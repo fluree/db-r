@@ -87,13 +87,16 @@ async fn import_inner(
         "ttl"
     };
 
-    // Write body to temp file for the import pipeline
-    let tmp_dir = std::env::temp_dir().join("fluree_import");
-    std::fs::create_dir_all(&tmp_dir)
-        .map_err(|e| ServerError::internal(format!("Failed to create temp directory: {}", e)))?;
-    let tmp_path = tmp_dir.join(format!("import_{}.{}", uuid_simple(), extension,));
-    std::fs::write(&tmp_path, &body)
+    // Write body to a NamedTempFile — auto-deleted on drop (even on panic),
+    // and guaranteed unique filename.
+    let mut tmp_file = tempfile::Builder::new()
+        .prefix("fluree-import-")
+        .suffix(&format!(".{}", extension))
+        .tempfile()
+        .map_err(|e| ServerError::internal(format!("Failed to create temp file: {}", e)))?;
+    std::io::Write::write_all(&mut tmp_file, &body)
         .map_err(|e| ServerError::internal(format!("Failed to write temp file: {}", e)))?;
+    let tmp_path = tmp_file.path().to_path_buf();
 
     let fluree = state.fluree.clone();
     let ledger = params.ledger.clone();
@@ -108,8 +111,7 @@ async fn import_inner(
     .await
     .map_err(|e| ServerError::internal(format!("Import task panicked: {}", e)))?;
 
-    // Clean up temp file (best-effort, regardless of result)
-    let _ = std::fs::remove_file(&tmp_path);
+    // tmp_file is dropped here (or on error above), auto-deleting the temp file
 
     let result =
         result.map_err(|e| ServerError::Api(fluree_db_api::ApiError::internal(e.to_string())))?;
@@ -126,14 +128,4 @@ async fn import_inner(
         t: result.t,
         flake_count: result.flake_count,
     })
-}
-
-/// Simple unique ID for temp files (avoid collisions on concurrent imports).
-fn uuid_simple() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{:x}", nanos)
 }

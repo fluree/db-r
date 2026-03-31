@@ -370,7 +370,7 @@ impl AdminAuthConfig {
 }
 
 /// Fluree DB HTTP Server configuration
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Clone)]
 #[command(name = "fluree-server")]
 #[command(about = "Fluree DB HTTP REST API Server")]
 pub struct ServerConfig {
@@ -705,6 +705,23 @@ pub struct ServerConfig {
     /// DANGEROUS: Accept any valid admin signature regardless of issuer (dev only)
     #[arg(long, env = "FLUREE_ADMIN_AUTH_INSECURE", hide = true)]
     pub admin_auth_insecure_accept_any_issuer: bool,
+}
+
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("listen_addr", &self.listen_addr)
+            .field("storage_path", &self.storage_path)
+            .field(
+                "encryption_key",
+                &self.encryption_key.as_ref().map(|_| "***"),
+            )
+            .field("encryption_key_file", &self.encryption_key_file)
+            .field("s3_bucket", &self.s3_bucket)
+            .field("indexing_enabled", &self.indexing_enabled)
+            .field("server_role", &self.server_role)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for ServerConfig {

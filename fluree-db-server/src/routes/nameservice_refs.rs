@@ -80,7 +80,7 @@ pub struct SnapshotResponse {
 fn require_read_write_mode(state: &AppState) -> Result<(), ServerError> {
     if state.fluree.nameservice_mode().is_read_only() {
         return Err(ServerError::not_found(
-            "Nameservice sync endpoints are not available in peer mode",
+            "Nameservice sync endpoints are not available in proxy peer mode",
         ));
     }
     Ok(())

@@ -41,6 +41,9 @@ pub struct AppState {
     /// `None` if no config file was found or used.
     pub config_file_path: Option<PathBuf>,
 
+    /// Mutex serializing config file writes to prevent TOCTOU races.
+    pub config_write_lock: tokio::sync::Mutex<()>,
+
     /// IRI prefix mappings from `.fluree/prefixes.json` (managed by CLI).
     /// Injected as default `@context` entries for JSON-LD queries.
     pub prefixes: Option<std::collections::HashMap<String, String>>,
@@ -230,6 +233,7 @@ impl AppState {
             fluree,
             config,
             config_file_path,
+            config_write_lock: tokio::sync::Mutex::new(()),
             prefixes,
             telemetry_config,
             start_time: Instant::now(),

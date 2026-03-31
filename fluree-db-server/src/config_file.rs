@@ -425,6 +425,22 @@ pub const CONFIG_FILE_ARG_IDS: &[&str] = &[
     "storage_proxy_default_identity",
     "storage_proxy_default_policy_class",
     "storage_proxy_debug_headers",
+    // Added in server maturity branch:
+    "no_preload",
+    "parallelism",
+    "novelty_min_bytes",
+    "novelty_max_bytes",
+    "no_ledger_cache",
+    "ledger_cache_idle_ttl_secs",
+    "ledger_cache_sweep_secs",
+    "shutdown_timeout_secs",
+    "query_timeout_secs",
+    "maintenance_mode",
+    "encryption_key",
+    "encryption_key_file",
+    "s3_bucket",
+    "s3_endpoint",
+    "s3_prefix",
 ];
 
 /// Arg IDs that are only available when the `oidc` feature is enabled.

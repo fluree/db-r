@@ -50,7 +50,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/graph-source/bm25/sync", post(graph_source::bm25_sync))
         .route("/graph-source/bm25/status", post(graph_source::bm25_status))
         .route("/graph-source/bm25/drop", post(graph_source::bm25_drop))
-        .route("/admin/config", put(admin::config_update));
+        .route("/admin/config", put(admin::config_update))
+        .route("/config", get(admin::config_inspect))
+        .route("/import", post(import::import));
 
     #[cfg(feature = "iceberg")]
     let v1_admin_protected_routes =
@@ -66,7 +68,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let v1 = Router::new()
         // Admin endpoints (stats and whoami are read-only, no auth required)
         .route("/stats", get(admin::stats))
-        .route("/config", get(admin::config_inspect))
         .route("/whoami", get(admin::whoami))
         // Ledger management (read-only)
         .route("/ledgers", get(ledger::list_ledgers))
@@ -98,8 +99,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/context/*ledger",
             get(context::get_context).put(context::set_context),
         )
-        // Bulk import endpoint
-        .route("/import", post(import::import))
         // Commit-push endpoint (precomputed commits)
         .route("/push/*ledger", post(push::push_ledger_tail))
         // Commit show endpoint (decoded commit with resolved IRIs)

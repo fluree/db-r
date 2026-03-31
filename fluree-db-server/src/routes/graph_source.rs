@@ -41,6 +41,7 @@ pub async fn bm25_create(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Bm25CreateRequest>,
 ) -> Result<Json<Bm25CreateResponse>> {
+    super::admin::check_maintenance(&state)?;
     let mut config = fluree_db_api::Bm25CreateConfig::new(req.name, req.ledger, req.query);
     if let Some(branch) = req.branch {
         config = config.with_branch(branch);
@@ -89,6 +90,7 @@ pub async fn bm25_sync(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Bm25GraphSourceRequest>,
 ) -> Result<Json<Bm25SyncResponse>> {
+    super::admin::check_maintenance(&state)?;
     let result = state
         .fluree
         .sync_bm25_index(&req.graph_source_id)
@@ -152,6 +154,7 @@ pub async fn bm25_drop(
     State(state): State<Arc<AppState>>,
     Json(req): Json<Bm25GraphSourceRequest>,
 ) -> Result<Json<Bm25DropResponse>> {
+    super::admin::check_maintenance(&state)?;
     let result = state
         .fluree
         .drop_full_text_index(&req.graph_source_id)

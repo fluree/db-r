@@ -217,13 +217,15 @@ pub async fn config_inspect(State(state): State<Arc<AppState>>) -> Json<serde_js
 /// PUT /v1/fluree/config
 ///
 /// Persists configuration changes to the config file (.fluree/config.toml or .jsonld).
-/// Only a subset of settings can take effect without restart:
-/// - `log_level`, `query_timeout_secs`, `maintenance_mode` (hot-reloaded)
-/// - All others are written to file but require server restart.
+/// Currently only `maintenance_mode` is hot-reloaded (takes effect immediately).
+/// All other settings are written to the config file but require server restart.
 pub async fn config_update(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<ConfigUpdateResponse>> {
+    // Serialize config writes to prevent TOCTOU races
+    let _lock = state.config_write_lock.lock().await;
+
     let config_path = state.config_file_path.as_ref().ok_or_else(|| {
         crate::error::ServerError::bad_request(
             "No config file found — cannot persist changes. \
@@ -248,7 +250,12 @@ pub async fn config_update(
     // Merge incoming values into the existing config
     let updated_content = if is_json {
         let mut existing: serde_json::Value =
-            serde_json::from_str(&existing_content).unwrap_or_else(|_| serde_json::json!({}));
+            serde_json::from_str(&existing_content).map_err(|e| {
+                crate::error::ServerError::internal(format!(
+                    "Config file is malformed JSON — fix it before updating: {}",
+                    e
+                ))
+            })?;
         let server = existing.as_object_mut().and_then(|o| {
             o.entry("server")
                 .or_insert_with(|| serde_json::json!({}))
@@ -266,8 +273,12 @@ pub async fn config_update(
         })?
     } else {
         // TOML: parse, merge into [server], re-serialize
-        let mut existing: toml::Value = toml::from_str(&existing_content)
-            .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+        let mut existing: toml::Value = toml::from_str(&existing_content).map_err(|e| {
+            crate::error::ServerError::internal(format!(
+                "Config file is malformed TOML — fix it before updating: {}",
+                e
+            ))
+        })?;
         let server = existing.as_table_mut().and_then(|t| {
             t.entry("server")
                 .or_insert_with(|| toml::Value::Table(Default::default()))
@@ -345,7 +356,16 @@ fn json_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
             let items: Vec<toml::Value> = arr.iter().filter_map(json_to_toml).collect();
             Some(toml::Value::Array(items))
         }
-        _ => None,
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::map::Map::new();
+            for (k, v) in obj {
+                if let Some(tv) = json_to_toml(v) {
+                    table.insert(k.clone(), tv);
+                }
+            }
+            Some(toml::Value::Table(table))
+        }
+        serde_json::Value::Null => None,
     }
 }
 

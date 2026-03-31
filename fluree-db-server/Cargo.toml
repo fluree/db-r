@@ -128,6 +128,9 @@ ciborium = "0.2" # CBOR encoding for policy-filtered flakes transport
 # JWT verification (OIDC/JWKS path)
 jsonwebtoken = { workspace = true, optional = true }
 
+# Temp files for bulk import endpoint
+tempfile = "3"
+
 # Prometheus metrics (optional, gated by `metrics` feature)
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }

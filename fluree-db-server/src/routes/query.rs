@@ -387,7 +387,10 @@ pub async fn query(
             if let Some(max_bytes) = headers.max_bytes() {
                 config = config.with_max_bytes(max_bytes);
             }
-            let result = state.fluree.query_from().sparql(&sparql).format(config).execute_formatted().await;
+            let result = with_query_timeout(&state, Box::pin(async {
+                state.fluree.query_from().sparql(&sparql).format(config).execute_formatted()
+                    .await.map_err(ServerError::Api)
+            })).await;
             return match result {
                 Ok(json) => {
                     tracing::info!(status = "success", query_kind = "sparql", format = "agent-json");
@@ -395,10 +398,9 @@ pub async fn query(
                     Ok(([(axum::http::header::CONTENT_TYPE, content_type)], Json(json)).into_response())
                 }
                 Err(e) => {
-                    let server_error = ServerError::Api(e);
                     set_span_error_code(&span, "error:InvalidQuery");
-                    tracing::error!(error = %server_error, query_kind = "sparql", "query failed");
-                    Err(server_error)
+                    tracing::error!(error = %e, query_kind = "sparql", "query failed");
+                    Err(e)
                 }
             };
         }
@@ -612,6 +614,9 @@ pub async fn query_ledger(
                 return Err(ServerError::not_found("Ledger not found"));
             }
         }
+
+        // Read-after-write consistency for SPARQL queries
+        enforce_min_t(&state, &base_ledger, &headers).await?;
 
         let identity = effective_identity(&credential, &bearer);
         let policy_class = data_auth.default_policy_class.as_deref();
