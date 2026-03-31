@@ -100,7 +100,7 @@ pub struct RebaseReport {
 
 impl<S, N> crate::Fluree<S, N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
+    S: Storage + Clone + 'static,
     N: NameService + Publisher + 'static,
 {
     /// Rebase a branch onto its source branch's current HEAD.
