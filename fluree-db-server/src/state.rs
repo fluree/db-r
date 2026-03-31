@@ -19,7 +19,9 @@ use crate::config::{ServerConfig, ServerRole};
 use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
-use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, NameServiceMode};
+use fluree_db_api::{
+    server_defaults, Fluree, FlureeBuilder, IndexConfig, LedgerManagerConfig, NameServiceMode,
+};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -127,9 +129,13 @@ impl AppState {
             Self::create_file_fluree(&config)?
         };
 
-        // Default idle TTL of 30 minutes for ledger registry, matching
-        // LedgerManagerConfig::default() in fluree-db-api.
-        let registry = Arc::new(LedgerRegistry::new(Duration::from_secs(1800)));
+        // Use configured TTL for ledger registry, defaulting to 30 minutes
+        // (matching LedgerManagerConfig::default() in fluree-db-api).
+        let registry_ttl = config
+            .ledger_cache_idle_ttl_secs
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(1800));
+        let registry = Arc::new(LedgerRegistry::new(registry_ttl));
 
         // Initialize peer mode state if in peer role
         let (peer_state, forwarding_client) = if config.server_role == ServerRole::Peer {
@@ -202,6 +208,39 @@ impl AppState {
 
         if let Some(max_mb) = config.cache_max_mb {
             builder = builder.cache_max_mb(max_mb);
+        }
+
+        // Wire parallelism
+        if let Some(p) = config.parallelism {
+            builder = builder.parallelism(p);
+        }
+
+        // Wire novelty thresholds (separate from indexing thresholds)
+        if config.novelty_min_bytes.is_some() || config.novelty_max_bytes.is_some() {
+            builder = builder.with_novelty_thresholds(
+                config
+                    .novelty_min_bytes
+                    .unwrap_or(server_defaults::DEFAULT_REINDEX_MIN_BYTES),
+                config
+                    .novelty_max_bytes
+                    .unwrap_or(server_defaults::DEFAULT_REINDEX_MAX_BYTES),
+            );
+        }
+
+        // Wire ledger cache configuration
+        if config.no_ledger_cache {
+            builder = builder.without_ledger_caching();
+        } else if config.ledger_cache_idle_ttl_secs.is_some()
+            || config.ledger_cache_sweep_secs.is_some()
+        {
+            let mut mgr_config = LedgerManagerConfig::default();
+            if let Some(ttl) = config.ledger_cache_idle_ttl_secs {
+                mgr_config.idle_ttl = Duration::from_secs(ttl);
+            }
+            if let Some(sweep) = config.ledger_cache_sweep_secs {
+                mgr_config.sweep_interval = Duration::from_secs(sweep);
+            }
+            builder = builder.with_ledger_cache_config(mgr_config);
         }
 
         // Wire background indexing if enabled

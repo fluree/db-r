@@ -261,6 +261,12 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # body_limit = {body_limit}              # 50 MB
 # cache_max_mb = 4096                    # global cache budget (MB); default: 50% of RAM
 # no_preload = false                     # skip ledger preload at startup (useful for containers)
+# parallelism = 0                        # thread pool size; 0 = auto-detect from CPU cores
+# novelty_min_bytes = {reindex_min_bytes}         # soft novelty threshold — triggers background indexing
+# novelty_max_bytes = {reindex_max_bytes}        # hard novelty threshold — blocks commits until indexed
+# no_ledger_cache = false                # disable in-memory ledger caching
+# ledger_cache_idle_ttl_secs = 1800      # evict idle ledgers after 30 min
+# ledger_cache_sweep_secs = 60           # background sweep interval
 
 # [server.indexing]
 # enabled = {indexing_enabled}
@@ -369,6 +375,12 @@ pub fn generate_jsonld_config_template(storage_path_override: Option<&str>) -> S
             "cors_enabled": DEFAULT_CORS_ENABLED,
             "body_limit": DEFAULT_BODY_LIMIT,
             "no_preload": false,
+            "parallelism": 0,
+            "novelty_min_bytes": DEFAULT_REINDEX_MIN_BYTES,
+            "novelty_max_bytes": DEFAULT_REINDEX_MAX_BYTES,
+            "no_ledger_cache": false,
+            "ledger_cache_idle_ttl_secs": 1800,
+            "ledger_cache_sweep_secs": 60,
             "indexing": {
                 "enabled": DEFAULT_INDEXING_ENABLED,
                 "reindex_min_bytes": DEFAULT_REINDEX_MIN_BYTES,

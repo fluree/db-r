@@ -62,6 +62,12 @@ pub struct ServerFileConfig {
     pub body_limit: Option<usize>,
     pub cache_max_mb: Option<usize>,
     pub no_preload: Option<bool>,
+    pub parallelism: Option<usize>,
+    pub novelty_min_bytes: Option<usize>,
+    pub novelty_max_bytes: Option<usize>,
+    pub no_ledger_cache: Option<bool>,
+    pub ledger_cache_idle_ttl_secs: Option<u64>,
+    pub ledger_cache_sweep_secs: Option<u64>,
 
     /// `[server.indexing]`
     #[serde(default)]
@@ -475,6 +481,36 @@ pub fn apply_to_server_config(
     if is_default("no_preload") {
         if let Some(v) = file.no_preload {
             config.no_preload = v;
+        }
+    }
+    if is_default("parallelism") {
+        if let Some(v) = file.parallelism {
+            config.parallelism = Some(v);
+        }
+    }
+    if is_default("novelty_min_bytes") {
+        if let Some(v) = file.novelty_min_bytes {
+            config.novelty_min_bytes = Some(v);
+        }
+    }
+    if is_default("novelty_max_bytes") {
+        if let Some(v) = file.novelty_max_bytes {
+            config.novelty_max_bytes = Some(v);
+        }
+    }
+    if is_default("no_ledger_cache") {
+        if let Some(v) = file.no_ledger_cache {
+            config.no_ledger_cache = v;
+        }
+    }
+    if is_default("ledger_cache_idle_ttl_secs") {
+        if let Some(v) = file.ledger_cache_idle_ttl_secs {
+            config.ledger_cache_idle_ttl_secs = Some(v);
+        }
+    }
+    if is_default("ledger_cache_sweep_secs") {
+        if let Some(v) = file.ledger_cache_sweep_secs {
+            config.ledger_cache_sweep_secs = Some(v);
         }
     }
 

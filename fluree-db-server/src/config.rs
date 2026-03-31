@@ -421,6 +421,36 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_NO_PRELOAD")]
     pub no_preload: bool,
 
+    /// Thread pool parallelism for query execution and indexing.
+    /// 0 means auto-detect (uses available CPU cores).
+    #[arg(long, env = "FLUREE_PARALLELISM")]
+    pub parallelism: Option<usize>,
+
+    /// Soft novelty threshold in bytes. When in-memory novelty exceeds this
+    /// size, background indexing is triggered (non-blocking).
+    #[arg(long, env = "FLUREE_NOVELTY_MIN_BYTES")]
+    pub novelty_min_bytes: Option<usize>,
+
+    /// Hard novelty threshold in bytes. When in-memory novelty exceeds this
+    /// size, new commits are blocked until indexing completes.
+    #[arg(long, env = "FLUREE_NOVELTY_MAX_BYTES")]
+    pub novelty_max_bytes: Option<usize>,
+
+    /// Disable the in-memory ledger cache entirely.
+    /// Each query will reload the ledger from storage.
+    #[arg(long, env = "FLUREE_NO_LEDGER_CACHE")]
+    pub no_ledger_cache: bool,
+
+    /// How long (in seconds) an idle ledger stays cached before eviction.
+    /// Default: 1800 (30 minutes).
+    #[arg(long, env = "FLUREE_LEDGER_CACHE_IDLE_TTL")]
+    pub ledger_cache_idle_ttl_secs: Option<u64>,
+
+    /// How often (in seconds) the cache background sweep runs to evict idle
+    /// ledgers. Default: 60 (1 minute).
+    #[arg(long, env = "FLUREE_LEDGER_CACHE_SWEEP_INTERVAL")]
+    pub ledger_cache_sweep_secs: Option<u64>,
+
     /// Request body size limit in bytes (default 50MB)
     #[arg(long, env = "FLUREE_BODY_LIMIT", default_value_t = server_defaults::DEFAULT_BODY_LIMIT)]
     pub body_limit: usize,
@@ -648,6 +678,12 @@ impl Default for ServerConfig {
             reindex_max_bytes: server_defaults::DEFAULT_REINDEX_MAX_BYTES,
             cache_max_mb: None,
             no_preload: false,
+            parallelism: None,
+            novelty_min_bytes: None,
+            novelty_max_bytes: None,
+            no_ledger_cache: false,
+            ledger_cache_idle_ttl_secs: None,
+            ledger_cache_sweep_secs: None,
             body_limit: server_defaults::DEFAULT_BODY_LIMIT,
             log_level: server_defaults::DEFAULT_LOG_LEVEL.to_string(),
             events_auth_mode: EventsAuthMode::None,
