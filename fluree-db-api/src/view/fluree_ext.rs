@@ -88,7 +88,10 @@ where
         if g_id != DEFAULT_GRAPH_ID && view.binary_store.is_some() && view.dict_novelty.is_some() {
             let store = view.binary_store.clone().unwrap();
             let dict_novelty = view.dict_novelty.clone().unwrap();
-            let provider = BinaryRangeProvider::new(store, dict_novelty);
+            let runtime_small_dicts = view.runtime_small_dicts.clone().unwrap_or_else(|| {
+                crate::runtime_dicts::build_runtime_small_dicts(&store, view.novelty.as_ref())
+            });
+            let provider = BinaryRangeProvider::new(store, dict_novelty, runtime_small_dicts);
             let mut db = (*view.snapshot).clone();
             db.range_provider = Some(Arc::new(provider));
             view.snapshot = Arc::new(db);
@@ -189,9 +192,18 @@ where
 
                 let arc_store = Arc::new(store);
                 let dn = snapshot.dict_novelty.clone();
-                let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
+                let runtime_small_dicts = crate::runtime_dicts::build_runtime_small_dicts(
+                    &arc_store,
+                    Some(&snapshot.novelty),
+                );
+                let provider = BinaryRangeProvider::new(
+                    Arc::clone(&arc_store),
+                    dn,
+                    Arc::clone(&runtime_small_dicts),
+                );
                 snapshot.snapshot.range_provider = Some(Arc::new(provider));
                 snapshot.binary_store = Some(arc_store);
+                snapshot.runtime_small_dicts = runtime_small_dicts;
             }
         }
 
@@ -336,10 +348,22 @@ where
                         };
                         let store = Arc::clone(store);
                         let dict_novelty = Arc::clone(dict_novelty);
-                        let provider = BinaryRangeProvider::new(store, dict_novelty);
+                        let runtime_small_dicts =
+                            view.runtime_small_dicts.clone().unwrap_or_else(|| {
+                                crate::runtime_dicts::build_runtime_small_dicts(
+                                    &store,
+                                    view.novelty.as_ref(),
+                                )
+                            });
+                        let provider = BinaryRangeProvider::new(
+                            Arc::clone(&store),
+                            dict_novelty,
+                            Arc::clone(&runtime_small_dicts),
+                        );
                         let mut db = (*view.snapshot).clone();
                         db.range_provider = Some(Arc::new(provider));
                         view.snapshot = Arc::new(db);
+                        view.runtime_small_dicts = Some(runtime_small_dicts);
                     }
                 } else {
                     // Commits exist but no index is available — populate without a store.

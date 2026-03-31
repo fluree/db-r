@@ -73,6 +73,8 @@ pub struct CachedLedgerState {
     pub novelty: Arc<Novelty>,
     /// Dictionary novelty layer (subjects and strings since last index build)
     pub dict_novelty: Arc<fluree_db_core::DictNovelty>,
+    /// Ledger-scoped runtime IDs for predicates and datatypes.
+    pub runtime_small_dicts: Arc<fluree_db_core::RuntimeSmallDicts>,
     /// Current transaction t value
     pub t: i64,
     /// Content identifier of the head commit (identity)
@@ -100,6 +102,7 @@ impl CachedLedgerState {
             snapshot: state.snapshot.clone(), // Cheap: Arc fields
             novelty: Arc::clone(&state.novelty),
             dict_novelty: Arc::clone(&state.dict_novelty),
+            runtime_small_dicts: Arc::clone(&state.runtime_small_dicts),
             t: state.t(),
             head_commit_id: state.head_commit_id.clone(),
             head_index_id: state.head_index_id.clone(),
@@ -142,6 +145,7 @@ impl CachedLedgerState {
             snapshot: self.snapshot,
             novelty: self.novelty,
             dict_novelty,
+            runtime_small_dicts: self.runtime_small_dicts,
             head_commit_id: self.head_commit_id,
             head_index_id: self.head_index_id,
             ns_record: self.ns_record,
@@ -407,10 +411,14 @@ impl LedgerHandle {
             crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
 
             let arc_store = Arc::new(store);
+            crate::runtime_dicts::reseed_runtime_small_dicts(&mut state, &arc_store);
 
             // Build range_provider with the real dict_novelty (rebuilt by apply_loaded_db)
-            let provider =
-                BinaryRangeProvider::new(Arc::clone(&arc_store), Arc::clone(&state.dict_novelty));
+            let provider = BinaryRangeProvider::new(
+                Arc::clone(&arc_store),
+                Arc::clone(&state.dict_novelty),
+                Arc::clone(&state.runtime_small_dicts),
+            );
             state.snapshot.range_provider = Some(Arc::new(provider));
 
             let te_store: Arc<dyn std::any::Any + Send + Sync> = arc_store.clone();
@@ -594,8 +602,12 @@ async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
     }
 
     let arc_store = Arc::new(store);
-    let provider =
-        BinaryRangeProvider::new(Arc::clone(&arc_store), Arc::clone(&state.dict_novelty));
+    crate::runtime_dicts::reseed_runtime_small_dicts(state, &arc_store);
+    let provider = BinaryRangeProvider::new(
+        Arc::clone(&arc_store),
+        Arc::clone(&state.dict_novelty),
+        Arc::clone(&state.runtime_small_dicts),
+    );
     state.snapshot.range_provider = Some(Arc::new(provider));
     // Also attach the type-erased store to the state so transaction staging
     // (which clones LedgerState under the write lock) can construct
@@ -1425,8 +1437,11 @@ where
                         if let Some(brp) = rp.as_any().downcast_ref::<BinaryRangeProvider>() {
                             let store = Arc::clone(brp.store());
                             let dn = Arc::clone(&write_guard.state().dict_novelty);
-                            write_guard.state_mut().snapshot.range_provider =
-                                Some(Arc::new(BinaryRangeProvider::new(store, dn)));
+                            let runtime_small_dicts =
+                                Arc::clone(&write_guard.state().runtime_small_dicts);
+                            write_guard.state_mut().snapshot.range_provider = Some(Arc::new(
+                                BinaryRangeProvider::new(store, dn, runtime_small_dicts),
+                            ));
                         }
                     }
                 }

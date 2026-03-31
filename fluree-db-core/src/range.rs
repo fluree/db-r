@@ -161,6 +161,10 @@ where
 struct SizedOverlayRef<'a, O: OverlayProvider + ?Sized>(&'a O);
 
 impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.0.as_any()
+    }
+
     fn epoch(&self) -> u64 {
         self.0.epoch()
     }

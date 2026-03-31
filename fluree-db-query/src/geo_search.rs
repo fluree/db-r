@@ -374,6 +374,7 @@ impl Operator for GeoSearchOperator {
                     flake,
                     store,
                     ctx.dict_novelty.as_ref(),
+                    ctx.runtime_small_dicts,
                     &mut ephemeral_preds,
                     &mut next_ep,
                 ) {

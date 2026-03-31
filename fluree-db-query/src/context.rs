@@ -13,7 +13,8 @@ use crate::vector::VectorIndexProvider;
 use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore, FulltextArena};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{
-    GraphDbRef, GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, Sid, Tracker,
+    GraphDbRef, GraphId, LedgerSnapshot, NoOverlay, OverlayProvider, RuntimeSmallDicts, Sid,
+    Tracker,
 };
 
 use crate::binary_range::BinaryRangeProvider;
@@ -91,6 +92,8 @@ pub struct ExecutionContext<'a> {
     /// shared layer (populated during commit). When absent, an uninitialized
     /// `DictNovelty` is used as fallback (routes everything to persisted tree).
     pub dict_novelty: Option<Arc<DictNovelty>>,
+    /// Ledger-scoped runtime IDs for predicates and datatypes.
+    pub runtime_small_dicts: Option<&'a RuntimeSmallDicts>,
     /// Optional spatial index providers for `Pattern::S2Search`.
     ///
     /// Keys are graph-scoped: `"g{g_id}:{predicate_iri}"`.
@@ -142,6 +145,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
@@ -156,6 +160,9 @@ impl<'a> ExecutionContext<'a> {
     pub fn from_graph_db_ref(db: GraphDbRef<'a>, vars: &'a VarRegistry) -> Self {
         let binary_store = Self::extract_binary_store(db.snapshot);
         let dict_novelty = Self::extract_dict_novelty(db.snapshot);
+        let runtime_small_dicts = db
+            .runtime_small_dicts
+            .or_else(|| Self::extract_runtime_small_dicts(db.snapshot));
 
         Self {
             snapshot: db.snapshot,
@@ -178,6 +185,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store,
             binary_g_id: db.g_id,
             dict_novelty,
+            runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
@@ -196,6 +204,9 @@ impl<'a> ExecutionContext<'a> {
     ) -> Self {
         let binary_store = Self::extract_binary_store(db.snapshot);
         let dict_novelty = Self::extract_dict_novelty(db.snapshot);
+        let runtime_small_dicts = db
+            .runtime_small_dicts
+            .or_else(|| Self::extract_runtime_small_dicts(db.snapshot));
 
         Self {
             snapshot: db.snapshot,
@@ -218,6 +229,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store,
             binary_g_id: db.g_id,
             dict_novelty,
+            runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
@@ -253,6 +265,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
@@ -293,6 +306,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
@@ -329,6 +343,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None,
             binary_g_id: 0,
             dict_novelty: None,
+            runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
@@ -684,6 +699,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: self.binary_store.clone(),
             binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
+            runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
@@ -729,6 +745,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: self.binary_store.clone(),
             binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
+            runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
@@ -765,6 +782,7 @@ impl<'a> ExecutionContext<'a> {
             binary_store: None, // GraphRef doesn't have binary store
             binary_g_id: graph.g_id,
             dict_novelty: None, // GraphRef doesn't have dict novelty
+            runtime_small_dicts: None,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
@@ -795,6 +813,15 @@ impl<'a> ExecutionContext<'a> {
             .as_ref()
             .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
             .map(|brp| Arc::clone(brp.dict_novelty()))
+    }
+
+    /// Extract `RuntimeSmallDicts` from a snapshot's `RangeProvider` via downcast.
+    fn extract_runtime_small_dicts(snapshot: &'a LedgerSnapshot) -> Option<&'a RuntimeSmallDicts> {
+        snapshot
+            .range_provider
+            .as_ref()
+            .and_then(|rp| rp.as_any().downcast_ref::<BinaryRangeProvider>())
+            .map(|brp| brp.runtime_small_dicts().as_ref())
     }
 
     /// Attach a binary columnar index store for fast local-file scans.

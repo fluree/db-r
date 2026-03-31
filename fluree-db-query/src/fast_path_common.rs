@@ -1369,6 +1369,7 @@ pub fn build_psot_cursor_for_predicate(
                     flake,
                     store,
                     Some(&dn),
+                    ctx.runtime_small_dicts,
                     &mut ephemeral_preds,
                     &mut next_ep,
                 ) {

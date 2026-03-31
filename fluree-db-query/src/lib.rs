@@ -79,6 +79,7 @@ pub(crate) mod semijoin;
 pub mod service;
 pub(crate) mod sid_iri;
 pub mod sort;
+pub(crate) mod stats_cache;
 pub mod stats_query;
 pub mod subquery;
 pub mod triple;

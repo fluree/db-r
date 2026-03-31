@@ -3,7 +3,7 @@
 //! `StatsView` provides O(1) lookups of property and class statistics,
 //! built from `IndexStats` at query time.
 
-use crate::ids::GraphId;
+use crate::ids::{GraphId, RuntimePredicateId};
 use crate::index_stats::IndexStats;
 use crate::sid::Sid;
 use crate::value_id::ValueTypeTag;
@@ -29,12 +29,12 @@ pub struct StatsView {
     ///
     /// This is derived from `classes` using the db's namespace table.
     pub classes_by_iri: HashMap<Arc<str>, u64>,
-    /// Graph-scoped property stats keyed by numeric IDs: g_id -> (p_id -> data).
+    /// Graph-scoped property stats keyed by runtime predicate IDs.
     ///
     /// Populated from `IndexStats.graphs` when present. Provides per-graph
     /// property lookups with datatype breakdown. The aggregate Sid-keyed
     /// `properties` map remains the primary source for the query planner.
-    pub graph_properties: HashMap<GraphId, HashMap<u32, GraphPropertyStatData>>,
+    pub graph_properties: HashMap<GraphId, HashMap<RuntimePredicateId, GraphPropertyStatData>>,
 }
 
 /// Per-property statistics within a graph, keyed by numeric IDs.
@@ -62,6 +62,53 @@ pub struct PropertyStatData {
 }
 
 impl StatsView {
+    /// Approximate byte size for cache weighing.
+    pub fn byte_size(&self) -> usize {
+        use std::mem::size_of;
+
+        let properties = self
+            .properties
+            .keys()
+            .map(|sid| size_of::<u16>() + sid.name.len() + size_of::<PropertyStatData>())
+            .sum::<usize>();
+        let classes = self
+            .classes
+            .keys()
+            .map(|sid| size_of::<u16>() + sid.name.len() + size_of::<u64>())
+            .sum::<usize>();
+        let properties_by_iri = self
+            .properties_by_iri
+            .keys()
+            .map(|iri| iri.len() + size_of::<PropertyStatData>())
+            .sum::<usize>();
+        let classes_by_iri = self
+            .classes_by_iri
+            .keys()
+            .map(|iri| iri.len() + size_of::<u64>())
+            .sum::<usize>();
+        let graph_properties = self
+            .graph_properties
+            .values()
+            .map(|props| {
+                props
+                    .values()
+                    .map(|data| {
+                        size_of::<RuntimePredicateId>()
+                            + size_of::<GraphPropertyStatData>()
+                            + data.datatypes.len() * size_of::<(ValueTypeTag, u64)>()
+                    })
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+
+        size_of::<Self>()
+            + properties
+            + classes
+            + properties_by_iri
+            + classes_by_iri
+            + graph_properties
+    }
+
     /// Build from IndexStats.
     ///
     /// Note: `PropertyStatEntry.sid` is already `(i32, String)` matching `Sid::new` shape,
@@ -95,7 +142,7 @@ impl StatsView {
                 let mut prop_map = HashMap::new();
                 for p_entry in &g_entry.properties {
                     prop_map.insert(
-                        p_entry.p_id,
+                        RuntimePredicateId::from_u32(p_entry.p_id),
                         GraphPropertyStatData {
                             count: p_entry.count,
                             ndv_values: p_entry.ndv_values,
@@ -177,7 +224,11 @@ impl StatsView {
     }
 
     /// Get property stats within a specific graph by numeric IDs.
-    pub fn get_graph_property(&self, g_id: GraphId, p_id: u32) -> Option<&GraphPropertyStatData> {
+    pub fn get_graph_property(
+        &self,
+        g_id: GraphId,
+        p_id: RuntimePredicateId,
+    ) -> Option<&GraphPropertyStatData> {
         self.graph_properties.get(&g_id)?.get(&p_id)
     }
 
@@ -185,7 +236,7 @@ impl StatsView {
     pub fn get_graph_properties(
         &self,
         g_id: GraphId,
-    ) -> Option<&HashMap<u32, GraphPropertyStatData>> {
+    ) -> Option<&HashMap<RuntimePredicateId, GraphPropertyStatData>> {
         self.graph_properties.get(&g_id)
     }
 

@@ -260,6 +260,10 @@ impl LedgerView {
 }
 
 impl OverlayProvider for LedgerView {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn epoch(&self) -> u64 {
         self.staged_epoch
     }

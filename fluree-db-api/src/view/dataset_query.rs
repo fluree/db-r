@@ -13,7 +13,9 @@ use crate::{
     TrackingOptions,
 };
 use fluree_db_core::GraphDbRef;
-use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
+use fluree_db_query::execute::{
+    execute_prepared, prepare_execution_with_binary_store, ContextConfig,
+};
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 
 // ============================================================================
@@ -522,9 +524,10 @@ where
 
         let db = primary.as_graph_db_ref();
 
-        let prepared = prepare_execution(db, executable)
-            .await
-            .map_err(query_error_to_api_error)?;
+        let prepared =
+            prepare_execution_with_binary_store(db, executable, primary.binary_store.as_ref())
+                .await
+                .map_err(query_error_to_api_error)?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),
@@ -623,7 +626,9 @@ where
 
         let db = primary.as_graph_db_ref();
 
-        let prepared = prepare_execution(db, executable).await?;
+        let prepared =
+            prepare_execution_with_binary_store(db, executable, primary.binary_store.as_ref())
+                .await?;
 
         let (from_t, to_t, history_mode) = match dataset.history_time_range() {
             Some((hist_from, hist_to)) => (Some(hist_from), hist_to, true),

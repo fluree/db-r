@@ -749,57 +749,11 @@ where
                 use fluree_db_core::index_stats as is;
                 use fluree_db_core::{ClassPropertyUsage, ClassRefCount, ClassStatEntry};
 
-                // Derive deprecated SID-keyed PropertyStatEntry from per-graph data.
-                // Aggregate across graphs by p_id.
-                struct PropAgg {
-                    count: u64,
-                    ndv_values: u64,
-                    ndv_subjects: u64,
-                    last_modified_t: i64,
-                    datatypes: Vec<(u8, u64)>,
-                }
-                let mut agg: std::collections::HashMap<u32, PropAgg> =
-                    std::collections::HashMap::new();
-                for g in &id_stats_result.graphs {
-                    for p in &g.properties {
-                        let e = agg.entry(p.p_id).or_insert(PropAgg {
-                            count: 0,
-                            ndv_values: 0,
-                            ndv_subjects: 0,
-                            last_modified_t: 0,
-                            datatypes: Vec::new(),
-                        });
-                        e.count += p.count;
-                        e.ndv_values = e.ndv_values.max(p.ndv_values);
-                        e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
-                        e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
-                        for &(dt, cnt) in &p.datatypes {
-                            if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
-                                existing.1 += cnt;
-                            } else {
-                                e.datatypes.push((dt, cnt));
-                            }
-                        }
-                    }
-                }
-                let properties: Vec<is::PropertyStatEntry> = agg
-                    .into_iter()
-                    .map(|(p_id, pa)| {
-                        let iri = shared.predicates.resolve(p_id).unwrap_or("");
-                        let (ns, name) = match trie_for_stats.longest_match(iri) {
-                            Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
-                            None => (0u16, iri.to_string()),
-                        };
-                        is::PropertyStatEntry {
-                            sid: (ns, name),
-                            count: pa.count,
-                            ndv_values: pa.ndv_values,
-                            ndv_subjects: pa.ndv_subjects,
-                            last_modified_t: pa.last_modified_t,
-                            datatypes: pa.datatypes,
-                        }
-                    })
-                    .collect();
+                let properties = crate::stats::aggregate_property_entries_from_graphs(
+                    &id_stats_result.graphs,
+                    &trie_for_stats,
+                    |p_id| shared.predicates.resolve(p_id).map(ToString::to_string),
+                );
 
                 // ---- Class stats (graph-scoped) ----
                 //

@@ -314,7 +314,7 @@ pub async fn resolve_incremental_commits_v6(
             delta_retracts += resolved.retracts as u64;
             commit_count += 1;
 
-            if commit_count % 500 == 0 {
+            if commit_count.is_multiple_of(500) {
                 tracing::info!(
                     commit_count,
                     total_commits = commit_cids.len(),
@@ -323,7 +323,7 @@ pub async fn resolve_incremental_commits_v6(
                     elapsed_ms = t0.elapsed().as_millis() as u64,
                     "V6 incremental resolve: commit resolution progress"
                 );
-            } else if commit_count % 100 == 0 {
+            } else if commit_count.is_multiple_of(100) {
                 tracing::debug!(
                     commit_count,
                     total_commits = commit_cids.len(),

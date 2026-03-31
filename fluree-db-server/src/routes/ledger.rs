@@ -522,19 +522,26 @@ pub async fn info(
 
         // Build comprehensive ledger info
         //
-        // By default we return the optimized base payload. Callers can opt into
-        // heavier/real-time property details via query params.
-        let realtime_details = query.realtime_property_details.unwrap_or(false);
+        // By default we return the full novelty-aware ledger-info payload. Query
+        // params can opt into lighter/index-derived variants explicitly.
         let graph_selector = match query.graph.as_deref() {
             Some(name) => fluree_db_api::ledger_info::GraphSelector::ByName(name.to_string()),
             None => fluree_db_api::ledger_info::GraphSelector::Default,
         };
-        let opts = fluree_db_api::ledger_info::LedgerInfoOptions {
-            realtime_property_details: realtime_details,
-            include_property_datatypes: query.include_property_datatypes.unwrap_or(false)
-                || realtime_details,
+        let mut opts = fluree_db_api::ledger_info::LedgerInfoOptions {
             graph: graph_selector,
+            ..Default::default()
         };
+        if let Some(enabled) = query.realtime_property_details {
+            opts.realtime_property_details = enabled;
+            opts.include_property_datatypes = enabled;
+        }
+        if let Some(enabled) = query.include_property_datatypes {
+            opts.include_property_datatypes = enabled;
+        }
+        if let Some(enabled) = query.include_property_estimates {
+            opts.include_property_estimates = enabled;
+        }
 
         let mut info = match &state.fluree {
             crate::state::FlureeInstance::File(f) => {
@@ -635,10 +642,13 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
 #[derive(Deserialize)]
 pub struct LedgerInfoQuery {
     pub ledger: Option<String>,
-    /// When true, merge novelty deltas into property “details” (real-time).
+    /// When false, use the lighter fast novelty-aware stats path instead of the
+    /// default full lookup-backed ledger-info stats path.
     pub realtime_property_details: Option<bool>,
-    /// When true, include `datatypes` under `stats.properties[*]` (indexed view by default).
+    /// When true, include `datatypes` under `stats.properties[*]`.
     pub include_property_datatypes: Option<bool>,
+    /// When true, include index-derived NDV/selectivity estimates.
+    pub include_property_estimates: Option<bool>,
     /// Which graph to scope stats to (e.g., “default”, “txn-meta”, or a graph IRI).
     /// Defaults to “default” (g_id = 0).
     pub graph: Option<String>,

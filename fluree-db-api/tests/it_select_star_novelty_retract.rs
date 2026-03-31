@@ -42,6 +42,35 @@ fn test_context() -> Value {
 
 const TASK_IRI: &str = "urn:test:task-1";
 
+fn assert_single_string_value(value: &Value, expected: &str, field: &str, node: &Value) {
+    match value {
+        Value::Array(arr) => {
+            assert_eq!(
+                arr.len(),
+                1,
+                "{field} should have exactly 1 value.\nGot: {value}\nFull node: {node}"
+            );
+            assert_single_string_value(&arr[0], expected, field, node);
+        }
+        Value::Object(obj) => {
+            assert_eq!(
+                obj.get("@value").and_then(Value::as_str),
+                Some(expected),
+                "{field} should match expected typed value.\nGot: {value}\nFull node: {node}"
+            );
+        }
+        Value::String(s) => {
+            assert_eq!(
+                s, expected,
+                "{field} should match expected string value.\nGot: {value}\nFull node: {node}"
+            );
+        }
+        _ => panic!(
+            "{field} should be a string, typed value, or single-element array.\nGot: {value}\nFull node: {node}"
+        ),
+    }
+}
+
 // =============================================================================
 // Core regression test: upsert in novelty → graph crawl must show only new value
 // =============================================================================
@@ -147,25 +176,15 @@ async fn graph_crawl_applies_novelty_retractions() {
         .expect("should return one result");
 
     // The description should be ONLY the updated value, not an array of both.
-    let desc = &node["ex:description"];
-    let desc_arr = desc.as_array().expect("description should be an array");
-    assert_eq!(
-        desc_arr.len(),
-        1,
-        "FQL graph crawl should return exactly 1 description value, not both old and new.\n\
-         Got: {desc}\nFull node: {node}"
-    );
-    let desc_val = desc_arr[0]["@value"].as_str().unwrap();
-    assert_eq!(
-        desc_val, "updated description",
-        "Description should be the updated value"
+    assert_single_string_value(
+        &node["ex:description"],
+        "updated description",
+        "description",
+        node,
     );
 
     // Status should be unchanged.
-    let status = &node["ex:status"];
-    let status_arr = status.as_array().expect("status should be an array");
-    assert_eq!(status_arr.len(), 1);
-    assert_eq!(status_arr[0]["@value"].as_str().unwrap(), "pending");
+    assert_single_string_value(&node["ex:status"], "pending", "status", node);
 }
 
 /// Scenario where the original value is already indexed (in the binary index),
@@ -255,18 +274,11 @@ async fn graph_crawl_applies_novelty_retractions_for_indexed_base_rows() {
         .and_then(|arr| arr.first())
         .expect("should return one result");
 
-    let desc = &node["ex:description"];
-    let desc_arr = desc.as_array().expect("description should be an array");
-    assert_eq!(
-        desc_arr.len(),
-        1,
-        "Indexed-base graph crawl should return exactly 1 description value.\n\
-         Got: {desc}\nFull node: {node}"
-    );
-    assert_eq!(
-        desc_arr[0]["@value"].as_str().unwrap(),
+    assert_single_string_value(
+        &node["ex:description"],
         "updated description",
-        "Description should be the updated value"
+        "description",
+        node,
     );
 }
 
@@ -352,19 +364,7 @@ async fn graph_crawl_applies_novelty_retractions_for_list_indexed_values() {
         .and_then(|arr| arr.first())
         .expect("should return one result");
 
-    let desc = &node["ex:description"];
-    let desc_arr = desc.as_array().expect("description should be an array");
-    assert_eq!(
-        desc_arr.len(),
-        1,
-        "List-indexed graph crawl should return exactly 1 description value.\n\
-         Got: {desc}\nFull node: {node}"
-    );
-    assert_eq!(
-        desc_arr[0]["@value"].as_str().unwrap(),
-        "desc c",
-        "Description should be the updated value"
-    );
+    assert_single_string_value(&node["ex:description"], "desc c", "description", node);
 }
 
 /// Regression: graph crawl must not drop novelty assertions when V3 overlay translation
@@ -431,8 +431,11 @@ async fn graph_crawl_does_not_drop_overlay_assertions_when_dict_novelty_missing(
 
     let store = Arc::clone(brp.store());
     let bad_dn = Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized());
+    let runtime_small_dicts = Arc::clone(brp.runtime_small_dicts());
     ledger.snapshot.range_provider = Some(Arc::new(fluree_db_query::BinaryRangeProvider::new(
-        store, bad_dn,
+        store,
+        bad_dn,
+        runtime_small_dicts,
     )));
 
     // Graph crawl should still return the updated value (correctness over speed).
@@ -455,18 +458,11 @@ async fn graph_crawl_does_not_drop_overlay_assertions_when_dict_novelty_missing(
         .and_then(|arr| arr.first())
         .expect("should return one result");
 
-    let desc = &node["ex:description"];
-    let desc_arr = desc.as_array().expect("description should be an array");
-    assert_eq!(
-        desc_arr.len(),
-        1,
-        "Graph crawl should keep the novelty-only asserted description even if overlay translation fails.\n\
-         Got: {desc}\nFull node: {node}"
-    );
-    assert_eq!(
-        desc_arr[0]["@value"].as_str().unwrap(),
+    assert_single_string_value(
+        &node["ex:description"],
         "updated description (novelty-only string)",
-        "Description should be the updated value"
+        "description",
+        node,
     );
 }
 
@@ -532,18 +528,11 @@ async fn graph_crawl_novelty_retractions_fresh_reader() {
         .and_then(|arr| arr.first())
         .expect("should return one result");
 
-    let desc = &node["ex:description"];
-    let desc_arr = desc.as_array().expect("description should be an array");
-    assert_eq!(
-        desc_arr.len(),
-        1,
-        "Fresh reader graph crawl should return exactly 1 description, not both old and new.\n\
-         Got: {desc}\nFull node: {node}"
-    );
-    assert_eq!(
-        desc_arr[0]["@value"].as_str().unwrap(),
+    assert_single_string_value(
+        &node["ex:description"],
         "updated description",
-        "Description should be the updated value"
+        "description",
+        node,
     );
 }
 

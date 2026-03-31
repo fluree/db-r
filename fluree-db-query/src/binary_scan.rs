@@ -24,7 +24,7 @@ use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeMeta, FlakeValue, GraphId, IndexType,
     LedgerSnapshot, NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest,
-    Sid,
+    RuntimePredicateId, RuntimeSmallDicts, Sid,
 };
 
 use crate::binding::{Batch, Binding};
@@ -35,6 +35,7 @@ use crate::object_binding::{late_materialized_object_binding, materialized_objec
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
 use crate::sid_iri;
+use crate::stats_cache::cached_stats_view_for_db;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 use fluree_vocab::{namespaces, rdf_names, xsd_names};
@@ -1598,8 +1599,25 @@ impl Operator for BinaryScanOperator {
             let lang = dtc.and_then(|d| d.lang_tag());
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
+            let stats_view = cached_stats_view_for_db(
+                fluree_db_core::GraphDbRef::new(ctx.snapshot, self.g_id, ctx.overlay(), ctx.to_t)
+                    .with_runtime_small_dicts_opt(ctx.runtime_small_dicts),
+                self.store.as_ref(),
+            );
+            let inferred_dt_sid = if dt_sid.is_none() && lang.is_none() {
+                filter.p_id.and_then(|p_id| {
+                    infer_exact_datatype_sid_from_stats(
+                        stats_view.as_deref(),
+                        self.g_id,
+                        RuntimePredicateId::from_u32(p_id),
+                        bound_o,
+                    )
+                })
+            } else {
+                None
+            };
 
-            let encoded = match (dt_sid, lang) {
+            let encoded = match (dt_sid.or(inferred_dt_sid.as_ref()), lang) {
                 (Some(dt_sid), lang) => {
                     value_to_otype_okey(bound_o, dt_sid, lang, store_ref, dict_novelty)
                 }
@@ -1790,6 +1808,7 @@ impl Operator for BinaryScanOperator {
                     ctx.overlay(),
                     store_ref,
                     ctx.dict_novelty.as_ref(),
+                    ctx.runtime_small_dicts,
                     ctx.to_t,
                     self.g_id,
                 );
@@ -1969,12 +1988,15 @@ pub fn translate_overlay_flakes(
     overlay: &dyn OverlayProvider,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     to_t: i64,
     g_id: GraphId,
 ) -> Vec<OverlayOp> {
     let mut ops = Vec::new();
     let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
-    let mut next_ephemeral_p_id = store.predicate_count();
+    let mut next_ephemeral_p_id = runtime_small_dicts
+        .map(|dicts| dicts.predicate_count().max(store.predicate_count()))
+        .unwrap_or_else(|| store.predicate_count());
 
     overlay.for_each_overlay_flake(
         g_id,
@@ -1987,6 +2009,7 @@ pub fn translate_overlay_flakes(
             flake,
             store,
             dict_novelty,
+            runtime_small_dicts,
             &mut ephemeral_preds,
             &mut next_ephemeral_p_id,
         ) {
@@ -2014,13 +2037,16 @@ fn translate_overlay_flakes_with_untranslated(
     overlay: &dyn OverlayProvider,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     to_t: i64,
     g_id: GraphId,
 ) -> (Vec<OverlayOp>, Vec<Flake>, HashMap<Sid, u32>) {
     let mut ops = Vec::new();
     let mut untranslated = Vec::new();
     let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
-    let mut next_ephemeral_p_id = store.predicate_count();
+    let mut next_ephemeral_p_id = runtime_small_dicts
+        .map(|dicts| dicts.predicate_count().max(store.predicate_count()))
+        .unwrap_or_else(|| store.predicate_count());
 
     overlay.for_each_overlay_flake(
         g_id,
@@ -2033,6 +2059,7 @@ fn translate_overlay_flakes_with_untranslated(
             flake,
             store,
             dict_novelty,
+            runtime_small_dicts,
             &mut ephemeral_preds,
             &mut next_ephemeral_p_id,
         ) {
@@ -2057,6 +2084,7 @@ pub(crate) fn translate_one_flake_v3_pub(
     flake: &fluree_db_core::Flake,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     ephemeral_preds: &mut HashMap<Sid, u32>,
     next_ephemeral_p_id: &mut u32,
 ) -> std::io::Result<OverlayOp> {
@@ -2070,11 +2098,20 @@ pub(crate) fn translate_one_flake_v3_pub(
     // original Sid (in snapshot namespace space).
     let p_id = match store.sid_to_p_id(&flake.p) {
         Some(id) => id,
-        None => *ephemeral_preds.entry(flake.p.clone()).or_insert_with(|| {
-            let id = *next_ephemeral_p_id;
-            *next_ephemeral_p_id += 1;
-            id
-        }),
+        None => runtime_small_dicts
+            .and_then(|dicts| dicts.predicate_id(&flake.p))
+            .map(|id| {
+                *ephemeral_preds
+                    .entry(flake.p.clone())
+                    .or_insert(id.as_u32())
+            })
+            .unwrap_or_else(|| {
+                *ephemeral_preds.entry(flake.p.clone()).or_insert_with(|| {
+                    let id = *next_ephemeral_p_id;
+                    *next_ephemeral_p_id += 1;
+                    id
+                })
+            }),
     };
 
     // Object value → (o_type, o_key), using flake.dt + lang for proper OType.
@@ -2353,6 +2390,88 @@ pub(crate) fn encode_bound_object_prefilter(
     }
 }
 
+fn infer_exact_datatype_sid_from_stats(
+    stats_view: Option<&fluree_db_core::StatsView>,
+    g_id: GraphId,
+    p_id: RuntimePredicateId,
+    value: &FlakeValue,
+) -> Option<Sid> {
+    let stats = stats_view?.get_graph_property(g_id, p_id)?;
+    let mut tags = stats
+        .datatypes
+        .iter()
+        .filter_map(|(tag, count)| (*count > 0).then_some(*tag))
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+    if tags.len() != 1 {
+        return None;
+    }
+    datatype_sid_for_untyped_value(value, tags[0])
+}
+
+fn datatype_sid_for_untyped_value(
+    value: &FlakeValue,
+    tag: fluree_db_core::ValueTypeTag,
+) -> Option<Sid> {
+    match value {
+        FlakeValue::Long(_) => match tag {
+            fluree_db_core::ValueTypeTag::INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::LONG => Some(Sid::new(namespaces::XSD, xsd_names::LONG)),
+            fluree_db_core::ValueTypeTag::INT => Some(Sid::new(namespaces::XSD, xsd_names::INT)),
+            fluree_db_core::ValueTypeTag::SHORT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::SHORT))
+            }
+            fluree_db_core::ValueTypeTag::BYTE => Some(Sid::new(namespaces::XSD, xsd_names::BYTE)),
+            fluree_db_core::ValueTypeTag::UNSIGNED_LONG => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_LONG))
+            }
+            fluree_db_core::ValueTypeTag::UNSIGNED_INT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_INT))
+            }
+            fluree_db_core::ValueTypeTag::UNSIGNED_SHORT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_SHORT))
+            }
+            fluree_db_core::ValueTypeTag::UNSIGNED_BYTE => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_BYTE))
+            }
+            fluree_db_core::ValueTypeTag::NON_NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_NEGATIVE_INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::POSITIVE_INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::NON_POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_POSITIVE_INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NEGATIVE_INTEGER))
+            }
+            _ => None,
+        },
+        FlakeValue::Double(_) => match tag {
+            fluree_db_core::ValueTypeTag::DOUBLE => {
+                Some(Sid::new(namespaces::XSD, xsd_names::DOUBLE))
+            }
+            fluree_db_core::ValueTypeTag::FLOAT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::FLOAT))
+            }
+            fluree_db_core::ValueTypeTag::DECIMAL => {
+                Some(Sid::new(namespaces::XSD, xsd_names::DECIMAL))
+            }
+            fluree_db_core::ValueTypeTag::INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::LONG => Some(Sid::new(namespaces::XSD, xsd_names::LONG)),
+            fluree_db_core::ValueTypeTag::INT => Some(Sid::new(namespaces::XSD, xsd_names::INT)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Resolve a datatype Sid to its OType constant.
 ///
 /// Reconstructs the IRI from the Sid and matches against well-known XSD types.
@@ -2447,5 +2566,63 @@ pub(crate) fn value_to_otype_okey_simple(
             "unsupported FlakeValue variant for V6 fast-path: {:?}",
             val
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fluree_db_core::{stats_view::GraphPropertyStatData, StatsView, ValueTypeTag};
+
+    #[test]
+    fn infer_exact_datatype_for_integer_family() {
+        let mut stats = StatsView::default();
+        stats.graph_properties.insert(
+            0,
+            HashMap::from([(
+                RuntimePredicateId::from_u32(7),
+                GraphPropertyStatData {
+                    count: 10,
+                    ndv_values: 0,
+                    ndv_subjects: 0,
+                    datatypes: vec![(ValueTypeTag::INT, 10)],
+                },
+            )]),
+        );
+
+        let inferred = infer_exact_datatype_sid_from_stats(
+            Some(&stats),
+            0,
+            RuntimePredicateId::from_u32(7),
+            &FlakeValue::Long(42),
+        )
+        .expect("datatype");
+        assert_eq!(inferred.namespace_code, namespaces::XSD);
+        assert_eq!(inferred.name, xsd_names::INT.into());
+    }
+
+    #[test]
+    fn does_not_infer_when_multiple_datatypes_present() {
+        let mut stats = StatsView::default();
+        stats.graph_properties.insert(
+            0,
+            HashMap::from([(
+                RuntimePredicateId::from_u32(7),
+                GraphPropertyStatData {
+                    count: 10,
+                    ndv_values: 0,
+                    ndv_subjects: 0,
+                    datatypes: vec![(ValueTypeTag::INT, 5), (ValueTypeTag::LONG, 5)],
+                },
+            )]),
+        );
+
+        assert!(infer_exact_datatype_sid_from_stats(
+            Some(&stats),
+            0,
+            RuntimePredicateId::from_u32(7),
+            &FlakeValue::Long(42),
+        )
+        .is_none());
     }
 }

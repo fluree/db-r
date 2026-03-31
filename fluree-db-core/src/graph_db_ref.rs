@@ -29,6 +29,7 @@ use crate::ids::GraphId;
 use crate::overlay::OverlayProvider;
 use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
 use crate::range::{range_bounded_with_overlay, range_with_overlay};
+use crate::runtime_small_dicts::RuntimeSmallDicts;
 
 /// Bundled database reference for range queries.
 ///
@@ -42,6 +43,7 @@ pub struct GraphDbRef<'a> {
     pub g_id: GraphId,
     pub overlay: &'a dyn OverlayProvider,
     pub t: i64,
+    pub runtime_small_dicts: Option<&'a RuntimeSmallDicts>,
 }
 
 impl std::fmt::Debug for GraphDbRef<'_> {
@@ -66,6 +68,22 @@ impl<'a> GraphDbRef<'a> {
             g_id,
             overlay,
             t,
+            runtime_small_dicts: None,
+        }
+    }
+
+    pub fn with_runtime_small_dicts(mut self, runtime_small_dicts: &'a RuntimeSmallDicts) -> Self {
+        self.runtime_small_dicts = Some(runtime_small_dicts);
+        self
+    }
+
+    pub fn with_runtime_small_dicts_opt(
+        self,
+        runtime_small_dicts: Option<&'a RuntimeSmallDicts>,
+    ) -> Self {
+        match runtime_small_dicts {
+            Some(runtime_small_dicts) => self.with_runtime_small_dicts(runtime_small_dicts),
+            None => self,
         }
     }
 

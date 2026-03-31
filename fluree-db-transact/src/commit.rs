@@ -435,6 +435,9 @@ where
             )?;
         }
 
+        let mut runtime_small_dicts = Arc::clone(&base.runtime_small_dicts);
+        Arc::make_mut(&mut runtime_small_dicts).populate_from_flakes(&all_flakes);
+
         let mut new_novelty = Arc::clone(&base.novelty);
         {
             let span = tracing::debug_span!("commit_apply_to_novelty");
@@ -457,6 +460,7 @@ where
                 snapshot.range_provider = Some(Arc::new(BinaryRangeProvider::new(
                     Arc::clone(brp.store()),
                     Arc::clone(&dict_novelty),
+                    Arc::clone(&runtime_small_dicts),
                 )));
             }
         }
@@ -465,6 +469,7 @@ where
             snapshot,
             novelty: new_novelty,
             dict_novelty,
+            runtime_small_dicts,
             head_commit_id: Some(commit_cid.clone()),
             head_index_id: base.head_index_id,
             ns_record: base.ns_record,

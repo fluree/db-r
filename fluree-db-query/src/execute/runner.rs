@@ -14,11 +14,12 @@ use crate::options::QueryOptions;
 use crate::parse::ParsedQuery;
 use crate::reasoning::ReasoningOverlay;
 use crate::rewrite_owl_ql::Ontology;
+use crate::stats_cache::cached_stats_view_for_db;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarRegistry;
 use fluree_db_binary_index::{BinaryIndexStore, FulltextArena};
 use fluree_db_core::dict_novelty::DictNovelty;
-use fluree_db_core::{GraphDbRef, GraphId, LedgerSnapshot, StatsView, Tracker};
+use fluree_db_core::{GraphDbRef, GraphId, LedgerSnapshot, Tracker};
 use fluree_db_reasoner::DerivedFactsOverlay;
 use fluree_db_spatial::SpatialIndexProvider;
 use std::collections::HashMap;
@@ -137,6 +138,16 @@ pub struct PreparedExecution {
 pub async fn prepare_execution(
     db: GraphDbRef<'_>,
     query: &ExecutableQuery,
+) -> Result<PreparedExecution> {
+    prepare_execution_with_binary_store(db, query, None).await
+}
+
+/// Prepare execution, optionally allowing the planner stats path to reuse the
+/// shared cache attached to a binary store.
+pub async fn prepare_execution_with_binary_store(
+    db: GraphDbRef<'_>,
+    query: &ExecutableQuery,
+    binary_store: Option<&Arc<BinaryIndexStore>>,
 ) -> Result<PreparedExecution> {
     let span = tracing::debug_span!(
         "query_prepare",
@@ -327,12 +338,7 @@ pub async fn prepare_execution(
                 tracing::debug_span!("plan", pattern_count = rewritten_query.patterns.len(),)
                     .entered();
 
-            let stats_view = db.snapshot.stats.as_ref().map(|s| {
-                Arc::new(StatsView::from_db_stats_with_namespaces(
-                    s,
-                    db.snapshot.namespaces(),
-                ))
-            });
+            let stats_view = cached_stats_view_for_db(db, binary_store);
             build_operator_tree(&rewritten_query, &query.options, stats_view)?
         };
 

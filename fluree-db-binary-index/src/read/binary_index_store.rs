@@ -17,7 +17,9 @@ use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::GraphId;
-use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, Sid};
+use fluree_db_core::{
+    ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, RuntimeSmallDicts, Sid,
+};
 use fluree_vocab::{geo_names, jsonld_names, namespaces, rdf_names, xsd_names};
 use parking_lot::RwLock;
 
@@ -1187,6 +1189,14 @@ impl BinaryIndexStore {
     /// Number of predicates in the persisted dictionary.
     pub fn predicate_count(&self) -> u32 {
         self.dicts.predicates.len()
+    }
+
+    /// Build a runtime predicate/datatype ID layer seeded from the persisted root.
+    pub fn runtime_small_dicts(&self) -> RuntimeSmallDicts {
+        RuntimeSmallDicts::from_seeded_sids(
+            (0..self.predicate_count()).filter_map(|p_id| self.predicate_sid(p_id)),
+            self.dt_sids().iter().cloned(),
+        )
     }
 
     /// Number of strings in the persisted forward dictionary.

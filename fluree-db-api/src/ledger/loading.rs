@@ -124,11 +124,13 @@ where
                     let provider = fluree_db_query::BinaryRangeProvider::new(
                         Arc::clone(&arc_store),
                         state.dict_novelty.clone(),
+                        state.runtime_small_dicts.clone(),
                     );
                     state.snapshot.range_provider = Some(Arc::new(provider));
                 }
 
-                state.binary_store = Some(TypeErasedStore(arc_store));
+                state.binary_store = Some(TypeErasedStore(arc_store.clone()));
+                crate::runtime_dicts::reseed_runtime_small_dicts(&mut state, &arc_store);
                 tracing::info!("loaded binary index store");
             }
         }
