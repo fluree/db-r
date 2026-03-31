@@ -47,6 +47,22 @@ pub async fn run(action: BranchAction, dirs: &FlureeDir, direct: bool) -> CliRes
             )
             .await
         }
+        BranchAction::Merge {
+            source,
+            target,
+            ledger,
+            remote,
+        } => {
+            run_merge(
+                &source,
+                target.as_deref(),
+                ledger.as_deref(),
+                dirs,
+                remote.as_deref(),
+                direct,
+            )
+            .await
+        }
     }
 }
 
@@ -436,6 +452,115 @@ fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
         );
         println!("  New branch point: t={}", new_t);
     }
+    Ok(())
+}
+
+async fn run_merge(
+    source: &str,
+    target: Option<&str>,
+    ledger: Option<&str>,
+    dirs: &FlureeDir,
+    remote_flag: Option<&str>,
+    direct: bool,
+) -> CliResult<()> {
+    if let Some(remote_name) = remote_flag {
+        let alias = context::resolve_ledger(ledger, dirs)?;
+        let (ledger_name, _) = split_ledger_id(&alias)?;
+        let client = context::build_remote_client(remote_name, dirs).await?;
+        let result = client.merge_branch(&ledger_name, source, target).await?;
+
+        context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+
+        print_merge_result(&result)?;
+        return Ok(());
+    }
+
+    let mode = {
+        let mode = context::resolve_ledger_mode(ledger, dirs).await?;
+        if direct {
+            mode
+        } else {
+            context::try_server_route(mode, dirs)
+        }
+    };
+
+    match mode {
+        LedgerMode::Tracked {
+            client,
+            remote_alias,
+            remote_name,
+            ..
+        } => {
+            let (ledger_name, _) = split_ledger_id(&remote_alias)?;
+            let result = client.merge_branch(&ledger_name, source, target).await?;
+
+            context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
+
+            print_merge_result(&result)?;
+        }
+        LedgerMode::Local { fluree, alias } => {
+            let (ledger_name, _) = split_ledger_id(&alias)?;
+
+            // Resolve target: use explicit target or look up source's parent.
+            let resolved_target = match target {
+                Some(t) => t.to_string(),
+                None => {
+                    use fluree_db_nameservice::NameService as _;
+                    let source_id =
+                        fluree_db_core::ledger_id::format_ledger_id(&ledger_name, source);
+                    let record = fluree
+                        .nameservice()
+                        .lookup(&source_id)
+                        .await
+                        .map_err(|e| CliError::Api(e.into()))?
+                        .ok_or_else(|| {
+                            CliError::Config(format!("Branch not found: {}", source_id))
+                        })?;
+                    record
+                        .branch_point
+                        .as_ref()
+                        .map(|bp| bp.source.clone())
+                        .ok_or_else(|| {
+                            CliError::Config(format!(
+                                "Branch {} has no parent; specify --target",
+                                source
+                            ))
+                        })?
+                }
+            };
+
+            let report = fluree
+                .merge_branch(&ledger_name, source, &resolved_target)
+                .await?;
+
+            println!(
+                "Merged '{}' into '{}' (fast-forward to t={}).",
+                report.source, report.target, report.new_head_t,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn print_merge_result(result: &serde_json::Value) -> CliResult<()> {
+    let source = result
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    let target = result
+        .get("target")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    let new_t = result
+        .get("new_head_t")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    println!(
+        "Merged '{}' into '{}' (fast-forward to t={}).",
+        source, target, new_t,
+    );
     Ok(())
 }
 

@@ -587,6 +587,24 @@ pub enum BranchAction {
         #[arg(long)]
         remote: Option<String>,
     },
+
+    /// Merge a branch into its parent (fast-forward only)
+    Merge {
+        /// Source branch name to merge from (e.g., "dev", "feature-x")
+        source: String,
+
+        /// Target branch to merge into (defaults to source's parent branch)
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
 }
 
 /// Memory subcommands.
