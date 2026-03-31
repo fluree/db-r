@@ -119,6 +119,13 @@ pub struct ExecutionContext<'a> {
     /// via `with_active_graph` / `with_default_graph`). This avoids re-iterating
     /// active graphs on every per-row call site.
     multi_ledger: bool,
+    /// When true, `BinaryScanOperator` always returns resolved
+    /// `Binding::Sid`/`Lit` instead of late-materialized `EncodedSid`/`EncodedLit`.
+    ///
+    /// Propagated from [`GraphDbRef::eager`]. Use for infrastructure queries
+    /// (config resolution, policy loading) that call `binding.as_sid()` /
+    /// `binding.as_lit()` directly.
+    pub eager_materialization: bool,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -150,6 +157,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -190,6 +198,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
+            eager_materialization: db.eager,
         }
     }
 
@@ -234,6 +243,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
+            eager_materialization: db.eager,
         }
     }
 
@@ -270,6 +280,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -311,6 +322,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -348,6 +360,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -704,6 +717,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger,
+            eager_materialization: self.eager_materialization,
         }
     }
 
@@ -750,6 +764,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
+            eager_materialization: self.eager_materialization,
         }
     }
 
@@ -787,6 +802,7 @@ impl<'a> ExecutionContext<'a> {
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
+            eager_materialization: self.eager_materialization,
         }
     }
 

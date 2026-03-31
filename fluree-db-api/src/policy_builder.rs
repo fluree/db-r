@@ -285,9 +285,11 @@ async fn load_policies_by_identity(
     );
 
     // Collect class SIDs from the default graph (where policy data lives).
+    // Eager materialization: `as_sid()` needs concrete `Binding::Sid`, not
+    // late-materialized `EncodedSid` from binary scans with epoch=0.
     let mut class_sids: Vec<Sid> = Vec::new();
     for g_id in POLICY_GRAPHS {
-        let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+        let db = GraphDbRef::new(snapshot, g_id, overlay, to_t).eager();
         let batches = execute_pattern_with_overlay_at(db, &vars, pattern.clone(), None).await?;
         for batch in &batches {
             for row in 0..batch.len() {

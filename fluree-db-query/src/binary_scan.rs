@@ -1107,7 +1107,12 @@ impl BinaryScanOperator {
         // for decoding (no novelty overlay with ephemeral IDs).
         //
         // Note: ExecutionContext always carries an overlay provider; `NoOverlay` has epoch=0.
-        let late_materialize = ctx.is_some_and(|c| c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0)
+        // When `eager_materialization` is set (via `GraphDbRef::eager()`), always resolve
+        // bindings eagerly — infrastructure queries (config, policy) need concrete
+        // `Binding::Sid`/`Lit`, not `EncodedSid`/`EncodedLit`.
+        let late_materialize = ctx.is_some_and(|c| {
+            c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 && !c.eager_materialization
+        })
             // If a repeated variable forces two components into the same output slot,
             // late-materialization must produce comparable binding representations.
             // In particular, `?x ?x ?o` would otherwise compare EncodedSid vs EncodedPid.
