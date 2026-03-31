@@ -61,8 +61,8 @@ impl IndexedTestHarness {
 ///
 /// Before this fix, the BinaryScanOperator used late materialization (epoch=0)
 /// which returned `EncodedSid` bindings that `find_instances_of_type` silently
-/// dropped via `binding.as_sid()`. The fix wraps config graph queries with
-/// `EagerOverlay` to force materialization.
+/// dropped via `binding.as_sid()`. The fix uses `GraphDbRef::eager()` to force
+/// resolved bindings for infrastructure queries.
 #[tokio::test]
 async fn config_graph_survives_indexing() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
