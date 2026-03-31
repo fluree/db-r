@@ -99,6 +99,20 @@ async fn with_query_timeout<T>(
     }
 }
 
+/// If the client sent `X-Fluree-Min-T`, refresh the ledger cache to ensure
+/// the cached state is at least at `min_t`. Returns 409 Conflict if the
+/// ledger cannot reach the requested `t` after refresh.
+async fn enforce_min_t(state: &AppState, ledger_id: &str, headers: &FlureeHeaders) -> Result<()> {
+    if let Some(min_t) = headers.min_t {
+        state
+            .fluree
+            .refresh(ledger_id, fluree_db_api::RefreshOpts { min_t: Some(min_t) })
+            .await
+            .map_err(ServerError::Api)?;
+    }
+    Ok(())
+}
+
 /// Resolve the effective request identity for policy enforcement.
 ///
 /// Precedence:
@@ -462,6 +476,9 @@ pub async fn query(
             }
         }
 
+        // Read-after-write consistency: refresh ledger if min_t requested
+        enforce_min_t(&state, &ledger_id, &headers).await?;
+
         // Force auth-derived identity and policy-class into opts (non-spoofable)
         let identity = effective_identity(&credential, &bearer);
         let policy_class = data_auth.default_policy_class.as_deref();
@@ -634,6 +651,9 @@ pub async fn query_ledger(
             return Err(ServerError::not_found("Ledger not found"));
         }
     }
+
+    // Read-after-write consistency: refresh ledger if min_t requested
+    enforce_min_t(&state, &base_ledger, &headers).await?;
 
     // Force auth-derived identity and policy-class into opts (non-spoofable)
     let identity = effective_identity(&credential, &bearer);

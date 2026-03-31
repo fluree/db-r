@@ -100,6 +100,63 @@ pub async fn readiness(
     }
 }
 
+/// Config inspection endpoint
+///
+/// GET /v1/fluree/config
+///
+/// Returns the effective server configuration with secrets masked.
+/// Useful for debugging, auditing, and CLI integration.
+pub async fn config_inspect(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let c = &state.config;
+    Json(serde_json::json!({
+        "listen_addr": c.listen_addr.to_string(),
+        "storage_path": c.storage_path.as_ref().map(|p| p.display().to_string()),
+        "storage_type": c.storage_type_str(),
+        "cors_enabled": c.cors_enabled,
+        "body_limit": c.body_limit,
+        "cache_max_mb": c.cache_max_mb,
+        "no_preload": c.no_preload,
+        "parallelism": c.parallelism,
+        "query_timeout_secs": c.query_timeout_secs,
+        "shutdown_timeout_secs": c.shutdown_timeout_secs,
+        "log_level": c.log_level,
+        "indexing": {
+            "enabled": c.indexing_enabled,
+            "reindex_min_bytes": c.reindex_min_bytes,
+            "reindex_max_bytes": c.reindex_max_bytes,
+        },
+        "novelty": {
+            "min_bytes": c.novelty_min_bytes,
+            "max_bytes": c.novelty_max_bytes,
+        },
+        "ledger_cache": {
+            "enabled": !c.no_ledger_cache,
+            "idle_ttl_secs": c.ledger_cache_idle_ttl_secs,
+            "sweep_interval_secs": c.ledger_cache_sweep_secs,
+        },
+        "auth": {
+            "events": {
+                "mode": format!("{:?}", c.events_auth_mode),
+                "has_trusted_issuers": !c.events_auth_trusted_issuers.is_empty(),
+            },
+            "data": {
+                "mode": format!("{:?}", c.data_auth_mode),
+                "has_trusted_issuers": !c.data_auth_trusted_issuers.is_empty(),
+                "has_default_policy_class": c.data_auth_default_policy_class.is_some(),
+            },
+            "admin": {
+                "mode": format!("{:?}", c.admin_auth_mode),
+                "has_trusted_issuers": !c.admin_auth_trusted_issuers.is_empty(),
+            },
+        },
+        "peer": {
+            "role": format!("{:?}", c.server_role),
+            "tx_server_url": c.tx_server_url.as_deref().map(|_| "***"),
+        },
+        "mcp_enabled": c.mcp_enabled,
+    }))
+}
+
 /// Server statistics response
 #[derive(Serialize)]
 pub struct StatsResponse {

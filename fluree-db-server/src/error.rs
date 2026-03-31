@@ -113,6 +113,7 @@ impl ServerError {
             ServerError::NotFound(_) => errors::NOT_FOUND,
             ServerError::NotAcceptable(_) => errors::NOT_ACCEPTABLE,
             ServerError::GatewayTimeout(_) => errors::INTERNAL,
+            ServerError::Api(ApiError::AwaitTNotReached { .. }) => errors::COMMIT_CONFLICT,
             ServerError::SparqlUpdateLower(_) => errors::SPARQL_LOWER,
 
             // Auth/Policy (requires credential feature)
@@ -180,6 +181,9 @@ impl ServerError {
 
             // 406 - Not Acceptable (content negotiation failure)
             ServerError::NotAcceptable(_) => StatusCode::NOT_ACCEPTABLE,
+
+            // 409 - Conflict (read-after-write: min_t not yet reached)
+            ServerError::Api(ApiError::AwaitTNotReached { .. }) => StatusCode::CONFLICT,
 
             // 504 - Gateway Timeout (query timeout exceeded)
             ServerError::GatewayTimeout(_) => StatusCode::GATEWAY_TIMEOUT,

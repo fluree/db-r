@@ -56,6 +56,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let v1 = Router::new()
         // Admin endpoints (stats and whoami are read-only, no auth required)
         .route("/stats", get(admin::stats))
+        .route("/config", get(admin::config_inspect))
         .route("/whoami", get(admin::whoami))
         // Ledger management (read-only)
         .route("/ledgers", get(ledger::list_ledgers))
