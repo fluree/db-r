@@ -199,19 +199,63 @@ impl AppState {
         })
     }
 
-    /// Create a file-backed Fluree instance
+    /// Create a file-backed (or S3-backed) Fluree instance.
+    ///
+    /// Selects the storage backend based on config: if `s3_bucket` is set the
+    /// server uses the S3 builder (requires the `aws` feature); otherwise it
+    /// falls back to local file storage.
     fn create_file_fluree(
         config: &ServerConfig,
     ) -> Result<(Arc<Fluree>, tokio::task::JoinHandle<()>), fluree_db_api::ApiError> {
-        let path = config
-            .storage_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
+        // Determine storage backend: S3 takes precedence if bucket is set
+        #[cfg(feature = "aws")]
+        let mut builder = if let Some(ref bucket) = config.s3_bucket {
+            let endpoint = config.s3_endpoint.as_deref().unwrap_or_default();
+            let mut b = FlureeBuilder::s3(bucket, endpoint);
+            if let Some(ref prefix) = config.s3_prefix {
+                b = b.s3_prefix(prefix);
+            }
+            b
+        } else {
+            let path = config
+                .storage_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
+            FlureeBuilder::file(path.to_string_lossy())
+        };
 
-        // Convert PathBuf to String for FlureeBuilder
-        let path_str = path.to_string_lossy().to_string();
+        #[cfg(not(feature = "aws"))]
+        let mut builder = {
+            if config.s3_bucket.is_some() {
+                return Err(fluree_db_api::ApiError::config(
+                    "S3 storage requires the 'aws' feature. Build with: cargo build -p fluree-db-server --features aws",
+                ));
+            }
+            let path = config
+                .storage_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
+            FlureeBuilder::file(path.to_string_lossy())
+        };
 
-        let mut builder = FlureeBuilder::file(&path_str);
+        // Encryption: resolve key from file or direct value
+        let encryption_key = match (&config.encryption_key, &config.encryption_key_file) {
+            (Some(key), _) => Some(key.clone()),
+            (_, Some(path)) => {
+                let content = std::fs::read_to_string(path).map_err(|e| {
+                    fluree_db_api::ApiError::config(format!(
+                        "Failed to read encryption key file {}: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+                Some(content.trim().to_string())
+            }
+            _ => None,
+        };
+        if let Some(ref key) = encryption_key {
+            builder = builder.with_encryption_key_base64(key)?;
+        }
 
         if let Some(max_mb) = config.cache_max_mb {
             builder = builder.cache_max_mb(max_mb);

@@ -390,6 +390,30 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_STORAGE_PATH")]
     pub storage_path: Option<PathBuf>,
 
+    // --- Encryption ---
+    /// AES-256-GCM encryption key (base64-encoded, 32 bytes).
+    /// When set, all data at rest is encrypted transparently.
+    #[arg(long, env = "FLUREE_ENCRYPTION_KEY", hide = true)]
+    pub encryption_key: Option<String>,
+
+    /// Path to a file containing the encryption key (base64-encoded).
+    /// Alternative to passing the key directly via env var.
+    #[arg(long, env = "FLUREE_ENCRYPTION_KEY_FILE")]
+    pub encryption_key_file: Option<PathBuf>,
+
+    // --- S3 storage (requires `aws` feature) ---
+    /// S3 bucket name. When set, uses S3 for storage instead of local files.
+    #[arg(long, env = "FLUREE_S3_BUCKET")]
+    pub s3_bucket: Option<String>,
+
+    /// S3 endpoint URL (e.g., https://s3.us-east-1.amazonaws.com).
+    #[arg(long, env = "FLUREE_S3_ENDPOINT")]
+    pub s3_endpoint: Option<String>,
+
+    /// S3 key prefix within the bucket.
+    #[arg(long, env = "FLUREE_S3_PREFIX")]
+    pub s3_prefix: Option<String>,
+
     /// Enable CORS (Cross-Origin Resource Sharing)
     #[arg(long, env = "FLUREE_CORS_ENABLED", default_value_t = server_defaults::DEFAULT_CORS_ENABLED)]
     pub cors_enabled: bool,
@@ -690,6 +714,11 @@ impl Default for ServerConfig {
             profile: None,
             listen_addr: server_defaults::DEFAULT_LISTEN_ADDR.parse().unwrap(),
             storage_path: None,
+            encryption_key: None,
+            encryption_key_file: None,
+            s3_bucket: None,
+            s3_endpoint: None,
+            s3_prefix: None,
             cors_enabled: server_defaults::DEFAULT_CORS_ENABLED,
             indexing_enabled: server_defaults::DEFAULT_INDEXING_ENABLED,
             reindex_min_bytes: server_defaults::DEFAULT_REINDEX_MIN_BYTES,

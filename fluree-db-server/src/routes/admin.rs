@@ -164,6 +164,8 @@ pub async fn config_inspect(State(state): State<Arc<AppState>>) -> Json<serde_js
         "listen_addr": c.listen_addr.to_string(),
         "storage_path": c.storage_path.as_ref().map(|p| p.display().to_string()),
         "storage_type": c.storage_type_str(),
+        "encryption": c.encryption_key.is_some() || c.encryption_key_file.is_some(),
+        "s3_bucket": c.s3_bucket.as_deref(),
         "cors_enabled": c.cors_enabled,
         "body_limit": c.body_limit,
         "cache_max_mb": c.cache_max_mb,

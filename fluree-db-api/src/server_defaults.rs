@@ -256,6 +256,8 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # [server]
 # listen_addr = "{listen_addr}"
 # storage_path = "{storage_path}"   {storage_comment}
+# encryption_key = ""                    # base64-encoded 32-byte AES-256-GCM key
+# encryption_key_file = ""               # or path to file containing the key
 # log_level = "{log_level}"                 # trace, debug, info, warn, error
 # cors_enabled = {cors_enabled}
 # body_limit = {body_limit}              # 50 MB
@@ -269,6 +271,11 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # ledger_cache_sweep_secs = 60           # background sweep interval
 # shutdown_timeout_secs = 30             # graceful shutdown drain timeout
 # query_timeout_secs = 0                 # global query timeout; 0 = no timeout
+
+# [server.s3]
+# bucket = ""                            # S3 bucket name (enables S3 storage, requires aws feature)
+# endpoint = ""                          # S3 endpoint URL
+# prefix = ""                            # key prefix within bucket
 
 # [server.indexing]
 # enabled = {indexing_enabled}

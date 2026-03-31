@@ -71,6 +71,12 @@ pub struct ServerFileConfig {
     pub shutdown_timeout_secs: Option<u64>,
     pub query_timeout_secs: Option<u64>,
     pub maintenance_mode: Option<bool>,
+    pub encryption_key: Option<String>,
+    pub encryption_key_file: Option<String>,
+
+    /// `[server.s3]`
+    #[serde(default)]
+    pub s3: Option<S3FileConfig>,
 
     /// `[server.indexing]`
     #[serde(default)]
@@ -174,6 +180,13 @@ pub struct StorageProxyFileConfig {
     pub default_identity: Option<String>,
     pub default_policy_class: Option<String>,
     pub debug_headers: Option<bool>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct S3FileConfig {
+    pub bucket: Option<String>,
+    pub endpoint: Option<String>,
+    pub prefix: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +542,33 @@ pub fn apply_to_server_config(
     if is_default("maintenance_mode") {
         if let Some(v) = file.maintenance_mode {
             config.maintenance_mode = v;
+        }
+    }
+    if is_default("encryption_key") {
+        if let Some(ref v) = file.encryption_key {
+            config.encryption_key = Some(v.clone());
+        }
+    }
+    if is_default("encryption_key_file") {
+        if let Some(ref v) = file.encryption_key_file {
+            config.encryption_key_file = Some(PathBuf::from(v));
+        }
+    }
+    if let Some(ref s3) = file.s3 {
+        if is_default("s3_bucket") {
+            if let Some(ref v) = s3.bucket {
+                config.s3_bucket = Some(v.clone());
+            }
+        }
+        if is_default("s3_endpoint") {
+            if let Some(ref v) = s3.endpoint {
+                config.s3_endpoint = Some(v.clone());
+            }
+        }
+        if is_default("s3_prefix") {
+            if let Some(ref v) = s3.prefix {
+                config.s3_prefix = Some(v.clone());
+            }
         }
     }
 
