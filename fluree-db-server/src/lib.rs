@@ -49,6 +49,7 @@ pub use telemetry::{init_logging, shutdown_tracer, TelemetryConfig};
 
 use axum::Router;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -227,24 +228,73 @@ impl FlureeServer {
         // Start ledger manager maintenance task for idle eviction
         let ledger_maintenance_task = self.state.fluree.spawn_maintenance();
 
+        let shutdown_timeout = Duration::from_secs(self.state.config.shutdown_timeout_secs);
+
         info!(
             addr = %addr,
             storage = %self.state.config.storage_type_str(),
             server_role = ?self.state.config.server_role,
             ledger_caching = ledger_maintenance_task.is_some(),
             mcp_enabled = self.state.config.mcp_enabled,
+            shutdown_timeout_secs = self.state.config.shutdown_timeout_secs,
             "Fluree server starting"
         );
 
-        // Run server
-        let result = axum::serve(listener, self.router).await;
+        // Build shutdown signal: listen for SIGTERM (containers) and ctrl-C
+        let shutdown_signal = async {
+            let ctrl_c = tokio::signal::ctrl_c();
 
-        // Cancel maintenance tasks on shutdown
+            #[cfg(unix)]
+            {
+                let mut sigterm =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("failed to register SIGTERM handler");
+                tokio::select! {
+                    _ = ctrl_c => info!("Received ctrl-C, starting graceful shutdown"),
+                    _ = sigterm.recv() => info!("Received SIGTERM, starting graceful shutdown"),
+                }
+            }
+
+            #[cfg(not(unix))]
+            {
+                ctrl_c.await.ok();
+                info!("Received ctrl-C, starting graceful shutdown");
+            }
+        };
+
+        // Run server with graceful shutdown — axum will stop accepting new
+        // connections and wait for inflight requests to complete.
+        let result = axum::serve(listener, self.router)
+            .with_graceful_shutdown(shutdown_signal)
+            .await;
+
+        // --- Post-shutdown cleanup (now reachable) ---
+
+        info!(
+            timeout_secs = shutdown_timeout.as_secs(),
+            "Draining inflight work and cleaning up"
+        );
+
+        // Cancel background tasks
         if let Some(task) = subscription_task {
             task.abort();
         }
         if let Some(task) = ledger_maintenance_task {
             task.abort();
+        }
+
+        // Disconnect Fluree: cancel pending indexing, evict cached ledgers,
+        // clear caches. Use a timeout to avoid hanging forever.
+        let disconnect_result =
+            tokio::time::timeout(shutdown_timeout, self.state.fluree.disconnect()).await;
+
+        if disconnect_result.is_err() {
+            tracing::warn!(
+                timeout_secs = shutdown_timeout.as_secs(),
+                "Fluree disconnect timed out during shutdown"
+            );
+        } else {
+            info!("Fluree disconnected cleanly");
         }
 
         result

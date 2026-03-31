@@ -267,6 +267,8 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # no_ledger_cache = false                # disable in-memory ledger caching
 # ledger_cache_idle_ttl_secs = 1800      # evict idle ledgers after 30 min
 # ledger_cache_sweep_secs = 60           # background sweep interval
+# shutdown_timeout_secs = 30             # graceful shutdown drain timeout
+# query_timeout_secs = 0                 # global query timeout; 0 = no timeout
 
 # [server.indexing]
 # enabled = {indexing_enabled}
@@ -381,6 +383,8 @@ pub fn generate_jsonld_config_template(storage_path_override: Option<&str>) -> S
             "no_ledger_cache": false,
             "ledger_cache_idle_ttl_secs": 1800,
             "ledger_cache_sweep_secs": 60,
+            "shutdown_timeout_secs": 30,
+            "query_timeout_secs": 0,
             "indexing": {
                 "enabled": DEFAULT_INDEXING_ENABLED,
                 "reindex_min_bytes": DEFAULT_REINDEX_MIN_BYTES,

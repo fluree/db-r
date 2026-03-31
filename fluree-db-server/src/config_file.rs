@@ -68,6 +68,8 @@ pub struct ServerFileConfig {
     pub no_ledger_cache: Option<bool>,
     pub ledger_cache_idle_ttl_secs: Option<u64>,
     pub ledger_cache_sweep_secs: Option<u64>,
+    pub shutdown_timeout_secs: Option<u64>,
+    pub query_timeout_secs: Option<u64>,
 
     /// `[server.indexing]`
     #[serde(default)]
@@ -511,6 +513,16 @@ pub fn apply_to_server_config(
     if is_default("ledger_cache_sweep_secs") {
         if let Some(v) = file.ledger_cache_sweep_secs {
             config.ledger_cache_sweep_secs = Some(v);
+        }
+    }
+    if is_default("shutdown_timeout_secs") {
+        if let Some(v) = file.shutdown_timeout_secs {
+            config.shutdown_timeout_secs = v;
+        }
+    }
+    if is_default("query_timeout_secs") {
+        if let Some(v) = file.query_timeout_secs {
+            config.query_timeout_secs = v;
         }
     }
 

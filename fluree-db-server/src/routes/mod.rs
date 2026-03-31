@@ -123,8 +123,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/remote/:path", get(stubs::remote).post(stubs::remote));
 
     let mut router = Router::new()
-        // Health check
+        // Health check (liveness) and readiness probe
         .route("/health", get(admin::health))
+        .route("/ready", get(admin::readiness))
         // Auth discovery (CLI auto-configuration)
         .route("/.well-known/fluree.json", get(admin::discovery))
         // Versioned API

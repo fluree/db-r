@@ -82,6 +82,23 @@ fn is_sparql_request(
 // Data API Auth Helpers
 // ============================================================================
 
+/// Apply the server-wide query timeout (if configured) to an async query future.
+/// Returns `GatewayTimeout` (504) if the query exceeds the configured limit.
+async fn with_query_timeout<T>(
+    state: &AppState,
+    fut: std::pin::Pin<Box<dyn std::future::Future<Output = Result<T>> + Send + '_>>,
+) -> Result<T> {
+    match state.query_timeout() {
+        Some(timeout) => tokio::time::timeout(timeout, fut).await.map_err(|_| {
+            ServerError::GatewayTimeout(format!(
+                "Query exceeded server timeout of {}s",
+                timeout.as_secs()
+            ))
+        })?,
+        None => fut.await,
+    }
+}
+
 /// Resolve the effective request identity for policy enforcement.
 ///
 /// Precedence:
@@ -352,43 +369,49 @@ pub async fn query(
         let identity = effective_identity(&credential, &bearer);
         let policy_class = data_auth.default_policy_class.as_deref();
 
-        let conn_result = if identity.is_none() && policy_class.is_none() {
-            state
-                .fluree
-                .query_from()
-                .sparql(&sparql)
-                .execute_formatted()
-                .await
-        } else {
-            match fluree_db_api::sparql_dataset_ledger_ids(&sparql) {
-                Ok(ids) => match ids.first() {
-                    Some(primary_ledger) => {
-                        let opts = fluree_db_api::QueryConnectionOptions {
-                            identity: identity.as_deref().map(str::to_string),
-                            policy_class: policy_class.map(|pc| vec![pc.to_string()]),
-                            ..Default::default()
-                        };
-                        match state.fluree.db_with_policy(primary_ledger, &opts).await {
-                            Ok(view) => {
-                                view.query(state.fluree.as_ref())
-                                    .sparql(&sparql)
-                                    .execute_formatted()
-                                    .await
-                            }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    None => Err(fluree_db_api::ApiError::query(
-                        "Connection-scoped SPARQL with identity/policy requires a FROM clause specifying the ledger",
-                    )),
-                },
-                Err(_) => Err(fluree_db_api::ApiError::query(
-                    "Could not parse FROM clause for policy evaluation in connection-scoped SPARQL",
-                )),
-            }
-        };
+        let sparql_result = with_query_timeout(
+            &state,
+            Box::pin(async {
+                if identity.is_none() && policy_class.is_none() {
+                    state
+                        .fluree
+                        .query_from()
+                        .sparql(&sparql)
+                        .execute_formatted()
+                        .await
+                        .map_err(ServerError::Api)
+                } else {
+                    let ids = fluree_db_api::sparql_dataset_ledger_ids(&sparql).map_err(|_| {
+                        ServerError::Api(fluree_db_api::ApiError::query(
+                            "Could not parse FROM clause for policy evaluation in connection-scoped SPARQL",
+                        ))
+                    })?;
+                    let primary_ledger = ids.first().ok_or_else(|| {
+                        ServerError::Api(fluree_db_api::ApiError::query(
+                            "Connection-scoped SPARQL with identity/policy requires a FROM clause specifying the ledger",
+                        ))
+                    })?;
+                    let opts = fluree_db_api::QueryConnectionOptions {
+                        identity: identity.as_deref().map(str::to_string),
+                        policy_class: policy_class.map(|pc| vec![pc.to_string()]),
+                        ..Default::default()
+                    };
+                    let view = state
+                        .fluree
+                        .db_with_policy(primary_ledger, &opts)
+                        .await
+                        .map_err(ServerError::Api)?;
+                    view.query(state.fluree.as_ref())
+                        .sparql(&sparql)
+                        .execute_formatted()
+                        .await
+                        .map_err(ServerError::Api)
+                }
+            }),
+        )
+        .await;
 
-        match conn_result {
+        match sparql_result {
             Ok(result) => {
                 tracing::info!(
                     status = "success",
@@ -398,10 +421,9 @@ pub async fn query(
                 Ok((HeaderMap::new(), Json(result)).into_response())
             }
             Err(e) => {
-                let server_error = ServerError::Api(e);
                 set_span_error_code(&span, "error:InvalidQuery");
-                tracing::error!(error = %server_error, query_kind = "sparql", "query failed");
-                Err(server_error)
+                tracing::error!(error = %e, query_kind = "sparql", "query failed");
+                Err(e)
             }
         }
     } else {
@@ -445,7 +467,7 @@ pub async fn query(
         let policy_class = data_auth.default_policy_class.as_deref();
         force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
-        execute_query(&state, &ledger_id, &query_json, delimited).await
+        with_query_timeout(&state, Box::pin(execute_query(&state, &ledger_id, &query_json, delimited))).await
     }
     }
     .instrument(span)
@@ -548,7 +570,7 @@ pub async fn query_ledger(
 
         let identity = effective_identity(&credential, &bearer);
         let policy_class = data_auth.default_policy_class.as_deref();
-        return execute_sparql_ledger(
+        return with_query_timeout(&state, Box::pin(execute_sparql_ledger(
             &state,
             &base_ledger,
             &sparql,
@@ -556,7 +578,7 @@ pub async fn query_ledger(
             policy_class,
             delimited,
             &headers,
-        )
+        )))
         .await;
     }
 
@@ -618,7 +640,7 @@ pub async fn query_ledger(
     let policy_class = data_auth.default_policy_class.as_deref();
     force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
-    execute_query(&state, &ledger_id, &query_json, delimited).await
+    with_query_timeout(&state, Box::pin(execute_query(&state, &ledger_id, &query_json, delimited))).await
     }
     .instrument(span)
     .await

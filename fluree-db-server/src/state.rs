@@ -284,6 +284,15 @@ impl AppState {
         self.start_time.elapsed().as_secs()
     }
 
+    /// Returns the configured query timeout, or `None` if disabled (0).
+    pub fn query_timeout(&self) -> Option<Duration> {
+        if self.config.query_timeout_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(self.config.query_timeout_secs))
+        }
+    }
+
     /// Subscribe to ledger/graph-source change events via the event bus.
     pub fn subscribe_events(
         &self,

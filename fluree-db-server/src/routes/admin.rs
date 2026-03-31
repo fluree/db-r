@@ -32,6 +32,74 @@ pub async fn health() -> Json<HealthResponse> {
     })
 }
 
+/// Readiness check response
+#[derive(Serialize)]
+pub struct ReadinessResponse {
+    pub status: &'static str,
+    pub checks: ReadinessChecks,
+}
+
+/// Individual readiness check results
+#[derive(Serialize)]
+pub struct ReadinessChecks {
+    pub nameservice: CheckResult,
+}
+
+/// Result of a single readiness check
+#[derive(Serialize)]
+pub struct CheckResult {
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Readiness probe endpoint
+///
+/// GET /ready
+///
+/// Verifies the server can serve requests by checking that the nameservice
+/// is reachable and functional. Use this as a Kubernetes/ECS readiness probe.
+///
+/// Returns 200 if ready, 503 if not.
+pub async fn readiness(
+    State(state): State<Arc<AppState>>,
+) -> std::result::Result<Json<ReadinessResponse>, (axum::http::StatusCode, Json<ReadinessResponse>)>
+{
+    // Check nameservice connectivity with a 5-second timeout
+    let ns_check = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        state.fluree.nameservice().all_records().await.map(|_| ())
+    })
+    .await;
+
+    let nameservice = match ns_check {
+        Ok(Ok(())) => CheckResult {
+            status: "ok",
+            error: None,
+        },
+        Ok(Err(e)) => CheckResult {
+            status: "error",
+            error: Some(e.to_string()),
+        },
+        Err(_) => CheckResult {
+            status: "error",
+            error: Some("nameservice check timed out (5s)".to_string()),
+        },
+    };
+
+    let all_ok = nameservice.status == "ok";
+
+    let response = ReadinessResponse {
+        status: if all_ok { "ready" } else { "not_ready" },
+        checks: ReadinessChecks { nameservice },
+    };
+
+    if all_ok {
+        Ok(Json(response))
+    } else {
+        Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(response)))
+    }
+}
+
 /// Server statistics response
 #[derive(Serialize)]
 pub struct StatsResponse {

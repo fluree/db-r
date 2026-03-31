@@ -451,6 +451,18 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_LEDGER_CACHE_SWEEP_INTERVAL")]
     pub ledger_cache_sweep_secs: Option<u64>,
 
+    /// Global query timeout in seconds. Queries exceeding this limit are
+    /// cancelled and return HTTP 504. 0 means no timeout (default).
+    /// Per-query fuel limits (`max-fuel` in opts) still apply independently.
+    #[arg(long, env = "FLUREE_QUERY_TIMEOUT", default_value_t = 0)]
+    pub query_timeout_secs: u64,
+
+    /// Graceful shutdown timeout in seconds. After receiving a shutdown signal
+    /// (SIGTERM/SIGINT), the server waits up to this long for inflight requests
+    /// to complete before forcing shutdown. Default: 30 seconds.
+    #[arg(long, env = "FLUREE_SHUTDOWN_TIMEOUT", default_value_t = 30)]
+    pub shutdown_timeout_secs: u64,
+
     /// Request body size limit in bytes (default 50MB)
     #[arg(long, env = "FLUREE_BODY_LIMIT", default_value_t = server_defaults::DEFAULT_BODY_LIMIT)]
     pub body_limit: usize,
@@ -684,6 +696,8 @@ impl Default for ServerConfig {
             no_ledger_cache: false,
             ledger_cache_idle_ttl_secs: None,
             ledger_cache_sweep_secs: None,
+            query_timeout_secs: 0,
+            shutdown_timeout_secs: 30,
             body_limit: server_defaults::DEFAULT_BODY_LIMIT,
             log_level: server_defaults::DEFAULT_LOG_LEVEL.to_string(),
             events_auth_mode: EventsAuthMode::None,
