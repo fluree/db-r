@@ -9,6 +9,8 @@ mod graph_source;
 #[cfg(feature = "iceberg")]
 mod iceberg;
 mod ledger;
+#[cfg(feature = "metrics")]
+pub(crate) mod metrics;
 mod nameservice_refs;
 mod pack;
 mod push;
@@ -144,6 +146,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     if state.config.mcp_enabled {
         let mcp_router = crate::mcp::build_mcp_router(state.clone());
         router = router.nest("/mcp", mcp_router);
+    }
+
+    // Prometheus metrics endpoint (feature-gated, no auth — scrapers need direct access)
+    #[cfg(feature = "metrics")]
+    {
+        router = router.route("/metrics", get(metrics::metrics_handler));
     }
 
     // Add state

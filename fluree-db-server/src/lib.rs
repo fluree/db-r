@@ -89,6 +89,14 @@ impl FlureeServer {
             }
         }
 
+        // Initialize Prometheus metrics recorder (feature-gated)
+        #[cfg(feature = "metrics")]
+        {
+            crate::routes::metrics::init_metrics_recorder();
+            crate::routes::metrics::describe_metrics();
+            info!("Prometheus metrics enabled at /metrics");
+        }
+
         // Pre-load all ledgers into the LRU cache so the first query
         // against each ledger doesn't pay the cold-start penalty (loading
         // the binary index root from CAS, deserializing dicts, etc.).

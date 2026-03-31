@@ -127,6 +127,8 @@ clap = { version = "4", features = ["derive", "env"] }
 http = "1.1"
 http-body-util = "0.1"
 bytes = "1.4"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.18"
 
 # HTTP client for REST catalog (Iceberg)
 reqwest = { version = "0.12", default-features = false, features = [

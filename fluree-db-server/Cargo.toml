@@ -40,6 +40,8 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:opentelemetry_sdk",
 ]
+# Prometheus metrics export
+metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 
 [dependencies]
 # Fluree DB crates
@@ -123,6 +125,10 @@ ciborium = "0.2" # CBOR encoding for policy-filtered flakes transport
 
 # JWT verification (OIDC/JWKS path)
 jsonwebtoken = { workspace = true, optional = true }
+
+# Prometheus metrics (optional, gated by `metrics` feature)
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
 
 # Shell expansion for token CLI
 shellexpand = "3"
