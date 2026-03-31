@@ -1921,7 +1921,7 @@ fi
 
 ### GET /health
 
-Health check endpoint for monitoring.
+Liveness probe. Returns immediately with no I/O — suitable for load-balancer health checks and Kubernetes `livenessProbe`. This endpoint only confirms the HTTP listener is running; it does **not** verify backend connectivity.
 
 **URL:**
 ```
@@ -1947,6 +1947,130 @@ GET /health
 
 ```bash
 curl http://localhost:8090/health
+```
+
+### GET /ready
+
+Readiness probe. Checks that the server can serve traffic by verifying connectivity to backend dependencies (e.g., nameservice). Use this for Kubernetes `readinessProbe` and load-balancer readiness gates.
+
+**URL:**
+```
+GET /ready
+```
+
+**Response (200 OK — ready):**
+
+```json
+{
+  "status": "ready",
+  "checks": {
+    "nameservice": {
+      "status": "ok"
+    }
+  }
+}
+```
+
+**Response (503 Service Unavailable — not ready):**
+
+```json
+{
+  "status": "not_ready",
+  "checks": {
+    "nameservice": {
+      "status": "error",
+      "message": "connection timed out"
+    }
+  }
+}
+```
+
+**Status Codes:**
+- `200 OK` - All readiness checks pass
+- `503 Service Unavailable` - One or more checks failed
+
+**Example:**
+
+```bash
+curl http://localhost:8090/ready
+```
+
+**Kubernetes Example (using both probes):**
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8090
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8090
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+```
+
+### GET /metrics
+
+Prometheus metrics endpoint. Requires the `metrics` feature flag at build time.
+
+**URL:**
+```
+GET /metrics
+```
+
+**Response (200 OK):**
+
+Returns metrics in Prometheus text exposition format (`text/plain`):
+
+```text
+# HELP fluree_queries_total Total queries processed
+# TYPE fluree_queries_total counter
+fluree_queries_total{ledger="mydb:main"} 1234
+# HELP fluree_query_duration_seconds Query latency
+# TYPE fluree_query_duration_seconds histogram
+fluree_query_duration_seconds_bucket{le="0.01"} 500
+fluree_query_duration_seconds_bucket{le="0.1"} 1100
+fluree_query_duration_seconds_bucket{le="1.0"} 1230
+fluree_query_duration_seconds_bucket{le="+Inf"} 1234
+fluree_query_duration_seconds_sum 98.5
+fluree_query_duration_seconds_count 1234
+# HELP fluree_transactions_total Total transactions committed
+# TYPE fluree_transactions_total counter
+fluree_transactions_total 567
+# HELP fluree_uptime_seconds Server uptime
+# TYPE fluree_uptime_seconds gauge
+fluree_uptime_seconds 3600
+```
+
+**Status Codes:**
+- `200 OK` - Metrics returned
+- `404 Not Found` - Server was not built with the `metrics` feature
+
+**Build with metrics support:**
+
+```bash
+cargo build -p fluree-db-server --features metrics --release
+```
+
+**Prometheus scrape configuration:**
+
+```yaml
+scrape_configs:
+  - job_name: 'fluree'
+    static_configs:
+      - targets: ['localhost:8090']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+```
+
+**Example:**
+
+```bash
+curl http://localhost:8090/metrics
 ```
 
 ### GET /status
@@ -2042,11 +2166,209 @@ Server-Sent Events (SSE) stream of nameservice changes for ledgers and graph sou
 
 ## Graph Source Endpoints
 
-> **Note:** HTTP endpoints for BM25 and vector index lifecycle management (create, sync, drop) are not yet implemented in the server. BM25 and vector indexes are currently managed via the Rust API (`Bm25CreateConfig`, `create_full_text_index`, `sync_bm25_index`, `drop_full_text_index`). See [BM25 Full-Text Search](../indexing-and-search/bm25.md) and [Vector Search](../indexing-and-search/vector-search.md) for API usage.
->
-> BM25 search **is** available in queries via the `f:graphSource` / `f:searchText` pattern in where clauses — see the query documentation for details.
+BM25 full-text indexes can be managed via the HTTP API. BM25 search is also available in queries via the `f:graphSource` / `f:searchText` pattern in where clauses — see the query documentation for details. For the Rust API equivalents, see [BM25 Full-Text Search](../indexing-and-search/bm25.md).
+
+Vector index HTTP endpoints are not yet available — vector indexes are managed via the Rust API. See [Vector Search](../indexing-and-search/vector-search.md).
 
 Graph source metadata can be discovered via the [POST /nameservice/query](#post-nameservicequery) endpoint using `@type: "f:GraphSourceDatabase"`.
+
+### POST /v1/fluree/graph-source/bm25/create
+
+Create a new BM25 full-text index over a ledger.
+
+**Authentication:** Admin-auth required.
+
+**URL:**
+```
+POST /v1/fluree/graph-source/bm25/create
+```
+
+**Request Body:**
+
+```json
+{
+  "name": "search",
+  "ledger": "mydb:main",
+  "query": {
+    "select": ["?s", "?p", "?o"],
+    "where": [["?s", "?p", "?o"]]
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Name for the BM25 index (used to construct the graph source ID) |
+| `ledger` | Yes | Source ledger (`name:branch`) |
+| `query` | Yes | Query defining which triples to index |
+
+**Response (201 Created):**
+
+```json
+{
+  "graph_source_id": "search:main",
+  "ledger": "mydb:main",
+  "status": "created",
+  "indexed_t": 0
+}
+```
+
+**Status Codes:**
+- `201 Created` - Index created
+- `400 Bad Request` - Invalid configuration
+- `401 Unauthorized` - Missing or invalid admin token
+- `409 Conflict` - Index with this name already exists
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8090/v1/fluree/graph-source/bm25/create \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  -d '{
+    "name": "search",
+    "ledger": "mydb:main",
+    "query": {"select": ["?s", "?p", "?o"], "where": [["?s", "?p", "?o"]]}
+  }'
+```
+
+### POST /v1/fluree/graph-source/bm25/sync
+
+Sync a BM25 index to the latest committed state of its source ledger.
+
+**Authentication:** Admin-auth required.
+
+**URL:**
+```
+POST /v1/fluree/graph-source/bm25/sync
+```
+
+**Request Body:**
+
+```json
+{
+  "graph_source_id": "search:main"
+}
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "graph_source_id": "search:main",
+  "status": "synced",
+  "previous_t": 10,
+  "synced_t": 25,
+  "documents_added": 150,
+  "duration_ms": 340
+}
+```
+
+**Status Codes:**
+- `200 OK` - Sync completed
+- `400 Bad Request` - Invalid request
+- `401 Unauthorized` - Missing or invalid admin token
+- `404 Not Found` - Graph source not found
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8090/v1/fluree/graph-source/bm25/sync \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  -d '{"graph_source_id": "search:main"}'
+```
+
+### POST /v1/fluree/graph-source/bm25/status
+
+Check BM25 index staleness — how far behind the index is relative to the source ledger's head.
+
+**URL:**
+```
+POST /v1/fluree/graph-source/bm25/status
+```
+
+**Request Body:**
+
+```json
+{
+  "graph_source_id": "search:main"
+}
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "graph_source_id": "search:main",
+  "indexed_t": 10,
+  "ledger_t": 25,
+  "lag": 15,
+  "stale": true
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `indexed_t` | The `t` value the BM25 index has been synced to |
+| `ledger_t` | The current `t` of the source ledger |
+| `lag` | `ledger_t - indexed_t` |
+| `stale` | `true` if `lag > 0` |
+
+**Status Codes:**
+- `200 OK` - Status returned
+- `400 Bad Request` - Invalid request
+- `404 Not Found` - Graph source not found
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8090/v1/fluree/graph-source/bm25/status \
+  -H "Content-Type: application/json" \
+  -d '{"graph_source_id": "search:main"}'
+```
+
+### POST /v1/fluree/graph-source/bm25/drop
+
+Drop (delete) a BM25 full-text index.
+
+**Authentication:** Admin-auth required.
+
+**URL:**
+```
+POST /v1/fluree/graph-source/bm25/drop
+```
+
+**Request Body:**
+
+```json
+{
+  "graph_source_id": "search:main"
+}
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "graph_source_id": "search:main",
+  "status": "dropped"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Index dropped
+- `401 Unauthorized` - Missing or invalid admin token
+- `404 Not Found` - Graph source not found
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8090/v1/fluree/graph-source/bm25/drop \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  -d '{"graph_source_id": "search:main"}'
+```
 
 ## Admin Endpoints
 
@@ -2091,6 +2413,217 @@ Get detailed server statistics.
 **URL:**
 ```
 GET /admin/stats
+```
+
+### GET /v1/fluree/config
+
+Return the effective server configuration as JSON. Secret values (tokens, keys) are masked in the response.
+
+**Authentication:** Admin-auth required.
+
+**URL:**
+```
+GET /v1/fluree/config
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "data_dir": "/var/lib/fluree/data",
+  "port": 8090,
+  "storage_type": "file",
+  "indexing_enabled": true,
+  "admin_auth_mode": "required",
+  "admin_auth_trusted_issuers": ["did:key:z6Mk..."],
+  "log_level": "info",
+  "log_format": "json",
+  "max_transaction_size": 10485760,
+  "max_query_size": 1048576,
+  "secret_key": "***MASKED***"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Config returned
+- `401 Unauthorized` - Missing or invalid admin token
+
+**Example:**
+
+```bash
+curl http://localhost:8090/v1/fluree/config \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..."
+```
+
+### PUT /v1/fluree/admin/config
+
+Persist configuration changes. Accepts a partial JSON body with only the keys to update. Some configuration changes take effect immediately; others require a server restart.
+
+**Authentication:** Admin-auth required.
+
+**URL:**
+```
+PUT /v1/fluree/admin/config
+```
+
+**Request Body:**
+
+```json
+{
+  "log_level": "debug",
+  "max_query_size": 2097152
+}
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "applied": ["log_level"],
+  "requires_restart": ["max_query_size"]
+}
+```
+
+**Status Codes:**
+- `200 OK` - Config update accepted
+- `400 Bad Request` - Invalid key or value
+- `401 Unauthorized` - Missing or invalid admin token
+
+**Example:**
+
+```bash
+curl -X PUT http://localhost:8090/v1/fluree/admin/config \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  -d '{"log_level": "debug", "max_query_size": 2097152}'
+```
+
+### POST /v1/fluree/admin/maintenance
+
+Toggle maintenance mode. When enabled, the server rejects data queries and transactions with `503 Service Unavailable`, while admin and health endpoints remain accessible.
+
+**Authentication:** Admin-auth required.
+
+**URL:**
+```
+POST /v1/fluree/admin/maintenance
+```
+
+**Request Body:**
+
+```json
+{
+  "enabled": true
+}
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "enabled": true,
+  "previous": false
+}
+```
+
+**Status Codes:**
+- `200 OK` - Maintenance mode toggled
+- `400 Bad Request` - Invalid request body
+- `401 Unauthorized` - Missing or invalid admin token
+
+**Example (enable):**
+
+```bash
+curl -X POST http://localhost:8090/v1/fluree/admin/maintenance \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  -d '{"enabled": true}'
+```
+
+**Example (disable):**
+
+```bash
+curl -X POST http://localhost:8090/v1/fluree/admin/maintenance \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  -d '{"enabled": false}'
+```
+
+### POST /v1/fluree/import
+
+Bulk import data into a ledger. Accepts raw Turtle, TriG, or JSON-LD in the request body. The format is determined by the `Content-Type` header or the `?format=` query parameter (query parameter takes precedence).
+
+**Authentication:** Admin-auth required.
+
+**URL:**
+```
+POST /v1/fluree/import?ledger={ledger-id}
+POST /v1/fluree/import?ledger={ledger-id}&format=turtle
+```
+
+**Query Parameters:**
+- `ledger` (required): Target ledger (format: `name:branch` or just `name` for `:main`)
+- `format` (optional): Override format detection. Values: `turtle`, `trig`, `jsonld`
+
+**Request Headers:**
+
+```http
+Content-Type: text/turtle
+Authorization: Bearer eyJhbGciOiJFZERTQSIs...
+```
+
+Supported Content-Type values: `text/turtle`, `application/trig`, `application/json`, `application/ld+json`.
+
+**Request Body (Turtle example):**
+
+```turtle
+@prefix ex: <http://example.org/ns/> .
+@prefix schema: <http://schema.org/> .
+
+ex:alice a schema:Person ;
+  schema:name "Alice" ;
+  schema:age 30 .
+
+ex:bob a schema:Person ;
+  schema:name "Bob" ;
+  schema:knows ex:alice .
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "ledger": "mydb:main",
+  "status": "imported",
+  "t": 42,
+  "triples_imported": 6,
+  "duration_ms": 1520
+}
+```
+
+**Status Codes:**
+- `200 OK` - Import succeeded
+- `400 Bad Request` - Parse error or unsupported format
+- `401 Unauthorized` - Missing or invalid admin token
+- `404 Not Found` - Ledger not found
+- `413 Payload Too Large` - Body exceeds size limit
+
+**Example (Turtle):**
+
+```bash
+curl -X POST "http://localhost:8090/v1/fluree/import?ledger=mydb" \
+  -H "Content-Type: text/turtle" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  --data-binary @data.ttl
+```
+
+**Example (JSON-LD):**
+
+```bash
+curl -X POST "http://localhost:8090/v1/fluree/import?ledger=mydb&format=jsonld" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJFZERTQSIs..." \
+  --data-binary @data.jsonld
 ```
 
 ## Admin Authentication

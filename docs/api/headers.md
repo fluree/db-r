@@ -181,6 +181,40 @@ X-Request-ID: abc-123-def-456
 
 The server will include this in logs and response headers for correlation.
 
+### X-Fluree-Min-T
+
+Integer. When set on **query requests**, the server ensures the ledger cache is refreshed to at least `t >= min_t` before executing the query. This guarantees read-after-write consistency in distributed or asynchronous workflows where the client has just committed a transaction and needs subsequent reads to reflect it.
+
+```http
+X-Fluree-Min-T: 42
+```
+
+If the requested `t` value is not reachable (e.g., the nameservice has not yet published that commit, or the value is in the future), the server returns `409 Conflict`:
+
+```json
+{
+  "error": "Requested min-t 42 is not reachable; current head is t=40",
+  "status": 409,
+  "@type": "err:db/Conflict"
+}
+```
+
+**Usage pattern:** Pair with the `X-Fluree-T` response header from a preceding transaction:
+
+```bash
+# 1. Transact — capture the returned t
+T=$(curl -s -X POST "http://localhost:8090/v1/fluree/insert?ledger=mydb:main" \
+  -H "Content-Type: application/json" \
+  -d '{"@context": {"ex": "http://example.org/"}, "@graph": [{"@id": "ex:a", "ex:val": 1}]}' \
+  -D - -o /dev/null 2>&1 | grep -i x-fluree-t | tr -d '\r' | awk '{print $2}')
+
+# 2. Query — ensure the read sees at least that t
+curl -X POST "http://localhost:8090/v1/fluree/query/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "X-Fluree-Min-T: $T" \
+  -d '{"select": ["*"], "from": "ex:a"}'
+```
+
 ## Response Headers
 
 ### Content-Type
@@ -201,13 +235,17 @@ Content-Length: 5678
 
 ### X-Fluree-T
 
-The transaction time of the data returned (for queries):
+Returned on **all transaction responses** (`/insert`, `/upsert`, `/update`) and on query responses. Contains the `t` value (integer) of the committed transaction or the data version that was queried.
+
+On transaction responses, this header enables read-after-write consistency when combined with `X-Fluree-Min-T` on subsequent reads:
 
 ```http
 X-Fluree-T: 42
 ```
 
-Useful for tracking which version of data was queried.
+**Typical flow:**
+1. Client sends a transaction, receives `X-Fluree-T: 42` in the response
+2. Client sends a query with `X-Fluree-Min-T: 42` to ensure the read reflects that transaction
 
 ### X-Fluree-Commit
 

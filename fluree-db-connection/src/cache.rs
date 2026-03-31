@@ -61,6 +61,31 @@ fn detect_cgroup_memory_bytes() -> Option<u64> {
     None
 }
 
+/// Parse a cgroup v2 memory limit value (from `/sys/fs/cgroup/memory.max`).
+#[cfg(any(target_os = "linux", test))]
+/// Returns `None` for "max" (unlimited) or unparseable content.
+fn parse_cgroup_v2_limit(content: &str) -> Option<u64> {
+    let trimmed = content.trim();
+    if trimmed == "max" {
+        return None;
+    }
+    trimmed.parse::<u64>().ok()
+}
+
+/// Parse a cgroup v1 memory limit value (from `memory.limit_in_bytes`).
+#[cfg(any(target_os = "linux", test))]
+/// Returns `None` for values near i64::MAX (unlimited sentinel) or unparseable.
+fn parse_cgroup_v1_limit(content: &str) -> Option<u64> {
+    let trimmed = content.trim();
+    let bytes = trimmed.parse::<u64>().ok()?;
+    // cgroup v1 reports a very large number (close to i64::MAX) when unlimited
+    if bytes < (1u64 << 62) {
+        Some(bytes)
+    } else {
+        None
+    }
+}
+
 /// Calculate the default cache size in MB based on available memory.
 ///
 /// Detection order:
@@ -118,4 +143,55 @@ pub fn default_cache_max_mb() -> usize {
 #[cfg(not(feature = "native"))]
 pub fn default_cache_max_mb() -> usize {
     DEFAULT_CACHE_MB_FALLBACK
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cgroup_v2_parses_numeric_limit() {
+        assert_eq!(parse_cgroup_v2_limit("1073741824\n"), Some(1073741824));
+        assert_eq!(parse_cgroup_v2_limit("536870912"), Some(536870912));
+    }
+
+    #[test]
+    fn cgroup_v2_returns_none_for_max() {
+        assert_eq!(parse_cgroup_v2_limit("max\n"), None);
+        assert_eq!(parse_cgroup_v2_limit("max"), None);
+    }
+
+    #[test]
+    fn cgroup_v2_returns_none_for_invalid() {
+        assert_eq!(parse_cgroup_v2_limit(""), None);
+        assert_eq!(parse_cgroup_v2_limit("not-a-number"), None);
+    }
+
+    #[test]
+    fn cgroup_v1_parses_numeric_limit() {
+        // 2 GB
+        assert_eq!(parse_cgroup_v1_limit("2147483648\n"), Some(2147483648));
+        // 512 MB
+        assert_eq!(parse_cgroup_v1_limit("536870912"), Some(536870912));
+    }
+
+    #[test]
+    fn cgroup_v1_returns_none_for_unlimited_sentinel() {
+        // cgroup v1 uses a very large value (near i64::MAX) to mean unlimited
+        assert_eq!(parse_cgroup_v1_limit("9223372036854771712\n"), None);
+        assert_eq!(parse_cgroup_v1_limit("9223372036854775807\n"), None); // i64::MAX
+    }
+
+    #[test]
+    fn cgroup_v1_returns_none_for_invalid() {
+        assert_eq!(parse_cgroup_v1_limit(""), None);
+        assert_eq!(parse_cgroup_v1_limit("garbage"), None);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn default_cache_is_at_least_minimum() {
+        let mb = default_cache_max_mb();
+        assert!(mb >= 100, "Cache should be at least 100 MB, got {}", mb);
+    }
 }

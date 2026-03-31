@@ -2676,3 +2676,270 @@ async fn commits_endpoint_without_token_returns_401() {
         "missing token should return 401 when storage proxy is enabled"
     );
 }
+
+// ============================================================================
+// Maintenance mode tests
+// ============================================================================
+
+#[tokio::test]
+async fn maintenance_mode_blocks_writes_allows_reads() {
+    let (_tmp, state) = test_state().await;
+
+    // Create a ledger first
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"maint-test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Enable maintenance mode
+    state
+        .maintenance_mode
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // Health check should still work (read-only)
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Insert should be blocked with 503
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert/maint-test:main")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"insert":[{"@id":"ex:1","ex:name":"test"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body_bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect")
+        .to_bytes();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Expected 503, got {}: {}",
+        status,
+        body_str
+    );
+
+    // Disable maintenance mode
+    state
+        .maintenance_mode
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // Insert should work again
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert/maint-test:main")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"insert":[{"@id":"ex:1","ex:name":"test"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ============================================================================
+// Readiness probe tests
+// ============================================================================
+
+#[tokio::test]
+async fn readiness_probe_returns_ok() {
+    let (_tmp, state) = test_state().await;
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["status"], "ready");
+    assert_eq!(json["checks"]["nameservice"]["status"], "ok");
+}
+
+// ============================================================================
+// Read-after-write consistency tests (X-Fluree-Min-T / X-Fluree-T)
+// ============================================================================
+
+#[tokio::test]
+async fn transaction_response_includes_x_fluree_t_header() {
+    let (_tmp, state) = test_state().await;
+
+    // Create ledger
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"raw-test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Insert data
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"ledger":"raw-test:main","insert":[{"@id":"ex:1","ex:name":"test"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify X-Fluree-T header is present
+    let t_header = resp.headers().get("x-fluree-t");
+    assert!(
+        t_header.is_some(),
+        "Transaction response should include X-Fluree-T header"
+    );
+    let t_value: i64 = t_header
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("X-Fluree-T should be an integer");
+    assert!(t_value > 0, "X-Fluree-T should be positive");
+}
+
+#[tokio::test]
+async fn min_t_header_enforces_read_after_write() {
+    let (_tmp, state) = test_state().await;
+
+    // Create ledger and insert data
+    let app = build_router(state.clone());
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/fluree/create")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"ledger":"mint-test"}"#))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"ledger":"mint-test:main","insert":[{"@id":"ex:1","ex:name":"alice"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let t_value = resp
+        .headers()
+        .get("x-fluree-t")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // Query with X-Fluree-Min-T equal to the committed t — should succeed
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/mint-test:main")
+                .header("content-type", "application/json")
+                .header("x-fluree-min-t", &t_value)
+                .body(Body::from(
+                    r#"{"where":{"@id":"?s"},"select":{"?s":["*"]}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let valid_status = resp.status();
+    if valid_status != StatusCode::OK {
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        panic!(
+            "Expected 200 for valid min_t, got {}: {}",
+            valid_status,
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    // Query with X-Fluree-Min-T far in the future — should return 409
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/mint-test:main")
+                .header("content-type", "application/json")
+                .header("x-fluree-min-t", "999999")
+                .body(Body::from(
+                    r#"{"where":{"@id":"?s"},"select":{"?s":["*"]}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    assert!(
+        status == StatusCode::CONFLICT || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "Expected 409 or 500 for unreachable min_t, got {}",
+        status,
+    );
+}
