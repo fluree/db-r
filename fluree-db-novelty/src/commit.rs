@@ -466,6 +466,102 @@ pub fn trace_commits_by_id<C: ContentStore + Clone + 'static>(
     })
 }
 
+// =============================================================================
+// Common Ancestor
+// =============================================================================
+
+/// The most recent common ancestor between two commit chains.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommonAncestor {
+    /// CID of the common commit.
+    pub commit_id: ContentId,
+    /// Transaction time of the common commit.
+    pub t: i64,
+}
+
+/// Walk two commit chains from their HEADs and find the most recent common
+/// ancestor.
+///
+/// Uses [`load_commit_envelope_by_id`] (lightweight — no flake data) to walk
+/// each chain. Advances whichever chain has the higher `t`. When both chains
+/// reach the same CID, that is the common ancestor.
+///
+/// Returns an error if the chains have no common ancestor (should not happen
+/// for branches within the same ledger, since they share a genesis commit).
+pub async fn find_common_ancestor<C: ContentStore>(
+    store: &C,
+    head_a: &ContentId,
+    head_b: &ContentId,
+) -> Result<CommonAncestor> {
+    if head_a == head_b {
+        let envelope = load_commit_envelope_by_id(store, head_a).await?;
+        return Ok(CommonAncestor {
+            commit_id: head_a.clone(),
+            t: envelope.t,
+        });
+    }
+
+    let mut cid_a = head_a.clone();
+    let mut cid_b = head_b.clone();
+    let mut env_a = load_commit_envelope_by_id(store, &cid_a).await?;
+    let mut env_b = load_commit_envelope_by_id(store, &cid_b).await?;
+
+    loop {
+        match env_a.t.cmp(&env_b.t) {
+            std::cmp::Ordering::Greater => {
+                cid_a = env_a.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                if cid_a == cid_b {
+                    return Ok(CommonAncestor {
+                        commit_id: cid_a,
+                        t: env_b.t,
+                    });
+                }
+                env_a = load_commit_envelope_by_id(store, &cid_a).await?;
+            }
+            std::cmp::Ordering::Less => {
+                cid_b = env_b.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                if cid_a == cid_b {
+                    return Ok(CommonAncestor {
+                        commit_id: cid_b,
+                        t: env_a.t,
+                    });
+                }
+                env_b = load_commit_envelope_by_id(store, &cid_b).await?;
+            }
+            std::cmp::Ordering::Equal => {
+                // Same t but different CIDs — advance both
+                cid_a = env_a.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                cid_b = env_b.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                if cid_a == cid_b {
+                    let env = load_commit_envelope_by_id(store, &cid_a).await?;
+                    return Ok(CommonAncestor {
+                        commit_id: cid_a,
+                        t: env.t,
+                    });
+                }
+                env_a = load_commit_envelope_by_id(store, &cid_a).await?;
+                env_b = load_commit_envelope_by_id(store, &cid_b).await?;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

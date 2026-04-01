@@ -1576,7 +1576,7 @@ mod tests {
             index_t: 40,
             default_context: None,
             retracted: false,
-            branch_point: None,
+            source_branch: None,
             branches: 0,
         };
 
@@ -1607,7 +1607,7 @@ mod tests {
             index_t: 0,
             default_context: None,
             retracted: true,
-            branch_point: None,
+            source_branch: None,
             branches: 0,
         };
 

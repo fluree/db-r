@@ -100,7 +100,7 @@ impl HistoricalLedgerView {
 
         // For branched ledgers, build a recursive content store that falls
         // back through the branch ancestry DAG.
-        if record.branch_point.is_some() {
+        if record.source_branch.is_some() {
             let store = LedgerState::build_branched_store(ns, &record, &storage).await?;
             return Self::load_at_with_store(store, record, target_t).await;
         }

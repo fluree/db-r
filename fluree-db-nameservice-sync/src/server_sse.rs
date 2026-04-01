@@ -64,17 +64,9 @@ struct LedgerSseRecord {
     index_t: i64,
     retracted: bool,
     #[serde(default)]
-    branch_point: Option<BranchPointSse>,
+    source_branch: Option<String>,
     #[serde(default)]
     branches: u32,
-}
-
-/// SSE wire format for branch point metadata.
-#[derive(Debug, serde::Deserialize)]
-struct BranchPointSse {
-    source: String,
-    commit_id: String,
-    t: i64,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -131,13 +123,6 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
     use fluree_db_core::ContentId;
 
     let (ledger_name, branch) = split_ledger_id_or_fallback(&record.ledger_id, &record.branch);
-    let branch_point = record.branch_point.and_then(|bp| {
-        Some(fluree_db_nameservice::BranchPoint {
-            source: bp.source,
-            commit_id: bp.commit_id.parse::<ContentId>().ok()?,
-            t: bp.t,
-        })
-    });
     NsRecord {
         ledger_id: record.ledger_id.clone(),
         name: ledger_name,
@@ -153,7 +138,7 @@ fn ledger_sse_to_ns_record(record: LedgerSseRecord) -> NsRecord {
         index_t: record.index_t,
         default_context: None,
         retracted: record.retracted,
-        branch_point,
+        source_branch: record.source_branch,
         branches: record.branches,
     }
 }

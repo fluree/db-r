@@ -7,7 +7,7 @@ use crate::{
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
 use fluree_db_core::DictNovelty;
-use fluree_db_nameservice::{BranchPoint, NameServiceError, NsRecord, Publisher};
+use fluree_db_nameservice::{NameServiceError, NsRecord, Publisher};
 
 impl<S, N> Fluree<S, N>
 where
@@ -281,18 +281,16 @@ where
             .await?
             .ok_or_else(|| ApiError::NotFound(source_id.clone()))?;
 
-        let commit_id = source_record.commit_head_id.clone().ok_or_else(|| {
-            ApiError::internal(format!("Source branch {} has no commit head", source_id))
-        })?;
-
-        let branch_point = BranchPoint {
-            source: source.to_string(),
-            commit_id,
-            t: source_record.commit_t,
-        };
+        // Verify the source branch has a commit head before creating.
+        if source_record.commit_head_id.is_none() {
+            return Err(ApiError::internal(format!(
+                "Source branch {} has no commit head",
+                source_id
+            )));
+        }
 
         self.nameservice
-            .create_branch(ledger_name, new_branch, branch_point)
+            .create_branch(ledger_name, new_branch, source)
             .await
             .map_err(|e| match e {
                 NameServiceError::LedgerAlreadyExists(a) => ApiError::ledger_exists(a),

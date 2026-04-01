@@ -193,24 +193,10 @@ impl DynamoDbNameService {
             .and_then(|v| v.as_s().ok())
             .and_then(|s| fluree_db_nameservice::parse_default_context_value(s));
 
-        let branch_point = meta
+        let source_branch = meta
             .get(ATTR_BP_SOURCE)
             .and_then(|v| v.as_s().ok())
-            .and_then(|source_branch| {
-                let commit_id = meta
-                    .get(ATTR_BP_COMMIT_ID)
-                    .and_then(|v| v.as_s().ok())
-                    .and_then(|s| s.parse::<ContentId>().ok())?;
-                let t = meta
-                    .get(ATTR_BP_T)
-                    .and_then(|v| v.as_n().ok())
-                    .and_then(|s| s.parse().ok())?;
-                Some(fluree_db_nameservice::BranchPoint {
-                    source: source_branch.clone(),
-                    commit_id,
-                    t,
-                })
-            });
+            .cloned();
 
         let branches = meta
             .get(ATTR_BRANCHES)
@@ -229,7 +215,7 @@ impl DynamoDbNameService {
             index_t,
             default_context,
             retracted,
-            branch_point,
+            source_branch,
             branches,
         })
     }
@@ -544,8 +530,21 @@ impl NameService for DynamoDbNameService {
         &self,
         ledger_name: &str,
         new_branch: &str,
-        branch_point: fluree_db_nameservice::BranchPoint,
+        source_branch: &str,
     ) -> std::result::Result<(), NameServiceError> {
+        // Look up the source branch to get its commit head.
+        let source_id = format_ledger_id(ledger_name, source_branch);
+        let source_record = self.lookup(&source_id).await?.ok_or_else(|| {
+            NameServiceError::not_found(format!(
+                "Source branch {source_branch} not found for {ledger_name}"
+            ))
+        })?;
+
+        let commit_id = source_record.commit_head_id.ok_or_else(|| {
+            NameServiceError::storage(format!("Source branch {source_id} has no commit head"))
+        })?;
+        let commit_t = source_record.commit_t;
+
         let pk = format_ledger_id(ledger_name, new_branch);
         let now = Self::now_epoch_ms().to_string();
         let sv = SCHEMA_VERSION.to_string();
@@ -564,7 +563,7 @@ impl NameService for DynamoDbNameService {
 
         let cond = "attribute_not_exists(pk)";
 
-        // 1. Meta — includes branch point attributes
+        // 1. Meta — includes source branch attribute
         let mut meta = base_item(SK_META);
         meta.insert(
             ATTR_KIND.to_string(),
@@ -581,26 +580,18 @@ impl NameService for DynamoDbNameService {
         meta.insert(ATTR_RETRACTED.to_string(), AttributeValue::Bool(false));
         meta.insert(
             ATTR_BP_SOURCE.to_string(),
-            AttributeValue::S(branch_point.source.clone()),
-        );
-        meta.insert(
-            ATTR_BP_COMMIT_ID.to_string(),
-            AttributeValue::S(branch_point.commit_id.to_string()),
-        );
-        meta.insert(
-            ATTR_BP_T.to_string(),
-            AttributeValue::N(branch_point.t.to_string()),
+            AttributeValue::S(source_branch.to_string()),
         );
 
         // 2. Head — starts at source commit
         let mut head = base_item(SK_HEAD);
         head.insert(
             ATTR_COMMIT_ID.to_string(),
-            AttributeValue::S(branch_point.commit_id.to_string()),
+            AttributeValue::S(commit_id.to_string()),
         );
         head.insert(
             ATTR_COMMIT_T.to_string(),
-            AttributeValue::N(branch_point.t.to_string()),
+            AttributeValue::N(commit_t.to_string()),
         );
 
         // 3. Index (unborn)
@@ -662,7 +653,7 @@ impl NameService for DynamoDbNameService {
         }
 
         // Increment source branch's child count atomically
-        let source_pk = format_ledger_id(ledger_name, &branch_point.source);
+        let source_pk = format_ledger_id(ledger_name, source_branch);
         let _ = self
             .client
             .update_item()
@@ -816,55 +807,6 @@ impl NameService for DynamoDbNameService {
         }
     }
 
-    async fn update_branch_point(
-        &self,
-        ledger_id: &str,
-        new_branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> std::result::Result<(), NameServiceError> {
-        let pk = Self::normalize(ledger_id);
-
-        match self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_PK, AttributeValue::S(pk))
-            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
-            .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :t")
-            .expression_attribute_names("#bps", ATTR_BP_SOURCE)
-            .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
-            .expression_attribute_names("#bpt", ATTR_BP_T)
-            .expression_attribute_values(
-                ":source",
-                AttributeValue::S(new_branch_point.source),
-            )
-            .expression_attribute_values(
-                ":commit_id",
-                AttributeValue::S(new_branch_point.commit_id.to_string()),
-            )
-            .expression_attribute_values(
-                ":t",
-                AttributeValue::N(new_branch_point.t.to_string()),
-            )
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .send()
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(aws_sdk_dynamodb::error::SdkError::ServiceError(se))
-                if matches!(
-                    se.err(),
-                    aws_sdk_dynamodb::operation::update_item::UpdateItemError::ConditionalCheckFailedException(_)
-                ) =>
-            {
-                Err(NameServiceError::not_found(ledger_id))
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB update_branch_point failed: {e}"
-            ))),
-        }
-    }
-
     async fn reset_head(
         &self,
         ledger_id: &str,
@@ -910,7 +852,7 @@ impl NameService for DynamoDbNameService {
         }
 
         // Combine into a single atomic transaction
-        let mut txn = self
+        let txn = self
             .client
             .transact_write_items()
             .transact_items(
@@ -923,28 +865,6 @@ impl NameService for DynamoDbNameService {
                     .update(idx.build().expect("valid Update"))
                     .build(),
             );
-
-        if let Some(ref bp) = snapshot.branch_point {
-            let meta = Update::builder()
-                .table_name(&self.table_name)
-                .key(ATTR_PK, AttributeValue::S(pk))
-                .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
-                .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :bpt, #ua = :now")
-                .expression_attribute_names("#bps", ATTR_BP_SOURCE)
-                .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
-                .expression_attribute_names("#bpt", ATTR_BP_T)
-                .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
-                .expression_attribute_values(":now", AttributeValue::N(now))
-                .expression_attribute_values(":source", AttributeValue::S(bp.source.clone()))
-                .expression_attribute_values(
-                    ":commit_id",
-                    AttributeValue::S(bp.commit_id.to_string()),
-                )
-                .expression_attribute_values(":bpt", AttributeValue::N(bp.t.to_string()))
-                .build()
-                .expect("valid Update");
-            txn = txn.transact_items(TransactWriteItem::builder().update(meta).build());
-        }
 
         txn.send()
             .await

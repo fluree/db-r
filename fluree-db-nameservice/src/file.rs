@@ -291,14 +291,9 @@ impl FileNameService {
                 .config_cid
                 .as_deref()
                 .and_then(|s| s.parse::<ContentId>().ok()),
-            branch_point: main.branch_point.and_then(|bp| {
-                let commit_id = bp.commit_cid?.parse::<ContentId>().ok()?;
-                Some(crate::BranchPoint {
-                    source: bp.source,
-                    commit_id,
-                    t: bp.t,
-                })
-            }),
+            source_branch: main
+                .source_branch
+                .or_else(|| main.branch_point.map(|bp| bp.source)),
             branches: main.branches,
         };
 
@@ -478,16 +473,21 @@ impl NameService for FileNameService {
         &self,
         ledger_name: &str,
         new_branch: &str,
-        branch_point: crate::BranchPoint,
+        source_branch: &str,
     ) -> Result<()> {
         let address = Self::ns_address(ledger_name, new_branch);
         let normalized_id = format_ledger_id(ledger_name, new_branch);
 
-        let bp_ref = BranchPointRef {
-            source: branch_point.source.clone(),
-            commit_cid: Some(branch_point.commit_id.to_string()),
-            t: branch_point.t,
-        };
+        // Read the source branch to get commit head info
+        let source_record = self
+            .load_record(ledger_name, source_branch)
+            .await?
+            .ok_or_else(|| {
+                NameServiceError::not_found(format!(
+                    "source branch {}:{}",
+                    ledger_name, source_branch
+                ))
+            })?;
 
         let file = NsFileV2 {
             context: ns_context(),
@@ -497,9 +497,9 @@ impl NameService for FileNameService {
                 id: ledger_name.to_string(),
             },
             branch: new_branch.to_string(),
-            commit_cid: Some(branch_point.commit_id.to_string()),
+            commit_cid: source_record.commit_head_id.as_ref().map(|c| c.to_string()),
             config_cid: None,
-            t: branch_point.t,
+            t: source_record.commit_t,
             index: None,
             status: "ready".to_string(),
             default_context_cid: None,
@@ -507,7 +507,12 @@ impl NameService for FileNameService {
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
-            branch_point: Some(bp_ref),
+            source_branch: Some(source_branch.to_string()),
+            branch_point: Some(BranchPointRef {
+                source: source_branch.to_string(),
+                commit_cid: None,
+                t: 0,
+            }),
             branches: 0,
         };
         let bytes = serde_json::to_vec_pretty(&file)?;
@@ -518,7 +523,7 @@ impl NameService for FileNameService {
         }
 
         // Increment source branch's child count
-        let source_address = Self::ns_address(ledger_name, &branch_point.source);
+        let source_address = Self::ns_address(ledger_name, source_branch);
         let outcome = self
             .storage
             .compare_and_swap(&source_address, |bytes| {
@@ -538,7 +543,7 @@ impl NameService for FileNameService {
             let _ = tokio::fs::remove_file(&created_path).await;
             return Err(NameServiceError::not_found(format!(
                 "source branch {}:{}",
-                ledger_name, branch_point.source
+                ledger_name, source_branch
             )));
         }
 
@@ -554,7 +559,7 @@ impl NameService for FileNameService {
             .await?
             .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
 
-        let parent_branch_point = record.branch_point.clone();
+        let parent_source = record.source_branch.clone();
 
         // Remove the NS files (purge)
         let main_path = self.ns_path(&ledger_name, &branch);
@@ -563,9 +568,9 @@ impl NameService for FileNameService {
         let _ = tokio::fs::remove_file(&idx_path).await;
 
         // Decrement parent's child count if this branch had a parent
-        match parent_branch_point {
-            Some(bp) => {
-                let parent_address = Self::ns_address(&ledger_name, &bp.source);
+        match parent_source {
+            Some(source) => {
+                let parent_address = Self::ns_address(&ledger_name, &source);
                 let outcome = self
                     .storage
                     .compare_and_swap(&parent_address, |bytes| {
@@ -585,43 +590,11 @@ impl NameService for FileNameService {
                 }
 
                 // Re-read the parent to get the updated count
-                let parent_record = self.load_record(&ledger_name, &bp.source).await?;
+                let parent_record = self.load_record(&ledger_name, &source).await?;
                 Ok(parent_record.map(|r| r.branches))
             }
             None => Ok(None),
         }
-    }
-
-    async fn update_branch_point(
-        &self,
-        ledger_id: &str,
-        new_branch_point: crate::BranchPoint,
-    ) -> Result<()> {
-        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let address = Self::ns_address(&ledger_name, &branch);
-
-        let outcome = self
-            .storage
-            .compare_and_swap(&address, |bytes| {
-                let Some(data) = bytes else {
-                    return Ok(CasAction::Abort(()));
-                };
-                let mut file: NsFileV2 = deserialize_json(data)?;
-                file.branch_point = Some(BranchPointRef {
-                    source: new_branch_point.source.clone(),
-                    commit_cid: Some(new_branch_point.commit_id.to_string()),
-                    t: new_branch_point.t,
-                });
-                let new_bytes = serialize_json(&file)?;
-                Ok(CasAction::Write(new_bytes))
-            })
-            .await?;
-
-        if matches!(outcome, CasOutcome::Aborted(())) {
-            return Err(NameServiceError::not_found(ledger_id));
-        }
-
-        Ok(())
     }
 
     async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
@@ -676,6 +649,7 @@ impl Publisher for FileNameService {
             status_meta: None,
             config_v: Some(0), // Unborn config
             config_meta: None,
+            source_branch: None,
             branch_point: None,
             branches: 0,
         };
@@ -742,6 +716,7 @@ impl Publisher for FileNameService {
                             status_meta: None,
                             config_v: Some(0),
                             config_meta: None,
+                            source_branch: None,
                             branch_point: None,
                             branches: 0,
                         };
@@ -1300,6 +1275,7 @@ impl RefPublisher for FileNameService {
                             status_meta: None,
                             config_v: Some(0),
                             config_meta: None,
+                            source_branch: None,
                             branch_point: None,
                             branches: 0,
                         });
@@ -2422,22 +2398,14 @@ mod tests {
         let cid = test_cid("commit-5");
         ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
 
-        let bp = crate::BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid.clone(),
-            t: 5,
-        };
-        ns.create_branch("mydb", "feature-x", bp).await.unwrap();
+        ns.create_branch("mydb", "feature-x", "main").await.unwrap();
 
         let record = ns.lookup("mydb:feature-x").await.unwrap().unwrap();
         assert_eq!(record.name, "mydb");
         assert_eq!(record.branch, "feature-x");
         assert_eq!(record.commit_head_id, Some(cid.clone()));
         assert_eq!(record.commit_t, 5);
-        let bp = record.branch_point.unwrap();
-        assert_eq!(bp.source, "main");
-        assert_eq!(bp.commit_id, cid);
-        assert_eq!(bp.t, 5);
+        assert_eq!(record.source_branch.as_deref(), Some("main"));
     }
 
     #[tokio::test]
@@ -2447,14 +2415,9 @@ mod tests {
         let cid = test_cid("commit-1");
         ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
-        let bp = crate::BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid,
-            t: 1,
-        };
-        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+        ns.create_branch("mydb", "dev", "main").await.unwrap();
 
-        let result = ns.create_branch("mydb", "dev", bp).await;
+        let result = ns.create_branch("mydb", "dev", "main").await;
         assert!(result.is_err());
     }
 
@@ -2465,13 +2428,8 @@ mod tests {
         let cid = test_cid("commit-3");
         ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
 
-        let bp = crate::BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid.clone(),
-            t: 3,
-        };
-        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
-        ns.create_branch("mydb", "staging", bp).await.unwrap();
+        ns.create_branch("mydb", "dev", "main").await.unwrap();
+        ns.create_branch("mydb", "staging", "main").await.unwrap();
 
         // Also create a different ledger to ensure filtering works
         ns.publish_ledger_init("other:main").await.unwrap();
@@ -2490,15 +2448,12 @@ mod tests {
         let cid = test_cid("commit-1");
         ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
-        let bp = crate::BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid.clone(),
-            t: 1,
-        };
-        ns.create_branch("mydb", "release/v1.0", bp.clone())
+        ns.create_branch("mydb", "release/v1.0", "main")
             .await
             .unwrap();
-        ns.create_branch("mydb", "feature/auth", bp).await.unwrap();
+        ns.create_branch("mydb", "feature/auth", "main")
+            .await
+            .unwrap();
 
         let branches = ns.list_branches("mydb").await.unwrap();
         assert_eq!(branches.len(), 3);
@@ -2521,12 +2476,7 @@ mod tests {
         let cid = test_cid("commit-1");
         ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
-        let bp = crate::BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid,
-            t: 1,
-        };
-        ns.create_branch("mydb", "dead", bp).await.unwrap();
+        ns.create_branch("mydb", "dead", "main").await.unwrap();
         ns.retract("mydb:dead").await.unwrap();
 
         let branches = ns.list_branches("mydb").await.unwrap();
@@ -2541,19 +2491,13 @@ mod tests {
         let cid = test_cid("commit-2");
         ns.publish_commit("mydb:main", 2, &cid).await.unwrap();
 
-        let bp = crate::BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid.clone(),
-            t: 2,
-        };
-        ns.create_branch("mydb", "persisted", bp).await.unwrap();
+        ns.create_branch("mydb", "persisted", "main").await.unwrap();
 
         // Create a new FileNameService pointing to the same directory
         let ns2 = FileNameService::new(temp.path());
         let record = ns2.lookup("mydb:persisted").await.unwrap().unwrap();
-        let bp = record.branch_point.unwrap();
-        assert_eq!(bp.source, "main");
-        assert_eq!(bp.commit_id, cid);
-        assert_eq!(bp.t, 2);
+        assert_eq!(record.source_branch.as_deref(), Some("main"));
+        assert_eq!(record.commit_head_id, Some(cid));
+        assert_eq!(record.commit_t, 2);
     }
 }

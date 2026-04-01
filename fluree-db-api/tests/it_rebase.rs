@@ -440,8 +440,9 @@ async fn rebase_branch_point_updated() {
         .await
         .unwrap()
         .unwrap();
-    let bp = dev_record.branch_point.expect("should have branch_point");
-    assert_eq!(bp.t, source_after.commit_t);
+    // After rebase, the branch's commit_t should match the source's commit_t
+    // (fast-forward rebase advances the branch to the source HEAD).
+    assert_eq!(dev_record.commit_t, source_after.commit_t);
 }
 
 /// Cannot rebase the main branch.

@@ -11,7 +11,7 @@ use fluree_db_core::{
     RangeTest, Storage,
 };
 use fluree_db_ledger::{LedgerState, LedgerView};
-use fluree_db_nameservice::{BranchPoint, NameService, NsRecordSnapshot, Publisher};
+use fluree_db_nameservice::{NameService, NsRecordSnapshot, Publisher};
 use fluree_db_novelty::{compute_delta_keys, trace_commits_by_id, Commit};
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use futures::TryStreamExt;
@@ -87,8 +87,8 @@ pub struct RebaseReport {
     pub replayed: usize,
     pub conflicts: Vec<RebaseConflict>,
     pub failures: Vec<RebaseFailure>,
-    pub new_branch_point_t: i64,
-    pub new_branch_point_id: ContentId,
+    pub source_head_t: i64,
+    pub source_head_id: ContentId,
     pub fast_forward: bool,
     pub total_commits: usize,
     pub skipped: usize,
@@ -146,11 +146,11 @@ where
             .await?
             .ok_or_else(|| ApiError::NotFound(branch_id.clone()))?;
 
-        let bp = branch_record.branch_point.as_ref().ok_or_else(|| {
-            ApiError::InvalidBranch(format!("Branch {branch_id} has no branch point"))
+        let source_name = branch_record.source_branch.as_ref().ok_or_else(|| {
+            ApiError::InvalidBranch(format!("Branch {branch_id} has no source branch"))
         })?;
 
-        let source_id = format_ledger_id(ledger_name, &bp.source);
+        let source_id = format_ledger_id(ledger_name, source_name);
         let source_record = self
             .nameservice
             .lookup(&source_id)
@@ -167,25 +167,6 @@ where
             lm.disconnect(&branch_id).await;
         }
 
-        // Fast-forward: branch has no unique commits.
-        let is_fast_forward = branch_record
-            .commit_head_id
-            .as_ref()
-            .is_none_or(|id| *id == bp.commit_id);
-
-        if is_fast_forward {
-            return self
-                .fast_forward_rebase(
-                    &branch_id,
-                    &source_id,
-                    &source_record,
-                    &bp.source,
-                    source_head_id,
-                    source_head_t,
-                )
-                .await;
-        }
-
         // Build a BranchedContentStore for reading commits across namespaces.
         let branch_store = LedgerState::build_branched_store(
             &self.nameservice,
@@ -194,29 +175,56 @@ where
         )
         .await?;
 
-        // Compute source delta: all (s,p,g) tuples modified on source since branch point.
+        // Compute common ancestor by walking commit chains.
+        let branch_head_id = branch_record
+            .commit_head_id
+            .clone()
+            .ok_or_else(|| ApiError::internal(format!("Branch {branch_id} has no commit head")))?;
+        let ancestor = fluree_db_novelty::find_common_ancestor(
+            &branch_store,
+            &branch_head_id,
+            &source_head_id,
+        )
+        .await?;
+
+        // Fast-forward: branch has no unique commits beyond the ancestor.
+        let is_fast_forward = branch_head_id == ancestor.commit_id;
+
+        if is_fast_forward {
+            return self
+                .fast_forward_rebase(
+                    &branch_id,
+                    &source_id,
+                    &source_record,
+                    source_head_id,
+                    source_head_t,
+                )
+                .await;
+        }
+
+        // Compute source delta: all (s,p,g) tuples modified on source since ancestor.
         // The source may itself be a branch, so use a BranchedContentStore if it has
-        // a branch_point, otherwise a plain store.
-        let source_delta = if source_record.branch_point.is_some() {
+        // a source_branch, otherwise a plain store.
+        let source_delta = if source_record.source_branch.is_some() {
             let source_store = LedgerState::build_branched_store(
                 &self.nameservice,
                 &source_record,
                 self.connection.storage(),
             )
             .await?;
-            compute_delta_keys(source_store, source_head_id.clone(), bp.t).await?
+            compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         } else {
             let source_store =
                 fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
-            compute_delta_keys(source_store, source_head_id.clone(), bp.t).await?
+            compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         };
 
         // Pass 1: stream branch commits to collect lightweight summaries
         // (CID, t, conflict keys) without retaining flake payloads in memory.
         let summaries = scan_branch_commits(
             branch_store.clone(),
-            branch_record.commit_head_id.clone().unwrap(),
-            bp.t,
+            branch_head_id,
+            ancestor.t,
             &source_delta,
         )
         .await?;
@@ -250,7 +258,6 @@ where
             source_id: &source_id,
             source_head_id: &source_head_id,
             source_head_t,
-            source_branch: &bp.source,
             branch_store: &branch_store,
             summaries: &summaries,
             strategy: &strategy,
@@ -306,8 +313,8 @@ where
             replayed: 0,
             conflicts: Vec::new(),
             failures: Vec::new(),
-            new_branch_point_t: ctx.source_head_t,
-            new_branch_point_id: ctx.source_head_id.clone(),
+            source_head_t: ctx.source_head_t,
+            source_head_id: ctx.source_head_id.clone(),
             fast_forward: false,
             total_commits: ctx.total_commits,
             skipped: 0,
@@ -362,15 +369,6 @@ where
             }
         }
 
-        let new_bp = BranchPoint {
-            source: ctx.source_branch.to_string(),
-            commit_id: ctx.source_head_id.clone(),
-            t: ctx.source_head_t,
-        };
-        self.nameservice
-            .update_branch_point(ctx.branch_id, new_bp)
-            .await?;
-
         Ok(report)
     }
 
@@ -379,7 +377,6 @@ where
         branch_id: &str,
         source_id: &str,
         source_record: &fluree_db_nameservice::NsRecord,
-        source_branch: &str,
         source_head_id: ContentId,
         source_head_t: i64,
     ) -> Result<RebaseReport> {
@@ -390,15 +387,6 @@ where
         self.copy_source_index(source_id, branch_id, source_record)
             .await;
 
-        let new_bp = BranchPoint {
-            source: source_branch.to_string(),
-            commit_id: source_head_id.clone(),
-            t: source_head_t,
-        };
-        self.nameservice
-            .update_branch_point(branch_id, new_bp)
-            .await?;
-
         if let Some(ref lm) = self.ledger_manager {
             lm.disconnect(branch_id).await;
         }
@@ -407,8 +395,8 @@ where
             replayed: 0,
             conflicts: Vec::new(),
             failures: Vec::new(),
-            new_branch_point_t: source_head_t,
-            new_branch_point_id: source_head_id,
+            source_head_t,
+            source_head_id,
             fast_forward: true,
             total_commits: 0,
             skipped: 0,
@@ -636,7 +624,6 @@ struct ReplayContext<'a, S: Storage> {
     source_id: &'a str,
     source_head_id: &'a ContentId,
     source_head_t: i64,
-    source_branch: &'a str,
     branch_store: &'a fluree_db_core::BranchedContentStore<S>,
     summaries: &'a [CommitSummary],
     strategy: &'a ConflictStrategy,
