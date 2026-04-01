@@ -1119,8 +1119,8 @@ async fn sparql_vector_cosine_similarity() {
     let bart_score = arr[1][1].as_f64().unwrap();
     assert!(homer_score > bart_score, "Homer should rank higher");
     // Cosine similarity should be in [-1, 1]
-    assert!(homer_score <= 1.0 && homer_score >= -1.0);
-    assert!(bart_score <= 1.0 && bart_score >= -1.0);
+    assert!((-1.0..=1.0).contains(&homer_score));
+    assert!((-1.0..=1.0).contains(&bart_score));
 }
 
 /// SPARQL euclideanDistance via BIND

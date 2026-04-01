@@ -2429,23 +2429,6 @@ pub struct Fluree<S: Storage + 'static, N> {
     ledger_manager: Option<Arc<LedgerManager<S, N>>>,
 }
 
-// Accessors that require `N: 'static` (for `Arc<LedgerManager<S, N>>` derefs).
-impl<S, N: 'static> Fluree<S, N>
-where
-    S: Storage + Clone + 'static,
-{
-    /// Directory for binary index cache files.
-    ///
-    /// Returns the configured cache directory from the ledger manager (if enabled),
-    /// falling back to the `LedgerManagerConfig` default (`$TMPDIR/fluree_binary_cache`).
-    pub fn cache_dir(&self) -> std::path::PathBuf {
-        self.ledger_manager
-            .as_ref()
-            .map(|lm| lm.config().cache_dir.clone())
-            .unwrap_or_else(|| LedgerManagerConfig::default().cache_dir)
-    }
-}
-
 impl<S, N> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
