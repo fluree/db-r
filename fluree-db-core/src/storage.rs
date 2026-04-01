@@ -625,7 +625,7 @@ pub fn content_address(method: &str, kind: ContentKind, ledger_id: &str, hash_he
     format!("fluree:{}://{}", method, path)
 }
 
-/// Decode JSON from bytes.
+/// Deserialize a JSON byte slice into a typed value.
 pub fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     Ok(serde_json::from_slice(bytes)?)
 }

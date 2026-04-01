@@ -38,7 +38,7 @@ impl MemoryStorage {
     /// Create a new empty memory storage
     pub fn new() -> Self {
         Self {
-            data: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -194,7 +194,7 @@ impl MemoryContentStore {
     /// Create a new empty in-memory content store.
     pub fn new() -> Self {
         Self {
-            data: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            data: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
