@@ -12,7 +12,6 @@ use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
     TrackingOptions,
 };
-use fluree_db_core::GraphDbRef;
 use fluree_db_query::execute::{
     execute_prepared, prepare_execution_with_binary_store, ContextConfig,
 };
@@ -588,7 +587,7 @@ where
             ..Default::default()
         };
 
-        let exec_db = GraphDbRef::new(&primary.snapshot, primary.graph_id, &*primary.overlay, to_t);
+        let exec_db = db.with_t(to_t);
         execute_prepared(exec_db, vars, prepared, config)
             .await
             .map_err(query_error_to_api_error)
@@ -680,7 +679,7 @@ where
             ..Default::default()
         };
 
-        let exec_db = GraphDbRef::new(&primary.snapshot, primary.graph_id, &*primary.overlay, to_t);
+        let exec_db = db.with_t(to_t);
         execute_prepared(exec_db, vars, prepared, config).await
     }
 }

@@ -566,6 +566,15 @@ pub async fn execute_prepared<'a, 'b>(
     // Overlay-only historical queries (genesis snapshot + commit replay) must still
     // route all range queries through the correct graph partition in the overlay.
     ctx = ctx.with_graph_id(db.g_id);
+    if let Some(runtime_small_dicts) = db
+        .runtime_small_dicts
+        .or_else(|| ExecutionContext::extract_runtime_small_dicts(db.snapshot))
+    {
+        ctx = ctx.with_runtime_small_dicts(runtime_small_dicts);
+    }
+    if db.eager {
+        ctx = ctx.with_eager_materialization();
+    }
 
     if let Some(tracker) = config.tracker {
         ctx = ctx.with_tracker(tracker.clone());

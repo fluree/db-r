@@ -844,7 +844,7 @@ where
         };
 
         if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
-            let cache_dir = crate::ledger_manager::LedgerManagerConfig::default().cache_dir;
+            let cache_dir = fluree.binary_store_cache_dir();
             // Result unused: load_and_attach mutates new_state in-place
             let _store = crate::ledger_manager::load_and_attach_binary_store(
                 fluree.storage(),
@@ -1017,7 +1017,7 @@ where
         };
 
         if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
-            let cache_dir = crate::ledger_manager::LedgerManagerConfig::default().cache_dir;
+            let cache_dir = fluree.binary_store_cache_dir();
             // Result unused: load_and_attach mutates new_state in-place
             let _store = crate::ledger_manager::load_and_attach_binary_store(
                 fluree.storage(),

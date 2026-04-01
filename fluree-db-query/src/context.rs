@@ -854,7 +854,9 @@ impl<'a> ExecutionContext<'a> {
     }
 
     /// Extract `RuntimeSmallDicts` from a snapshot's `RangeProvider` via downcast.
-    fn extract_runtime_small_dicts(snapshot: &'a LedgerSnapshot) -> Option<&'a RuntimeSmallDicts> {
+    pub(crate) fn extract_runtime_small_dicts(
+        snapshot: &'a LedgerSnapshot,
+    ) -> Option<&'a RuntimeSmallDicts> {
         snapshot
             .range_provider
             .as_ref()
@@ -875,6 +877,18 @@ impl<'a> ExecutionContext<'a> {
     /// Attach a dictionary novelty layer for binary scan subject/string lookups.
     pub fn with_dict_novelty(mut self, dict_novelty: Arc<DictNovelty>) -> Self {
         self.dict_novelty = Some(dict_novelty);
+        self
+    }
+
+    /// Attach runtime predicate/datatype IDs carried by the db value.
+    pub fn with_runtime_small_dicts(mut self, runtime_small_dicts: &'a RuntimeSmallDicts) -> Self {
+        self.runtime_small_dicts = Some(runtime_small_dicts);
+        self
+    }
+
+    /// Force eager materialization of binary-scan bindings.
+    pub fn with_eager_materialization(mut self) -> Self {
+        self.eager_materialization = true;
         self
     }
 

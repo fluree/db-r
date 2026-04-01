@@ -115,7 +115,7 @@ pub struct PushedHead {
 impl<S, N> Fluree<S, N>
 where
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
-    N: NameService + RefPublisher + Send + Sync,
+    N: NameService + RefPublisher + Send + Sync + 'static,
 {
     pub async fn push_commits_with_handle(
         &self,
@@ -338,7 +338,7 @@ where
 
         let mut new_state = new_state;
         if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
-            let cache_dir = crate::ledger_manager::LedgerManagerConfig::default().cache_dir;
+            let cache_dir = self.binary_store_cache_dir();
             // Result unused: load_and_attach mutates new_state in-place
             let _store = crate::ledger_manager::load_and_attach_binary_store(
                 self.storage(),

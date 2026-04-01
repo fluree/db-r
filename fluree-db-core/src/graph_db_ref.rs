@@ -97,6 +97,12 @@ impl<'a> GraphDbRef<'a> {
         }
     }
 
+    /// Return a copy with a different as-of time.
+    pub fn with_t(mut self, t: i64) -> Self {
+        self.t = t;
+        self
+    }
+
     /// Return a copy with eager materialization enabled.
     ///
     /// When set, queries built from this `GraphDbRef` will never use
@@ -212,6 +218,21 @@ mod tests {
         assert!(eager_db.eager);
         assert_eq!(eager_db.t, db.t);
         assert_eq!(eager_db.g_id, db.g_id);
+    }
+
+    #[test]
+    fn test_with_t_preserves_flags() {
+        let snapshot = LedgerSnapshot::genesis("test:with-t");
+        let overlay = NoOverlay;
+        let dicts = RuntimeSmallDicts::default();
+        let db = GraphDbRef::new(&snapshot, 0, &overlay, 1)
+            .with_runtime_small_dicts(&dicts)
+            .eager();
+
+        let shifted = db.with_t(42);
+        assert_eq!(shifted.t, 42);
+        assert!(shifted.eager);
+        assert!(shifted.runtime_small_dicts.is_some());
     }
 
     #[tokio::test]

@@ -24,7 +24,7 @@ use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::cmp_v2_spot;
 use fluree_db_core::o_type::OType;
 use fluree_db_core::o_type_registry::OTypeRegistry;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
@@ -117,6 +117,8 @@ impl ClassBitsetTable {
         let mut class_to_bit: FxHashMap<u64, u8> = FxHashMap::default();
         let mut bit_to_class: Vec<u64> = Vec::new();
         let mut graph_bitsets: FxHashMap<u16, FxHashMap<u16, Vec<u64>>> = FxHashMap::default();
+        let mut overflow_classes: FxHashSet<u64> = FxHashSet::default();
+        let mut overflow_entries = 0u64;
         let mut saw_sidecar = false;
         let mut buf = [0u8; 18];
 
@@ -146,6 +148,8 @@ impl ClassBitsetTable {
                     bit_to_class.push(c_global);
                     idx
                 } else {
+                    overflow_classes.insert(c_global);
+                    overflow_entries += 1;
                     continue;
                 };
 
@@ -174,6 +178,15 @@ impl ClassBitsetTable {
                 .sum::<usize>(),
             "class bitset table built"
         );
+
+        if !overflow_classes.is_empty() {
+            tracing::warn!(
+                retained_classes = bit_to_class.len(),
+                skipped_classes = overflow_classes.len(),
+                skipped_type_assertions = overflow_entries,
+                "class ref stats truncated at 64 distinct classes; stats.classes[*].properties[*].ref-classes may be incomplete"
+            );
+        }
 
         Ok(Some(Self {
             bit_to_class,
