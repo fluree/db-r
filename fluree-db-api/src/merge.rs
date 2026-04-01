@@ -74,34 +74,26 @@ where
         // Resolve target: explicit or from source's parent branch.
         // NOTE: The bp.source constraint will be removed when BranchPoint is
         // replaced with computed common ancestors, allowing any-to-any merges.
-        let bp = source_record
-            .branch_point
-            .as_ref()
-            .ok_or_else(|| ApiError::Http {
-                status: 400,
-                message: format!(
-                    "Branch {source_branch} has no branch point; \
+        let bp = source_record.branch_point.as_ref().ok_or_else(|| {
+            ApiError::InvalidBranch(format!(
+                "Branch {source_branch} has no branch point; \
                      only branches created from another branch can be merged"
-                ),
-            })?;
+            ))
+        })?;
 
         let resolved_target = target_branch.unwrap_or(&bp.source);
 
         if source_branch == resolved_target {
-            return Err(ApiError::Http {
-                status: 400,
-                message: "Cannot merge a branch into itself".to_string(),
-            });
+            return Err(ApiError::InvalidBranch(
+                "Cannot merge a branch into itself".to_string(),
+            ));
         }
 
         if bp.source != resolved_target {
-            return Err(ApiError::Http {
-                status: 400,
-                message: format!(
-                    "Branch {source_branch} was created from '{}', not '{resolved_target}'",
-                    bp.source
-                ),
-            });
+            return Err(ApiError::InvalidBranch(format!(
+                "Branch {source_branch} was created from '{}', not '{resolved_target}'",
+                bp.source
+            )));
         }
 
         let target_id = format_ledger_id(ledger_name, resolved_target);
@@ -117,23 +109,17 @@ where
         let is_fast_forward = target_head.is_none_or(|id| *id == bp.commit_id);
 
         if !is_fast_forward {
-            return Err(ApiError::Http {
-                status: 409,
-                message: format!(
-                    "Cannot fast-forward merge: {resolved_target} has diverged since \
-                     {source_branch} was created. Rebase the source branch first."
-                ),
-            });
+            return Err(ApiError::BranchConflict(format!(
+                "Cannot fast-forward merge: {resolved_target} has diverged since \
+                 {source_branch} was created. Rebase the source branch first."
+            )));
         }
 
-        let source_head_id =
-            source_record
-                .commit_head_id
-                .clone()
-                .ok_or_else(|| ApiError::Http {
-                    status: 400,
-                    message: format!("Source branch {source_branch} has no commits to merge"),
-                })?;
+        let source_head_id = source_record.commit_head_id.clone().ok_or_else(|| {
+            ApiError::InvalidBranch(format!(
+                "Source branch {source_branch} has no commits to merge"
+            ))
+        })?;
         let source_head_t = source_record.commit_t;
 
         // Snapshot nameservice state for both branches before mutations.

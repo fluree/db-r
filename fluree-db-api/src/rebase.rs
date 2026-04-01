@@ -134,10 +134,9 @@ where
         strategy: ConflictStrategy,
     ) -> Result<RebaseReport> {
         if branch == "main" {
-            return Err(ApiError::Http {
-                status: 400,
-                message: "Cannot rebase the main branch".to_string(),
-            });
+            return Err(ApiError::InvalidBranch(
+                "Cannot rebase the main branch".to_string(),
+            ));
         }
 
         let branch_id = format_ledger_id(ledger_name, branch);
@@ -147,13 +146,9 @@ where
             .await?
             .ok_or_else(|| ApiError::NotFound(branch_id.clone()))?;
 
-        let bp = branch_record
-            .branch_point
-            .as_ref()
-            .ok_or_else(|| ApiError::Http {
-                status: 400,
-                message: format!("Branch {branch_id} has no branch point"),
-            })?;
+        let bp = branch_record.branch_point.as_ref().ok_or_else(|| {
+            ApiError::InvalidBranch(format!("Branch {branch_id} has no branch point"))
+        })?;
 
         let source_id = format_ledger_id(ledger_name, &bp.source);
         let source_record = self
@@ -230,14 +225,11 @@ where
         // Abort upfront if any commit conflicts — no commits will be written.
         if strategy == ConflictStrategy::Abort {
             if let Some(summary) = summaries.iter().find(|s| !s.conflict_keys.is_empty()) {
-                return Err(ApiError::Http {
-                    status: 409,
-                    message: format!(
-                        "Rebase aborted: {} conflict(s) at t={} with abort strategy",
-                        summary.conflict_keys.len(),
-                        summary.t
-                    ),
-                });
+                return Err(ApiError::BranchConflict(format!(
+                    "Rebase aborted: {} conflict(s) at t={} with abort strategy",
+                    summary.conflict_keys.len(),
+                    summary.t
+                )));
             }
         }
 
