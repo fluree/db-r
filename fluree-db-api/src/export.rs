@@ -10,7 +10,7 @@ use fluree_db_binary_index::{
 };
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::value::FlakeValue;
-use fluree_db_core::{DecodeKind, GraphId, OType, OverlayProvider};
+use fluree_db_core::{DecodeKind, GraphId, OType, OverlayProvider, Sid};
 use fluree_db_query::binary_scan::{translate_overlay_flakes, EphemeralPredicateMap};
 use fluree_vocab::xsd;
 use std::collections::{BTreeMap, HashMap};
@@ -104,8 +104,8 @@ fn apply_time_travel(
 struct ExportResolver<'a> {
     store: &'a Arc<BinaryIndexStore>,
     dict_novelty: Option<&'a Arc<DictNovelty>>,
-    /// Reverse map: ephemeral p_id → IRI (inverted from translate_overlay_flakes).
-    ephemeral_preds_reverse: HashMap<u32, String>,
+    /// Reverse map: ephemeral p_id → Sid (inverted from translate_overlay_flakes).
+    ephemeral_preds_reverse: HashMap<u32, Sid>,
 }
 
 impl<'a> ExportResolver<'a> {
@@ -114,10 +114,10 @@ impl<'a> ExportResolver<'a> {
         dict_novelty: Option<&'a Arc<DictNovelty>>,
         ephemeral_preds: &EphemeralPredicateMap,
     ) -> Self {
-        // Invert the IRI→p_id map to p_id→IRI for O(1) reverse lookup.
-        let ephemeral_preds_reverse: HashMap<u32, String> = ephemeral_preds
+        // Invert the Sid→p_id map to p_id→Sid for O(1) reverse lookup.
+        let ephemeral_preds_reverse: HashMap<u32, Sid> = ephemeral_preds
             .iter()
-            .map(|(iri, &pid)| (pid, iri.clone()))
+            .map(|(sid, &pid)| (pid, sid.clone()))
             .collect();
         Self {
             store,
@@ -156,11 +156,13 @@ impl<'a> ExportResolver<'a> {
     /// Resolve a predicate ID to an IRI string.
     ///
     /// Falls back to the ephemeral predicate map for novelty-only predicates.
-    fn resolve_predicate_iri(&self, p_id: u32) -> Option<&str> {
+    fn resolve_predicate_iri(&self, p_id: u32) -> Option<String> {
         if let Some(iri) = self.store.resolve_predicate_iri(p_id) {
-            return Some(iri);
+            return Some(iri.to_string());
         }
-        self.ephemeral_preds_reverse.get(&p_id).map(|s| s.as_str())
+        self.ephemeral_preds_reverse
+            .get(&p_id)
+            .and_then(|sid| self.store.sid_to_iri(sid))
     }
 
     /// Decode an object value from its binary representation.
@@ -430,7 +432,7 @@ fn write_turtle_batch<W: Write>(
         if p_iri == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type" {
             writer.write_all(b"a")?;
         } else {
-            write_turtle_iri(writer, p_iri, prefixes)?;
+            write_turtle_iri(writer, &p_iri, prefixes)?;
         }
         writer.write_all(b" ")?;
 
@@ -476,7 +478,7 @@ fn write_turtle_object<W: Write>(
 ) -> io::Result<()> {
     match value {
         FlakeValue::Ref(sid) => {
-            let iri = store.sid_to_iri(sid);
+            let iri = store.sid_to_iri(sid).unwrap_or_else(|| format!("_:unknown_{}", sid));
             write_turtle_iri_or_bnode(w, &iri, prefixes)
         }
         // For all literal types, reuse the N-Triples formatting
@@ -712,7 +714,7 @@ fn flake_to_jsonld(
 ) -> serde_json::Value {
     match value {
         FlakeValue::Ref(sid) => {
-            let iri = store.sid_to_iri(sid);
+            let iri = store.sid_to_iri(sid).unwrap_or_else(|| format!("_:unknown_{}", sid));
             let compact = compact_iri(&iri, prefixes);
             serde_json::json!({ "@id": compact })
         }
@@ -1000,7 +1002,7 @@ fn write_batch<W: Write>(
 
         // Write predicate (always an IRI)
         writer.write_all(b"<")?;
-        write_escaped_iri(writer, p_iri)?;
+        write_escaped_iri(writer, &p_iri)?;
         writer.write_all(b"> ")?;
 
         // Write object
@@ -1043,7 +1045,7 @@ fn write_object<W: Write>(
 ) -> io::Result<()> {
     match value {
         FlakeValue::Ref(sid) => {
-            let iri = store.sid_to_iri(sid);
+            let iri = store.sid_to_iri(sid).unwrap_or_else(|| format!("_:unknown_{}", sid));
             write_iri_or_bnode(w, &iri)
         }
 
@@ -1230,7 +1232,7 @@ fn write_object<W: Write>(
 fn resolve_datatype_iri(store: &BinaryIndexStore, o_type: u16) -> Option<String> {
     store
         .resolve_datatype_sid(o_type)
-        .map(|sid| store.sid_to_iri(&sid))
+        .and_then(|sid| store.sid_to_iri(&sid))
 }
 
 /// Write `"lexical"^^<datatype_iri>`.

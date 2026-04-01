@@ -1706,7 +1706,7 @@ impl Operator for BinaryScanOperator {
 /// Ephemeral predicate mapping: IRI → ephemeral p_id for predicates that only
 /// exist in novelty. Callers must use this to extend p_id resolution so that
 /// novelty-only predicates can be resolved back to IRIs during decode.
-pub type EphemeralPredicateMap = HashMap<String, u32>;
+pub type EphemeralPredicateMap = HashMap<Sid, u32>;
 
 pub fn translate_overlay_flakes(
     overlay: &dyn OverlayProvider,
