@@ -475,6 +475,20 @@ impl<S: Storage> StorageContentStore<S> {
             self.method, prefix, hex
         ))
     }
+
+    /// Index roots were stored with a `.json` extension before the switch to `.fir6`.
+    /// Returns `None` for non-IndexRoot CIDs.
+    fn legacy_index_root_address(&self, id: &ContentId) -> Option<String> {
+        if id.codec() != crate::CODEC_FLUREE_INDEX_ROOT {
+            return None;
+        }
+        let prefix = ledger_id_prefix_for_path(&self.ledger_id);
+        let hex = id.digest_hex();
+        Some(format!(
+            "fluree:{}://{}/index/roots/{}.json",
+            self.method, prefix, hex
+        ))
+    }
 }
 
 #[async_trait]
@@ -486,6 +500,10 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
         }
         // Fallback: dicts moved from per-branch to @shared namespace
         if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.exists(&legacy).await;
+        }
+        // Fallback: index roots stored with .json before .fir6 rename
+        if let Some(legacy) = self.legacy_index_root_address(id) {
             return self.storage.exists(&legacy).await;
         }
         Ok(false)
@@ -500,6 +518,10 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
         }
         // Fallback: dicts moved from per-branch to @shared namespace
         if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.read_bytes(&legacy).await;
+        }
+        // Fallback: index roots stored with .json before .fir6 rename
+        if let Some(legacy) = self.legacy_index_root_address(id) {
             return self.storage.read_bytes(&legacy).await;
         }
         Err(crate::error::Error::not_found(address))
@@ -531,13 +553,36 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
             return Some(path);
         }
         // Fallback: dicts moved from per-branch to @shared namespace
-        let legacy = self.legacy_dict_address(id)?;
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            if let Some(path) = self.storage.resolve_local_path(&legacy) {
+                return Some(path);
+            }
+        }
+        // Fallback: index roots stored with .json before .fir6 rename
+        let legacy = self.legacy_index_root_address(id)?;
         self.storage.resolve_local_path(&legacy)
     }
 
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let address = self.cid_to_address(id)?;
-        self.storage.read_byte_range(&address, range).await
+        match self.storage.read_byte_range(&address, range.clone()).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(crate::error::Error::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            match self.storage.read_byte_range(&legacy, range.clone()).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(crate::error::Error::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        // Fallback: index roots stored with .json before .fir6 rename
+        if let Some(legacy) = self.legacy_index_root_address(id) {
+            return self.storage.read_byte_range(&legacy, range).await;
+        }
+        Err(crate::error::Error::not_found(address))
     }
 }
 
@@ -680,7 +725,7 @@ pub fn ledger_id_prefix_for_path(ledger_id: &str) -> String {
 ///
 /// This determines the directory structure for different content types:
 /// - Commits: `{ledger_id}/commit/{hash}.fcv2`
-/// - Index nodes: `{ledger_id}/index/{ordering}/{hash}.json`
+/// - Index roots: `{ledger_id}/index/roots/{hash}.fir6`
 /// - Graph sources: `graph-sources/{ledger_id}/snapshots/{hash}.gssnap`
 /// - etc.
 pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> String {
@@ -688,7 +733,7 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
     match kind {
         ContentKind::Commit => format!("{}/commit/{}.fcv2", prefix, hash_hex),
         ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
-        ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
+        ContentKind::IndexRoot => format!("{}/index/roots/{}.fir6", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
         ContentKind::DictBlob { dict } => {
             // Dictionaries are global per ledger — shared across all branches.

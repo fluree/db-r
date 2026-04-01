@@ -40,10 +40,15 @@ where
         {
             if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
                 let storage = self.connection.storage();
-                let cs = fluree_db_core::content_store_for(
-                    storage.clone(),
-                    state.snapshot.ledger_id.as_str(),
-                );
+                // Use the NsRecord's ledger_id (canonical namespace) rather than
+                // snapshot.ledger_id, which may reflect the source ledger after
+                // a pack import/clone into a differently-named destination.
+                let ns_ledger_id = state
+                    .ns_record
+                    .as_ref()
+                    .map(|r| r.ledger_id.as_str())
+                    .unwrap_or(state.snapshot.ledger_id.as_str());
+                let cs = fluree_db_core::content_store_for(storage.clone(), ns_ledger_id);
                 let bytes = cs.get(&index_cid).await.map_err(|e| {
                     ApiError::internal(format!(
                         "failed to read binary index root for {}: {}",
@@ -121,14 +126,18 @@ where
 
                 // Attach range provider for policy/SHACL/reasoner/property paths.
                 if state.snapshot.range_provider.is_none() {
+                    let ns_fallback = Some(Arc::new(state.snapshot.namespaces().clone()));
                     let provider = fluree_db_query::BinaryRangeProvider::new(
                         Arc::clone(&arc_store),
                         state.dict_novelty.clone(),
+                        state.runtime_small_dicts.clone(),
+                        ns_fallback,
                     );
                     state.snapshot.range_provider = Some(Arc::new(provider));
                 }
 
-                state.binary_store = Some(TypeErasedStore(arc_store));
+                state.binary_store = Some(TypeErasedStore(arc_store.clone()));
+                crate::runtime_dicts::reseed_runtime_small_dicts(&mut state, &arc_store);
                 tracing::info!("loaded binary index store");
             }
         }
@@ -139,10 +148,13 @@ where
             .as_ref()
             .and_then(|r| r.default_context.as_ref())
         {
-            let cs = fluree_db_core::content_store_for(
-                self.connection.storage().clone(),
-                state.snapshot.ledger_id.as_str(),
-            );
+            let ns_ledger_id = state
+                .ns_record
+                .as_ref()
+                .map(|r| r.ledger_id.as_str())
+                .unwrap_or(state.snapshot.ledger_id.as_str());
+            let cs =
+                fluree_db_core::content_store_for(self.connection.storage().clone(), ns_ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),

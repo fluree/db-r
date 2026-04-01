@@ -8,7 +8,7 @@ use fluree_db_api::{FileStorage, Fluree};
 use fluree_db_nameservice::file::FileNameService;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use tracing::debug;
+use tracing::{debug, warn};
 
 const MEM_PREFIX: &str = "mem:";
 const MEM_NAMESPACE: &str = "https://ns.flur.ee/memory#";
@@ -136,12 +136,31 @@ impl MemoryStore {
 
         debug!("Transacting memory schema");
         let schema = memory_schema_jsonld();
-        self.fluree
+        match self
+            .fluree
             .graph(MEMORY_LEDGER_ID)
             .transact()
             .insert(&schema)
             .commit()
-            .await?;
+            .await
+        {
+            Ok(_) => {}
+            Err(fluree_db_api::ApiError::Transact(
+                fluree_db_api::TransactError::CommitConflict { .. },
+            )) => {
+                // A concurrent process (e.g. an old MCP server) may have
+                // modified the ledger between create_ledger and the schema
+                // transact. This commonly happens after `fluree init` when
+                // an old process is still running. Fall back to a full
+                // drop-and-reinit to recover cleanly.
+                warn!("Commit conflict during init — falling back to drop_and_reinit");
+                self.drop_and_reinit().await?;
+                self.ensure_file_structure()?;
+                debug!("Memory ledger initialized (via drop_and_reinit fallback)");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
 
         self.ensure_file_structure()?;
 

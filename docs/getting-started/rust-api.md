@@ -1768,22 +1768,27 @@ The response includes:
 
 #### Stats freshness (real-time vs indexed)
 
-The `stats` section mixes **real-time** values (indexed + novelty deltas) with values that are only available **as-of the last index**.
+The `stats` section now uses layered runtime stats assembly:
+
+- Default `ledger_info()` uses the full novelty-aware path, including lookup-backed class/ref enrichment.
+- `with_realtime_property_details(false)` downgrades to the lighter fast novelty-aware merge (`Indexed` + novelty deltas, no extra lookups).
+- HLL / NDV fields remain index-derived, so they are omitted by default and only included via `with_property_estimates(true)`.
+
+That means the payload still mixes **real-time** values (indexed + novelty deltas) with values that are only available **as-of the last index**.
 
 - **Real-time (includes novelty)**:
   - `stats.flakes`, `stats.size`
   - `stats.properties[*].count` (but not NDV)
-  - `stats.properties[*].datatypes` is real-time **only when** `with_realtime_property_details(true)` is used
+  - `stats.properties[*].datatypes` by default
   - `stats.classes[*].count`
   - `stats.classes[*].property-list` and `stats.classes[*].properties` (property presence)
-  - `stats.classes[*].properties[*].refs` is real-time **only when** `with_realtime_property_details(true)` is used
+  - `stats.classes[*].properties[*].refs` by default
 
 - **As-of last index**:
   - `stats.indexed` (the index \(t\))
-  - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects`
-  - `stats.properties[*].datatypes` (when included via `with_property_datatypes(true)`) is as-of last index unless `with_realtime_property_details(true)` is used
+  - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects` when explicitly included via `with_property_estimates(true)`
   - Any selectivity derived from NDV values
-  - `stats.classes[*].properties[*].refs` (ref target class counts), which are computed during indexing unless `with_realtime_property_details(true)` is used
+  - `stats.classes[*].properties[*].refs` only when callers explicitly disable full detail with `with_realtime_property_details(false)`
 
 ## Nameservice Query API
 

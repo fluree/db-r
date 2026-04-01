@@ -63,6 +63,7 @@ pub mod policy_builder;
 pub mod policy_view;
 mod query;
 mod rebase;
+pub(crate) mod runtime_dicts;
 pub mod server_defaults;
 mod time_resolve;
 pub mod tx;
@@ -205,7 +206,7 @@ pub use fluree_db_query::{Term, TriplePattern};
 pub use fluree_db_query::parse::{ParseError, ParsedQuery};
 pub use fluree_db_transact::{
     lower_sparql_update, lower_sparql_update_ast, CommitOpts, CommitReceipt,
-    LowerError as SparqlUpdateLowerError, NamespaceRegistry, TxnOpts, TxnType,
+    LowerError as SparqlUpdateLowerError, NamespaceRegistry, TransactError, TxnOpts, TxnType,
 };
 
 // Re-export SPARQL types (product feature; always enabled)
@@ -2536,6 +2537,24 @@ where
     /// Get the ledger manager (if caching is enabled)
     pub fn ledger_manager(&self) -> Option<&Arc<LedgerManager<S, N>>> {
         self.ledger_manager.as_ref()
+    }
+}
+
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: NameService + Send + Sync + 'static,
+{
+    /// Resolve the binary-store disk cache directory for this instance.
+    ///
+    /// When ledger caching is enabled, binary-store reloads must use the
+    /// manager's configured cache dir so post-commit namespace repair attaches
+    /// into the same on-disk layout as normal ledger loads.
+    pub(crate) fn binary_store_cache_dir(&self) -> std::path::PathBuf {
+        self.ledger_manager
+            .as_ref()
+            .map(|mgr| mgr.config().cache_dir.clone())
+            .unwrap_or_else(|| LedgerManagerConfig::default().cache_dir)
     }
 }
 

@@ -35,7 +35,8 @@ pub use staged::LedgerView;
 
 use fluree_db_core::{
     content_store_for, format_ledger_id, BranchedContentStore, ContentId, ContentStore,
-    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, Storage, TXN_META_GRAPH_ID,
+    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, RuntimeSmallDicts, Storage,
+    TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{
@@ -95,6 +96,12 @@ pub struct LedgerState {
     /// Tracks novel dictionary entries introduced since the last index build.
     /// Populated during commit, read during queries, reset at index application.
     pub dict_novelty: Arc<DictNovelty>,
+    /// Ledger-scoped runtime IDs for predicates and datatypes.
+    ///
+    /// Persisted IDs are seeded when a binary index store is attached; novelty-only
+    /// predicate/datatype SIDs are appended here during commit so query planning
+    /// and runtime stats share one stable identity space.
+    pub runtime_small_dicts: Arc<RuntimeSmallDicts>,
     /// Content identifier of the head commit (identity).
     ///
     /// Set during commit (from the computed CID) and during ledger load
@@ -221,10 +228,17 @@ impl LedgerState {
                 )
                 .await?;
                 let head_index_id = record.index_head_id.clone();
+                let mut runtime_small_dicts = RuntimeSmallDicts::new();
+                runtime_small_dicts.populate_from_flakes_iter(
+                    novelty_overlay
+                        .iter_index(fluree_db_core::IndexType::Post)
+                        .map(|id| novelty_overlay.get_flake(id)),
+                );
                 return Ok(Self {
                     snapshot,
                     novelty: Arc::new(novelty_overlay),
                     dict_novelty: Arc::new(dict_novelty),
+                    runtime_small_dicts: Arc::new(runtime_small_dicts),
                     head_commit_id: head_id,
                     head_index_id,
                     ns_record: Some(record),
@@ -242,6 +256,7 @@ impl LedgerState {
             snapshot,
             novelty: Arc::new(Novelty::new(novelty_t)),
             dict_novelty: Arc::new(dict_novelty),
+            runtime_small_dicts: Arc::new(RuntimeSmallDicts::new()),
             head_commit_id,
             head_index_id,
             ns_record: Some(record),
@@ -352,10 +367,17 @@ impl LedgerState {
             snapshot.subject_watermarks.clone(),
             snapshot.string_watermark,
         );
+        let mut runtime_small_dicts = RuntimeSmallDicts::new();
+        runtime_small_dicts.populate_from_flakes_iter(
+            novelty
+                .iter_index(fluree_db_core::IndexType::Post)
+                .map(|id| novelty.get_flake(id)),
+        );
         Self {
             snapshot,
             novelty: Arc::new(novelty),
             dict_novelty: Arc::new(dict_novelty),
+            runtime_small_dicts: Arc::new(runtime_small_dicts),
             head_commit_id: None,
             head_index_id: None,
             ns_record: None,
@@ -396,6 +418,7 @@ impl LedgerState {
     /// including all committed flakes.
     pub fn as_graph_db_ref(&self, g_id: GraphId) -> GraphDbRef<'_> {
         GraphDbRef::new(&self.snapshot, g_id, &*self.novelty, self.t())
+            .with_runtime_small_dicts(&self.runtime_small_dicts)
     }
 
     /// Get the novelty size in bytes
@@ -486,10 +509,20 @@ impl LedgerState {
             );
         }
 
+        let mut new_runtime_small_dicts = RuntimeSmallDicts::new();
+        if !new_novelty.is_empty() {
+            new_runtime_small_dicts.populate_from_flakes_iter(
+                new_novelty
+                    .iter_index(fluree_db_core::IndexType::Post)
+                    .map(|id| new_novelty.get_flake(id)),
+            );
+        }
+
         // Update state
         self.snapshot = new_snapshot;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
+        self.runtime_small_dicts = Arc::new(new_runtime_small_dicts);
         self.head_index_id = Some(index_id.clone());
 
         // Update ns_record
@@ -555,6 +588,15 @@ impl LedgerState {
             );
         }
 
+        let mut new_runtime_small_dicts = RuntimeSmallDicts::new();
+        if has_remaining_novelty {
+            new_runtime_small_dicts.populate_from_flakes_iter(
+                new_novelty
+                    .iter_index(fluree_db_core::IndexType::Post)
+                    .map(|id| new_novelty.get_flake(id)),
+            );
+        }
+
         // Preserve namespace codes and graph IRIs from commits still in novelty.
         // The new snapshot from the index root only has codes/IRIs up to index_t.
         // Post-index commits may have introduced new ones that the remaining
@@ -582,6 +624,7 @@ impl LedgerState {
         self.snapshot = merged_snapshot;
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
+        self.runtime_small_dicts = Arc::new(new_runtime_small_dicts);
         self.head_index_id = index_id.cloned();
 
         // Update ns_record
@@ -660,6 +703,9 @@ impl LedgerState {
         let mut new_dict_novelty = (*self.dict_novelty).clone();
         new_dict_novelty.populate_from_flakes(&all_flakes);
 
+        let mut new_runtime_small_dicts = (*self.runtime_small_dicts).clone();
+        new_runtime_small_dicts.populate_from_flakes(&all_flakes);
+
         // Clone and extend novelty
         let mut new_novelty = (*self.novelty).clone();
         new_novelty.apply_commit(all_flakes, commit_t, &reverse_graph)?;
@@ -667,6 +713,7 @@ impl LedgerState {
         // Update state
         self.novelty = Arc::new(new_novelty);
         self.dict_novelty = Arc::new(new_dict_novelty);
+        self.runtime_small_dicts = Arc::new(new_runtime_small_dicts);
         self.head_commit_id = Some(commit_id.clone());
 
         // Update ns_record

@@ -18,8 +18,9 @@ use fluree_db_query::binding::Binding;
 use fluree_db_query::parse::encode::IriEncoder;
 use fluree_db_query::triple::{Ref, Term, TriplePattern};
 use fluree_db_query::var_registry::VarId;
-use fluree_vocab::namespaces::XSD;
-use fluree_vocab::{xsd, xsd_names};
+use fluree_vocab::namespaces::{FLUREE_DB, XSD};
+use fluree_vocab::{fluree, xsd, xsd_names};
+use std::sync::Arc;
 
 use super::{LowerError, LoweringContext, Result};
 
@@ -109,20 +110,20 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
 
     pub(super) fn lower_iri(&mut self, iri: &Iri) -> Result<Term> {
         let full_iri = self.expand_iri(iri)?;
-        let sid = self
-            .encoder
-            .encode_iri(&full_iri)
-            .ok_or_else(|| LowerError::unknown_namespace(&full_iri, iri.span))?;
-        Ok(Term::Sid(sid))
+        if let Some(sid) = self.encoder.encode_iri_strict(&full_iri) {
+            Ok(Term::Sid(sid))
+        } else {
+            Ok(Term::Iri(Arc::from(full_iri)))
+        }
     }
 
     pub(super) fn lower_iri_ref(&mut self, iri: &Iri) -> Result<Ref> {
         let full_iri = self.expand_iri(iri)?;
-        let sid = self
-            .encoder
-            .encode_iri(&full_iri)
-            .ok_or_else(|| LowerError::unknown_namespace(&full_iri, iri.span))?;
-        Ok(Ref::Sid(sid))
+        if let Some(sid) = self.encoder.encode_iri_strict(&full_iri) {
+            Ok(Ref::Sid(sid))
+        } else {
+            Ok(Ref::Iri(Arc::from(full_iri)))
+        }
     }
 
     fn lower_literal(&self, lit: &Literal) -> Result<Term> {
@@ -236,6 +237,18 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 })?;
                 Ok(FlakeValue::YearMonthDuration(Box::new(d)))
             }
+            fluree::EMBEDDING_VECTOR => {
+                // Parse JSON array string "[0.1, 0.2, ...]" into Vec<f64>
+                let arr: Vec<f64> = serde_json::from_str(value).map_err(|e| {
+                    LowerError::invalid_literal(
+                        value,
+                        "f:embeddingVector",
+                        e.to_string(),
+                        datatype.span,
+                    )
+                })?;
+                Ok(FlakeValue::Vector(arr))
+            }
             _ => {
                 // Default to string for unknown datatypes
                 Ok(FlakeValue::String(value.to_string()))
@@ -324,12 +337,15 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         Sid::new(XSD, xsd_names::DECIMAL),
                     ))
                 }
-                LiteralValue::Typed { value, .. } => {
-                    // For typed literals in VALUES, treat as string
-                    Ok(Binding::lit(
-                        FlakeValue::String(value.to_string()),
-                        Sid::new(XSD, xsd_names::STRING),
-                    ))
+                LiteralValue::Typed { value, datatype } => {
+                    let fv = self.lower_typed_literal(value, datatype)?;
+                    let dt_iri = self.expand_iri(datatype)?;
+                    let dt_sid = if dt_iri == fluree::EMBEDDING_VECTOR {
+                        Sid::new(FLUREE_DB, "vector")
+                    } else {
+                        Sid::new(XSD, xsd_names::STRING)
+                    };
+                    Ok(Binding::lit(fv, dt_sid))
                 }
             },
             SparqlTerm::Var(_) => {

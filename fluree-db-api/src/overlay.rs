@@ -28,6 +28,10 @@ impl CompositeOverlay {
 }
 
 impl OverlayProvider for CompositeOverlay {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn epoch(&self) -> u64 {
         self.epoch
     }

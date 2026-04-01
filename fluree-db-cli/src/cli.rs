@@ -474,6 +474,25 @@ pub enum Commands {
         ledger: Option<String>,
     },
 
+    /// Publish a local ledger to a remote server (create + push all commits)
+    ///
+    /// Creates the ledger on the remote if it doesn't exist, pushes all local
+    /// commits, and configures upstream tracking for subsequent push/pull.
+    ///
+    /// Usage:
+    ///   fluree publish <remote> [ledger]
+    Publish {
+        /// Remote name (e.g., "origin")
+        remote: String,
+
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// Remote ledger name (defaults to local ledger name)
+        #[arg(long)]
+        remote_name: Option<String>,
+    },
+
     /// Clone a ledger from a remote server (downloads all commits and indexes)
     ///
     /// Usage:

@@ -1766,8 +1766,9 @@ Returns simplified nameservice-only metadata:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `realtime_property_details` | boolean | false | Compute live property stats (slower) |
-| `include_property_datatypes` | boolean | false | Include datatype info for properties |
+| `realtime_property_details` | boolean | true | When `false`, use the lighter fast novelty-aware stats path instead of the default full lookup-backed path |
+| `include_property_datatypes` | boolean | true | Include datatype info for properties |
+| `include_property_estimates` | boolean | false | Include index-derived NDV/selectivity estimates for properties |
 
 **Status Codes:**
 - `200 OK` - Ledger found

@@ -111,9 +111,15 @@ where
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
             let (commit_cids, ledger_split_mode) = {
+                const INFO_PROGRESS_EVERY: usize = 500;
+                const DEBUG_PROGRESS_EVERY: usize = 100;
+
                 let mut cids = Vec::new();
                 let mut current = Some(head_commit_id.clone());
                 let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
+                let walk_started = std::time::Instant::now();
+                let mut head_t: Option<i64> = None;
+                let mut genesis_t: Option<i64> = None;
 
                 while let Some(cid) = current {
                     let bytes = content_store
@@ -126,11 +132,39 @@ where
                     if let Some(mode) = envelope.ns_split_mode {
                         split_mode = mode;
                     }
+                    if head_t.is_none() {
+                        head_t = Some(envelope.t);
+                    }
+                    genesis_t = Some(envelope.t);
                     current = envelope.previous_id().cloned();
                     cids.push(cid);
+
+                    let walked = cids.len();
+                    if walked % INFO_PROGRESS_EVERY == 0 {
+                        tracing::info!(
+                            commits_walked = walked,
+                            current_t = envelope.t,
+                            elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                            "Phase A progress: walked commit chain"
+                        );
+                    } else if walked % DEBUG_PROGRESS_EVERY == 0 {
+                        tracing::debug!(
+                            commits_walked = walked,
+                            current_t = envelope.t,
+                            elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                            "Phase A progress: walked commit chain"
+                        );
+                    }
                 }
 
                 cids.reverse(); // chronological order (genesis first)
+                tracing::info!(
+                    commits = cids.len(),
+                    genesis_t = ?genesis_t,
+                    head_t = ?head_t,
+                    elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                    "Phase A complete: commit chain collected"
+                );
                 (cids, split_mode)
             };
             drop(_span_a);
@@ -170,6 +204,7 @@ where
             let mut total_commit_size = 0u64;
             let mut total_asserts = 0u64;
             let mut total_retracts = 0u64;
+            let resolve_started = std::time::Instant::now();
 
             for (i, cid) in commit_cids.iter().enumerate() {
                 // If chunk is non-empty and near budget, flush before processing
@@ -205,6 +240,16 @@ where
                     chunk_flakes = chunk.flake_count(),
                     "commit resolved into chunk"
                 );
+                if (i + 1) % 500 == 0 {
+                    tracing::info!(
+                        commits_resolved = i + 1,
+                        total_commits = commit_cids.len(),
+                        t = resolved.t,
+                        chunk_flakes = chunk.flake_count(),
+                        elapsed_ms = resolve_started.elapsed().as_millis() as u64,
+                        "Phase B progress: resolved commits into chunks"
+                    );
+                }
 
                 // Post-commit flush check.
                 if chunk.flake_count() >= chunk_max_flakes {
@@ -576,7 +621,10 @@ where
                     leaf_target_rows: config.leaflet_rows * config.leaflets_per_leaf,
                     zstd_level: 1,
                     run_budget_bytes: config.run_budget_bytes,
-                    progress: None,
+                    worker_count: 1,
+                    remap_progress: None,
+                    build_progress: None,
+                    stage_marker: None,
                 };
 
                 let v3_result = crate::build_indexes_from_remapped_commits(
@@ -701,57 +749,11 @@ where
                 use fluree_db_core::index_stats as is;
                 use fluree_db_core::{ClassPropertyUsage, ClassRefCount, ClassStatEntry};
 
-                // Derive deprecated SID-keyed PropertyStatEntry from per-graph data.
-                // Aggregate across graphs by p_id.
-                struct PropAgg {
-                    count: u64,
-                    ndv_values: u64,
-                    ndv_subjects: u64,
-                    last_modified_t: i64,
-                    datatypes: Vec<(u8, u64)>,
-                }
-                let mut agg: std::collections::HashMap<u32, PropAgg> =
-                    std::collections::HashMap::new();
-                for g in &id_stats_result.graphs {
-                    for p in &g.properties {
-                        let e = agg.entry(p.p_id).or_insert(PropAgg {
-                            count: 0,
-                            ndv_values: 0,
-                            ndv_subjects: 0,
-                            last_modified_t: 0,
-                            datatypes: Vec::new(),
-                        });
-                        e.count += p.count;
-                        e.ndv_values = e.ndv_values.max(p.ndv_values);
-                        e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
-                        e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
-                        for &(dt, cnt) in &p.datatypes {
-                            if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
-                                existing.1 += cnt;
-                            } else {
-                                e.datatypes.push((dt, cnt));
-                            }
-                        }
-                    }
-                }
-                let properties: Vec<is::PropertyStatEntry> = agg
-                    .into_iter()
-                    .map(|(p_id, pa)| {
-                        let iri = shared.predicates.resolve(p_id).unwrap_or("");
-                        let (ns, name) = match trie_for_stats.longest_match(iri) {
-                            Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
-                            None => (0u16, iri.to_string()),
-                        };
-                        is::PropertyStatEntry {
-                            sid: (ns, name),
-                            count: pa.count,
-                            ndv_values: pa.ndv_values,
-                            ndv_subjects: pa.ndv_subjects,
-                            last_modified_t: pa.last_modified_t,
-                            datatypes: pa.datatypes,
-                        }
-                    })
-                    .collect();
+                let properties = crate::stats::aggregate_property_entries_from_graphs(
+                    &id_stats_result.graphs,
+                    &trie_for_stats,
+                    |p_id| shared.predicates.resolve(p_id).map(ToString::to_string),
+                );
 
                 // ---- Class stats (graph-scoped) ----
                 //
@@ -1076,7 +1078,7 @@ where
 
             // Phase F-V3: Upload dicts + assemble FIR6 root.
             let uploaded_dicts =
-                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes)
+                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes, false)
                     .instrument(tracing::debug_span!("upload_dicts_v3"))
                     .await?;
 

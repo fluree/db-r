@@ -178,6 +178,18 @@ Response:
 
 For byte-level novelty size and indexing trigger decisions, see the `indexing` block returned by transaction and replication endpoints (e.g. `POST /push/<ledger>`), documented in [API Endpoints](../api/endpoints.md).
 
+### Key Log Messages
+
+At `INFO`, background indexing now emits coarse-grained progress logs that make it easier to distinguish:
+
+- request queued vs. worker started
+- current wait status while `trigger_index()` is blocked
+- incremental vs. rebuild path selection
+- commit-chain walking progress
+- commit resolution progress and phase completion
+
+At `DEBUG`, the same wait and commit-walk paths emit more frequent progress updates for incident debugging without changing behavior.
+
 ### Health Indicators
 
 **Healthy:**

@@ -152,6 +152,16 @@ async fn policy_class_survives_indexing() {
                     1,
                     "pre-index: only Alice's SSN should be visible, got: {jsonld:#?}"
                 );
+
+                let row_str = rows[0].to_string();
+                assert!(
+                    row_str.contains("111-11-1111"),
+                    "pre-index: returned row should contain Alice's SSN (111-11-1111), got: {row_str}"
+                );
+                assert!(
+                    !row_str.contains("222-22-2222"),
+                    "pre-index: returned row must NOT contain Bob's SSN (222-22-2222), got: {row_str}"
+                );
             }
 
             // Index + reload
@@ -198,6 +208,16 @@ async fn policy_class_survives_indexing() {
                     rows.len(),
                     1,
                     "post-index: policy enforcement must survive indexing — only Alice's SSN should be visible, got: {jsonld:#?}"
+                );
+
+                let row_str = rows[0].to_string();
+                assert!(
+                    row_str.contains("111-11-1111"),
+                    "post-index: returned row should contain Alice's SSN (111-11-1111), got: {row_str}"
+                );
+                assert!(
+                    !row_str.contains("222-22-2222"),
+                    "post-index: returned row must NOT contain Bob's SSN (222-22-2222), got: {row_str}"
                 );
             }
         })

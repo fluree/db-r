@@ -1732,7 +1732,7 @@ fn make_first_scan(
     group_by: &[VarId],
 ) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
-    let index_hint = scan_index_hint_for_triple(tp, group_by);
+    let index_hint = scan_index_hint_for_triple(tp, group_by, &inline_ops);
     Box::new(crate::binary_scan::ScanOperator::new_with_emit_and_index(
         tp.clone(),
         obj_bounds,
@@ -1818,7 +1818,15 @@ fn emit_mask_for_triple(
 }
 
 #[inline]
-fn scan_index_hint_for_triple(tp: &TriplePattern, group_by: &[VarId]) -> Option<IndexType> {
+fn scan_index_hint_for_triple(
+    tp: &TriplePattern,
+    group_by: &[VarId],
+    inline_ops: &[InlineOperator],
+) -> Option<IndexType> {
+    if let Some(hint) = crate::binary_scan::preferred_index_hint_for_prefix_filters(tp, inline_ops)
+    {
+        return Some(hint);
+    }
     if group_by.len() != 1 {
         return None;
     }
@@ -3087,5 +3095,66 @@ mod tests {
         assert!(schema.contains(&s));
         assert!(schema.contains(&age));
         assert!(schema.contains(&y));
+    }
+
+    #[test]
+    fn test_scan_index_hint_prefers_opst_for_prefix_filter() {
+        let tp = TriplePattern::new(
+            Ref::Var(VarId(0)),
+            Ref::Sid(fluree_db_core::Sid::new(100, "name")),
+            Term::Var(VarId(1)),
+        );
+        let filter = InlineOperator::Filter(PreparedBoolExpression::new(Expression::call(
+            crate::ir::Function::StrStarts,
+            vec![
+                Expression::Var(VarId(1)),
+                Expression::Const(FilterValue::String("Ali".to_string())),
+            ],
+        )));
+
+        let hint = scan_index_hint_for_triple(&tp, &[VarId(1)], &[filter]);
+        assert_eq!(hint, Some(IndexType::Opst));
+    }
+
+    #[test]
+    fn test_scan_index_hint_prefers_opst_for_str_wrapper_with_string_dtc() {
+        let tp = TriplePattern::with_dt(
+            Ref::Var(VarId(0)),
+            Ref::Sid(fluree_db_core::Sid::new(100, "name")),
+            Term::Var(VarId(1)),
+            fluree_db_core::Sid::new(
+                fluree_vocab::namespaces::XSD,
+                fluree_vocab::xsd_names::STRING,
+            ),
+        );
+        let filter = InlineOperator::Filter(PreparedBoolExpression::new(Expression::call(
+            crate::ir::Function::Regex,
+            vec![
+                Expression::call(crate::ir::Function::Str, vec![Expression::Var(VarId(1))]),
+                Expression::Const(FilterValue::String("^Ali".to_string())),
+            ],
+        )));
+
+        let hint = scan_index_hint_for_triple(&tp, &[], &[filter]);
+        assert_eq!(hint, Some(IndexType::Opst));
+    }
+
+    #[test]
+    fn test_scan_index_hint_rejects_str_wrapper_without_string_dtc() {
+        let tp = TriplePattern::new(
+            Ref::Var(VarId(0)),
+            Ref::Sid(fluree_db_core::Sid::new(100, "name")),
+            Term::Var(VarId(1)),
+        );
+        let filter = InlineOperator::Filter(PreparedBoolExpression::new(Expression::call(
+            crate::ir::Function::Regex,
+            vec![
+                Expression::call(crate::ir::Function::Str, vec![Expression::Var(VarId(1))]),
+                Expression::Const(FilterValue::String("^Ali".to_string())),
+            ],
+        )));
+
+        let hint = scan_index_hint_for_triple(&tp, &[], &[filter]);
+        assert_eq!(hint, None);
     }
 }

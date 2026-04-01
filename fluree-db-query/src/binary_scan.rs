@@ -17,26 +17,29 @@ use fluree_db_binary_index::{
     resolve_overlay_ops, sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView,
     BinaryIndexStore, ColumnBatch, ColumnProjection, OverlayOp,
 };
-use fluree_db_core::o_type::OType;
+use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
     dt_compatible, range_with_overlay, Flake, FlakeMeta, FlakeValue, GraphId, IndexType,
     LedgerSnapshot, NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest,
-    Sid,
+    RuntimePredicateId, RuntimeSmallDicts, Sid,
 };
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::fast_path_common::contiguous_id_range;
 use crate::ir::{Expression, Function};
 use crate::object_binding::{late_materialized_object_binding, materialized_object_binding};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
 use crate::sid_iri;
+use crate::stats_cache::cached_stats_view_for_db;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
+use fluree_vocab::{namespaces, rdf_names, xsd_names};
 
 // ============================================================================
 // Shared types and utilities
@@ -182,6 +185,9 @@ pub struct BinaryScanOperator {
     check_p_eq_o: bool,
     /// Range-scan fallback iterator (used when no binary store is attached).
     range_iter: Option<std::vec::IntoIter<RangeFlake>>,
+    /// When a bound subject IRI cannot be translated to a persisted `s_id`,
+    /// keep a widened base scan correct by checking the resolved subject IRI row-by-row.
+    unresolved_bound_subject_iri: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug)]
@@ -206,6 +212,9 @@ enum EncodedPreFilter {
     SubjectEqObjectRef,
     /// `FILTER(?s != ?o)` under two-valued logic: false only when both sides are comparable+equal.
     SubjectNeObjectRef,
+    /// `FILTER(STRSTARTS(?o, "..."))` or anchored literal `REGEX(?o, "^...")`
+    /// on dictionary-backed string objects.
+    ObjectStringPrefix { id_ranges: Arc<[(u32, u32)]> },
 }
 
 impl EncodedPreFilter {
@@ -230,6 +239,16 @@ impl EncodedPreFilter {
                     || o_type == fluree_db_core::o_type::OType::BLANK_NODE.as_u16();
                 !(is_ref && s_id == o_key)
             }
+            EncodedPreFilter::ObjectStringPrefix { id_ranges } => {
+                let ot = OType::from_u16(o_type);
+                if ot.decode_kind() != DecodeKind::StringDict {
+                    return false;
+                }
+                let Ok(str_id) = u32::try_from(o_key) else {
+                    return false;
+                };
+                range_contains(id_ranges, str_id)
+            }
         }
     }
 }
@@ -238,6 +257,7 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
     inline_ops: &[InlineOperator],
     pattern: &TriplePattern,
     store: &BinaryIndexStore,
+    allow_string_prefix_pushdown: bool,
 ) -> (Vec<EncodedPreFilter>, Vec<InlineOperator>) {
     use crate::ir::{Expression, FilterValue, Function};
 
@@ -261,6 +281,22 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
             pruned.push(op.clone());
             continue;
         };
+        if allow_string_prefix_pushdown {
+            if let Some(prefix) =
+                extract_object_string_prefix(expr.expr(), obj_var, pattern.dtc.as_ref())
+            {
+                match build_prefix_id_ranges(store, prefix.as_ref()) {
+                    Ok(id_ranges) => {
+                        out.push(EncodedPreFilter::ObjectStringPrefix { id_ranges });
+                        continue;
+                    }
+                    Err(_) => {
+                        pruned.push(op.clone());
+                        continue;
+                    }
+                }
+            }
+        }
         if args.len() == 1 {
             // FILTER(ISBLANK(?o))
             if *func == Function::IsBlank {
@@ -333,6 +369,154 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
         }
     }
     (out, pruned)
+}
+
+fn string_literal_str_wrapper_safe(dtc: Option<&DatatypeConstraint>) -> bool {
+    match dtc {
+        Some(DatatypeConstraint::LangTag(_)) => true,
+        Some(DatatypeConstraint::Explicit(dt)) => {
+            (dt.namespace_code == namespaces::XSD && dt.name_str() == xsd_names::STRING)
+                || (dt.namespace_code == namespaces::RDF && dt.name_str() == rdf_names::LANG_STRING)
+        }
+        None => false,
+    }
+}
+
+fn object_prefix_input_matches(expr: &Expression, obj_var: VarId, allow_str_wrapper: bool) -> bool {
+    match expr {
+        Expression::Var(v) => *v == obj_var,
+        Expression::Call { func, args }
+            if allow_str_wrapper
+                && *func == Function::Str
+                && args.len() == 1
+                && matches!(&args[0], Expression::Var(v) if *v == obj_var) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+fn extract_object_string_prefix(
+    expr: &Expression,
+    obj_var: Option<VarId>,
+    pattern_dtc: Option<&DatatypeConstraint>,
+) -> Option<Arc<str>> {
+    use crate::ir::{FilterValue, Function};
+
+    let ov = obj_var?;
+    let allow_str_wrapper = string_literal_str_wrapper_safe(pattern_dtc);
+    let is_object_input = |e: &Expression| object_prefix_input_matches(e, ov, allow_str_wrapper);
+
+    match expr {
+        Expression::Call { func, args } if *func == Function::StrStarts && args.len() == 2 => {
+            if !is_object_input(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(prefix)) = &args[1] else {
+                return None;
+            };
+            (!prefix.is_empty()).then(|| Arc::from(prefix.as_str()))
+        }
+        Expression::Call { func, args } if *func == Function::Regex => {
+            if args.len() != 2 && args.len() != 3 {
+                return None;
+            }
+            if !is_object_input(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(pattern)) = &args[1] else {
+                return None;
+            };
+            if args.len() == 3 {
+                let Expression::Const(FilterValue::String(flags)) = &args[2] else {
+                    return None;
+                };
+                if !flags.is_empty() {
+                    return None;
+                }
+            }
+            anchored_literal_regex_prefix(pattern)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn preferred_index_hint_for_prefix_filters(
+    pattern: &TriplePattern,
+    inline_ops: &[InlineOperator],
+) -> Option<IndexType> {
+    if !pattern.p_bound() || pattern.s_bound() {
+        return None;
+    }
+    let Term::Var(ov) = &pattern.o else {
+        return None;
+    };
+    let obj_var = Some(*ov);
+
+    inline_ops
+        .iter()
+        .any(|op| match op {
+            InlineOperator::Filter(expr) => {
+                extract_object_string_prefix(expr.expr(), obj_var, pattern.dtc.as_ref()).is_some()
+            }
+            InlineOperator::Bind { .. } => false,
+        })
+        .then_some(IndexType::Opst)
+}
+
+fn anchored_literal_regex_prefix(pattern: &str) -> Option<Arc<str>> {
+    let prefix = pattern.strip_prefix('^')?;
+    if prefix.is_empty() {
+        return None;
+    }
+    if prefix.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'+'
+                | b'*'
+                | b'?'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'\\'
+                | b'^'
+                | b'$'
+        )
+    }) {
+        return None;
+    }
+    Some(Arc::from(prefix))
+}
+
+fn build_prefix_id_ranges(
+    store: &BinaryIndexStore,
+    prefix: &str,
+) -> std::io::Result<Arc<[(u32, u32)]>> {
+    let ids = store.find_strings_by_prefix(prefix)?;
+    if ids.is_empty() {
+        return Ok(Arc::from(Vec::<(u32, u32)>::new()));
+    }
+    let ranges = contiguous_id_range(&ids).map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(Arc::from(ranges.into_boxed_slice()))
+}
+
+fn range_contains(ranges: &[(u32, u32)], value: u32) -> bool {
+    ranges
+        .binary_search_by(|(start, end)| {
+            if value < *start {
+                std::cmp::Ordering::Greater
+            } else if value > *end {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 impl BinaryScanOperator {
@@ -412,6 +596,7 @@ impl BinaryScanOperator {
             check_s_eq_p,
             check_p_eq_o,
             range_iter: None,
+            unresolved_bound_subject_iri: None,
         }
     }
 
@@ -463,6 +648,17 @@ impl BinaryScanOperator {
             };
             let flake = rf.flake;
             let ledger_alias = rf.ledger_alias;
+
+            if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
+                let subject_iri = ledger_alias
+                    .as_ref()
+                    .and_then(|alias| ctx.decode_sid_in_ledger(&flake.s, alias.as_ref()))
+                    .or_else(|| ctx.snapshot.decode_sid(&flake.s))
+                    .unwrap_or_else(|| flake.s.to_string());
+                if subject_iri != target_iri.as_ref() {
+                    continue;
+                }
+            }
 
             // Repeated-variable checks.
             if self.check_s_eq_p && flake.s != flake.p {
@@ -724,13 +920,24 @@ impl BinaryScanOperator {
 
     /// Build a `BinaryFilter` from bound pattern terms.
     fn build_filter_from_snapshot_sids(
+        snapshot: &LedgerSnapshot,
+        pattern: &TriplePattern,
         store: &BinaryIndexStore,
         s_sid: &Option<Sid>,
         p_sid: &Option<Sid>,
     ) -> std::io::Result<BinaryFilter> {
-        let s_id = match s_sid.as_ref() {
-            Some(sid) => sid_iri::sid_to_store_s_id(store, sid)?,
-            None => None,
+        let s_id = match (&pattern.s, s_sid.as_ref()) {
+            (Ref::Iri(iri), _) => store.find_subject_id(iri)?,
+            (Ref::Sid(query_sid), Some(sid)) => {
+                if let Some(s_id) = sid_iri::sid_to_store_s_id(store, sid)? {
+                    Some(s_id)
+                } else if let Some(iri) = snapshot.decode_sid(query_sid) {
+                    store.find_subject_id(&iri)?
+                } else {
+                    None
+                }
+            }
+            _ => None,
         };
         let p_id = match p_sid.as_ref() {
             Some(sid) => sid_iri::sid_to_store_p_id(store, sid),
@@ -755,7 +962,11 @@ impl BinaryScanOperator {
             .store()
             .resolve_subject_iri(s_id)
             .map_err(|e| QueryError::Internal(format!("resolve s_id={s_id}: {e}")))?;
-        let sid = self.store().encode_iri(&iri);
+        let sid = self
+            .store()
+            .find_subject_sid(&iri)
+            .map_err(|e| QueryError::Internal(format!("find_subject_sid: {e}")))?
+            .unwrap_or_else(|| self.store().encode_iri(&iri));
         self.sid_cache.insert(s_id, sid.clone());
         Ok(sid)
     }
@@ -880,7 +1091,8 @@ impl BinaryScanOperator {
             Arc::clone(&store_arc),
             self.g_id,
             dict_novelty_arc.clone(),
-        );
+        )
+        .with_namespace_codes_fallback(ctx.and_then(|c| c.namespace_codes_fallback.clone()));
         // DictOverlay is no longer needed here for decoding — BinaryGraphView
         // handles watermark routing internally. DictOverlay is still used for
         // overlay translation (translate_overlay_flakes) in BinaryScanOperator::open.
@@ -935,6 +1147,15 @@ impl BinaryScanOperator {
             // Enforce datatype constraints before decoding into bindings.
             if !self.matches_datatype_constraint(o_type) {
                 continue;
+            }
+
+            if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
+                let subject_iri = view
+                    .resolve_subject_iri(s_id)
+                    .map_err(|e| QueryError::Internal(format!("resolve_subject_iri: {e}")))?;
+                if subject_iri != target_iri.as_ref() {
+                    continue;
+                }
             }
 
             // Decode object when needed:
@@ -1204,10 +1425,27 @@ fn build_match_val_for_snapshot(
 ) -> Result<RangeMatch> {
     let mut match_val = RangeMatch::new();
 
+    let reencode_iri_subject = |iri: &Arc<str>| -> Result<Option<Sid>> {
+        if let Some(store) = ctx.binary_store.as_deref() {
+            if let Some(sid) = store
+                .find_subject_sid(iri.as_ref())
+                .map_err(|e| QueryError::Internal(format!("find_subject_sid: {e}")))?
+            {
+                return Ok(Some(sid));
+            }
+        }
+        Ok(snapshot.encode_iri(iri))
+    };
+
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
         if let Some(iri) = ctx.snapshot.decode_sid(sid) {
+            if let Some(store) = ctx.binary_store.as_deref() {
+                if let Ok(Some(persisted_sid)) = store.find_subject_sid(&iri) {
+                    return Some(persisted_sid);
+                }
+            }
             snapshot.encode_iri(&iri)
         } else {
             // If the SID can't be decoded (namespace code missing), preserve the
@@ -1221,7 +1459,7 @@ fn build_match_val_for_snapshot(
     match &pattern.s {
         Ref::Sid(s) => match_val.s = reencode_sid(s),
         Ref::Var(_) => {}
-        Ref::Iri(iri) => match_val.s = snapshot.encode_iri(iri),
+        Ref::Iri(iri) => match_val.s = reencode_iri_subject(iri)?,
     }
 
     match &pattern.p {
@@ -1234,7 +1472,7 @@ fn build_match_val_for_snapshot(
         Term::Sid(o) => match_val.o = reencode_sid(o).map(FlakeValue::Ref),
         Term::Value(v) => match_val.o = Some(v.clone()),
         Term::Var(_) => {}
-        Term::Iri(iri) => match_val.o = snapshot.encode_iri(iri).map(FlakeValue::Ref),
+        Term::Iri(iri) => match_val.o = reencode_iri_subject(iri)?.map(FlakeValue::Ref),
     }
 
     Ok(match_val)
@@ -1320,8 +1558,14 @@ impl Operator for BinaryScanOperator {
         // by translating through full IRIs into store namespace space.
         let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
         self.bound_o = o_val;
-        let mut filter = Self::build_filter_from_snapshot_sids(store_ref, &s_sid, &p_sid)
-            .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
+        let mut filter = Self::build_filter_from_snapshot_sids(
+            ctx.snapshot,
+            &self.pattern,
+            store_ref,
+            &s_sid,
+            &p_sid,
+        )
+        .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         tracing::debug!(
             ?self.pattern,
             s_bound = s_sid.is_some(),
@@ -1330,6 +1574,16 @@ impl Operator for BinaryScanOperator {
             ?filter.p_id,
             "BinaryScanOperator::open"
         );
+
+        self.unresolved_bound_subject_iri = if s_sid.is_some() && filter.s_id.is_none() {
+            match &self.pattern.s {
+                Ref::Iri(iri) => Some(Arc::clone(iri)),
+                Ref::Sid(sid) => ctx.snapshot.decode_sid(sid).map(Arc::from),
+                Ref::Var(_) => None,
+            }
+        } else {
+            None
+        };
 
         // Bound-object fast path: if the triple pattern has a constant object, encode it into
         // (o_type, o_key) so the cursor can seek directly to the relevant leaf range.
@@ -1344,8 +1598,25 @@ impl Operator for BinaryScanOperator {
             let lang = dtc.and_then(|d| d.lang_tag());
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
+            let stats_view = cached_stats_view_for_db(
+                fluree_db_core::GraphDbRef::new(ctx.snapshot, self.g_id, ctx.overlay(), ctx.to_t)
+                    .with_runtime_small_dicts_opt(ctx.runtime_small_dicts),
+                self.store.as_ref(),
+            );
+            let inferred_dt_sid = if dt_sid.is_none() && lang.is_none() {
+                filter.p_id.and_then(|p_id| {
+                    infer_exact_datatype_sid_from_stats(
+                        stats_view.as_deref(),
+                        self.g_id,
+                        RuntimePredicateId::from_u32(p_id),
+                        bound_o,
+                    )
+                })
+            } else {
+                None
+            };
 
-            let encoded = match (dt_sid, lang) {
+            let encoded = match (dt_sid.or(inferred_dt_sid.as_ref()), lang) {
                 (Some(dt_sid), lang) => {
                     value_to_otype_okey(bound_o, dt_sid, lang, store_ref, dict_novelty)
                 }
@@ -1391,8 +1662,14 @@ impl Operator for BinaryScanOperator {
         // base index scans. If a SID isn't in the base dictionaries, a range scan can
         // still devolve into a wide base scan. In this case we want an **overlay-only**
         // fallback to return only novelty matches.
-        if s_sid.is_some() && filter.s_id.is_none() || p_sid.is_some() && filter.p_id.is_none() {
+        if p_sid.is_some() && filter.p_id.is_none() {
             return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
+        }
+        if s_sid.is_some() && filter.s_id.is_none() && self.unresolved_bound_subject_iri.is_none() {
+            return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
+        }
+        if self.unresolved_bound_subject_iri.is_some() && filter.p_id.is_some() {
+            self.index = IndexType::Psot;
         }
 
         let order = index_type_to_sort_order(self.index);
@@ -1420,7 +1697,7 @@ impl Operator for BinaryScanOperator {
             return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
         };
         let branch: Arc<fluree_db_binary_index::format::branch::BranchManifest> =
-            Arc::new(branch_ref.clone());
+            Arc::clone(branch_ref);
 
         // If this scan has range bounds on the object variable and we're scanning in POST order,
         // narrow the cursor's leaf range by object-key range.
@@ -1530,6 +1807,7 @@ impl Operator for BinaryScanOperator {
                     ctx.overlay(),
                     store_ref,
                     ctx.dict_novelty.as_ref(),
+                    ctx.runtime_small_dicts,
                     ctx.to_t,
                     self.g_id,
                 );
@@ -1618,6 +1896,7 @@ impl Operator for BinaryScanOperator {
             &self.inline_ops,
             &self.pattern,
             store_ref,
+            ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0,
         );
         self.encoded_pre_filters = encoded;
         self.inline_ops = pruned;
@@ -1691,6 +1970,7 @@ impl Operator for BinaryScanOperator {
         self.store = None;
         self.sid_cache.clear();
         self.p_sids.clear();
+        self.unresolved_bound_subject_iri = None;
         self.state = OperatorState::Closed;
     }
 }
@@ -1712,12 +1992,15 @@ pub fn translate_overlay_flakes(
     overlay: &dyn OverlayProvider,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     to_t: i64,
     g_id: GraphId,
 ) -> (Vec<OverlayOp>, EphemeralPredicateMap) {
     let mut ops = Vec::new();
     let mut ephemeral_preds: EphemeralPredicateMap = HashMap::new();
-    let mut next_ephemeral_p_id = store.predicate_count();
+    let mut next_ephemeral_p_id = runtime_small_dicts
+        .map(|dicts| dicts.predicate_count().max(store.predicate_count()))
+        .unwrap_or_else(|| store.predicate_count());
 
     overlay.for_each_overlay_flake(
         g_id,
@@ -1730,6 +2013,7 @@ pub fn translate_overlay_flakes(
             flake,
             store,
             dict_novelty,
+            runtime_small_dicts,
             &mut ephemeral_preds,
             &mut next_ephemeral_p_id,
         ) {
@@ -1757,13 +2041,16 @@ fn translate_overlay_flakes_with_untranslated(
     overlay: &dyn OverlayProvider,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     to_t: i64,
     g_id: GraphId,
 ) -> (Vec<OverlayOp>, Vec<Flake>, HashMap<Sid, u32>) {
     let mut ops = Vec::new();
     let mut untranslated = Vec::new();
     let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
-    let mut next_ephemeral_p_id = store.predicate_count();
+    let mut next_ephemeral_p_id = runtime_small_dicts
+        .map(|dicts| dicts.predicate_count().max(store.predicate_count()))
+        .unwrap_or_else(|| store.predicate_count());
 
     overlay.for_each_overlay_flake(
         g_id,
@@ -1776,6 +2063,7 @@ fn translate_overlay_flakes_with_untranslated(
             flake,
             store,
             dict_novelty,
+            runtime_small_dicts,
             &mut ephemeral_preds,
             &mut next_ephemeral_p_id,
         ) {
@@ -1800,6 +2088,7 @@ pub(crate) fn translate_one_flake_v3_pub(
     flake: &fluree_db_core::Flake,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     ephemeral_preds: &mut HashMap<Sid, u32>,
     next_ephemeral_p_id: &mut u32,
 ) -> std::io::Result<OverlayOp> {
@@ -1813,11 +2102,20 @@ pub(crate) fn translate_one_flake_v3_pub(
     // original Sid (in snapshot namespace space).
     let p_id = match store.sid_to_p_id(&flake.p) {
         Some(id) => id,
-        None => *ephemeral_preds.entry(flake.p.clone()).or_insert_with(|| {
-            let id = *next_ephemeral_p_id;
-            *next_ephemeral_p_id += 1;
-            id
-        }),
+        None => runtime_small_dicts
+            .and_then(|dicts| dicts.predicate_id(&flake.p))
+            .map(|id| {
+                *ephemeral_preds
+                    .entry(flake.p.clone())
+                    .or_insert(id.as_u32())
+            })
+            .unwrap_or_else(|| {
+                *ephemeral_preds.entry(flake.p.clone()).or_insert_with(|| {
+                    let id = *next_ephemeral_p_id;
+                    *next_ephemeral_p_id += 1;
+                    id
+                })
+            }),
     };
 
     // Object value → (o_type, o_key), using flake.dt + lang for proper OType.
@@ -2096,6 +2394,88 @@ pub(crate) fn encode_bound_object_prefilter(
     }
 }
 
+fn infer_exact_datatype_sid_from_stats(
+    stats_view: Option<&fluree_db_core::StatsView>,
+    g_id: GraphId,
+    p_id: RuntimePredicateId,
+    value: &FlakeValue,
+) -> Option<Sid> {
+    let stats = stats_view?.get_graph_property(g_id, p_id)?;
+    let mut tags = stats
+        .datatypes
+        .iter()
+        .filter_map(|(tag, count)| (*count > 0).then_some(*tag))
+        .collect::<Vec<_>>();
+    tags.sort();
+    tags.dedup();
+    if tags.len() != 1 {
+        return None;
+    }
+    datatype_sid_for_untyped_value(value, tags[0])
+}
+
+fn datatype_sid_for_untyped_value(
+    value: &FlakeValue,
+    tag: fluree_db_core::ValueTypeTag,
+) -> Option<Sid> {
+    match value {
+        FlakeValue::Long(_) => match tag {
+            fluree_db_core::ValueTypeTag::INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::LONG => Some(Sid::new(namespaces::XSD, xsd_names::LONG)),
+            fluree_db_core::ValueTypeTag::INT => Some(Sid::new(namespaces::XSD, xsd_names::INT)),
+            fluree_db_core::ValueTypeTag::SHORT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::SHORT))
+            }
+            fluree_db_core::ValueTypeTag::BYTE => Some(Sid::new(namespaces::XSD, xsd_names::BYTE)),
+            fluree_db_core::ValueTypeTag::UNSIGNED_LONG => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_LONG))
+            }
+            fluree_db_core::ValueTypeTag::UNSIGNED_INT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_INT))
+            }
+            fluree_db_core::ValueTypeTag::UNSIGNED_SHORT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_SHORT))
+            }
+            fluree_db_core::ValueTypeTag::UNSIGNED_BYTE => {
+                Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_BYTE))
+            }
+            fluree_db_core::ValueTypeTag::NON_NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_NEGATIVE_INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::POSITIVE_INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::NON_POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_POSITIVE_INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NEGATIVE_INTEGER))
+            }
+            _ => None,
+        },
+        FlakeValue::Double(_) => match tag {
+            fluree_db_core::ValueTypeTag::DOUBLE => {
+                Some(Sid::new(namespaces::XSD, xsd_names::DOUBLE))
+            }
+            fluree_db_core::ValueTypeTag::FLOAT => {
+                Some(Sid::new(namespaces::XSD, xsd_names::FLOAT))
+            }
+            fluree_db_core::ValueTypeTag::DECIMAL => {
+                Some(Sid::new(namespaces::XSD, xsd_names::DECIMAL))
+            }
+            fluree_db_core::ValueTypeTag::INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::INTEGER))
+            }
+            fluree_db_core::ValueTypeTag::LONG => Some(Sid::new(namespaces::XSD, xsd_names::LONG)),
+            fluree_db_core::ValueTypeTag::INT => Some(Sid::new(namespaces::XSD, xsd_names::INT)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Resolve a datatype Sid to its OType constant.
 ///
 /// Reconstructs the IRI from the Sid and matches against well-known XSD types.
@@ -2190,5 +2570,63 @@ pub(crate) fn value_to_otype_okey_simple(
             "unsupported FlakeValue variant for V6 fast-path: {:?}",
             val
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fluree_db_core::{stats_view::GraphPropertyStatData, StatsView, ValueTypeTag};
+
+    #[test]
+    fn infer_exact_datatype_for_integer_family() {
+        let mut stats = StatsView::default();
+        stats.graph_properties.insert(
+            0,
+            HashMap::from([(
+                RuntimePredicateId::from_u32(7),
+                GraphPropertyStatData {
+                    count: 10,
+                    ndv_values: 0,
+                    ndv_subjects: 0,
+                    datatypes: vec![(ValueTypeTag::INT, 10)],
+                },
+            )]),
+        );
+
+        let inferred = infer_exact_datatype_sid_from_stats(
+            Some(&stats),
+            0,
+            RuntimePredicateId::from_u32(7),
+            &FlakeValue::Long(42),
+        )
+        .expect("datatype");
+        assert_eq!(inferred.namespace_code, namespaces::XSD);
+        assert_eq!(inferred.name, xsd_names::INT.into());
+    }
+
+    #[test]
+    fn does_not_infer_when_multiple_datatypes_present() {
+        let mut stats = StatsView::default();
+        stats.graph_properties.insert(
+            0,
+            HashMap::from([(
+                RuntimePredicateId::from_u32(7),
+                GraphPropertyStatData {
+                    count: 10,
+                    ndv_values: 0,
+                    ndv_subjects: 0,
+                    datatypes: vec![(ValueTypeTag::INT, 5), (ValueTypeTag::LONG, 5)],
+                },
+            )]),
+        );
+
+        assert!(infer_exact_datatype_sid_from_stats(
+            Some(&stats),
+            0,
+            RuntimePredicateId::from_u32(7),
+            &FlakeValue::Long(42),
+        )
+        .is_none());
     }
 }

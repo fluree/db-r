@@ -25,9 +25,17 @@ fluree export [LEDGER] [OPTIONS]
 | `--context-file <FILE>` | Read context from a JSON file. Overrides the ledger's default context. |
 | `--at <TIME>` | Export data as of a specific point in time. Accepts a transaction number (`5`), ISO-8601 datetime (`2024-01-15T10:30:00Z`), or commit CID prefix (`abc123def456`). If omitted, exports at the latest committed time (including data committed but not yet persisted to index). |
 
-## Description
+## Formats
 
-Exports all data from a ledger in the specified format. Output goes to stdout so it can be redirected to a file or piped to other tools.
+### turtle / jsonld (data snapshot)
+
+Exports a point-in-time snapshot of all triples in the ledger. Output goes to stdout.
+
+### ledger (native pack)
+
+Exports the full native ledger — all commits, transaction blobs, indexes, and dictionaries — as a `.flpack` file. This format preserves the complete history and can be imported into a new Fluree instance via `fluree create <name> --from <file>.flpack`.
+
+The `.flpack` format uses the `fluree-pack-v1` binary wire protocol (the same format used by `fluree clone` and `fluree pull` for network transfers).
 
 All formats (Turtle, N-Triples, N-Quads, TriG, JSON-LD) read directly from the binary SPOT index with a novelty overlay, so export always includes the latest committed transactions — even those not yet persisted to index. Memory usage stays constant regardless of dataset size. JSON-LD streams one subject at a time, so memory is O(largest subject), not O(dataset).
 
@@ -227,4 +235,3 @@ let stats = fluree.export("mydb")
 
 - [context](context.md) - Manage default JSON-LD context (prefix map)
 - [query](query.md) - Run custom queries
-- [create](create.md) - Create ledger with `--from` to import

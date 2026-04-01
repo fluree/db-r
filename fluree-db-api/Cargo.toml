@@ -110,6 +110,7 @@ num-bigdecimal = { package = "bigdecimal", version = "0.4" }
 ed25519-dalek = "2.1"
 criterion = "0.5"
 rand = { workspace = true }
+fluree-db-nameservice-sync = { path = "../fluree-db-nameservice-sync" }
 
 [[test]]
 name = "it_graph_source_r2rml"

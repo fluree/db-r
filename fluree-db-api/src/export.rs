@@ -80,6 +80,7 @@ fn apply_time_travel(
             overlay,
             store,
             config.dict_novelty,
+            None, // no runtime_small_dicts during export
             config.to_t,
             config.g_id,
         );
@@ -341,7 +342,7 @@ pub fn export_graph_turtle<W: Write>(
         Some(b) => b,
         None => return Ok(ExportStats::default()),
     };
-    let branch = Arc::new(branch_ref.clone());
+    let branch = Arc::clone(branch_ref);
 
     let filter = BinaryFilter::default();
     let projection = ColumnProjection {
@@ -518,7 +519,7 @@ pub fn export_graph_jsonld<W: Write>(
         Some(b) => b,
         None => return Ok(ExportStats::default()),
     };
-    let branch = Arc::new(branch_ref.clone());
+    let branch = Arc::clone(branch_ref);
 
     let filter = BinaryFilter::default();
     let projection = ColumnProjection {
@@ -922,7 +923,7 @@ pub fn export_graph_ntriples<W: Write>(
         Some(b) => b,
         None => return Ok(ExportStats::default()), // no data for this graph
     };
-    let branch = Arc::new(branch_ref.clone());
+    let branch = Arc::clone(branch_ref);
 
     let filter = BinaryFilter::default();
     let projection = ColumnProjection {

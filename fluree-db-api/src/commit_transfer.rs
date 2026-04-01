@@ -115,7 +115,7 @@ pub struct PushedHead {
 impl<S, N> Fluree<S, N>
 where
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
-    N: NameService + RefPublisher + Send + Sync,
+    N: NameService + RefPublisher + Send + Sync + 'static,
 {
     pub async fn push_commits_with_handle(
         &self,
@@ -336,6 +336,19 @@ where
         )
         .map_err(|e| e.into_api_error())?;
 
+        let mut new_state = new_state;
+        if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
+            let cache_dir = self.binary_store_cache_dir();
+            // Result unused: load_and_attach mutates new_state in-place
+            let _store = crate::ledger_manager::load_and_attach_binary_store(
+                self.storage(),
+                &mut new_state,
+                &cache_dir,
+                Some(std::sync::Arc::clone(self.leaflet_cache())),
+            )
+            .await?;
+        }
+
         // 8) Compute indexing status from the updated state.
         let indexing_enabled = self.indexing_mode.is_enabled() && self.defaults_indexing_enabled();
         let indexing_needed = new_state.should_reindex(index_config);
@@ -348,6 +361,9 @@ where
             commit_t: final_head.t,
         };
 
+        // Sync binary_store BEFORE replacing state so that concurrent readers
+        // (via snapshot()) never see the new state with a stale binary_store.
+        handle.sync_binary_store_from_state(&new_state).await;
         guard.replace(new_state);
 
         // 9) Trigger background indexing if enabled and needed.
@@ -1478,6 +1494,9 @@ where
             commit_t: final_head.t,
         };
 
+        // Sync binary_store BEFORE replacing state so that concurrent readers
+        // (via snapshot()) never see the new state with a stale binary_store.
+        handle.sync_binary_store_from_state(&new_state).await;
         guard.replace(new_state);
 
         // 10) Trigger background indexing if enabled and needed.

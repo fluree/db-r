@@ -42,6 +42,10 @@ impl<'a> ReasoningOverlay<'a> {
 }
 
 impl<'a> OverlayProvider for ReasoningOverlay<'a> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.base.as_any()
+    }
+
     fn epoch(&self) -> u64 {
         self.epoch
     }

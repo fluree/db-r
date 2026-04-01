@@ -8,6 +8,7 @@
 use crate::error::{ApiError, Result};
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::LedgerSnapshot;
+use fluree_db_ledger::LedgerState;
 
 /// Sync namespace codes between a `BinaryIndexStore` and a `LedgerSnapshot`.
 ///
@@ -66,4 +67,20 @@ pub fn sync_store_and_snapshot_ns(
     }
 
     Ok(())
+}
+
+pub fn binary_store_missing_snapshot_namespaces(state: &LedgerState) -> bool {
+    let Some(store) = state
+        .binary_store
+        .as_ref()
+        .and_then(|te| te.0.downcast_ref::<BinaryIndexStore>())
+    else {
+        return false;
+    };
+
+    state
+        .snapshot
+        .namespaces()
+        .iter()
+        .any(|(code, prefix)| store.namespace_codes().get(code) != Some(prefix))
 }

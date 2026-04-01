@@ -216,3 +216,66 @@ fn extract_binary_store_ref(
     // We only need a shared reference for inspection.
     te.0.downcast_ref::<fluree_db_binary_index::BinaryIndexStore>()
 }
+
+#[tokio::test]
+async fn cached_handle_query_after_new_namespace_commit_still_works() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/ns-new-after-index-cached:main";
+
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+    let tx1 = json!({
+        "@context": { "a": "http://example.org/a/" },
+        "@graph": [
+            { "@id": "a:thing1", "a:val": "seed" }
+        ]
+    });
+    let _ = fluree.insert(ledger0, &tx1).await.unwrap();
+
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex at t=1");
+
+    let handle = fluree.ledger_cached(ledger_id).await.unwrap();
+
+    let tx2 = json!({
+        "@context": { "b": "http://example.org/b/" },
+        "@graph": [
+            { "@id": "b:thing2", "b:name": "Thing 2" }
+        ]
+    });
+    let _out = fluree.stage(&handle).insert(&tx2).execute().await.unwrap();
+
+    // Re-read through the cached handle. This is the path that can retain a
+    // stale binary store after commit-time namespace changes.
+    let cached = handle.snapshot().await.to_ledger_state();
+    let b_prefix = "http://example.org/b/";
+    let Some((&b_code, _)) = cached
+        .snapshot
+        .namespaces()
+        .iter()
+        .find(|(_, p)| p.as_str() == b_prefix)
+    else {
+        panic!("expected cached snapshot to contain namespace prefix {b_prefix}");
+    };
+    let store = extract_binary_store_ref(&cached.binary_store).expect("cached binary store");
+    assert!(
+        store.namespace_codes().contains_key(&b_code),
+        "cached binary store should include newly introduced namespace code {b_code}"
+    );
+
+    let sparql = r#"
+        PREFIX b: <http://example.org/b/>
+        SELECT ?s ?name WHERE {
+          ?s ?p ?o .
+          ?s b:name ?name .
+          FILTER(?o = "Thing 2")
+        }
+    "#;
+    let result = support::query_sparql(&fluree, &cached, sparql)
+        .await
+        .unwrap();
+    let jsonld = result.to_jsonld(&cached.snapshot).expect("to_jsonld");
+
+    assert_eq!(jsonld, json!([["b:thing2", "Thing 2"]]));
+}

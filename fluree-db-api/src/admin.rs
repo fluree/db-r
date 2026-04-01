@@ -18,7 +18,7 @@ use fluree_db_nameservice::{
     AdminPublisher, GraphSourcePublisher, NameService, NsRecord, Publisher,
 };
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 // =============================================================================
 // Drop Mode and Status Types
@@ -793,31 +793,155 @@ where
 
         // Trigger with min_t = commit_t
         let min_t = record.commit_t;
-        let completion = handle.trigger(ledger_id.clone(), min_t).await;
-
-        // Wait with timeout
         let timeout_ms = opts
             .timeout_ms
             .unwrap_or(TriggerIndexOptions::DEFAULT_TIMEOUT_MS);
-        let result =
-            tokio::time::timeout(Duration::from_millis(timeout_ms), completion.wait()).await;
+        info!(
+            ledger_id = %ledger_id,
+            index_t = record.index_t,
+            commit_t = record.commit_t,
+            timeout_ms,
+            "Queueing index request"
+        );
+        let completion = handle.trigger(ledger_id.clone(), min_t).await;
 
-        match result {
-            Ok(IndexOutcome::Completed { index_t, root_id }) => {
-                info!(ledger_id = %ledger_id, index_t = index_t, "Indexing completed");
-                Ok(TriggerIndexResult {
-                    ledger_id,
-                    index_t,
-                    root_id,
-                })
-            }
-            Ok(IndexOutcome::Failed(msg)) => {
-                Err(ApiError::internal(format!("Indexing failed: {}", msg)))
-            }
-            Ok(IndexOutcome::Cancelled) => Err(ApiError::internal("Indexing was cancelled")),
-            Err(_) => {
-                warn!(ledger_id = %ledger_id, timeout_ms = timeout_ms, "Index trigger timed out");
-                Err(ApiError::IndexTimeout(timeout_ms))
+        if let Some(status) = handle.status(&ledger_id).await {
+            info!(
+                ledger_id = %ledger_id,
+                target_t = min_t,
+                phase = ?status.phase,
+                pending_min_t = ?status.pending_min_t,
+                last_index_t = status.last_index_t,
+                waiter_count = status.waiter_count,
+                "Index request queued"
+            );
+        } else {
+            info!(
+                ledger_id = %ledger_id,
+                target_t = min_t,
+                "Index request queued"
+            );
+        }
+
+        // Wait with timeout, emitting periodic status so long-running or stuck
+        // indexing work shows up clearly in INFO/DEBUG logs.
+        info!(
+            ledger_id = %ledger_id,
+            target_t = min_t,
+            timeout_ms,
+            "Waiting for index completion"
+        );
+        let wait_started = std::time::Instant::now();
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let mut wait_fut = Box::pin(completion.wait());
+        let mut info_interval = tokio::time::interval(Duration::from_secs(60));
+        info_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let _ = info_interval.tick().await;
+        let mut debug_interval = tokio::time::interval(Duration::from_secs(15));
+        debug_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let _ = debug_interval.tick().await;
+
+        loop {
+            tokio::select! {
+                outcome = &mut wait_fut => {
+                    match outcome {
+                        IndexOutcome::Completed { index_t, root_id } => {
+                            info!(
+                                ledger_id = %ledger_id,
+                                index_t = index_t,
+                                elapsed_ms = wait_started.elapsed().as_millis() as u64,
+                                "Indexing completed"
+                            );
+                            return Ok(TriggerIndexResult {
+                                ledger_id,
+                                index_t,
+                                root_id,
+                            });
+                        }
+                        IndexOutcome::Failed(msg) => {
+                            warn!(
+                                ledger_id = %ledger_id,
+                                elapsed_ms = wait_started.elapsed().as_millis() as u64,
+                                error = %msg,
+                                "Indexing failed while waiting"
+                            );
+                            return Err(ApiError::internal(format!("Indexing failed: {}", msg)));
+                        }
+                        IndexOutcome::Cancelled => {
+                            warn!(
+                                ledger_id = %ledger_id,
+                                elapsed_ms = wait_started.elapsed().as_millis() as u64,
+                                "Indexing was cancelled while waiting"
+                            );
+                            return Err(ApiError::internal("Indexing was cancelled"));
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    let elapsed_ms = wait_started.elapsed().as_millis() as u64;
+                    if let Some(status) = handle.status(&ledger_id).await {
+                        warn!(
+                            ledger_id = %ledger_id,
+                            timeout_ms,
+                            elapsed_ms,
+                            target_t = min_t,
+                            phase = ?status.phase,
+                            pending_min_t = ?status.pending_min_t,
+                            last_index_t = status.last_index_t,
+                            last_error = ?status.last_error,
+                            waiter_count = status.waiter_count,
+                            "Index trigger timed out"
+                        );
+                    } else {
+                        warn!(
+                            ledger_id = %ledger_id,
+                            timeout_ms,
+                            elapsed_ms,
+                            target_t = min_t,
+                            "Index trigger timed out"
+                        );
+                    }
+                    return Err(ApiError::IndexTimeout(timeout_ms));
+                }
+                _ = info_interval.tick() => {
+                    let elapsed_ms = wait_started.elapsed().as_millis() as u64;
+                    if let Some(status) = handle.status(&ledger_id).await {
+                        info!(
+                            ledger_id = %ledger_id,
+                            elapsed_ms,
+                            target_t = min_t,
+                            phase = ?status.phase,
+                            pending_min_t = ?status.pending_min_t,
+                            last_index_t = status.last_index_t,
+                            last_error = ?status.last_error,
+                            waiter_count = status.waiter_count,
+                            "Still waiting for index completion"
+                        );
+                    } else {
+                        info!(
+                            ledger_id = %ledger_id,
+                            elapsed_ms,
+                            target_t = min_t,
+                            "Still waiting for index completion"
+                        );
+                    }
+                }
+                _ = debug_interval.tick() => {
+                    let elapsed_ms = wait_started.elapsed().as_millis() as u64;
+                    if let Some(status) = handle.status(&ledger_id).await {
+                        debug!(
+                            ledger_id = %ledger_id,
+                            elapsed_ms,
+                            target_t = min_t,
+                            phase = ?status.phase,
+                            pending_min_t = ?status.pending_min_t,
+                            last_index_t = status.last_index_t,
+                            last_error = ?status.last_error,
+                            waiter_count = status.waiter_count,
+                            "Waiting for index completion"
+                        );
+                    }
+                }
             }
         }
     }

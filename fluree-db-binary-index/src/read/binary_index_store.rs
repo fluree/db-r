@@ -17,7 +17,9 @@ use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::GraphId;
-use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, Sid};
+use fluree_db_core::{
+    ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, RuntimeSmallDicts, Sid,
+};
 use fluree_vocab::{geo_names, jsonld_names, namespaces, rdf_names, xsd_names};
 use parking_lot::RwLock;
 
@@ -137,7 +139,7 @@ where
 // ============================================================================
 
 struct GraphIndex {
-    orders: HashMap<RunSortOrder, BranchManifest>,
+    orders: HashMap<RunSortOrder, Arc<BranchManifest>>,
     numbig: HashMap<u32, crate::arena::numbig::NumBigArena>,
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
@@ -237,7 +239,7 @@ impl BinaryIndexStore {
                 spatial: HashMap::new(),
                 fulltext: HashMap::new(),
             });
-            gi.orders.insert(dgo.order, branch);
+            gi.orders.insert(dgo.order, Arc::new(branch));
         }
 
         // Named graphs: fetch FBR3 branch manifests from CAS.
@@ -253,7 +255,7 @@ impl BinaryIndexStore {
                     spatial: HashMap::new(),
                     fulltext: HashMap::new(),
                 });
-                gi.orders.insert(*order, branch);
+                gi.orders.insert(*order, Arc::new(branch));
             }
         }
 
@@ -336,7 +338,11 @@ impl BinaryIndexStore {
     }
 
     /// Get the branch manifest for a graph + sort order.
-    pub fn branch_for_order(&self, g_id: GraphId, order: RunSortOrder) -> Option<&BranchManifest> {
+    pub fn branch_for_order(
+        &self,
+        g_id: GraphId,
+        order: RunSortOrder,
+    ) -> Option<&Arc<BranchManifest>> {
         self.graph_indexes
             .get(&g_id)
             .and_then(|gi| gi.orders.get(&order))
@@ -755,6 +761,9 @@ impl BinaryIndexStore {
                 format!("subject local_id {} not found in ns {}", local_id, ns_code),
             )
         })?;
+        if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
+            return Ok(suffix);
+        }
         let prefix = self.dicts.namespace_codes.get(&ns_code).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1048,28 +1057,61 @@ impl BinaryIndexStore {
             .map(|prefix| format!("{}{}", prefix, sid.name))
     }
 
-    /// Reverse subject lookup: find the u64 s_id for a given IRI.
-    ///
-    /// Uses canonical encoding to build the reverse-tree key,
-    /// matching the encoding used when the reverse dictionary was built.
-    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+    fn reverse_lookup_subject_key(&self, ns_code: u16, suffix: &[u8]) -> io::Result<Option<u64>> {
         match &self.dicts.subject_reverse_tree {
             Some(tree) => {
-                let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
-                let ns_code = self
-                    .dicts
-                    .namespace_reverse
-                    .get(canonical_prefix)
-                    .copied()
-                    .unwrap_or(0);
-                let key = crate::dict::reverse_leaf::subject_reverse_key(
-                    ns_code,
-                    canonical_suffix.as_bytes(),
-                );
+                let key = crate::dict::reverse_leaf::subject_reverse_key(ns_code, suffix);
                 tree.reverse_lookup(&key)
             }
             None => Ok(None),
         }
+    }
+
+    fn find_full_iri_subject_fallback(&self, iri: &str) -> io::Result<Option<(u16, u64)>> {
+        for ns_code in [namespaces::EMPTY, namespaces::OVERFLOW] {
+            if !self.dicts.subject_forward_packs.contains_key(&ns_code) {
+                continue;
+            }
+            if let Some(s_id) = self.reverse_lookup_subject_key(ns_code, iri.as_bytes())? {
+                return Ok(Some((ns_code, s_id)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reverse subject lookup: find the u64 s_id for a given IRI.
+    ///
+    /// Uses canonical encoding when the IRI's canonical prefix is registered.
+    /// If not, it only consults full-IRI subject namespaces that are actually
+    /// present in the persisted dictionaries.
+    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+        if let Some(&ns_code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            if let Some(s_id) =
+                self.reverse_lookup_subject_key(ns_code, canonical_suffix.as_bytes())?
+            {
+                return Ok(Some(s_id));
+            }
+        }
+        Ok(self
+            .find_full_iri_subject_fallback(iri)?
+            .map(|(_ns_code, s_id)| s_id))
+    }
+
+    /// Resolve the exact persisted subject SID for a full IRI, if present.
+    pub fn find_subject_sid(&self, iri: &str) -> io::Result<Option<Sid>> {
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+        if let Some(&ns_code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            if self
+                .reverse_lookup_subject_key(ns_code, canonical_suffix.as_bytes())?
+                .is_some()
+            {
+                return Ok(Some(Sid::new(ns_code, canonical_suffix)));
+            }
+        }
+        Ok(self
+            .find_full_iri_subject_fallback(iri)?
+            .map(|(ns_code, _s_id)| Sid::new(ns_code, iri)))
     }
 
     /// Translate a `Sid` to `p_id` via the predicate reverse map.
@@ -1153,6 +1195,14 @@ impl BinaryIndexStore {
     /// Number of predicates in the persisted dictionary.
     pub fn predicate_count(&self) -> u32 {
         self.dicts.predicates.len()
+    }
+
+    /// Build a runtime predicate/datatype ID layer seeded from the persisted root.
+    pub fn runtime_small_dicts(&self) -> RuntimeSmallDicts {
+        RuntimeSmallDicts::from_seeded_sids(
+            (0..self.predicate_count()).filter_map(|p_id| self.predicate_sid(p_id)),
+            self.dt_sids().iter().cloned(),
+        )
     }
 
     /// Number of strings in the persisted forward dictionary.
@@ -1492,6 +1542,7 @@ pub struct BinaryGraphView {
     store: Arc<BinaryIndexStore>,
     g_id: GraphId,
     dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
 }
 
 impl BinaryGraphView {
@@ -1500,6 +1551,7 @@ impl BinaryGraphView {
             store,
             g_id,
             dict_novelty: None,
+            namespace_codes_fallback: None,
         }
     }
 
@@ -1518,7 +1570,22 @@ impl BinaryGraphView {
             store,
             g_id,
             dict_novelty,
+            namespace_codes_fallback: None,
         }
+    }
+
+    /// Provide snapshot-derived namespace codes for novelty subject decoding when
+    /// the attached store predates a namespace-adding commit.
+    pub fn with_namespace_codes_fallback(
+        mut self,
+        namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
+    ) -> Self {
+        self.namespace_codes_fallback = namespace_codes_fallback;
+        self
+    }
+
+    pub fn namespace_codes_fallback(&self) -> Option<Arc<HashMap<u16, String>>> {
+        self.namespace_codes_fallback.clone()
     }
 
     /// Decode a value from `(o_type, o_key)`. Novelty-aware when `dict_novelty`
@@ -1621,7 +1688,17 @@ impl BinaryGraphView {
                 }
             }
         }
-        let result = self.store.resolve_subject_iri(s_id);
+        let result = self.store.resolve_subject_iri(s_id).or_else(|store_err| {
+            let Some(dn) = self.dict_novelty.as_ref() else {
+                return Err(store_err);
+            };
+            match dn.subjects.resolve_subject(s_id) {
+                Some((ns_code, suffix)) => self
+                    .namespace_prefix(ns_code)
+                    .map(|prefix| format!("{}{}", prefix, suffix)),
+                None => Err(store_err),
+            }
+        });
         if let Err(err) = &result {
             tracing::debug!(
                 g_id = self.g_id,
@@ -1648,7 +1725,11 @@ impl BinaryGraphView {
             }
         }
         let iri = self.store.resolve_subject_iri(s_id)?;
-        Ok(self.store.encode_iri(&iri))
+        if let Some(sid) = self.store.find_subject_sid(&iri)? {
+            Ok(sid)
+        } else {
+            Ok(self.store.encode_iri(&iri))
+        }
     }
 
     pub fn store(&self) -> &BinaryIndexStore {
@@ -1711,11 +1792,22 @@ impl BinaryGraphView {
         }
         // Novel — need full IRI string (prefix + suffix).
         match dn.subjects.resolve_subject(s_id) {
-            Some((ns_code, suffix)) => match self.store.namespace_prefix(ns_code) {
+            Some((ns_code, suffix)) => match self.namespace_prefix(ns_code) {
                 Ok(prefix) => Some(Ok(format!("{}{}", prefix, suffix))),
                 Err(e) => Some(Err(e)),
             },
             None => None, // Not in DictNovelty either — fall through to store
+        }
+    }
+
+    pub fn namespace_prefix(&self, ns_code: u16) -> io::Result<String> {
+        match self.store.namespace_prefix(ns_code) {
+            Ok(prefix) => Ok(prefix),
+            Err(err) => self
+                .namespace_codes_fallback
+                .as_ref()
+                .and_then(|codes| codes.get(&ns_code).cloned())
+                .ok_or(err),
         }
     }
 
@@ -2112,6 +2204,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 
+    use crate::dict::builder;
+    use crate::dict::forward_pack::{encode_forward_pack, KIND_SUBJECT_FWD};
+    use crate::dict::pack_reader::ForwardPackReader;
+    use crate::dict::reader::DictTreeReader;
+    use crate::dict::reverse_leaf::ReverseEntry;
     use crate::format::leaf::LeafWriter;
     use crate::format::run_record_v2::RunRecordV2;
 
@@ -2229,6 +2326,22 @@ mod tests {
         }
     }
 
+    fn build_reverse_reader(entries: Vec<ReverseEntry>) -> DictTreeReader {
+        let result =
+            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES).unwrap();
+
+        let mut leaf_map = HashMap::new();
+        for (leaf_artifact, branch_leaf) in result.leaves.iter().zip(result.branch.leaves.iter()) {
+            leaf_map.insert(branch_leaf.address.clone(), leaf_artifact.bytes.clone());
+        }
+
+        DictTreeReader::from_memory(result.branch, leaf_map)
+    }
+
+    fn make_subject_pack_bytes(entries: &[(u64, &[u8])]) -> Vec<u8> {
+        encode_forward_pack(entries, KIND_SUBJECT_FWD, 0, 256 * 1024).unwrap()
+    }
+
     fn build_test_leaf_bytes() -> Vec<u8> {
         let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
         writer.set_skip_history(true);
@@ -2304,5 +2417,35 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn find_subject_id_uses_full_iri_fallback_when_store_has_it() {
+        let cache_dir = temp_cache_dir();
+        let mut store = empty_store(Arc::new(MemoryContentStore::new()), cache_dir);
+
+        let full_iri = "https://dblp.org/streams/conf/IEEEpact";
+        let s_id = SubjectId::new(namespaces::OVERFLOW, 7).as_u64();
+
+        store.dicts.subject_reverse_tree = Some(build_reverse_reader(vec![ReverseEntry {
+            key: crate::dict::reverse_leaf::subject_reverse_key(
+                namespaces::OVERFLOW,
+                full_iri.as_bytes(),
+            ),
+            id: s_id,
+        }]));
+        store.dicts.subject_forward_packs.insert(
+            namespaces::OVERFLOW,
+            ForwardPackReader::from_memory(vec![Arc::from(
+                make_subject_pack_bytes(&[(7, full_iri.as_bytes())]).into_boxed_slice(),
+            )])
+            .unwrap(),
+        );
+
+        assert_eq!(store.find_subject_id(full_iri).unwrap(), Some(s_id));
+        assert_eq!(
+            store.find_subject_sid(full_iri).unwrap(),
+            Some(Sid::new(namespaces::OVERFLOW, full_iri))
+        );
     }
 }
