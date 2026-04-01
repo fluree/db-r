@@ -7,7 +7,7 @@ use crate::{
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
 use fluree_db_core::DictNovelty;
-use fluree_db_nameservice::{NameServiceError, Publisher};
+use fluree_db_nameservice::{BranchPoint, NameServiceError, NsRecord, Publisher};
 
 impl<S, N> Fluree<S, N>
 where
@@ -70,20 +70,10 @@ where
                     ))
                 })?;
 
-                binary_index_store.augment_namespace_codes(&state.snapshot.namespace_codes);
-
-                // Augment the snapshot's namespace table with codes from
-                // the root. After a rebuild, the root may have namespace
-                // codes that the snapshot (loaded from the commit chain)
-                // doesn't have. Without this, SPARQL result formatting
-                // fails with UnknownNamespace errors.
-                for (code, prefix) in binary_index_store.namespace_codes() {
-                    state
-                        .snapshot
-                        .namespace_codes
-                        .entry(*code)
-                        .or_insert_with(|| prefix.clone());
-                }
+                crate::ns_helpers::sync_store_and_snapshot_ns(
+                    &mut binary_index_store,
+                    &mut state.snapshot,
+                )?;
 
                 // Extract stats from the FIR6 root if present.
                 // Decode FIR6 root metadata once and apply:
@@ -101,13 +91,20 @@ where
                 ));
                 // Re-populate DictNovelty with any already-loaded novelty flakes so
                 // overlay translation (BinaryRangeProvider) can resolve newly-introduced IDs.
+                //
+                // Important: only allocate novelty IDs for entries *not* present in the
+                // persisted dictionaries (canonical IDs must win).
                 if !state.novelty.is_empty() {
                     let novelty = state.novelty.as_ref();
-                    Arc::make_mut(&mut state.dict_novelty).populate_from_flakes_iter(
+                    let dn = Arc::make_mut(&mut state.dict_novelty);
+                    fluree_db_binary_index::dict_novelty_safe::populate_dict_novelty_safe(
+                        dn,
+                        Some(&binary_index_store),
                         novelty
                             .iter_index(fluree_db_core::IndexType::Post)
                             .map(|id| novelty.get_flake(id)),
-                    );
+                    )
+                    .map_err(|e| ApiError::internal(format!("populate_dict_novelty_safe: {e}")))?;
                 }
 
                 // Stats + schema.
@@ -240,5 +237,218 @@ where
 
         info!(ledger_id = %ledger_id, "Ledger created successfully");
         Ok(ledger)
+    }
+
+    /// Create a new branch for a ledger.
+    ///
+    /// Looks up the source branch to capture its current commit state, then
+    /// creates a new [`NsRecord`] for `ledger_name:new_branch` with the commit
+    /// head copied from the source. If the source has an index, the index
+    /// files are copied into the new branch's storage namespace so the branch
+    /// owns its own copy (safe from GC on the source).
+    ///
+    /// Commits are **not** copied — the branch's [`BranchedContentStore`]
+    /// reads historical commits from the source namespace via fallback.
+    ///
+    /// # Errors
+    ///
+    /// - [`ApiError::LedgerExists`] if the branch already exists
+    /// - [`ApiError::NotFound`] if the source branch does not exist
+    pub async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        source_branch: Option<&str>,
+    ) -> Result<NsRecord> {
+        use fluree_db_core::ledger_id::{format_ledger_id, validate_branch_name};
+        use tracing::info;
+
+        validate_branch_name(new_branch).map_err(|e| ApiError::Http {
+            status: 400,
+            message: e.to_string(),
+        })?;
+
+        let source = source_branch.unwrap_or("main");
+        let source_id = format_ledger_id(ledger_name, source);
+        let new_id = format_ledger_id(ledger_name, new_branch);
+
+        info!(ledger_name, new_branch, source, "Creating branch");
+
+        // Look up the source branch to capture its commit state
+        let source_record = self
+            .nameservice
+            .lookup(&source_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(source_id.clone()))?;
+
+        let commit_id = source_record.commit_head_id.clone().ok_or_else(|| {
+            ApiError::internal(format!("Source branch {} has no commit head", source_id))
+        })?;
+
+        let branch_point = BranchPoint {
+            source: source.to_string(),
+            commit_id,
+            t: source_record.commit_t,
+        };
+
+        self.nameservice
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+            .map_err(|e| match e {
+                NameServiceError::LedgerAlreadyExists(a) => ApiError::ledger_exists(a),
+                other => other.into(),
+            })?;
+
+        // Copy the source's index files into the new branch's namespace.
+        // This gives the branch its own copy, safe from GC on the source.
+        if let Some(ref index_cid) = source_record.index_head_id {
+            if let Err(e) = self
+                .copy_index_to_branch(&source_id, &new_id, index_cid)
+                .await
+            {
+                tracing::warn!(
+                    %e, source = %source_id, branch = %new_id,
+                    "failed to copy index to branch; branch will replay from genesis"
+                );
+            } else {
+                // Register the copied index in the new branch's nameservice record
+                self.nameservice
+                    .publish_index(&new_id, source_record.index_t, index_cid)
+                    .await?;
+            }
+        }
+
+        let record = self.nameservice.lookup(&new_id).await?.ok_or_else(|| {
+            ApiError::internal(format!(
+                "Branch {} was created but not found in nameservice",
+                new_id
+            ))
+        })?;
+
+        info!(
+            ledger_name,
+            new_branch, source, "Branch created successfully"
+        );
+        Ok(record)
+    }
+
+    /// Copy index artifacts (excluding dictionaries) from the source branch
+    /// namespace into the target branch namespace.
+    ///
+    /// Copies the index root, fact leaves, branch manifests, and specialty
+    /// arenas (numbig, vector, spatial, fulltext). Dictionary blobs are
+    /// **not** copied — they are stored globally per ledger (not per branch),
+    /// so all branches already share the same dict artifacts.
+    pub(crate) async fn copy_index_to_branch(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        index_cid: &fluree_db_core::ContentId,
+    ) -> Result<()> {
+        use fluree_db_binary_index::format::branch::read_branch_from_bytes;
+        use fluree_db_binary_index::format::index_root::IndexRoot;
+        use fluree_db_core::content_kind::ContentKind;
+        use fluree_db_core::storage::content_address;
+        use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
+
+        let storage = self.connection.storage().clone();
+        let method = storage.storage_method();
+        let source_store = fluree_db_core::content_store_for(storage.clone(), source_id);
+
+        // Read and parse the index root
+        let root_bytes = source_store.get(index_cid).await.map_err(|e| {
+            ApiError::internal(format!("failed to read index root {}: {}", index_cid, e))
+        })?;
+        let root = IndexRoot::decode(&root_bytes).map_err(|e| {
+            ApiError::internal(format!("failed to decode index root {}: {}", index_cid, e))
+        })?;
+
+        // Collect all CIDs referenced by the index root
+        let mut all_cids = root.all_cas_ids();
+
+        // Expand named graph branch manifests → leaf CIDs
+        // (all_cas_ids includes branch CIDs but not the leaves within)
+        for ng in &root.named_graphs {
+            for (_, branch_cid) in &ng.orders {
+                let branch_addr = content_address(
+                    method,
+                    ContentKind::IndexBranch,
+                    source_id,
+                    &branch_cid.digest_hex(),
+                );
+                if let Ok(branch_bytes) = storage.read_bytes(&branch_addr).await {
+                    if let Ok(manifest) = read_branch_from_bytes(&branch_bytes) {
+                        for leaf in &manifest.leaves {
+                            all_cids.push(leaf.leaf_cid.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add the root CID itself
+        all_cids.push(index_cid.clone());
+
+        // Skip dictionary blobs — they are stored globally per ledger (not
+        // per branch), so all branches already share the same dict artifacts.
+        // Also filter out CIDs with no recognized content kind.
+        all_cids
+            .retain(|cid| cid.codec() != CODEC_FLUREE_DICT_BLOB && cid.content_kind().is_some());
+
+        // Deduplicate
+        all_cids.sort();
+        all_cids.dedup();
+
+        // Copy artifacts concurrently from source to target namespace
+        use futures::stream::{self, StreamExt, TryStreamExt};
+
+        const COPY_CONCURRENCY: usize = 32;
+
+        let source_label = source_id.to_string();
+        let artifact_count = all_cids.len();
+
+        stream::iter(all_cids.into_iter().map(|cid| {
+            let kind = cid.content_kind().expect("filtered above");
+            let hex = cid.digest_hex();
+            let src_addr = content_address(method, kind, source_id, &hex);
+            let dst_addr = content_address(method, kind, target_id, &hex);
+            let storage = storage.clone();
+            let cid_display = cid.to_string();
+            let source_label = source_label.clone();
+            async move {
+                let bytes = storage.read_bytes(&src_addr).await.map_err(|e| {
+                    ApiError::internal(format!(
+                        "failed to read index artifact {} from {}: {}",
+                        cid_display, source_label, e
+                    ))
+                })?;
+                storage
+                    .write_bytes(&dst_addr, &bytes)
+                    .await
+                    .map_err(ApiError::from)
+            }
+        }))
+        .buffer_unordered(COPY_CONCURRENCY)
+        .try_for_each(|()| async { Ok(()) })
+        .await?;
+
+        tracing::info!(
+            source = %source_id, target = %target_id,
+            count = artifact_count,
+            "copied index artifacts to branch namespace"
+        );
+
+        Ok(())
+    }
+}
+
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + 'static,
+    N: NameService,
+{
+    /// List all non-retracted branches for a ledger.
+    pub async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        Ok(self.nameservice.list_branches(ledger_name).await?)
     }
 }

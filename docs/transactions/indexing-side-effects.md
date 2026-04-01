@@ -259,7 +259,7 @@ fluree-server --indexing-enabled=false
 
 ## Transaction Patterns and Indexing
 
-### Batch Writes
+### Batch Transactions
 
 Good pattern:
 ```javascript
@@ -282,9 +282,9 @@ Bad pattern:
 await transact({ "@graph": allEntities });  // 1 million entities!
 ```
 
-### Continuous Writes
+### Continuous Transactions
 
-For continuous write load:
+For continuous transaction load:
 
 ```javascript
 async function writeWithBackpressure(data) {

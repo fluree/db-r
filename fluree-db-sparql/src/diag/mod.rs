@@ -110,7 +110,7 @@ pub enum DiagCode {
     #[serde(rename = "F004")]
     UnsupportedMultipleUsing,
 
-    /// GRAPH not supported in INSERT/DELETE (use WITH/USING)
+    /// GRAPH restrictions in SPARQL Update templates
     #[serde(rename = "F005")]
     UnsupportedGraphInUpdate,
 

@@ -9,13 +9,17 @@ use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use fluree_db_core::ids::DatatypeDictId;
+use fluree_db_core::ns_encoding::{canonical_split, NsLookup, NsSplitMode};
 use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::GraphId;
 use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, Sid};
+use fluree_vocab::{geo_names, jsonld_names, namespaces, rdf_names, xsd_names};
+use parking_lot::RwLock;
 
 use crate::dict::forward_pack::{KIND_STRING_FWD, KIND_SUBJECT_FWD};
 use crate::dict::global_dict::{LanguageTagDict, PredicateDict};
@@ -23,9 +27,12 @@ use crate::dict::pack_reader::ForwardPackReader;
 use crate::dict::DictTreeReader;
 use crate::format::branch::{read_branch_from_bytes, BranchManifest};
 use crate::format::index_root::{IndexRoot, OTypeTableEntry};
+use crate::format::leaf::DecodedLeafDirV3;
 use crate::format::run_record::RunSortOrder;
 
 use super::leaflet_cache::LeafletCache;
+
+const HOT_REMOTE_LEAF_PROMOTION_TOUCHES: usize = 2;
 
 // ============================================================================
 // Shared dictionary / CAS utilities
@@ -63,6 +70,73 @@ fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
         _ => io::ErrorKind::Other,
     };
     io::Error::new(kind, e.to_string())
+}
+
+fn cas_sync_timeout() -> Option<Duration> {
+    std::env::var("FLUREE_CAS_SYNC_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(Duration::from_millis)
+}
+
+fn run_sync_on_runtime<T, Fut>(fut: Fut) -> io::Result<T>
+where
+    T: Send + 'static,
+    Fut: std::future::Future<Output = io::Result<T>> + Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => match handle.runtime_flavor() {
+            tokio::runtime::RuntimeFlavor::MultiThread => {
+                // Safe on multithread runtimes: allow blocking in-place while we
+                // drive the async future to completion.
+                tokio::task::block_in_place(|| handle.block_on(fut))
+            }
+            tokio::runtime::RuntimeFlavor::CurrentThread => {
+                // Avoid deadlock:
+                // - We're on the single runtime thread.
+                // - If we block here waiting for another thread that calls
+                //   `handle.block_on(...)`, the runtime can't make progress.
+                // Instead, run the future on a self-contained runtime in a helper thread.
+                let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<T>>(1);
+                std::thread::spawn(move || {
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| {
+                            io::Error::other(format!("failed to build helper runtime: {e}"))
+                        })
+                        .and_then(|rt| rt.block_on(fut));
+                    let _ = tx.send(result);
+                });
+                rx.recv()
+                    .map_err(|_| io::Error::other("helper runtime thread panicked"))?
+            }
+            _ => {
+                // Future-proofing: treat unknown flavors conservatively.
+                let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<T>>(1);
+                std::thread::spawn(move || {
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|e| {
+                            io::Error::other(format!("failed to build helper runtime: {e}"))
+                        })
+                        .and_then(|rt| rt.block_on(fut));
+                    let _ = tx.send(result);
+                });
+                rx.recv()
+                    .map_err(|_| io::Error::other("helper runtime thread panicked"))?
+            }
+        },
+        Err(_) => {
+            // No runtime context available. Create a local runtime to run the future.
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| io::Error::other(format!("failed to build helper runtime: {e}")))?
+                .block_on(fut)
+        }
+    }
 }
 
 pub(crate) fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -170,10 +244,25 @@ pub struct BinaryIndexStore {
     cas: Option<Arc<dyn ContentStore>>,
     cache_dir: PathBuf,
     leaflet_cache: Option<Arc<LeafletCache>>,
+    /// Remote leaf metadata cache keyed by leaf CID.
+    ///
+    /// This avoids re-fetching the same header+directory ranges when repeated
+    /// scans reopen the same remote leaf within a query/session.
+    remote_leaf_metadata: RwLock<HashMap<ContentId, DecodedLeafDirV3>>,
+    /// Remote leaf open counts keyed by leaf CID.
+    ///
+    /// Once a remote leaf is touched repeatedly, we promote it to the local
+    /// disk cache so subsequent opens use `FullBlobLeafHandle`.
+    remote_leaf_open_counts: RwLock<HashMap<ContentId, usize>>,
     max_t: i64,
     base_t: i64,
     language_tags: Vec<String>,
     lex_sorted_string_ids: bool,
+    /// Ledger-fixed split mode for canonical IRI encoding.
+    /// Set from the snapshot's `ns_split_mode` via `set_ns_split_mode()`.
+    ns_split_mode: NsSplitMode,
+    /// Whether `set_ns_split_mode` was called. Debug-asserted on first encode.
+    ns_split_mode_set: bool,
 }
 
 impl BinaryIndexStore {
@@ -287,10 +376,14 @@ impl BinaryIndexStore {
             cas: Some(cs),
             cache_dir: cache_dir.to_path_buf(),
             leaflet_cache,
+            remote_leaf_metadata: RwLock::new(HashMap::new()),
+            remote_leaf_open_counts: RwLock::new(HashMap::new()),
             max_t: root.index_t,
             base_t: root.base_t,
             language_tags: root.language_tags.clone(),
             lex_sorted_string_ids: root.lex_sorted_string_ids,
+            ns_split_mode: root.ns_split_mode,
+            ns_split_mode_set: true,
         })
     }
 
@@ -302,6 +395,14 @@ impl BinaryIndexStore {
 
     pub fn base_t(&self) -> i64 {
         self.base_t
+    }
+
+    /// Set the ledger's split mode for canonical IRI encoding.
+    ///
+    /// Called after loading to sync with the snapshot's `ns_split_mode`.
+    pub fn set_ns_split_mode(&mut self, mode: NsSplitMode) {
+        self.ns_split_mode = mode;
+        self.ns_split_mode_set = true;
     }
 
     /// True if `StringId` / `LEX_ID` ordering is lexicographic by UTF-8 bytes.
@@ -319,6 +420,13 @@ impl BinaryIndexStore {
 
     pub fn leaflet_cache(&self) -> Option<&Arc<LeafletCache>> {
         self.leaflet_cache.as_ref()
+    }
+
+    fn note_remote_leaf_open(&self, leaf_cid: &ContentId) -> usize {
+        let mut counts = self.remote_leaf_open_counts.write();
+        let count = counts.entry(leaf_cid.clone()).or_insert(0);
+        *count += 1;
+        *count
     }
 
     /// Fetch leaf bytes by CID: local path first, then CAS with caching.
@@ -340,27 +448,31 @@ impl BinaryIndexStore {
         }
 
         // Fetch from CAS via sync bridge: capture the Tokio handle on the caller's
-        // thread (which has a runtime context), then spawn a dedicated OS thread that
-        // uses it to block_on the async fetch. Same pattern as V5 ensure_index_leaf_cached.
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|_| io::Error::other("leaf fetch requires a Tokio runtime"))?;
+        // sync bridge: run the async CAS request without deadlocking current-thread runtimes.
         let cs = Arc::clone(cs);
         let cid = leaf_cid.clone();
         let cache_path_owned = cache_path.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
-        std::thread::spawn(move || {
-            let result = handle.block_on(async {
-                let data = cs
-                    .get(&cid)
+        let timeout = cas_sync_timeout();
+        run_sync_on_runtime(async move {
+            let fut = cs.get(&cid);
+            let data = if let Some(dur) = timeout {
+                tokio::time::timeout(dur, fut)
                     .await
-                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?;
-                cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
-                Ok(data)
-            });
-            let _ = tx.send(result);
-        });
-        rx.recv()
-            .map_err(|_| io::Error::other("leaf fetch thread panicked"))?
+                    .map_err(|_| {
+                        io::Error::other(format!(
+                            "CAS fetch timed out after {}ms (cid={})",
+                            dur.as_millis(),
+                            cid
+                        ))
+                    })?
+                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
+            } else {
+                fut.await
+                    .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
+            };
+            cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
+            Ok(data)
+        })
     }
 
     // ── LeafHandle-based access ──────────────────────────────────────
@@ -380,7 +492,6 @@ impl BinaryIndexStore {
         use super::leaf_access::{
             fetch_header_and_directory, FullBlobLeafHandle, RangeReadLeafHandle,
         };
-
         let cs = self
             .cas
             .as_ref()
@@ -411,13 +522,60 @@ impl BinaryIndexStore {
             return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
         }
 
+        let touch_count = self.note_remote_leaf_open(leaf_cid);
+
+        if let Some(dir) = self.remote_leaf_metadata.read().get(leaf_cid).cloned() {
+            if touch_count >= HOT_REMOTE_LEAF_PROMOTION_TOUCHES {
+                tracing::debug!(
+                    leaf = %leaf_cid,
+                    need_replay,
+                    source = "remote_promote_disk",
+                    touch_count,
+                    "promoting hot remote leaf to disk cache"
+                );
+                let bytes = self.get_leaf_bytes_sync(leaf_cid)?;
+                let sidecar = if need_replay {
+                    self.fetch_sidecar_bytes_sync(sidecar_cid)?
+                } else {
+                    None
+                };
+                return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+            }
+            let sc_cid = if need_replay {
+                sidecar_cid.cloned()
+            } else {
+                None
+            };
+            return Ok(Box::new(RangeReadLeafHandle::new(
+                leaf_cid.clone(),
+                dir.clone(),
+                dir.payload_base as u64,
+                leaf_id,
+                Arc::new(ContentStoreRangeFetcher::new(
+                    Arc::clone(cs),
+                    self.cache_dir.clone(),
+                )) as Arc<dyn super::leaf_access::RangeReadFetcher>,
+                sc_cid,
+            )));
+        }
+
         // Slow path: remote — use range reads for column-selective access.
+        tracing::debug!(
+            leaf = %leaf_cid,
+            need_replay,
+            source = "remote_range",
+            touch_count,
+            "binary leaf open"
+        );
         let fetcher = Arc::new(ContentStoreRangeFetcher::new(
             Arc::clone(cs),
             self.cache_dir.clone(),
         ));
 
         let (dir, payload_base) = fetch_header_and_directory(fetcher.as_ref(), leaf_cid)?;
+        self.remote_leaf_metadata
+            .write()
+            .insert(leaf_cid.clone(), dir.clone());
 
         let sc_cid = if need_replay {
             sidecar_cid.cloned()
@@ -549,18 +707,42 @@ impl BinaryIndexStore {
                 Ok(FlakeValue::Ref(Sid::new(0, &bnode_iri)))
             }
             DecodeKind::IriRef => {
-                let iri = self.resolve_subject_iri(o_key)?;
+                let iri = self.resolve_subject_iri(o_key).map_err(|e| {
+                    tracing::debug!(
+                        g_id,
+                        o_key,
+                        error = %e,
+                        "binary index failed to resolve IRI ref subject"
+                    );
+                    e
+                })?;
                 Ok(FlakeValue::Ref(self.encode_iri(&iri)))
             }
             DecodeKind::StringDict => {
-                let s = self.resolve_string_value(o_key as u32)?;
+                let s = self.resolve_string_value(o_key as u32).map_err(|e| {
+                    tracing::debug!(
+                        g_id,
+                        str_id = o_key as u32,
+                        error = %e,
+                        "binary index failed to resolve string dictionary value"
+                    );
+                    e
+                })?;
                 Ok(FlakeValue::String(s))
             }
             DecodeKind::JsonArena => {
                 // Despite the "Arena" name in DecodeKind, JSON values are currently
                 // stored in the string dictionary (same as ObjKind::JSON_ID).
                 // A dedicated JSON arena may be introduced later.
-                let json_str = self.resolve_string_value(o_key as u32)?;
+                let json_str = self.resolve_string_value(o_key as u32).map_err(|e| {
+                    tracing::debug!(
+                        g_id,
+                        str_id = o_key as u32,
+                        error = %e,
+                        "binary index failed to resolve JSON dictionary value"
+                    );
+                    e
+                })?;
                 Ok(FlakeValue::Json(json_str))
             }
             DecodeKind::NumBigArena => {
@@ -750,7 +932,8 @@ impl BinaryIndexStore {
 
     /// Resolve a string dictionary ID to its value.
     pub fn resolve_string_value(&self, str_id: u32) -> io::Result<String> {
-        self.dicts
+        let result = self
+            .dicts
             .string_forward_packs
             .forward_lookup_str(str_id as u64)?
             .ok_or_else(|| {
@@ -758,7 +941,15 @@ impl BinaryIndexStore {
                     io::ErrorKind::NotFound,
                     format!("string id {} not found in forward packs", str_id),
                 )
-            })
+            });
+        if let Err(err) = &result {
+            tracing::debug!(
+                str_id,
+                error = %err,
+                "resolve_string_value failed"
+            );
+        }
+        result
     }
 
     /// Resolve a predicate ID to its IRI.
@@ -771,12 +962,21 @@ impl BinaryIndexStore {
         self.dicts.predicate_reverse.get(iri).copied()
     }
 
-    /// Encode an IRI to a namespaced `Sid`.
+    /// Encode an IRI to a namespaced `Sid` using canonical splitting and exact-prefix lookup.
+    ///
+    /// Uses `canonical_split` + exact-prefix lookup via reverse map. If the
+    /// canonical prefix is not registered, returns `Sid(EMPTY, iri)`.
+    /// No longest-prefix-match — canonical encoding prohibits `starts_with` matching.
     pub fn encode_iri(&self, iri: &str) -> Sid {
-        match self.dicts.prefix_trie.longest_match(iri) {
-            Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-            None => Sid::new(0, iri),
+        debug_assert!(
+            self.ns_split_mode_set,
+            "BinaryIndexStore::encode_iri called before ns_split_mode was set"
+        );
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+        if let Some(&code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            return Sid::new(code, canonical_suffix);
         }
+        Sid::new(0, iri)
     }
 
     /// Resolve language ID to BCP 47 tag string.
@@ -799,10 +999,90 @@ impl BinaryIndexStore {
     /// Resolve o_type to a datatype Sid (for materializing datatype IRIs in output).
     /// O(1) via the pre-built o_type index.
     pub fn resolve_datatype_sid(&self, o_type: u16) -> Option<Sid> {
-        let idx = self.o_type_index.get(&o_type)?;
-        let entry = &self.o_type_table[*idx];
-        let iri = entry.datatype_iri.as_deref()?;
-        Some(self.encode_iri(iri))
+        let ot = OType::from_u16(o_type);
+
+        // Customer-defined datatypes encode the DatatypeDictId directly in the payload.
+        // We can resolve it without any IRI parsing/encoding round-trip.
+        if ot.is_customer_datatype() {
+            let dt_id = ot.payload() as usize;
+            return self.dicts.dt_sids.get(dt_id).cloned();
+        }
+
+        // rdf:langString encodes the language tag in the payload (lang_id). The datatype
+        // itself is constant and must be rdf:langString (not tag-qualified).
+        if ot.is_lang_string() {
+            return Some(Sid::new(namespaces::RDF, rdf_names::LANG_STRING));
+        }
+
+        // Built-ins: construct SIDs directly in reserved namespace code space.
+        // This avoids relying on the FIR6 root's `o_type_table.datatype_iri` strings,
+        // which historically used compact forms like "xsd:string" (not full IRIs),
+        // and avoids an encode/decode round-trip in a hot path.
+        match ot {
+            OType::NULL => Some(Sid::new(namespaces::XSD, xsd_names::STRING)),
+            OType::XSD_BOOLEAN => Some(Sid::new(namespaces::XSD, xsd_names::BOOLEAN)),
+            OType::XSD_INTEGER => Some(Sid::new(namespaces::XSD, xsd_names::INTEGER)),
+            OType::XSD_LONG => Some(Sid::new(namespaces::XSD, xsd_names::LONG)),
+            OType::XSD_INT => Some(Sid::new(namespaces::XSD, xsd_names::INT)),
+            OType::XSD_SHORT => Some(Sid::new(namespaces::XSD, xsd_names::SHORT)),
+            OType::XSD_BYTE => Some(Sid::new(namespaces::XSD, xsd_names::BYTE)),
+            OType::XSD_UNSIGNED_LONG => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_LONG)),
+            OType::XSD_UNSIGNED_INT => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_INT)),
+            OType::XSD_UNSIGNED_SHORT => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_SHORT)),
+            OType::XSD_UNSIGNED_BYTE => Some(Sid::new(namespaces::XSD, xsd_names::UNSIGNED_BYTE)),
+            OType::XSD_NON_NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_NEGATIVE_INTEGER))
+            }
+            OType::XSD_POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::POSITIVE_INTEGER))
+            }
+            OType::XSD_NON_POSITIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NON_POSITIVE_INTEGER))
+            }
+            OType::XSD_NEGATIVE_INTEGER => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NEGATIVE_INTEGER))
+            }
+            OType::XSD_DOUBLE => Some(Sid::new(namespaces::XSD, xsd_names::DOUBLE)),
+            OType::XSD_FLOAT => Some(Sid::new(namespaces::XSD, xsd_names::FLOAT)),
+            OType::XSD_DECIMAL => Some(Sid::new(namespaces::XSD, xsd_names::DECIMAL)),
+            OType::XSD_DATE => Some(Sid::new(namespaces::XSD, xsd_names::DATE)),
+            OType::XSD_TIME => Some(Sid::new(namespaces::XSD, xsd_names::TIME)),
+            OType::XSD_DATE_TIME => Some(Sid::new(namespaces::XSD, xsd_names::DATE_TIME)),
+            OType::XSD_G_YEAR => Some(Sid::new(namespaces::XSD, xsd_names::G_YEAR)),
+            OType::XSD_G_YEAR_MONTH => Some(Sid::new(namespaces::XSD, xsd_names::G_YEAR_MONTH)),
+            OType::XSD_G_MONTH => Some(Sid::new(namespaces::XSD, xsd_names::G_MONTH)),
+            OType::XSD_G_DAY => Some(Sid::new(namespaces::XSD, xsd_names::G_DAY)),
+            OType::XSD_G_MONTH_DAY => Some(Sid::new(namespaces::XSD, xsd_names::G_MONTH_DAY)),
+            OType::XSD_YEAR_MONTH_DURATION => {
+                Some(Sid::new(namespaces::XSD, xsd_names::YEAR_MONTH_DURATION))
+            }
+            OType::XSD_DAY_TIME_DURATION => {
+                Some(Sid::new(namespaces::XSD, xsd_names::DAY_TIME_DURATION))
+            }
+            OType::XSD_DURATION => Some(Sid::new(namespaces::XSD, xsd_names::DURATION)),
+
+            // Dict/arena-backed built-ins
+            OType::XSD_STRING => Some(Sid::new(namespaces::XSD, xsd_names::STRING)),
+            OType::XSD_ANY_URI => Some(Sid::new(namespaces::XSD, xsd_names::ANY_URI)),
+            OType::XSD_NORMALIZED_STRING => {
+                Some(Sid::new(namespaces::XSD, xsd_names::NORMALIZED_STRING))
+            }
+            OType::XSD_TOKEN => Some(Sid::new(namespaces::XSD, xsd_names::TOKEN)),
+            OType::XSD_LANGUAGE => Some(Sid::new(namespaces::XSD, xsd_names::LANGUAGE)),
+            OType::XSD_BASE64_BINARY => Some(Sid::new(namespaces::XSD, xsd_names::BASE64_BINARY)),
+            OType::XSD_HEX_BINARY => Some(Sid::new(namespaces::XSD, xsd_names::HEX_BINARY)),
+            OType::IRI_REF | OType::BLANK_NODE => {
+                Some(Sid::new(namespaces::JSON_LD, jsonld_names::ID))
+            }
+            OType::RDF_JSON => Some(Sid::new(namespaces::RDF, rdf_names::JSON)),
+            OType::VECTOR => Some(Sid::new(namespaces::FLUREE_DB, "embeddingVector")),
+            OType::FULLTEXT => Some(Sid::new(namespaces::FLUREE_DB, "fullText")),
+            OType::GEO_POINT => Some(Sid::new(namespaces::OGC_GEO, geo_names::WKT_LITERAL)),
+
+            // Types without a stable datatype (or not representable as typed literals)
+            // return None so callers can either skip constraints or use a safe fallback.
+            _ => None,
+        }
     }
 
     /// Look up an o_type table entry by o_type value. O(1).
@@ -812,41 +1092,52 @@ impl BinaryIndexStore {
             .map(|&idx| &self.o_type_table[idx])
     }
 
-    /// Reconstruct the full IRI string from a `Sid`.
-    pub fn sid_to_iri(&self, sid: &Sid) -> String {
-        let prefix = self
-            .dicts
+    /// Reconstruct the full IRI string from a `Sid` (strict decode).
+    ///
+    /// - `EMPTY (0)` / `OVERFLOW (0xFFFE)`: returns `Some(sid.name)`.
+    /// - Registered code: returns `Some(prefix + name)`.
+    /// - Unknown code: returns `None`.
+    pub fn sid_to_iri(&self, sid: &Sid) -> Option<String> {
+        // EMPTY (0) and OVERFLOW (0xFFFE) store the full IRI as sid.name
+        if sid.namespace_code == 0 || sid.namespace_code == 0xFFFE {
+            return Some(sid.name.to_string());
+        }
+        self.dicts
             .namespace_codes
             .get(&sid.namespace_code)
-            .map(|s| s.as_str())
-            .unwrap_or("");
-        format!("{}{}", prefix, sid.name)
+            .map(|prefix| format!("{}{}", prefix, sid.name))
     }
 
     /// Reverse subject lookup: find the u64 s_id for a given IRI.
+    ///
+    /// Uses canonical encoding to build the reverse-tree key,
+    /// matching the encoding used when the reverse dictionary was built.
     pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
         match &self.dicts.subject_reverse_tree {
             Some(tree) => {
-                let (ns_code, prefix_len) =
-                    self.dicts.prefix_trie.longest_match(iri).unwrap_or((0, 0));
-                let suffix = &iri[prefix_len..];
-                let key =
-                    crate::dict::reverse_leaf::subject_reverse_key(ns_code, suffix.as_bytes());
+                let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+                let ns_code = self
+                    .dicts
+                    .namespace_reverse
+                    .get(canonical_prefix)
+                    .copied()
+                    .unwrap_or(0);
+                let key = crate::dict::reverse_leaf::subject_reverse_key(
+                    ns_code,
+                    canonical_suffix.as_bytes(),
+                );
                 tree.reverse_lookup(&key)
             }
             None => Ok(None),
         }
     }
 
-    /// Translate a `Sid` to `s_id` via the reverse subject dictionary.
-    pub fn sid_to_s_id(&self, sid: &Sid) -> io::Result<Option<u64>> {
-        let iri = self.sid_to_iri(sid);
-        self.find_subject_id(&iri)
-    }
-
     /// Translate a `Sid` to `p_id` via the predicate reverse map.
+    ///
+    /// Returns `None` if the namespace code is unknown or the predicate
+    /// is not in the persisted dictionary.
     pub fn sid_to_p_id(&self, sid: &Sid) -> Option<u32> {
-        let iri = self.sid_to_iri(sid);
+        let iri = self.sid_to_iri(sid)?;
         self.find_predicate_id(&iri)
     }
 
@@ -955,19 +1246,61 @@ impl BinaryIndexStore {
     }
 
     /// Augment namespace codes with entries from novelty commits.
-    pub fn augment_namespace_codes(&mut self, codes: &std::collections::HashMap<u16, String>) {
+    ///
+    /// Validates namespace bimap uniqueness: a delta entry is rejected
+    /// if the code already maps to a different prefix or the prefix already
+    /// maps to a different code.
+    ///
+    /// # Panics
+    ///
+    /// Returns `Err` on a namespace bimap conflict so the caller
+    /// can reject the invalid state rather than crashing the process.
+    pub fn augment_namespace_codes(
+        &mut self,
+        codes: &std::collections::HashMap<u16, String>,
+    ) -> io::Result<()> {
+        // Validate and collect genuinely new entries using bidirectional checks
+        // against both forward (namespace_codes) and reverse (namespace_reverse) maps.
+        let mut new_entries: Vec<(u16, String)> = Vec::new();
         for (&code, prefix) in codes {
-            self.dicts
-                .namespace_codes
-                .entry(code)
-                .or_insert_with(|| prefix.clone());
-            self.dicts
-                .namespace_reverse
-                .entry(prefix.clone())
-                .or_insert(code);
+            // code → prefix direction
+            if let Some(existing) = self.dicts.namespace_codes.get(&code) {
+                if existing != prefix {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "namespace conflict: code {} maps to {:?} but augment has {:?}",
+                            code, existing, prefix
+                        ),
+                    ));
+                }
+                continue; // already present and matching
+            }
+            // prefix → code direction
+            if let Some(&existing_code) = self.dicts.namespace_reverse.get(prefix.as_str()) {
+                if existing_code != code {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "namespace conflict: prefix {:?} has code {} but augment has code {}",
+                            prefix, existing_code, code
+                        ),
+                    ));
+                }
+                continue; // already present and matching
+            }
+            new_entries.push((code, prefix.clone()));
         }
-        // Rebuild prefix trie to include new entries.
-        self.dicts.prefix_trie = PrefixTrie::from_namespace_codes(&self.dicts.namespace_codes);
+
+        // Apply validated new entries to all three structures.
+        for (code, prefix) in new_entries {
+            self.dicts.namespace_codes.insert(code, prefix.clone());
+            if !prefix.is_empty() {
+                self.dicts.prefix_trie.insert(&prefix, code);
+            }
+            self.dicts.namespace_reverse.insert(prefix, code);
+        }
+        Ok(())
     }
 
     /// Access the namespace codes table.
@@ -1078,9 +1411,18 @@ impl BinaryIndexStore {
         Ok(0)
     }
 
-    /// Create a `BinaryGraphView` for a specific graph.
+    /// Create a `BinaryGraphView` for a specific graph (no novelty).
     pub fn graph(self: &Arc<Self>, g_id: GraphId) -> BinaryGraphView {
         BinaryGraphView::new(Arc::clone(self), g_id)
+    }
+
+    /// Create a novelty-aware `BinaryGraphView` for a specific graph.
+    pub fn graph_with_novelty(
+        self: &Arc<Self>,
+        g_id: GraphId,
+        dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    ) -> BinaryGraphView {
+        BinaryGraphView::with_novelty(Arc::clone(self), g_id, dict_novelty)
     }
 
     /// Find the 1-based lang_id for a language tag string. Returns `None` if not found.
@@ -1180,27 +1522,98 @@ fn compare_prefix_suffix_bytes(
 }
 
 // ============================================================================
+// NsLookup implementation
+// ============================================================================
+
+impl NsLookup for BinaryIndexStore {
+    fn code_for_prefix(&self, prefix: &str) -> Option<u16> {
+        self.dicts.namespace_reverse.get(prefix).copied()
+    }
+
+    fn prefix_for_code(&self, code: u16) -> Option<&str> {
+        self.dicts.namespace_codes.get(&code).map(|s| s.as_str())
+    }
+}
+
+// ============================================================================
 // BinaryGraphView — graph-scoped wrapper
 // ============================================================================
 
 /// Graph-scoped view for V6 store. Binds a specific `g_id` for value decoding.
+///
+/// When `dict_novelty` is present, all decode methods automatically perform
+/// watermark-based routing: IDs at or below the watermark delegate to the
+/// persisted store; IDs above the watermark resolve from `DictNovelty`.
+/// This makes every caller novelty-safe by default.
+///
+/// When `dict_novelty` is `None`, all methods delegate straight to the store
+/// with zero overhead (single well-predicted branch).
 pub struct BinaryGraphView {
     store: Arc<BinaryIndexStore>,
     g_id: GraphId,
+    dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
 }
 
 impl BinaryGraphView {
     pub fn new(store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
-        Self { store, g_id }
+        Self {
+            store,
+            g_id,
+            dict_novelty: None,
+        }
     }
 
+    /// Create a novelty-aware graph view.
+    ///
+    /// When `dict_novelty` is `Some`, decode methods use watermark routing
+    /// so that novel string/subject IDs (above the persisted watermark) are
+    /// resolved from `DictNovelty` instead of failing with "not found in
+    /// forward packs".
+    pub fn with_novelty(
+        store: Arc<BinaryIndexStore>,
+        g_id: GraphId,
+        dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    ) -> Self {
+        Self {
+            store,
+            g_id,
+            dict_novelty,
+        }
+    }
+
+    /// Decode a value from `(o_type, o_key)`. Novelty-aware when `dict_novelty`
+    /// is set: dict-backed types (IriRef, StringDict, JsonArena) route through
+    /// watermark checks; all other types delegate directly to the store.
     pub fn decode_value(&self, o_type: u16, o_key: u64, p_id: u32) -> io::Result<FlakeValue> {
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                let ot = OType::from_u16(o_type);
+                match ot.decode_kind() {
+                    DecodeKind::IriRef => {
+                        if let Some(sid) = self.resolve_novel_subject_sid(dn, o_key) {
+                            return Ok(FlakeValue::Ref(sid));
+                        }
+                    }
+                    DecodeKind::StringDict => {
+                        if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                            return Ok(FlakeValue::String(s));
+                        }
+                    }
+                    DecodeKind::JsonArena => {
+                        if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                            return Ok(FlakeValue::Json(s));
+                        }
+                    }
+                    _ => {} // Non-dict types: straight to store
+                }
+            }
+        }
         self.store.decode_value_v3(o_type, o_key, p_id, self.g_id)
     }
 
-    /// Decode a value from `(o_kind, dt_id, lang_id)` fields.
+    /// Decode a value from `(o_kind, dt_id, lang_id)` fields. Novelty-aware.
     ///
-    /// See [`BinaryIndexStore::decode_value_from_kind`] for details.
+    /// See [`BinaryIndexStore::decode_value_from_kind`] for the persisted path.
     pub fn decode_value_from_kind(
         &self,
         o_kind: u8,
@@ -1209,8 +1622,93 @@ impl BinaryGraphView {
         dt_id: u16,
         lang_id: u16,
     ) -> io::Result<FlakeValue> {
-        self.store
-            .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id, self.g_id)
+        let novelty_initialized = self
+            .dict_novelty
+            .as_ref()
+            .is_some_and(|dn| dn.is_initialized());
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                // Route dict-backed ObjKinds through watermark checks.
+                if o_kind == ObjKind::REF_ID.as_u8() {
+                    if let Some(sid) = self.resolve_novel_subject_sid(dn, o_key) {
+                        return Ok(FlakeValue::Ref(sid));
+                    }
+                } else if o_kind == ObjKind::LEX_ID.as_u8() {
+                    if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                        return Ok(FlakeValue::String(s));
+                    }
+                } else if o_kind == ObjKind::JSON_ID.as_u8() {
+                    if let Some(s) = self.resolve_novel_string(dn, o_key as u32) {
+                        return Ok(FlakeValue::Json(s));
+                    }
+                }
+            }
+        }
+        let result = self
+            .store
+            .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id, self.g_id);
+        if let Err(err) = &result {
+            tracing::debug!(
+                g_id = self.g_id,
+                o_kind,
+                o_key,
+                p_id,
+                dt_id,
+                lang_id,
+                has_dict_novelty = self.dict_novelty.is_some(),
+                novelty_initialized,
+                error = %err,
+                "BinaryGraphView decode_value_from_kind failed"
+            );
+        }
+        result
+    }
+
+    /// Resolve a subject ID to its full IRI string. Novelty-aware.
+    pub fn resolve_subject_iri(&self, s_id: u64) -> io::Result<String> {
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                if let Some(result) = self.resolve_novel_subject_iri(dn, s_id) {
+                    if let Err(err) = &result {
+                        tracing::debug!(
+                            g_id = self.g_id,
+                            s_id,
+                            error = %err,
+                            "BinaryGraphView novelty subject lookup failed"
+                        );
+                    }
+                    return result;
+                }
+            }
+        }
+        let result = self.store.resolve_subject_iri(s_id);
+        if let Err(err) = &result {
+            tracing::debug!(
+                g_id = self.g_id,
+                s_id,
+                has_dict_novelty = self.dict_novelty.is_some(),
+                error = %err,
+                "BinaryGraphView persisted subject lookup failed"
+            );
+        }
+        result
+    }
+
+    /// Resolve a subject ID to a `Sid`. Novelty-aware.
+    ///
+    /// More efficient than `resolve_subject_iri` + `encode_iri` because the
+    /// novelty path returns `Sid::new(ns_code, suffix)` directly without
+    /// building the full IRI string or doing a prefix trie lookup.
+    pub fn resolve_subject_sid(&self, s_id: u64) -> io::Result<Sid> {
+        if let Some(ref dn) = self.dict_novelty {
+            if dn.is_initialized() {
+                if let Some(sid) = self.resolve_novel_subject_sid(dn, s_id) {
+                    return Ok(sid);
+                }
+            }
+        }
+        let iri = self.store.resolve_subject_iri(s_id)?;
+        Ok(self.store.encode_iri(&iri))
     }
 
     pub fn store(&self) -> &BinaryIndexStore {
@@ -1223,6 +1721,76 @@ impl BinaryGraphView {
 
     pub fn g_id(&self) -> GraphId {
         self.g_id
+    }
+
+    /// Check whether this view has DictNovelty attached.
+    pub fn has_dict_novelty(&self) -> bool {
+        self.dict_novelty.is_some()
+    }
+
+    // ── Internal watermark helpers ──────────────────────────────────────
+
+    /// If `s_id` is above the watermark for its namespace, resolve from
+    /// DictNovelty to a `Sid` directly (no IRI string allocation, no prefix
+    /// trie lookup). Returns `None` if the ID is persisted (below watermark).
+    #[inline]
+    fn resolve_novel_subject_sid(
+        &self,
+        dn: &fluree_db_core::dict_novelty::DictNovelty,
+        s_id: u64,
+    ) -> Option<Sid> {
+        use fluree_db_core::subject_id::SubjectId;
+        let sid64 = SubjectId::from_u64(s_id);
+        let wm = dn.subjects.watermark_for_ns(sid64.ns_code());
+        if sid64.local_id() <= wm {
+            return None; // Persisted — let the store handle it
+        }
+        // Novel — resolve (ns_code, suffix) directly to Sid.
+        // This avoids format!("{prefix}{suffix}") + encode_iri() trie lookup.
+        dn.subjects
+            .resolve_subject(s_id)
+            .map(|(ns_code, suffix)| Sid::new(ns_code, suffix))
+    }
+
+    /// If `s_id` is above the watermark, resolve from DictNovelty to a full
+    /// IRI string. Returns `None` if the ID is persisted (below watermark).
+    ///
+    /// Use `resolve_novel_subject_sid` when you need a `Sid` (avoids the
+    /// prefix concatenation).
+    #[inline]
+    fn resolve_novel_subject_iri(
+        &self,
+        dn: &fluree_db_core::dict_novelty::DictNovelty,
+        s_id: u64,
+    ) -> Option<io::Result<String>> {
+        use fluree_db_core::subject_id::SubjectId;
+        let sid64 = SubjectId::from_u64(s_id);
+        let wm = dn.subjects.watermark_for_ns(sid64.ns_code());
+        if sid64.local_id() <= wm {
+            return None; // Persisted — let the store handle it
+        }
+        // Novel — need full IRI string (prefix + suffix).
+        match dn.subjects.resolve_subject(s_id) {
+            Some((ns_code, suffix)) => match self.store.namespace_prefix(ns_code) {
+                Ok(prefix) => Some(Ok(format!("{}{}", prefix, suffix))),
+                Err(e) => Some(Err(e)),
+            },
+            None => None, // Not in DictNovelty either — fall through to store
+        }
+    }
+
+    /// If `str_id` is above the string watermark, resolve from DictNovelty.
+    /// Returns `None` if the ID is persisted (below watermark).
+    #[inline]
+    fn resolve_novel_string(
+        &self,
+        dn: &fluree_db_core::dict_novelty::DictNovelty,
+        str_id: u32,
+    ) -> Option<String> {
+        if str_id <= dn.strings.watermark() {
+            return None; // Persisted — let the store handle it
+        }
+        dn.strings.resolve_string(str_id).map(|s| s.to_string())
     }
 }
 
@@ -1319,9 +1887,13 @@ async fn build_dictionary_set(
     let dt_sids: Vec<Sid> = root
         .datatype_iris
         .iter()
-        .map(|iri| match prefix_trie.longest_match(iri) {
-            Some((code, prefix_len)) => Sid::new(code, &iri[prefix_len..]),
-            None => Sid::new(0, iri),
+        .map(|iri| {
+            let (canonical_prefix, canonical_suffix) = canonical_split(iri, root.ns_split_mode);
+            if let Some(&code) = namespace_reverse.get(canonical_prefix) {
+                Sid::new(code, canonical_suffix)
+            } else {
+                Sid::new(0, iri)
+            }
         })
         .collect();
 
@@ -1560,20 +2132,233 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
         }
 
         // Remote CAS: use async get_range via sync bridge.
-        let handle = tokio::runtime::Handle::try_current()
-            .map_err(|_| io::Error::other("range fetch requires a Tokio runtime"))?;
         let cs = Arc::clone(&self.cs);
         let cid = id.clone();
-        let (tx, rx) = std::sync::mpsc::sync_channel::<io::Result<Vec<u8>>>(1);
-        std::thread::spawn(move || {
-            let result = handle.block_on(async {
-                cs.get_range(&cid, range)
+        let timeout = cas_sync_timeout();
+        let bytes = run_sync_on_runtime(async move {
+            let fut = cs.get_range(&cid, range.clone());
+            if let Some(dur) = timeout {
+                tokio::time::timeout(dur, fut)
                     .await
+                    .map_err(|_| {
+                        io::Error::other(format!(
+                            "CAS range fetch timed out after {}ms (cid={}, range={:?})",
+                            dur.as_millis(),
+                            cid,
+                            range
+                        ))
+                    })?
                     .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
-            });
-            let _ = tx.send(result);
-        });
-        rx.recv()
-            .map_err(|_| io::Error::other("range fetch thread panicked"))?
+            } else {
+                fut.await
+                    .map_err(|e| io::Error::other(format!("CAS range fetch failed: {e}")))
+            }
+        })?;
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use fluree_db_core::content_kind::ContentKind;
+    use fluree_db_core::o_type::OType;
+    use fluree_db_core::subject_id::SubjectId;
+    use fluree_db_core::MemoryContentStore;
+    use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
+
+    use crate::format::leaf::LeafWriter;
+    use crate::format::run_record_v2::RunRecordV2;
+
+    #[derive(Debug, Clone)]
+    struct CountingContentStore {
+        inner: MemoryContentStore,
+        get_calls: Arc<AtomicUsize>,
+        range_calls: Arc<AtomicUsize>,
+    }
+
+    impl CountingContentStore {
+        fn new() -> Self {
+            Self {
+                inner: MemoryContentStore::new(),
+                get_calls: Arc::new(AtomicUsize::new(0)),
+                range_calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn get_calls(&self) -> usize {
+            self.get_calls.load(AtomicOrdering::Relaxed)
+        }
+
+        fn range_calls(&self) -> usize {
+            self.range_calls.load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl ContentStore for CountingContentStore {
+        async fn has(&self, id: &ContentId) -> fluree_db_core::Result<bool> {
+            self.inner.has(id).await
+        }
+
+        async fn get(&self, id: &ContentId) -> fluree_db_core::Result<Vec<u8>> {
+            self.get_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            self.inner.get(id).await
+        }
+
+        async fn put(&self, kind: ContentKind, bytes: &[u8]) -> fluree_db_core::Result<ContentId> {
+            self.inner.put(kind, bytes).await
+        }
+
+        async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::Result<()> {
+            self.inner.put_with_id(id, bytes).await
+        }
+
+        async fn get_range(
+            &self,
+            id: &ContentId,
+            range: std::ops::Range<u64>,
+        ) -> fluree_db_core::Result<Vec<u8>> {
+            self.range_calls.fetch_add(1, AtomicOrdering::Relaxed);
+            self.inner.get_range(id, range).await
+        }
+    }
+
+    fn temp_cache_dir() -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let suffix = COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "fluree-binary-index-remote-meta-cache-{}-{}",
+            std::process::id(),
+            suffix
+        ));
+        std::fs::create_dir_all(&path).expect("create temp cache dir");
+        path
+    }
+
+    fn empty_store(cs: Arc<dyn ContentStore>, cache_dir: PathBuf) -> BinaryIndexStore {
+        BinaryIndexStore {
+            dicts: DictionarySet {
+                predicates: PredicateDict::new(),
+                predicate_reverse: HashMap::new(),
+                graphs_reverse: HashMap::new(),
+                subject_forward_packs: BTreeMap::new(),
+                subject_reverse_tree: None,
+                string_forward_packs: crate::dict::pack_reader::ForwardPackReader::empty(),
+                string_reverse_tree: None,
+                subject_count: 0,
+                string_count: 0,
+                namespace_codes: HashMap::new(),
+                namespace_reverse: HashMap::new(),
+                prefix_trie: PrefixTrie::new(),
+                language_tags: LanguageTagDict::new(),
+                dt_sids: Vec::new(),
+            },
+            graph_indexes: HashMap::new(),
+            o_type_table: Vec::new(),
+            o_type_index: HashMap::new(),
+            cas: Some(cs),
+            cache_dir,
+            leaflet_cache: None,
+            remote_leaf_metadata: RwLock::new(HashMap::new()),
+            remote_leaf_open_counts: RwLock::new(HashMap::new()),
+            max_t: 1,
+            base_t: 0,
+            language_tags: Vec::new(),
+            lex_sorted_string_ids: false,
+            ns_split_mode: NsSplitMode::default(),
+            ns_split_mode_set: true,
+        }
+    }
+
+    fn make_rec(s_id: u64, p_id: u32, o_type: u16, o_key: u64, t: u32) -> RunRecordV2 {
+        RunRecordV2 {
+            s_id: SubjectId(s_id),
+            o_key,
+            p_id,
+            t,
+            o_i: u32::MAX,
+            o_type,
+            g_id: 0,
+        }
+    }
+
+    fn build_test_leaf_bytes() -> Vec<u8> {
+        let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
+        writer.set_skip_history(true);
+        for i in 0..5u64 {
+            writer
+                .push_record(make_rec(i + 1, 1, OType::XSD_INTEGER.as_u16(), i * 10, 1))
+                .unwrap();
+        }
+        writer.finish().unwrap().remove(0).leaf_bytes
+    }
+
+    #[test]
+    fn open_leaf_handle_caches_remote_metadata() {
+        let store = CountingContentStore::new();
+        let leaf_bytes = build_test_leaf_bytes();
+        let leaf_cid = run_sync_on_runtime({
+            let store = store.clone();
+            async move {
+                store
+                    .put(ContentKind::IndexLeaf, &leaf_bytes)
+                    .await
+                    .map_err(storage_to_io_error)
+            }
+        })
+        .expect("store leaf bytes");
+        let cache_dir = temp_cache_dir();
+        let binary_store = empty_store(Arc::new(store.clone()), cache_dir.clone());
+
+        let handle = binary_store
+            .open_leaf_handle(&leaf_cid, None, false)
+            .expect("first remote open");
+        assert_eq!(handle.dir().entries.len(), 1);
+        let first_range_calls = store.range_calls();
+        assert!(
+            first_range_calls >= 2,
+            "expected initial remote open to fetch header+directory"
+        );
+        drop(handle);
+
+        let handle = binary_store
+            .open_leaf_handle(&leaf_cid, None, false)
+            .expect("second remote open");
+        assert_eq!(handle.dir().entries.len(), 1);
+        let second_range_calls = store.range_calls();
+        assert_eq!(
+            second_range_calls, first_range_calls,
+            "cached remote metadata should avoid extra range reads"
+        );
+        assert_eq!(
+            store.get_calls(),
+            1,
+            "hot remote leaf should be promoted to full local cache on second open"
+        );
+        assert!(
+            cache_dir.join(leaf_cid.to_string()).exists(),
+            "promoted remote leaf should be written to disk cache"
+        );
+        drop(handle);
+
+        let handle = binary_store
+            .open_leaf_handle(&leaf_cid, None, false)
+            .expect("third remote open");
+        assert_eq!(handle.dir().entries.len(), 1);
+        assert_eq!(
+            store.range_calls(),
+            second_range_calls,
+            "once promoted, repeated opens should not perform remote range reads"
+        );
+        assert_eq!(
+            store.get_calls(),
+            1,
+            "once promoted, repeated opens should not refetch the full blob"
+        );
+
+        let _ = std::fs::remove_dir_all(cache_dir);
     }
 }

@@ -14,7 +14,9 @@ use fluree_db_core::{
     address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
 };
 use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
-use fluree_db_nameservice::{AdminPublisher, GraphSourcePublisher, NameService, Publisher};
+use fluree_db_nameservice::{
+    AdminPublisher, GraphSourcePublisher, NameService, NsRecord, Publisher,
+};
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -88,6 +90,23 @@ pub struct GraphSourceDropReport {
     /// Number of files deleted (Hard mode only)
     pub files_deleted: usize,
     /// Any non-fatal errors or warnings encountered during the operation
+    pub warnings: Vec<String>,
+}
+
+/// Report of a branch drop operation
+#[derive(Debug, Clone, Default)]
+pub struct BranchDropReport {
+    /// The normalized ledger ID of the dropped branch
+    pub ledger_id: String,
+    /// Status based on nameservice state at lookup time
+    pub status: DropStatus,
+    /// Whether the branch was deferred (retracted but storage preserved for children)
+    pub deferred: bool,
+    /// Number of storage artifacts deleted
+    pub artifacts_deleted: usize,
+    /// Ledger IDs of ancestor branches that were cascade-dropped
+    pub cascaded: Vec<String>,
+    /// Any non-fatal errors or warnings encountered
     pub warnings: Vec<String>,
 }
 
@@ -291,6 +310,152 @@ where
         Ok(report)
     }
 
+    /// Drop a branch
+    ///
+    /// This operation:
+    /// 1. Refuses to drop the "main" branch
+    /// 2. If the branch has children (`branches > 0`): retracts (soft-delete),
+    ///    preserving storage for children, reports as deferred
+    /// 3. If the branch is a leaf (`branches == 0`): cancels indexing, deletes
+    ///    all storage artifacts, purges from nameservice, and cascades upward
+    ///    to any retracted ancestors that now have zero children
+    ///
+    /// # Errors
+    /// - `ApiError::NotFound` if the branch does not exist
+    /// - `ApiError::InvalidInput` if attempting to drop "main"
+    pub async fn drop_branch(&self, ledger_name: &str, branch: &str) -> Result<BranchDropReport> {
+        if branch == "main" {
+            return Err(ApiError::Http {
+                status: 400,
+                message: "Cannot drop the main branch".to_string(),
+            });
+        }
+
+        let ledger_id = format_ledger_id(ledger_name, branch);
+        info!(ledger_id = %ledger_id, "Dropping branch");
+
+        let mut report = BranchDropReport {
+            ledger_id: ledger_id.clone(),
+            ..Default::default()
+        };
+
+        // Look up the record
+        let record = self
+            .nameservice
+            .lookup(&ledger_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Branch not found: {}", ledger_id)))?;
+
+        if record.retracted {
+            report.status = DropStatus::AlreadyRetracted;
+            return Ok(report);
+        }
+
+        report.status = DropStatus::Dropped;
+
+        if record.branches > 0 {
+            // Has children — retract but preserve storage
+            self.nameservice.retract(&ledger_id).await?;
+            report.deferred = true;
+
+            // Disconnect from cache
+            if let Some(mgr) = &self.ledger_manager {
+                mgr.disconnect(&ledger_id).await;
+            }
+
+            info!(
+                ledger_id = %ledger_id,
+                children = record.branches,
+                "Branch retracted (deferred — has children)"
+            );
+            return Ok(report);
+        }
+
+        // Leaf branch — full drop
+        let parent_new_count = self
+            .purge_branch(&ledger_id, Some(&record), &mut report)
+            .await?;
+
+        // Cascade upward if parent is retracted with zero children
+        if let (Some(0), Some(bp)) = (parent_new_count, &record.branch_point) {
+            let parent_id = format_ledger_id(ledger_name, &bp.source);
+            self.try_cascade_drop(ledger_name, &parent_id, &mut report)
+                .await;
+        }
+
+        info!(
+            ledger_id = %ledger_id,
+            artifacts_deleted = report.artifacts_deleted,
+            cascaded = ?report.cascaded,
+            "Branch dropped"
+        );
+        Ok(report)
+    }
+
+    /// Cancel indexing, delete storage artifacts, purge nameservice record,
+    /// and disconnect from cache. Returns the parent's new child count.
+    async fn purge_branch(
+        &self,
+        ledger_id: &str,
+        record: Option<&NsRecord>,
+        report: &mut BranchDropReport,
+    ) -> Result<Option<u32>> {
+        if let IndexingMode::Background(handle) = &self.indexing_mode {
+            handle.cancel(ledger_id).await;
+            handle.wait_for_idle(ledger_id).await;
+        }
+
+        let (count, warnings) = self.drop_artifacts(ledger_id, record).await;
+        report.artifacts_deleted += count;
+        report.warnings.extend(warnings);
+
+        let parent_new_count = self.nameservice.drop_branch(ledger_id).await?;
+
+        if let Some(mgr) = &self.ledger_manager {
+            mgr.disconnect(ledger_id).await;
+        }
+
+        Ok(parent_new_count)
+    }
+
+    /// Recursively drop retracted ancestor branches that have zero children.
+    async fn try_cascade_drop(
+        &self,
+        ledger_name: &str,
+        ancestor_id: &str,
+        report: &mut BranchDropReport,
+    ) {
+        let Ok(Some(ancestor)) = self.nameservice.lookup(ancestor_id).await else {
+            return;
+        };
+
+        if !ancestor.retracted || ancestor.branches > 0 {
+            return;
+        }
+
+        info!(ledger_id = %ancestor_id, "Cascading drop to retracted ancestor");
+
+        let parent_new_count = match self
+            .purge_branch(ancestor_id, Some(&ancestor), report)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                report
+                    .warnings
+                    .push(format!("Cascade purge of {ancestor_id}: {e}"));
+                return;
+            }
+        };
+
+        report.cascaded.push(ancestor_id.to_string());
+
+        if let (Some(0), Some(bp)) = (parent_new_count, &ancestor.branch_point) {
+            let next_ancestor = format_ledger_id(ledger_name, &bp.source);
+            Box::pin(self.try_cascade_drop(ledger_name, &next_ancestor, report)).await;
+        }
+    }
+
     /// Delete all storage artifacts for a ledger.
     ///
     /// Uses a two-path strategy:
@@ -482,15 +647,33 @@ where
         };
         report.status = status;
 
-        // 2. Delete graph source index files (Hard mode)
+        // 2. Delete graph source artifacts (Hard mode)
+        #[cfg(feature = "iceberg")]
         if matches!(mode, DropMode::Hard) {
-            // TODO: Call graph_source_artifact_prefix() from indexer crate once it exists
-            // For now, skip deletion and report a warning
-            if record.is_some() {
-                report.warnings.push(
-                    "Graph source artifact deletion not yet implemented - prefix not standardized"
-                        .to_string(),
-                );
+            if let Some(ref record) = record {
+                // Try to delete the CAS-stored mapping blob
+                if let Ok(iceberg_config) =
+                    fluree_db_iceberg::IcebergGsConfig::from_json(&record.config)
+                {
+                    if let Some(mapping) = &iceberg_config.mapping {
+                        if let Ok(cid) = mapping.source.parse::<fluree_db_core::ContentId>() {
+                            // Resolve CID to storage path and delete
+                            let path = fluree_db_core::content_path(
+                                fluree_db_core::ContentKind::GraphSourceMapping,
+                                &graph_source_id,
+                                &cid.digest_hex(),
+                            );
+                            if let Err(e) = self.storage().delete(&path).await {
+                                report.warnings.push(format!(
+                                    "Failed to delete mapping blob {}: {}",
+                                    mapping.source, e
+                                ));
+                            } else {
+                                report.files_deleted += 1;
+                            }
+                        }
+                    }
+                }
             }
         }
 

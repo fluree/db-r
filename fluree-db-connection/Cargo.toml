@@ -37,6 +37,7 @@ fluree-db-query = { path = "../fluree-db-query" }
 testcontainers = "0.23"
 aws-sdk-s3 = { workspace = true }
 aws-sdk-dynamodb = { workspace = true }
+fs2 = "0.4"
 
 [[test]]
 name = "aws_testcontainers_test"

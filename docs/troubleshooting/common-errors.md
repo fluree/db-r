@@ -28,8 +28,9 @@ curl http://localhost:8090/ledgers
 
 **Create ledger:**
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
-  -d '{"@context": {}, "@graph": []}'
+curl -X POST "http://localhost:8090/v1/fluree/create" \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb:main"}'
 ```
 
 **Verify spelling:**
@@ -471,10 +472,10 @@ async function transactWithRetry(data, maxRetries = 3) {
 }
 ```
 
-**Use replace mode:**
+**Use upsert for retry-friendly transactions:**
 ```bash
-# Upsert mode is more retry-friendly
-POST /transact?ledger=mydb:main&mode=replace
+# Upsert is more retry-friendly for idempotent entity transactions
+POST /upsert?ledger=mydb:main
 ```
 
 ## SIGNATURE_VERIFICATION_FAILED

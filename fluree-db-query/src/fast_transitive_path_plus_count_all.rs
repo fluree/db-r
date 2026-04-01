@@ -65,14 +65,22 @@ fn count_p1_then_p2_plus(
     let p1_sid = normalize_pred_sid(store, p1)?;
     let p2_sid = normalize_pred_sid(store, p2)?;
     let Some(p1_id) = store.sid_to_p_id(&p1_sid) else {
-        return Ok(Some(0));
+        return if ctx.overlay.is_some() {
+            Ok(None)
+        } else {
+            Ok(Some(0))
+        };
     };
     let Some(p2_id) = store.sid_to_p_id(&p2_sid) else {
-        return Ok(Some(0));
+        return if ctx.overlay.is_some() {
+            Ok(None)
+        } else {
+            Ok(Some(0))
+        };
     };
 
     // Build adjacency from PSOT(p2).
-    let mut cursor2 = build_psot_cursor_for_predicate(
+    let Some(mut cursor2) = build_psot_cursor_for_predicate(
         ctx,
         store,
         g_id,
@@ -80,11 +88,13 @@ fn count_p1_then_p2_plus(
         p2_id,
         cursor_projection_sid_otype_okey(),
     )?
-    .ok_or_else(|| QueryError::Internal("transitive-path+: missing PSOT branch".into()))?;
+    else {
+        return Ok(None);
+    };
     let adj = build_iri_adjacency_from_cursor(&mut cursor2)?;
 
     // Stream p1 grouped by subject and union endpoints across multiple start nodes if needed.
-    let mut cursor1 = build_psot_cursor_for_predicate(
+    let Some(mut cursor1) = build_psot_cursor_for_predicate(
         ctx,
         store,
         g_id,
@@ -92,7 +102,9 @@ fn count_p1_then_p2_plus(
         p1_id,
         cursor_projection_sid_otype_okey(),
     )?
-    .ok_or_else(|| QueryError::Internal("transitive-path+: missing PSOT branch".into()))?;
+    else {
+        return Ok(None);
+    };
 
     let iri_ref = OType::IRI_REF.as_u16();
     let mut memo: FxHashMap<u64, u64> = FxHashMap::default();

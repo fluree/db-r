@@ -35,7 +35,7 @@ use axum::{
 use clap::Parser;
 use fluree_db_core::{ContentStore, FileStorage};
 use fluree_db_nameservice::file::FileNameService;
-use fluree_db_nameservice::GraphSourcePublisher;
+use fluree_db_nameservice::GraphSourceLookup;
 use fluree_db_query::bm25::{deserialize, Bm25Index, Bm25Manifest};
 #[cfg(feature = "vector")]
 use fluree_db_query::vector::usearch::{deserialize as vector_deserialize, VectorIndex};

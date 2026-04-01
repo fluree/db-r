@@ -17,17 +17,22 @@
 //! Uses ETag-based compare-and-swap (CAS) operations for atomic updates.
 //! Under contention, operations will retry with exponential backoff.
 
-use crate::storage_traits::{StorageCas, StorageExtError, StorageList};
+use crate::ns_format::{
+    ns_context, BranchPointRef, IndexRef, LedgerRef, NsFileV2, NsIndexFileV2, NS_VERSION,
+};
 use crate::{
-    parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
-    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
-    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher,
-    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    deserialize_json, parse_default_context_value, serialize_json, AdminPublisher, CasResult,
+    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
+    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher,
+    StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
-use fluree_db_core::ContentId;
-use fluree_db_core::{Error as CoreError, StorageRead, StorageWrite};
+use fluree_db_core::{
+    CasAction, CasOutcome, ContentId, Error as CoreError, StorageCas, StorageList, StorageRead,
+    StorageWrite,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
@@ -40,6 +45,15 @@ pub struct StorageNameService<S> {
     prefix: String,
 }
 
+impl<S: Clone> Clone for StorageNameService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+            prefix: self.prefix.clone(),
+        }
+    }
+}
+
 impl<S: Debug> Debug for StorageNameService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StorageNameService")
@@ -48,106 +62,6 @@ impl<S: Debug> Debug for StorageNameService<S> {
             .finish()
     }
 }
-
-/// JSON structure for main ns@v2 record file.
-/// Field names use the `f:` compact prefix (e.g., `"f:ledger"`, `"f:branch"`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NsFileV2 {
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "@id")]
-    id: String,
-
-    #[serde(rename = "@type")]
-    record_type: Vec<String>,
-
-    #[serde(rename = "f:ledger")]
-    ledger: LedgerRef,
-
-    #[serde(rename = "f:branch")]
-    branch: String,
-
-    /// Content identifier for the head commit (CID string, e.g. "bafy...").
-    /// This is the authoritative identity for the head commit.
-    #[serde(
-        rename = "f:commitCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    commit_cid: Option<String>,
-
-    /// Content identifier for the ledger configuration (origin discovery).
-    #[serde(
-        rename = "f:configCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    config_cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
-
-    #[serde(rename = "f:ledgerIndex", skip_serializing_if = "Option::is_none")]
-    index: Option<IndexRef>,
-
-    #[serde(rename = "f:status")]
-    status: String,
-
-    /// Content identifier for the default JSON-LD context (new CID format).
-    #[serde(
-        rename = "f:defaultContextCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    default_context_cid: Option<String>,
-
-    // V2 extension fields (optional for backward compatibility)
-    /// Status watermark (v2 extension) - defaults to 1 if missing
-    #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
-    status_v: Option<i64>,
-
-    /// Status metadata beyond the state field (v2 extension)
-    #[serde(rename = "f:statusMeta", skip_serializing_if = "Option::is_none")]
-    status_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-
-    /// Config watermark (v2 extension) - defaults to 0 (unborn) if missing
-    #[serde(rename = "f:configV", skip_serializing_if = "Option::is_none")]
-    config_v: Option<i64>,
-
-    /// Config metadata beyond default_context (v2 extension)
-    #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
-    config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-}
-
-/// JSON structure for index-only ns@v2 file
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct NsIndexFileV2 {
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "f:ledgerIndex")]
-    index: IndexRef,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LedgerRef {
-    #[serde(rename = "@id")]
-    id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct IndexRef {
-    /// Content identifier for this index root (CID string).
-    #[serde(rename = "f:cid", skip_serializing_if = "Option::is_none", default)]
-    cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
-}
-
-const NS_VERSION: &str = "ns@v2";
-const MAX_CAS_RETRIES: u32 = 5;
 
 // =============================================================================
 // Graph Source File Structures (ns@v2 format)
@@ -212,12 +126,6 @@ struct GraphSourceIndexRef {
     cid: String,
 }
 
-/// Create the standard ns@v2 context as JSON value.
-/// Uses the `"f"` prefix for field names (e.g. `"f:ledger"`, `"f:branch"`).
-fn ns_context() -> serde_json::Value {
-    serde_json::json!({"f": fluree_vocab::fluree::DB})
-}
-
 // Methods that do not depend on storage trait bounds.
 impl<S> StorageNameService<S> {
     /// Create a new `NsFileV2` for initial creation.
@@ -249,6 +157,8 @@ impl<S> StorageNameService<S> {
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            branch_point: None,
+            branches: 0,
         }
     }
 }
@@ -456,6 +366,15 @@ where
                 .as_deref()
                 .and_then(parse_default_context_value),
             retracted: main.status == "retracted",
+            branch_point: main.branch_point.and_then(|bp| {
+                let commit_id = bp.commit_cid?.parse::<ContentId>().ok()?;
+                Some(crate::BranchPoint {
+                    source: bp.source,
+                    commit_id,
+                    t: bp.t,
+                })
+            }),
+            branches: main.branches,
         };
 
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
@@ -473,160 +392,74 @@ where
         Ok(Some(record))
     }
 
-    /// Perform a CAS update with retries
+    /// Perform an atomic read-modify-write on a JSON value.
     ///
-    /// Uses exponential backoff with jitter on conflict.
+    /// Reads the current value at `key`, deserializes it, applies `update_fn`,
+    /// and writes the result back atomically. If the closure returns `None`,
+    /// no write is performed.
     async fn cas_update<T, F>(&self, key: &str, update_fn: F) -> Result<()>
     where
-        T: Serialize + for<'de> Deserialize<'de> + Clone,
-        F: Fn(Option<T>) -> Option<T>,
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: Fn(Option<T>) -> Option<T> + Send + Sync,
     {
-        for attempt in 0..MAX_CAS_RETRIES {
-            // Read current value with ETag
-            let current = match self.storage.read_with_etag(key).await {
-                Ok((bytes, etag)) => {
-                    let value: T = serde_json::from_slice(&bytes)?;
-                    Some((value, etag))
-                }
-                Err(StorageExtError::NotFound(_)) => None,
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to read {}: {}",
-                        key, e
-                    )))
-                }
-            };
+        let outcome = self
+            .storage
+            .compare_and_swap(key, |current_bytes| {
+                let current: Option<T> = current_bytes.map(deserialize_json).transpose()?;
 
-            // Apply update function
-            let new_value = match &current {
-                Some((existing, _)) => update_fn(Some(existing.clone())),
-                None => update_fn(None),
-            };
-
-            // If no update needed, we're done
-            let Some(value) = new_value else {
-                return Ok(());
-            };
-
-            // Serialize the new value
-            let bytes = serde_json::to_vec_pretty(&value)?;
-
-            // Write with appropriate condition
-            let result = match current {
-                Some((_, etag)) => {
-                    // Update existing - use If-Match
-                    self.storage.write_if_match(key, &bytes, &etag).await
-                }
-                None => {
-                    // Create new - use If-None-Match
-                    match self.storage.write_if_absent(key, &bytes).await {
-                        Ok(true) => Ok("created".to_string()),
-                        Ok(false) => Err(StorageExtError::PreconditionFailed),
-                        Err(e) => Err(e),
+                match update_fn(current) {
+                    Some(value) => {
+                        let bytes = serialize_json(&value)?;
+                        Ok(CasAction::Write(bytes))
                     }
+                    None => Ok(CasAction::Abort(())),
                 }
-            };
+            })
+            .await
+            .map_err(|e| {
+                NameServiceError::storage(format!("CAS update failed for {}: {}", key, e))
+            })?;
 
-            match result {
-                Ok(_) => return Ok(()),
-                Err(StorageExtError::PreconditionFailed) => {
-                    // Conflict - retry with backoff
-                    if attempt + 1 < MAX_CAS_RETRIES {
-                        let jitter = rand::random::<u64>() % 50;
-                        let delay = std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
-                        tokio::time::sleep(delay).await;
-                    }
-                }
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to write {}: {}",
-                        key, e
-                    )))
-                }
-            }
+        match outcome {
+            CasOutcome::Written | CasOutcome::Aborted(()) => Ok(()),
         }
-
-        Err(NameServiceError::storage(format!(
-            "CAS update failed after {} retries for {}",
-            MAX_CAS_RETRIES, key
-        )))
     }
 
-    /// CAS update variant that returns an outcome decided by the closure.
+    /// Atomic read-modify-write that returns an outcome decided by the closure.
     ///
     /// Unlike `cas_update`, this lets the closure signal "I decided not to update" as
-    /// a non-error condition (returning `CasUpdateDecision::Skip` with a reason).
-    /// The CAS retry loop handles ETag conflicts transparently; the `Skip` case is
-    /// returned immediately without retries.
+    /// a non-error condition, carrying an application-level result out.
     async fn cas_update_with_outcome<T, F>(
         &self,
         key: &str,
         update_fn: F,
     ) -> Result<CasUpdateOutcome>
     where
-        T: Serialize + for<'de> Deserialize<'de> + Clone,
-        F: Fn(Option<T>) -> CasUpdateDecision<T>,
+        T: Serialize + for<'de> Deserialize<'de>,
+        F: Fn(Option<T>) -> CasUpdateDecision<T> + Send + Sync,
     {
-        for attempt in 0..MAX_CAS_RETRIES {
-            let current = match self.storage.read_with_etag(key).await {
-                Ok((bytes, etag)) => {
-                    let value: T = serde_json::from_slice(&bytes)?;
-                    Some((value, etag))
-                }
-                Err(StorageExtError::NotFound(_)) => None,
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to read {}: {}",
-                        key, e
-                    )))
-                }
-            };
+        let outcome = self
+            .storage
+            .compare_and_swap(key, |current_bytes| {
+                let current: Option<T> = current_bytes.map(deserialize_json).transpose()?;
 
-            let decision = match &current {
-                Some((existing, _)) => update_fn(Some(existing.clone())),
-                None => update_fn(None),
-            };
-
-            let value = match decision {
-                CasUpdateDecision::Apply(v) => v,
-                CasUpdateDecision::Skip(result) => {
-                    return Ok(CasUpdateOutcome::Skipped(result));
-                }
-            };
-
-            let bytes = serde_json::to_vec_pretty(&value)?;
-
-            let result = match current {
-                Some((_, etag)) => self.storage.write_if_match(key, &bytes, &etag).await,
-                None => match self.storage.write_if_absent(key, &bytes).await {
-                    Ok(true) => Ok("created".to_string()),
-                    Ok(false) => Err(StorageExtError::PreconditionFailed),
-                    Err(e) => Err(e),
-                },
-            };
-
-            match result {
-                Ok(_) => return Ok(CasUpdateOutcome::Updated),
-                Err(StorageExtError::PreconditionFailed) => {
-                    if attempt + 1 < MAX_CAS_RETRIES {
-                        let jitter = rand::random::<u64>() % 50;
-                        let delay = std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
-                        tokio::time::sleep(delay).await;
+                match update_fn(current) {
+                    CasUpdateDecision::Apply(value) => {
+                        let bytes = serialize_json(&value)?;
+                        Ok(CasAction::Write(bytes))
                     }
+                    CasUpdateDecision::Skip(result) => Ok(CasAction::Abort(result)),
                 }
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to write {}: {}",
-                        key, e
-                    )))
-                }
-            }
-        }
+            })
+            .await
+            .map_err(|e| {
+                NameServiceError::storage(format!("CAS update failed for {}: {}", key, e))
+            })?;
 
-        Err(NameServiceError::storage(format!(
-            "CAS update failed after {} retries for {}",
-            MAX_CAS_RETRIES, key
-        )))
+        match outcome {
+            CasOutcome::Written => Ok(CasUpdateOutcome::Updated),
+            CasOutcome::Aborted(result) => Ok(CasUpdateOutcome::Skipped(result)),
+        }
     }
 }
 
@@ -655,6 +488,38 @@ where
     async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         self.load_record(&ledger_name, &branch).await
+    }
+
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let prefix = if self.prefix.is_empty() {
+            format!("{}/{}/", NS_VERSION, ledger_name)
+        } else {
+            format!("{}/{}/{}/", self.prefix, NS_VERSION, ledger_name)
+        };
+
+        let keys = StorageList::list_prefix(&self.storage, &prefix)
+            .await
+            .map_err(|e| NameServiceError::storage(format!("Failed to list branches: {}", e)))?;
+
+        let mut records = Vec::new();
+
+        for key in keys {
+            if key.ends_with(".index.json") || !key.ends_with(".json") {
+                continue;
+            }
+
+            // Extract branch name from the key suffix
+            let file_part = key.rsplit('/').next().unwrap_or("");
+            let branch = file_part.trim_end_matches(".json");
+
+            if let Ok(Some(record)) = self.load_record(ledger_name, branch).await {
+                if !record.retracted {
+                    records.push(record);
+                }
+            }
+        }
+
+        Ok(records)
     }
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
@@ -704,6 +569,165 @@ where
 
         Ok(records)
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let key = self.ns_key(ledger_name, new_branch);
+        let normalized_id = format_ledger_id(ledger_name, new_branch);
+
+        let bp_ref = BranchPointRef {
+            source: branch_point.source.clone(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            t: branch_point.t,
+        };
+
+        let file = NsFileV2 {
+            context: ns_context(),
+            id: normalized_id.clone(),
+            record_type: vec!["f:LedgerSource".to_string()],
+            ledger: LedgerRef {
+                id: ledger_name.to_string(),
+            },
+            branch: new_branch.to_string(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            config_cid: None,
+            t: branch_point.t,
+            index: None,
+            status: "ready".to_string(),
+            default_context_cid: None,
+            status_v: Some(1),
+            status_meta: None,
+            config_v: Some(0),
+            config_meta: None,
+            branch_point: Some(bp_ref),
+            branches: 0,
+        };
+        let bytes = serde_json::to_vec_pretty(&file)
+            .map_err(|e| NameServiceError::storage(e.to_string()))?;
+
+        let created = self.storage.insert(&key, &bytes).await?;
+        if !created {
+            return Err(NameServiceError::ledger_already_exists(&normalized_id));
+        }
+
+        // Increment source branch's child count
+        let source_key = self.ns_key(ledger_name, &branch_point.source);
+        let source_branch = branch_point.source.clone();
+        self.cas_update::<NsFileV2, _>(&source_key, |existing| {
+            let mut file = existing?;
+            file.branches += 1;
+            Some(file)
+        })
+        .await?;
+
+        // Verify the increment actually happened (cas_update treats abort as Ok)
+        let parent = self.load_record(ledger_name, &source_branch).await?;
+        if parent.is_none() {
+            // Source branch doesn't exist; clean up the record we just created
+            let _ = self.storage.delete(&key).await;
+            return Err(NameServiceError::not_found(format!(
+                "source branch {}:{}",
+                ledger_name, source_branch
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+
+        // Read the record to find the parent before purging
+        let record = self
+            .load_record(&ledger_name, &branch)
+            .await?
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_branch_point = record.branch_point.clone();
+
+        // Remove the NS files
+        let main_key = self.ns_key(&ledger_name, &branch);
+        let index_key = self.index_key(&ledger_name, &branch);
+        let _ = self.storage.delete(&main_key).await;
+        let _ = self.storage.delete(&index_key).await;
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_branch_point {
+            Some(bp) => {
+                let parent_key = self.ns_key(&ledger_name, &bp.source);
+                self.cas_update::<NsFileV2, _>(&parent_key, move |existing| {
+                    let mut file = existing?;
+                    file.branches = file.branches.saturating_sub(1);
+                    Some(file)
+                })
+                .await?;
+                // Re-read the parent to get the updated count
+                let parent_record = self.load_record(&ledger_name, &bp.source).await?;
+                Ok(parent_record.map(|r| r.branches))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let key = self.ns_key(&ledger_name, &branch);
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&key, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.branch_point = Some(BranchPointRef {
+                    source: new_branch_point.source.clone(),
+                    commit_cid: Some(new_branch_point.commit_id.to_string()),
+                    t: new_branch_point.t,
+                });
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(ledger_id));
+        }
+
+        Ok(())
+    }
+
+    async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let key = self.ns_key(&ledger_name, &branch);
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&key, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.apply_snapshot(&snapshot);
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(ledger_id));
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -736,12 +760,14 @@ where
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            branch_point: None,
+            branches: 0,
         };
 
         let bytes = serde_json::to_vec_pretty(&file)?;
 
-        // Use write_if_absent for atomic create-if-not-exists
-        match self.storage.write_if_absent(&key, &bytes).await {
+        // Use insert for atomic create-if-not-exists
+        match self.storage.insert(&key, &bytes).await {
             Ok(true) => Ok(()), // Successfully created
             Ok(false) => {
                 // Record exists — check if it's retracted (dropped) and allow re-creation
@@ -1094,8 +1120,24 @@ where
                                 });
                             }
                             (true, None) => {
-                                return CasUpdateDecision::Skip(CasResult::Conflict {
-                                    actual: None,
+                                // The separate index file doesn't exist yet.
+                                // get_ref returns Some(RefValue { id: None, t: 0 })
+                                // for a freshly created ledger (from the main file
+                                // fallback). Allow if the caller expected that empty
+                                // state; otherwise conflict.
+                                let expected_is_empty = expected_id.is_none();
+                                if !expected_is_empty {
+                                    return CasUpdateDecision::Skip(CasResult::Conflict {
+                                        actual: None,
+                                    });
+                                }
+                                // Treat as create — fall through to apply
+                                return CasUpdateDecision::Apply(NsIndexFileV2 {
+                                    context: ns_context(),
+                                    index: IndexRef {
+                                        cid: new_cid.as_ref().map(|c| c.to_string()),
+                                        t: new_t,
+                                    },
                                 });
                             }
                             (true, Some(actual)) => {
@@ -1250,14 +1292,19 @@ where
         })
         .await
     }
+}
 
+#[async_trait]
+impl<S> GraphSourceLookup for StorageNameService<S>
+where
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+{
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,
     ) -> Result<Option<GraphSourceRecord>> {
         let (name, branch) = split_ledger_id(graph_source_id)?;
 
-        // First check if it's a graph source record
         if !self.is_graph_source_record(&name, &branch).await? {
             return Ok(None);
         }
@@ -1406,17 +1453,7 @@ where
 
         let file: NsFileV2 = serde_json::from_slice(&data)?;
 
-        // Build StatusPayload from status field and status_meta
-        let extra = file.status_meta.unwrap_or_default();
-        let payload = StatusPayload {
-            state: file.status.clone(),
-            extra,
-        };
-
-        // status_v defaults to 1 if missing (for backward compatibility)
-        let v = file.status_v.unwrap_or(1);
-
-        Ok(Some(StatusValue { v, payload }))
+        Ok(Some(file.to_status_value()))
     }
 
     async fn push_status(
@@ -1427,94 +1464,63 @@ where
     ) -> Result<StatusCasResult> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
-        // Retry only on ETag precondition failures (true write races).
-        // If the expected/current check fails, return Conflict immediately.
-        for attempt in 0..MAX_CAS_RETRIES {
-            // Read current state with ETag
-            let (current_bytes, etag) = match self.storage.read_with_etag(&key).await {
-                Ok((bytes, etag)) => (bytes, etag),
-                Err(StorageExtError::NotFound(_)) => {
-                    return Ok(StatusCasResult::Conflict { actual: None });
-                }
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to read record: {}",
-                        e
-                    )));
-                }
-            };
 
-            let mut file: NsFileV2 = serde_json::from_slice(&current_bytes)?;
+        let expected = expected.cloned();
+        let new = new.clone();
 
-            // Build current StatusValue
-            let current = {
-                let extra = file.status_meta.clone().unwrap_or_default();
-                let payload = StatusPayload {
-                    state: file.status.clone(),
-                    extra,
+        let outcome = self
+            .storage
+            .compare_and_swap(&key, |current_bytes| {
+                let Some(bytes) = current_bytes else {
+                    return Ok(CasAction::Abort(StatusCasResult::Conflict { actual: None }));
                 };
-                let v = file.status_v.unwrap_or(1);
-                StatusValue { v, payload }
-            };
 
-            // Compare expected with current
-            match expected {
-                None => {
-                    return Ok(StatusCasResult::Conflict {
-                        actual: Some(current),
-                    });
-                }
-                Some(exp) => {
-                    if exp.v != current.v || exp.payload != current.payload {
-                        return Ok(StatusCasResult::Conflict {
+                let mut file: NsFileV2 = deserialize_json(bytes)?;
+
+                let current = file.to_status_value();
+
+                // Compare expected with current
+                match &expected {
+                    None => {
+                        return Ok(CasAction::Abort(StatusCasResult::Conflict {
                             actual: Some(current),
-                        });
+                        }));
+                    }
+                    Some(exp) => {
+                        if exp.v != current.v || exp.payload != current.payload {
+                            return Ok(CasAction::Abort(StatusCasResult::Conflict {
+                                actual: Some(current),
+                            }));
+                        }
                     }
                 }
-            }
 
-            // Monotonic guard: new.v > current.v
-            if new.v <= current.v {
-                return Ok(StatusCasResult::Conflict {
-                    actual: Some(current),
-                });
-            }
-
-            // Apply update
-            file.status = new.payload.state.clone();
-            file.status_v = Some(new.v);
-            file.status_meta = if new.payload.extra.is_empty() {
-                None
-            } else {
-                Some(new.payload.extra.clone())
-            };
-
-            let new_bytes = serde_json::to_vec_pretty(&file)?;
-
-            // Write with ETag check
-            match self.storage.write_if_match(&key, &new_bytes, &etag).await {
-                Ok(_) => return Ok(StatusCasResult::Updated),
-                Err(StorageExtError::PreconditionFailed) => {
-                    // ETag mismatch - retry with backoff
-                    if attempt + 1 < MAX_CAS_RETRIES {
-                        let jitter = rand::random::<u64>() % 50;
-                        let delay = std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
+                // Monotonic guard: new.v > current.v
+                if new.v <= current.v {
+                    return Ok(CasAction::Abort(StatusCasResult::Conflict {
+                        actual: Some(current),
+                    }));
                 }
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to update status: {}",
-                        e
-                    )))
-                }
-            }
+
+                // Apply update
+                file.status = new.payload.state.clone();
+                file.status_v = Some(new.v);
+                file.status_meta = if new.payload.extra.is_empty() {
+                    None
+                } else {
+                    Some(new.payload.extra.clone())
+                };
+
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await
+            .map_err(|e| NameServiceError::storage(format!("Failed to update status: {}", e)))?;
+
+        match outcome {
+            CasOutcome::Written => Ok(StatusCasResult::Updated),
+            CasOutcome::Aborted(result) => Ok(result),
         }
-
-        // Too much contention; return best-effort current value.
-        let current = self.get_status(ledger_id).await?;
-        Ok(StatusCasResult::Conflict { actual: current })
     }
 }
 
@@ -1540,45 +1546,7 @@ where
 
         let file: NsFileV2 = serde_json::from_slice(&data)?;
 
-        let has_default_ctx = file.default_context_cid.is_some();
-
-        // config_v defaults based on whether default_context exists:
-        // - If default_context exists but config_v is missing, treat as v=1 (legacy record)
-        // - If neither exists, treat as v=0 (unborn)
-        let v = file.config_v.unwrap_or_else(|| {
-            if has_default_ctx || file.config_meta.is_some() || file.config_cid.is_some() {
-                1 // Legacy record with config data
-            } else {
-                0 // Unborn
-            }
-        });
-
-        // Resolve default_context CID (CID-only)
-        let resolved_ctx = file
-            .default_context_cid
-            .as_deref()
-            .and_then(parse_default_context_value);
-
-        // Build ConfigPayload if we have any config data
-        let payload = if v == 0
-            && resolved_ctx.is_none()
-            && file.config_meta.is_none()
-            && file.config_cid.is_none()
-        {
-            None
-        } else {
-            let extra = file.config_meta.unwrap_or_default();
-            Some(ConfigPayload {
-                default_context: resolved_ctx,
-                config_id: file
-                    .config_cid
-                    .as_deref()
-                    .and_then(|s| s.parse::<ContentId>().ok()),
-                extra,
-            })
-        };
-
-        Ok(Some(ConfigValue { v, payload }))
+        Ok(Some(file.to_config_value()))
     }
 
     async fn push_config(
@@ -1589,135 +1557,80 @@ where
     ) -> Result<ConfigCasResult> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let key = self.ns_key(&ledger_name, &branch);
-        // Retry only on ETag precondition failures (true write races).
-        // If the expected/current check fails, return Conflict immediately.
-        for attempt in 0..MAX_CAS_RETRIES {
-            // Read current state with ETag
-            let (current_bytes, etag) = match self.storage.read_with_etag(&key).await {
-                Ok((bytes, etag)) => (bytes, etag),
-                Err(StorageExtError::NotFound(_)) => {
-                    return Ok(ConfigCasResult::Conflict { actual: None });
-                }
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to read record: {}",
-                        e
-                    )));
-                }
-            };
 
-            let mut file: NsFileV2 = serde_json::from_slice(&current_bytes)?;
+        let expected = expected.cloned();
+        let new = new.clone();
 
-            // Build current ConfigValue
-            let current = {
-                let has_default_ctx = file.default_context_cid.is_some();
-
-                let v = file.config_v.unwrap_or_else(|| {
-                    if has_default_ctx || file.config_meta.is_some() || file.config_cid.is_some() {
-                        1 // Legacy record with config data
-                    } else {
-                        0 // Unborn
-                    }
-                });
-
-                let resolved_ctx = file
-                    .default_context_cid
-                    .as_deref()
-                    .and_then(parse_default_context_value);
-
-                let payload = if v == 0
-                    && resolved_ctx.is_none()
-                    && file.config_meta.is_none()
-                    && file.config_cid.is_none()
-                {
-                    None
-                } else {
-                    let extra = file.config_meta.clone().unwrap_or_default();
-                    Some(ConfigPayload {
-                        default_context: resolved_ctx,
-                        config_id: file
-                            .config_cid
-                            .as_deref()
-                            .and_then(|s| s.parse::<ContentId>().ok()),
-                        extra,
-                    })
+        let outcome = self
+            .storage
+            .compare_and_swap(&key, |current_bytes| {
+                let Some(bytes) = current_bytes else {
+                    return Ok(CasAction::Abort(ConfigCasResult::Conflict { actual: None }));
                 };
-                ConfigValue { v, payload }
-            };
 
-            // Compare expected with current
-            match expected {
-                None => {
-                    return Ok(ConfigCasResult::Conflict {
-                        actual: Some(current),
-                    });
-                }
-                Some(exp) => {
-                    if exp.v != current.v || exp.payload != current.payload {
-                        return Ok(ConfigCasResult::Conflict {
+                let mut file: NsFileV2 = deserialize_json(bytes)?;
+
+                let current = file.to_config_value();
+
+                // Compare expected with current
+                match &expected {
+                    None => {
+                        return Ok(CasAction::Abort(ConfigCasResult::Conflict {
                             actual: Some(current),
-                        });
+                        }));
+                    }
+                    Some(exp) => {
+                        if exp.v != current.v || exp.payload != current.payload {
+                            return Ok(CasAction::Abort(ConfigCasResult::Conflict {
+                                actual: Some(current),
+                            }));
+                        }
                     }
                 }
-            }
 
-            // Monotonic guard: new.v > current.v
-            if new.v <= current.v {
-                return Ok(ConfigCasResult::Conflict {
-                    actual: Some(current),
-                });
-            }
+                // Monotonic guard: new.v > current.v
+                if new.v <= current.v {
+                    return Ok(CasAction::Abort(ConfigCasResult::Conflict {
+                        actual: Some(current),
+                    }));
+                }
 
-            // Apply update
-            file.config_v = Some(new.v);
+                // Apply update
+                file.config_v = Some(new.v);
 
-            if let Some(ref payload) = new.payload {
-                // Write CID to field
-                file.default_context_cid = payload.default_context.as_ref().map(|c| c.to_string());
-                file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
-                file.config_meta = if payload.extra.is_empty() {
-                    None
+                if let Some(ref payload) = new.payload {
+                    file.default_context_cid =
+                        payload.default_context.as_ref().map(|c| c.to_string());
+                    file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
+                    file.config_meta = if payload.extra.is_empty() {
+                        None
+                    } else {
+                        Some(payload.extra.clone())
+                    };
                 } else {
-                    Some(payload.extra.clone())
-                };
-            } else {
-                file.default_context_cid = None;
-                file.config_cid = None;
-                file.config_meta = None;
-            }
-
-            let new_bytes = serde_json::to_vec_pretty(&file)?;
-
-            // Write with ETag check
-            match self.storage.write_if_match(&key, &new_bytes, &etag).await {
-                Ok(_) => return Ok(ConfigCasResult::Updated),
-                Err(StorageExtError::PreconditionFailed) => {
-                    // ETag mismatch - retry with backoff
-                    if attempt + 1 < MAX_CAS_RETRIES {
-                        let jitter = rand::random::<u64>() % 50;
-                        let delay = std::time::Duration::from_millis(50 * (1 << attempt) + jitter);
-                        tokio::time::sleep(delay).await;
-                        continue;
-                    }
+                    file.default_context_cid = None;
+                    file.config_cid = None;
+                    file.config_meta = None;
                 }
-                Err(e) => {
-                    return Err(NameServiceError::storage(format!(
-                        "Failed to update config: {}",
-                        e
-                    )))
-                }
-            }
+
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await
+            .map_err(|e| NameServiceError::storage(format!("Failed to update config: {}", e)))?;
+
+        match outcome {
+            CasOutcome::Written => Ok(ConfigCasResult::Updated),
+            CasOutcome::Aborted(result) => Ok(result),
         }
-
-        // Too much contention; return best-effort current value.
-        let current = self.get_config(ledger_id).await?;
-        Ok(ConfigCasResult::Conflict { actual: current })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ConfigPayload, StatusPayload};
+    use fluree_db_core::StorageExtError;
 
     #[test]
     fn test_ns_key_with_prefix() {
@@ -1756,15 +1669,14 @@ mod tests {
     // In-memory CAS storage for testing StorageNameService
     // =========================================================================
 
-    use crate::storage_traits::{ListResult, StorageExtResult};
+    use fluree_db_core::{ListResult, StorageExtResult};
     use std::collections::HashMap;
     use std::sync::RwLock;
 
-    /// In-memory storage with ETag-based CAS for testing.
-    /// ETags are simple version counters per key.
+    /// In-memory storage with atomic CAS for testing.
     #[derive(Debug)]
     struct MemoryCasStorage {
-        data: RwLock<HashMap<String, (Vec<u8>, u64)>>, // value + version counter
+        data: RwLock<HashMap<String, Vec<u8>>>,
     }
 
     impl MemoryCasStorage {
@@ -1782,7 +1694,7 @@ mod tests {
                 .read()
                 .unwrap()
                 .get(address)
-                .map(|(bytes, _)| bytes.clone())
+                .cloned()
                 .ok_or_else(|| fluree_db_core::Error::not_found(address))
         }
 
@@ -1803,9 +1715,10 @@ mod tests {
     #[async_trait]
     impl fluree_db_core::StorageWrite for MemoryCasStorage {
         async fn write_bytes(&self, address: &str, bytes: &[u8]) -> fluree_db_core::Result<()> {
-            let mut data = self.data.write().unwrap();
-            let version = data.get(address).map(|(_, v)| v + 1).unwrap_or(1);
-            data.insert(address.to_string(), (bytes.to_vec(), version));
+            self.data
+                .write()
+                .unwrap()
+                .insert(address.to_string(), bytes.to_vec());
             Ok(())
         }
 
@@ -1867,43 +1780,35 @@ mod tests {
 
     #[async_trait]
     impl StorageCas for MemoryCasStorage {
-        async fn write_if_absent(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+        async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
             let mut data = self.data.write().unwrap();
             if data.contains_key(address) {
                 Ok(false)
             } else {
-                data.insert(address.to_string(), (bytes.to_vec(), 1));
+                data.insert(address.to_string(), bytes.to_vec());
                 Ok(true)
             }
         }
 
-        async fn write_if_match(
+        async fn compare_and_swap<T, F>(
             &self,
             address: &str,
-            bytes: &[u8],
-            expected_etag: &str,
-        ) -> StorageExtResult<String> {
+            f: F,
+        ) -> StorageExtResult<CasOutcome<T>>
+        where
+            F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError>
+                + Send
+                + Sync,
+            T: Send,
+        {
             let mut data = self.data.write().unwrap();
-            match data.get(address) {
-                None => Err(StorageExtError::NotFound(address.to_string())),
-                Some((_, version)) => {
-                    let current_etag = version.to_string();
-                    if current_etag != expected_etag {
-                        Err(StorageExtError::PreconditionFailed)
-                    } else {
-                        let new_version = version + 1;
-                        data.insert(address.to_string(), (bytes.to_vec(), new_version));
-                        Ok(new_version.to_string())
-                    }
+            let current = data.get(address).map(|v| v.as_slice());
+            match f(current)? {
+                CasAction::Write(new_bytes) => {
+                    data.insert(address.to_string(), new_bytes);
+                    Ok(CasOutcome::Written)
                 }
-            }
-        }
-
-        async fn read_with_etag(&self, address: &str) -> StorageExtResult<(Vec<u8>, String)> {
-            let data = self.data.read().unwrap();
-            match data.get(address) {
-                None => Err(StorageExtError::NotFound(address.to_string())),
-                Some((bytes, version)) => Ok((bytes.clone(), version.to_string())),
+                CasAction::Abort(t) => Ok(CasOutcome::Aborted(t)),
             }
         }
     }
@@ -1912,18 +1817,21 @@ mod tests {
         StorageNameService::new(MemoryCasStorage::new(), "test")
     }
 
-    /// Wrapper that fails the first `write_if_match` with `PreconditionFailed`.
+    /// Wrapper that simulates a concurrent modification on the first
+    /// `compare_and_swap` call. The closure runs but writes are silently
+    /// discarded on the first attempt, forcing a retry. This tests that
+    /// callers handle retries correctly.
     #[derive(Debug)]
     struct FlakyCasStorage {
         inner: MemoryCasStorage,
-        fail_first_match: std::sync::atomic::AtomicBool,
+        fail_first_swap: std::sync::atomic::AtomicBool,
     }
 
     impl FlakyCasStorage {
         fn new() -> Self {
             Self {
                 inner: MemoryCasStorage::new(),
-                fail_first_match: std::sync::atomic::AtomicBool::new(true),
+                fail_first_swap: std::sync::atomic::AtomicBool::new(true),
             }
         }
     }
@@ -1994,29 +1902,35 @@ mod tests {
 
     #[async_trait]
     impl StorageCas for FlakyCasStorage {
-        async fn write_if_absent(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
-            self.inner.write_if_absent(address, bytes).await
+        async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+            self.inner.insert(address, bytes).await
         }
 
-        async fn write_if_match(
+        async fn compare_and_swap<T, F>(
             &self,
             address: &str,
-            bytes: &[u8],
-            expected_etag: &str,
-        ) -> StorageExtResult<String> {
+            f: F,
+        ) -> StorageExtResult<CasOutcome<T>>
+        where
+            F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError>
+                + Send
+                + Sync,
+            T: Send,
+        {
+            // On the first call, run the closure but then call it again to
+            // simulate a concurrent modification that invalidated the first read.
             if self
-                .fail_first_match
+                .fail_first_swap
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
             {
-                return Err(StorageExtError::PreconditionFailed);
+                let data = self.inner.data.read().unwrap();
+                let current = data.get(address).map(|v| v.as_slice());
+                // Run closure but discard result (simulating a race)
+                let _ = f(current);
+                drop(data);
             }
-            self.inner
-                .write_if_match(address, bytes, expected_etag)
-                .await
-        }
-
-        async fn read_with_etag(&self, address: &str) -> StorageExtResult<(Vec<u8>, String)> {
-            self.inner.read_with_etag(address).await
+            // Second attempt succeeds normally
+            self.inner.compare_and_swap(address, f).await
         }
     }
 

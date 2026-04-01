@@ -501,15 +501,18 @@ mod tests {
         let result = fluree
             .nameservice_query()
             .jsonld(&query)
-            .format(FormatterConfig::jsonld_objects())
+            .format(FormatterConfig::agent_json())
             .execute_formatted()
             .await
             .unwrap();
 
-        let arr = result.as_array().expect("Expected array result");
-        assert_eq!(arr.len(), 3, "Should have 3 results");
-        // With jsonld_objects, results should be objects with variable names
-        assert!(arr[0].is_object(), "Results should be objects");
+        // AgentJson returns an envelope with schema, rows, rowCount, etc.
+        let obj = result.as_object().expect("Expected object envelope");
+        assert!(obj.contains_key("schema"), "Should have schema");
+        assert!(obj.contains_key("rows"), "Should have rows");
+        let rows = obj["rows"].as_array().expect("rows should be array");
+        assert_eq!(rows.len(), 3, "Should have 3 results");
+        assert!(rows[0].is_object(), "Rows should be objects");
     }
 
     #[tokio::test]

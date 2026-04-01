@@ -444,16 +444,16 @@ impl<'a> PsotSubjectCountIter<'a> {
                     continue;
                 }
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Psot,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -590,16 +590,16 @@ impl<'a> PostObjectGroupCountIter<'a> {
                     return Ok(None);
                 }
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Post,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -815,16 +815,16 @@ impl<'a> PsotSubjectWeightedSumIter<'a> {
                 }
 
                 let batch = if let Some(cache) = self.store.leaflet_cache() {
-                    let idx_u8: u8 = idx
+                    let idx_u32: u32 = idx
                         .try_into()
-                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u8".to_string()))?;
+                        .map_err(|_| QueryError::Internal("leaflet idx exceeds u32".to_string()))?;
                     load_columns_cached_via_handle(
                         handle.as_ref(),
                         idx,
                         RunSortOrder::Psot,
                         cache,
                         handle.leaf_id(),
-                        idx_u8,
+                        idx_u32,
                     )
                     .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
@@ -1351,6 +1351,8 @@ pub fn build_psot_cursor_for_predicate(
         let mut ephemeral_preds = HashMap::new();
         let mut next_ep = store.predicate_count();
         let mut ops = Vec::new();
+        let mut translate_failed = false;
+        let mut translate_fail_count: u32 = 0;
 
         ctx.overlay().for_each_overlay_flake(
             g_id,
@@ -1372,14 +1374,33 @@ pub fn build_psot_cursor_for_predicate(
                 ) {
                     Ok(op) => ops.push(op),
                     Err(e) => {
-                        tracing::warn!(error = %e, "fast-path cursor: failed to translate overlay flake");
+                        translate_failed = true;
+                        translate_fail_count = translate_fail_count.saturating_add(1);
+                        if translate_fail_count == 1 {
+                            tracing::warn!(
+                                error = %e,
+                                s = %flake.s,
+                                p = %flake.p,
+                                t = flake.t,
+                                op = flake.op,
+                                "fast-path cursor: overlay flake translation failed; disabling fast path for correctness"
+                            );
+                        }
                     }
                 }
             },
         );
+        if translate_failed {
+            tracing::debug!(
+                failures = translate_fail_count,
+                "fast-path cursor: falling back due to overlay translation failures"
+            );
+            return Ok(None);
+        }
 
         if !ops.is_empty() {
             fluree_db_binary_index::read::types::sort_overlay_ops(&mut ops, RunSortOrder::Psot);
+            fluree_db_binary_index::read::types::resolve_overlay_ops(&mut ops);
             cursor.set_overlay_ops(ops);
         }
         cursor.set_epoch(ctx.overlay().epoch());
@@ -1397,8 +1418,8 @@ pub fn subject_ref_to_s_id(store: &BinaryIndexStore, r: &Ref) -> Result<Option<u
             .find_subject_id(iri)
             .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?),
         Ref::Sid(sid) => Ok(store
-            .sid_to_s_id(sid)
-            .map_err(|e| QueryError::Internal(format!("sid_to_s_id: {e}")))?),
+            .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+            .map_err(|e| QueryError::Internal(format!("find_subject_id_by_parts: {e}")))?),
         Ref::Var(_) => Ok(None),
     }
 }
@@ -1613,8 +1634,8 @@ pub fn term_to_ref_s_id(
     };
     let sid = store.encode_iri(iri.as_ref());
     store
-        .sid_to_s_id(&sid)
-        .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))
+        .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+        .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}")))
 }
 
 /// Check whether the execution context allows fast-path operators.
@@ -1623,7 +1644,11 @@ pub fn term_to_ref_s_id(
 /// enforcement (or root policy), and no uncommitted overlay.
 #[inline]
 fn allow_fast_path(ctx: &ExecutionContext<'_>) -> bool {
-    !ctx.history_mode
+    // Fast paths rely on a single binary index + single-ledger semantics for encoded IDs.
+    // Dataset (multi-ledger) execution can span multiple ledgers/graphs, so disable fast
+    // paths for correctness unless/until they are made dataset-aware.
+    !ctx.is_multi_ledger()
+        && !ctx.history_mode
         && ctx.from_t.is_none()
         && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
         && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0

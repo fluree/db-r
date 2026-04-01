@@ -8,15 +8,6 @@
 //! - [`RefPublisher`]: Explicit compare-and-set ref operations for sync
 //! - [`Publication`]: Optional subscription support for reactive updates
 //!
-//! # Extended Storage Traits
-//!
-//! For storage-backed nameservice implementations (e.g., S3), this crate also
-//! provides extended storage traits:
-//!
-//! - [`StorageDelete`]: Delete stored objects
-//! - [`StorageList`]: List objects by prefix
-//! - [`StorageCas`]: Compare-and-swap operations using ETags
-//!
 //! # Implementations
 //!
 //! - [`MemoryNameService`]: In-memory implementation for testing
@@ -28,8 +19,8 @@ mod error;
 pub mod file;
 pub mod ledger_config;
 pub mod memory;
+pub(crate) mod ns_format;
 pub mod storage_ns;
-pub mod storage_traits;
 pub mod tracking;
 #[cfg(feature = "native")]
 pub mod tracking_file;
@@ -37,15 +28,76 @@ pub mod tracking_file;
 pub use error::{NameServiceError, Result};
 pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
 
+use fluree_db_core::StorageExtError;
+
+/// Convert a serde_json error to a StorageExtError for use inside CAS closures.
+fn json_ext_err(e: serde_json::Error) -> StorageExtError {
+    StorageExtError::other(e.to_string())
+}
+
+/// Deserialize JSON bytes inside a CAS closure.
+pub(crate) fn deserialize_json<T: for<'de> Deserialize<'de>>(
+    data: &[u8],
+) -> std::result::Result<T, StorageExtError> {
+    serde_json::from_slice(data).map_err(json_ext_err)
+}
+
+/// Serialize a value to pretty-printed JSON bytes inside a CAS closure.
+pub(crate) fn serialize_json<T: Serialize>(
+    value: &T,
+) -> std::result::Result<Vec<u8>, StorageExtError> {
+    serde_json::to_vec_pretty(value).map_err(json_ext_err)
+}
+
+/// Check CAS expectation against the current value.
+///
+/// Returns `Some(conflict_result)` if there is a mismatch, `None` if the
+/// expectation is satisfied and the caller should proceed with the write.
+///
+/// `allow_create` controls the `(None, None)` case: if `true`, creating a
+/// new record when none exists is allowed; if `false`, it's a conflict.
+pub(crate) fn check_cas_expectation<T: Clone, R>(
+    expected: &Option<T>,
+    current: &Option<T>,
+    allow_create: bool,
+    eq: impl Fn(&T, &T) -> bool,
+    conflict: impl Fn(Option<T>) -> R,
+) -> Option<R> {
+    match (expected, current) {
+        (None, None) => {
+            if allow_create {
+                None
+            } else {
+                Some(conflict(None))
+            }
+        }
+        (None, Some(actual)) => Some(conflict(Some(actual.clone()))),
+        (Some(_), None) => Some(conflict(None)),
+        (Some(exp), Some(actual)) => {
+            if eq(exp, actual) {
+                None
+            } else {
+                Some(conflict(Some(actual.clone())))
+            }
+        }
+    }
+}
+
+/// Compare two `RefValue`s by ContentId identity (ignoring `t`).
+pub(crate) fn ref_values_match(a: &RefValue, b: &RefValue) -> bool {
+    match (&a.id, &b.id) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Storage path segment for graph source artifacts.
 ///
 /// Used when constructing storage addresses for BM25, vector, and other graph
 /// source index artifacts, e.g. `fluree:file://graph-sources/{name}/{branch}/bm25/...`.
 pub const STORAGE_SEGMENT_GRAPH_SOURCES: &str = "graph-sources";
 pub use storage_ns::StorageNameService;
-pub use storage_traits::{
-    ListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult, StorageList,
-};
 pub use tracking::{MemoryTrackingStore, RemoteName, RemoteTrackingStore, TrackingRecord};
 #[cfg(feature = "native")]
 pub use tracking_file::FileTrackingStore;
@@ -63,6 +115,23 @@ use tokio::sync::broadcast;
 /// (e.g., `"bafy..."`). Legacy storage address strings are not supported.
 pub fn parse_default_context_value(s: &str) -> Option<ContentId> {
     s.parse::<ContentId>().ok()
+}
+
+/// Records where a branch was created from.
+///
+/// When a branch is created via [`Publisher::create_branch`], this struct captures
+/// the source branch and commit state at the time of branching. This enables ancestry
+/// queries (e.g., determining common ancestors for future merge operations).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchPoint {
+    /// The branch this was created from (e.g., "main")
+    pub source: String,
+
+    /// Content identifier of the source commit at branch time
+    pub commit_id: ContentId,
+
+    /// Transaction time of the source commit at branch time
+    pub t: i64,
 }
 
 /// Nameservice record containing ledger metadata
@@ -112,6 +181,21 @@ pub struct NsRecord {
     /// origins, auth requirements, and replication defaults.
     #[serde(default)]
     pub config_id: Option<ContentId>,
+
+    /// The point at which this branch was created, if it was created via
+    /// [`Publisher::create_branch`]. `None` for the initial branch (typically "main").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_point: Option<BranchPoint>,
+
+    /// Number of child branches that were created from this branch.
+    /// Used for safe deletion: a branch with children cannot be fully purged
+    /// until all children are dropped.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub branches: u32,
+}
+
+pub(crate) fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 impl NsRecord {
@@ -132,6 +216,8 @@ impl NsRecord {
             default_context: None,
             retracted: false,
             config_id: None,
+            branch_point: None,
+            branches: 0,
         }
     }
 
@@ -329,7 +415,7 @@ pub enum NsLookupResult {
 ///
 /// Implementations provide ledger discovery by ledger ID.
 #[async_trait]
-pub trait NameService: Debug + Send + Sync {
+pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
     /// Look up a ledger by its ledger ID (e.g. "mydb:main")
     ///
     /// Returns `None` if the ledger is not found.
@@ -339,6 +425,114 @@ pub trait NameService: Debug + Send + Sync {
     ///
     /// Used for building in-memory query indexes over the nameservice.
     async fn all_records(&self) -> Result<Vec<NsRecord>>;
+
+    /// List all branches for a given ledger name.
+    ///
+    /// Returns the [`NsRecord`] for every non-retracted branch that shares the
+    /// given base name (e.g., passing `"mydb"` returns records for `"mydb:main"`,
+    /// `"mydb:feature-x"`, etc.).
+    ///
+    /// The default implementation filters [`all_records`](Self::all_records);
+    /// backends may override for efficiency.
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let all = self.all_records().await?;
+        Ok(all
+            .into_iter()
+            .filter(|r| r.name == ledger_name && !r.retracted)
+            .collect())
+    }
+
+    /// Create a new branch for a ledger.
+    ///
+    /// Creates a new [`NsRecord`] for `ledger_name:new_branch` with its
+    /// [`branch_point`](NsRecord::branch_point) set to record the branch origin.
+    /// The new branch starts at the same commit head as the source, so
+    /// subsequent transactions on either branch will diverge independently.
+    ///
+    /// Also increments the source branch's `branches` count to track
+    /// the child reference for safe deletion.
+    ///
+    /// # Arguments
+    /// * `ledger_name` - The base ledger name (e.g., `"mydb"`)
+    /// * `new_branch` - The branch name to create (e.g., `"feature-x"`)
+    /// * `branch_point` - The source branch state at branch time
+    ///
+    /// # Errors
+    /// Returns [`LedgerAlreadyExists`](NameServiceError::LedgerAlreadyExists)
+    /// if the branch already exists.
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: BranchPoint,
+    ) -> Result<()>;
+
+    /// Drop a branch, purging its nameservice record and decrementing
+    /// the parent branch's child count.
+    ///
+    /// Returns `Some(new_count)` with the parent's updated `branches` count
+    /// if the dropped branch had a parent, or `None` if it had no parent
+    /// (i.e., was the root branch).
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch
+    /// record does not exist.
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>>;
+
+    /// Update a branch's branch point after a rebase operation.
+    ///
+    /// Replaces the existing [`BranchPoint`] on the branch's [`NsRecord`]
+    /// with `new_branch_point`, effectively re-anchoring the branch to a
+    /// new position on its source branch.
+    ///
+    /// # Arguments
+    /// * `ledger_id` - The full ledger:branch identifier (e.g., `"mydb:feature-x"`)
+    /// * `new_branch_point` - The updated branch point referencing the source's current HEAD
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch does not exist.
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: BranchPoint,
+    ) -> Result<()>;
+
+    /// Force-reset a branch's commit head, index head, and branch point to
+    /// a previously captured snapshot.
+    ///
+    /// Unlike [`Publisher::publish_commit`] and [`Publisher::publish_index`],
+    /// this bypasses monotonic guards — the new `t` values may be lower than
+    /// the current ones. Used to roll back a branch after a failed rebase.
+    ///
+    /// # Errors
+    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch does not exist.
+    async fn reset_head(&self, ledger_id: &str, snapshot: NsRecordSnapshot) -> Result<()>;
+}
+
+/// Captured state of an `NsRecord` for rollback purposes.
+///
+/// Contains only the fields that `reset_head` restores — commit head,
+/// index head, and branch point.
+#[derive(Clone, Debug)]
+pub struct NsRecordSnapshot {
+    pub commit_head_id: Option<ContentId>,
+    pub commit_t: i64,
+    pub index_head_id: Option<ContentId>,
+    pub index_t: i64,
+    pub branch_point: Option<BranchPoint>,
+}
+
+impl NsRecordSnapshot {
+    /// Capture the restorable fields from an `NsRecord`.
+    pub fn from_record(record: &NsRecord) -> Self {
+        Self {
+            commit_head_id: record.commit_head_id.clone(),
+            commit_t: record.commit_t,
+            index_head_id: record.index_head_id.clone(),
+            index_t: record.index_t,
+            branch_point: record.branch_point.clone(),
+        }
+    }
 }
 
 /// Publisher trait for writing nameservice records
@@ -432,12 +626,37 @@ pub trait AdminPublisher: Publisher {
     ) -> Result<()>;
 }
 
-/// Graph source publisher trait
+/// Read-only graph source lookup trait.
 ///
-/// Implementations handle publishing graph source config and index updates.
-/// Graph source records are stored separately from ledger records.
+/// Provides discovery of graph source records without write capability.
+/// This is a supertrait of `NameService` so that query execution can
+/// detect and resolve graph sources transparently.
 #[async_trait]
-pub trait GraphSourcePublisher: Debug + Send + Sync {
+pub trait GraphSourceLookup: Debug + Send + Sync {
+    /// Look up a graph source by its graph_source_id (e.g. "my-search:main").
+    ///
+    /// Returns `None` if not found or if the record is a ledger (not a graph source).
+    async fn lookup_graph_source(&self, graph_source_id: &str)
+        -> Result<Option<GraphSourceRecord>>;
+
+    /// Look up any record (ledger or graph source) and return unified result.
+    ///
+    /// `resource_id` can be either a ledger_id or graph_source_id.
+    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult>;
+
+    /// Get all known graph source records
+    ///
+    /// Used for building in-memory query indexes over the nameservice.
+    /// Returns all graph source records including retracted ones (callers can filter by status).
+    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>>;
+}
+
+/// Graph source publisher trait (read + write).
+///
+/// Extends `GraphSourceLookup` with publish/retract operations.
+/// Required by APIs that create, update, or drop graph sources.
+#[async_trait]
+pub trait GraphSourcePublisher: GraphSourceLookup {
     /// Publish a graph source configuration record
     ///
     /// Creates or updates the graph source config in nameservice. This stores the
@@ -475,23 +694,6 @@ pub trait GraphSourcePublisher: Debug + Send + Sync {
     /// Marks the graph source as retracted. Future lookups will return the record
     /// with `retracted: true`.
     async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()>;
-
-    /// Look up a graph source by its graph_source_id (e.g. "my-search:main").
-    ///
-    /// Returns `None` if not found or if the record is a ledger (not a graph source).
-    async fn lookup_graph_source(&self, graph_source_id: &str)
-        -> Result<Option<GraphSourceRecord>>;
-
-    /// Look up any record (ledger or graph source) and return unified result.
-    ///
-    /// `resource_id` can be either a ledger_id or graph_source_id.
-    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult>;
-
-    /// Get all known graph source records
-    ///
-    /// Used for building in-memory query indexes over the nameservice.
-    /// Returns all graph source records including retracted ones (callers can filter by status).
-    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>>;
 }
 
 /// Subscription scope for filtering nameservice events.
@@ -848,7 +1050,7 @@ impl ConfigPayload {
 ///
 /// The watermark `v` is a monotonically increasing counter that changes
 /// on every status update. Status always has a payload (never unborn).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusValue {
     /// Watermark (monotonically increasing version counter)
     pub v: i64,
@@ -875,7 +1077,7 @@ impl StatusValue {
 ///
 /// The watermark `v` is a monotonically increasing counter. Config can be
 /// "unborn" (v=0, payload=None) if no config has been set yet.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfigValue {
     /// Watermark (monotonically increasing version counter)
     pub v: i64,

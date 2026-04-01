@@ -27,6 +27,7 @@
 mod commit;
 mod commit_flakes;
 pub mod commit_v2;
+pub mod delta;
 mod error;
 mod stats;
 
@@ -39,6 +40,7 @@ pub use commit_flakes::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 pub use commit_v2::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};
 pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
 pub use commit_v2::verify_commit_v2_blob;
+pub use delta::compute_delta_keys;
 pub use error::{NoveltyError, Result};
 pub use fluree_db_credential::SigningKey;
 pub use stats::current_stats;
@@ -273,15 +275,40 @@ impl Novelty {
         self.t = self.t.max(commit_t);
         self.epoch += 1; // Bump epoch once per commit
 
-        // Store flakes in arena, resolve graph IDs, and group by graph
+        // Store flakes in arena, resolve graph IDs, and group by graph.
+        //
+        // RDF set semantics: skip assertion flakes whose fact (s, p, o, dt, m)
+        // is already **currently asserted** in novelty. This prevents duplicate
+        // facts from accumulating when the same triple is asserted in multiple
+        // commits (e.g., via repeated `insert` calls). Retractions are always
+        // accepted — they're needed to cancel existing assertions.
+        //
+        // This mirrors the dedup logic in the indexer's merge pipeline
+        // (KWayMerge::next_deduped, novelty_merge::merge_novelty) which
+        // deduplicates at index-build time.
         let mut per_graph: HashMap<GraphId, Vec<FlakeId>> = HashMap::new();
+        let mut deduped = 0u64;
 
         for flake in flakes {
             let g_id = Self::resolve_flake_g_id(&flake, reverse_graph)?;
+
+            // Set semantics: skip duplicate assertions
+            if flake.op && self.fact_currently_asserted_in_graph(g_id, &flake) {
+                deduped += 1;
+                continue;
+            }
+
             let size = flake.size_bytes();
             self.size += size;
             let flake_id = self.store.push_with_size(flake, size);
             per_graph.entry(g_id).or_default().push(flake_id);
+        }
+
+        if deduped > 0 {
+            tracing::debug!(
+                deduped,
+                "skipped duplicate assertion flakes (set semantics)"
+            );
         }
 
         // Ensure all graph slots exist
@@ -422,6 +449,65 @@ impl Novelty {
             .filter_map(Option::as_ref)
             .flat_map(move |graph_vecs| graph_vecs.get_index(index).iter().copied())
     }
+
+    /// Returns true if the fact `(s, p, o, dt, m)` is **currently asserted**
+    /// in the given graph's novelty.
+    ///
+    /// Uses binary search on the SPOT index (sorted by s, p, o, dt, t, op, m)
+    /// to find the region where `(s, p, o, dt)` lives, then walks backwards
+    /// to find the latest operation for the matching `(s, p, o, dt, m)`.
+    ///
+    /// Important: we must consider the **latest** op, not "any assertion exists",
+    /// otherwise a prior assertion followed by a retraction would incorrectly
+    /// cause a later re-assertion to be dropped.
+    fn fact_currently_asserted_in_graph(&self, g_id: GraphId, flake: &Flake) -> bool {
+        let spot = match self.graphs.get(g_id as usize).and_then(Option::as_ref) {
+            Some(graph_vecs) => &graph_vecs.spot,
+            None => return false,
+        };
+
+        if spot.is_empty() {
+            return false;
+        }
+
+        // Find the (s, p, o, dt) run.
+        let start = spot.partition_point(|&id| {
+            let existing = self.store.get(id);
+            let cmp = existing
+                .s
+                .cmp(&flake.s)
+                .then_with(|| existing.p.cmp(&flake.p))
+                .then_with(|| existing.o.cmp(&flake.o))
+                .then_with(|| existing.dt.cmp(&flake.dt));
+            cmp == Ordering::Less
+        });
+
+        let end = spot.partition_point(|&id| {
+            let existing = self.store.get(id);
+            let cmp = existing
+                .s
+                .cmp(&flake.s)
+                .then_with(|| existing.p.cmp(&flake.p))
+                .then_with(|| existing.o.cmp(&flake.o))
+                .then_with(|| existing.dt.cmp(&flake.dt));
+            cmp != Ordering::Greater
+        });
+
+        if start >= end {
+            return false;
+        }
+
+        // Walk backward (latest t/op first) and find the most recent op for the
+        // exact fact identity (including metadata).
+        for &id in spot[start..end].iter().rev() {
+            let existing = self.store.get(id);
+            if existing.m == flake.m {
+                return existing.op;
+            }
+        }
+
+        false // No matching (s, p, o, dt, m) in novelty
+    }
 }
 
 impl std::fmt::Debug for Novelty {
@@ -510,7 +596,7 @@ fn merge_batch_into_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{FlakeValue, Sid};
+    use fluree_db_core::{FlakeMeta, FlakeValue, Sid};
 
     /// Empty reverse_graph — all flakes go to default graph (g_id=0)
     fn no_graphs() -> HashMap<Sid, GraphId> {
@@ -526,6 +612,25 @@ mod tests {
             t,
             op,
             None,
+        )
+    }
+
+    fn make_flake_with_meta(
+        s: u16,
+        p: u16,
+        o: i64,
+        t: i64,
+        op: bool,
+        m: Option<FlakeMeta>,
+    ) -> Flake {
+        Flake::new(
+            Sid::new(s, format!("s{}", s)),
+            Sid::new(p, format!("p{}", p)),
+            FlakeValue::Long(o),
+            Sid::new(2, "long"),
+            t,
+            op,
+            m,
         )
     }
 
@@ -601,6 +706,100 @@ mod tests {
 
         assert_eq!(novelty.len(), 2);
         assert_eq!(novelty.t, 2);
+    }
+
+    #[test]
+    fn test_apply_commit_skips_duplicate_assertions_across_commits() {
+        let mut novelty = Novelty::new(0);
+        let rg = no_graphs();
+
+        // Assert once
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 1, true)], 1, &rg)
+            .unwrap();
+        assert_eq!(novelty.len(), 1);
+
+        // Re-assert same fact (different t) -> should be skipped
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 2, true)], 2, &rg)
+            .unwrap();
+        assert_eq!(novelty.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_commit_allows_reassert_after_retract() {
+        let mut novelty = Novelty::new(0);
+        let rg = no_graphs();
+
+        // Assert -> retract -> re-assert
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 1, true)], 1, &rg)
+            .unwrap();
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 2, false)], 2, &rg)
+            .unwrap();
+        novelty
+            .apply_commit(vec![make_flake(1, 1, 100, 3, true)], 3, &rg)
+            .unwrap();
+
+        // Retractions are always stored; the final assertion must not be deduped away.
+        assert_eq!(novelty.len(), 3);
+    }
+
+    #[test]
+    fn test_apply_commit_does_not_dedup_distinct_metadata() {
+        let mut novelty = Novelty::new(0);
+        let rg = no_graphs();
+
+        // Same (s,p,o,dt) but different list index metadata -> distinct facts.
+        novelty
+            .apply_commit(
+                vec![make_flake_with_meta(
+                    1,
+                    1,
+                    100,
+                    1,
+                    true,
+                    Some(FlakeMeta::with_index(1)),
+                )],
+                1,
+                &rg,
+            )
+            .unwrap();
+        novelty
+            .apply_commit(
+                vec![make_flake_with_meta(
+                    1,
+                    1,
+                    100,
+                    2,
+                    true,
+                    Some(FlakeMeta::with_index(2)),
+                )],
+                2,
+                &rg,
+            )
+            .unwrap();
+
+        assert_eq!(novelty.len(), 2);
+
+        // Re-assert the second meta variant -> should be deduped
+        novelty
+            .apply_commit(
+                vec![make_flake_with_meta(
+                    1,
+                    1,
+                    100,
+                    3,
+                    true,
+                    Some(FlakeMeta::with_index(2)),
+                )],
+                3,
+                &rg,
+            )
+            .unwrap();
+
+        assert_eq!(novelty.len(), 2);
     }
 
     #[test]

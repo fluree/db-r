@@ -254,7 +254,11 @@ pub enum JoinKeyMode {
 /// Create one instance per query execution and pass it to operators that need
 /// to materialize bindings for comparison/hashing/output.
 pub struct Materializer {
-    /// Graph-scoped view (store + graph ID) for decoding
+    /// Graph-scoped view (store + graph ID) for decoding.
+    ///
+    /// When constructed with a novelty-aware `BinaryGraphView` (via
+    /// `ExecutionContext::graph_view()`), all decode methods automatically
+    /// handle watermark routing for novelty-only subject/string IDs.
     graph_view: BinaryGraphView,
     /// Cache: s_id -> Sid (for terminal output)
     sid_cache: HashMap<u64, Sid>,
@@ -325,9 +329,20 @@ impl Materializer {
                     }
                     JoinKeyMode::MultiLedger => {
                         // In multi-ledger mode, namespace codes may differ across ledgers,
-                        // so we must use the full canonical IRI for comparison
-                        let iri = self.graph_view.store().sid_to_iri(sid);
-                        JoinKey::IriOwned(Arc::from(iri))
+                        // so we must use the full canonical IRI for comparison.
+                        // Unknown namespace code → Absent (strict decode).
+                        match self.graph_view.store().sid_to_iri(sid) {
+                            Some(iri) => JoinKey::IriOwned(Arc::from(iri)),
+                            None => {
+                                tracing::error!(
+                                    ns_code = sid.namespace_code,
+                                    suffix = %sid.name,
+                                    "sid_to_iri: unknown namespace code in materializer join_key \
+                                     — this is a data corruption signal"
+                                );
+                                JoinKey::Absent
+                            }
+                        }
                     }
                 }
             }
@@ -460,7 +475,19 @@ impl Materializer {
             Binding::Sid(sid) => {
                 // Decode to full IRI string.
                 // IMPORTANT: `namespace_code:name` is an internal representation and is not a full IRI.
-                Some(Arc::from(self.graph_view.store().sid_to_iri(sid)))
+                // Unknown namespace code → None (strict decode).
+                match self.graph_view.store().sid_to_iri(sid) {
+                    Some(iri) => Some(Arc::from(iri)),
+                    None => {
+                        tracing::error!(
+                            ns_code = sid.namespace_code,
+                            suffix = %sid.name,
+                            "sid_to_iri: unknown namespace code in materializer as_string \
+                             — this is a data corruption signal"
+                        );
+                        None
+                    }
+                }
             }
 
             Binding::IriMatch { iri, .. } => Some(Arc::clone(iri)),
@@ -570,14 +597,23 @@ impl Materializer {
     // -------------------------------------------------------------------------
 
     /// Resolve s_id to canonical IRI string (cached).
+    ///
+    /// Novelty-aware: `BinaryGraphView` handles watermark routing internally.
     fn resolve_iri(&mut self, s_id: u64) -> Arc<str> {
         if let Some(cached) = self.iri_cache.get(&s_id) {
             return Arc::clone(cached);
         }
 
-        let iri = match self.graph_view.store().resolve_subject_iri(s_id) {
+        let iri = match self.graph_view.resolve_subject_iri(s_id) {
             Ok(iri) => Arc::from(iri),
-            Err(_) => Arc::from(format!("_:unknown_{}", s_id)),
+            Err(e) => {
+                tracing::warn!(
+                    s_id,
+                    error = %e,
+                    "resolve_subject_iri failed — fabricating placeholder IRI"
+                );
+                Arc::from(format!("_:unknown_{}", s_id))
+            }
         };
 
         self.iri_cache.insert(s_id, Arc::clone(&iri));
@@ -585,13 +621,16 @@ impl Materializer {
     }
 
     /// Resolve s_id to Sid (cached).
+    ///
+    /// Novelty-aware: uses `resolve_subject_sid` which returns `Sid` directly
+    /// for novel subjects (no IRI string allocation or trie lookup).
     fn resolve_sid(&mut self, s_id: u64) -> Sid {
         if let Some(cached) = self.sid_cache.get(&s_id) {
             return cached.clone();
         }
 
-        let sid = match self.graph_view.store().resolve_subject_iri(s_id) {
-            Ok(iri) => self.graph_view.store().encode_iri(&iri),
+        let sid = match self.graph_view.resolve_subject_sid(s_id) {
+            Ok(sid) => sid,
             Err(_) => Sid::new(0, format!("_:unknown_{}", s_id)),
         };
 
@@ -607,7 +646,13 @@ impl Materializer {
 
         let sid = match self.graph_view.store().resolve_predicate_iri(p_id) {
             Some(iri) => self.graph_view.store().encode_iri(iri),
-            None => Sid::new(0, format!("_:unknown_p_{}", p_id)),
+            None => {
+                tracing::warn!(
+                    p_id,
+                    "resolve_predicate_iri failed — fabricating placeholder predicate"
+                );
+                Sid::new(0, format!("_:unknown_p_{}", p_id))
+            }
         };
 
         self.pid_cache.insert(p_id, sid.clone());

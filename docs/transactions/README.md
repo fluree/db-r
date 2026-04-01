@@ -1,4 +1,4 @@
-# Transactions / Writes
+# Transactions
 
 Transactions are how you write data to Fluree. This section covers all transaction patterns, formats, and behaviors.
 
@@ -20,10 +20,10 @@ Adding new data to the database:
 - Entity creation
 - Relationship creation
 
-### [Upsert (Replace Mode)](upsert.md)
+### [Upsert](upsert.md)
 
-Idempotent writes that replace entity state:
-- Replace mode semantics
+Idempotent transactions that replace values for supplied predicates:
+- Upsert semantics
 - Use cases for upsert
 - Idempotent operations
 - Synchronization patterns
@@ -186,7 +186,7 @@ Updates are represented as retraction + assertion pairs.
 ### Replace Entity (Upsert)
 
 ```bash
-POST /transact?ledger=mydb:main&mode=replace
+POST /upsert?ledger=mydb:main
 ```
 
 ```json
@@ -202,24 +202,11 @@ POST /transact?ledger=mydb:main&mode=replace
 }
 ```
 
-## Transaction Modes
+## Transaction Types
 
-### Default Mode
-
-Normal insert/update behavior:
-- New properties are added
-- Existing properties remain unless explicitly deleted
-- Updates require WHERE/DELETE/INSERT pattern
-
-### Replace Mode
-
-Upsert behavior:
-- All properties for entity are replaced
-- Old properties are retracted
-- New properties are asserted
-- Idempotent operation
-
-Enable with query parameter: `?mode=replace`
+- **Insert** (`POST /insert`) — add triples (JSON-LD or Turtle)
+- **Update** (`POST /update`) — WHERE/DELETE/INSERT (JSON-LD) or SPARQL UPDATE
+- **Upsert** (`POST /upsert`) — replace values for the predicates you supply (JSON-LD, Turtle, TriG)
 
 ## Transaction Validation
 
@@ -359,5 +346,5 @@ Track transaction metrics:
 
 - [Getting Started: Write Data](../getting-started/quickstart-write.md) - Quickstart guide
 - [Concepts: Time Travel](../concepts/time-travel.md) - Temporal semantics
-- [API: POST /transact](../api/endpoints.md#post-transact) - HTTP endpoint details
+- [API: POST /update](../api/endpoints.md#post-update) - HTTP endpoint details
 - [Indexing](../indexing-and-search/README.md) - Indexing and search

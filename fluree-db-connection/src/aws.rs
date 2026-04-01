@@ -25,10 +25,10 @@ use crate::error::{ConnectionError, Result};
 use async_trait::async_trait;
 use fluree_db_core::LedgerSnapshot;
 use fluree_db_nameservice::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher,
-    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
-    Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPublisher, StatusValue,
-    StorageNameService,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, StatusCasResult,
+    StatusPublisher, StatusValue, StorageNameService,
 };
 use fluree_db_storage_aws::{DynamoDbNameService, S3Storage};
 use once_cell::sync::OnceCell;
@@ -76,6 +76,56 @@ impl NameService for AwsNameService {
         match self {
             Self::DynamoDb(ns) => ns.all_records().await,
             Self::Storage(ns) => ns.all_records().await,
+        }
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => {
+                ns.create_branch(ledger_name, new_branch, branch_point)
+                    .await
+            }
+            Self::Storage(ns) => {
+                ns.create_branch(ledger_name, new_branch, branch_point)
+                    .await
+            }
+        }
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.drop_branch(ledger_id).await,
+            Self::Storage(ns) => ns.drop_branch(ledger_id).await,
+        }
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.update_branch_point(ledger_id, new_branch_point).await,
+            Self::Storage(ns) => ns.update_branch_point(ledger_id, new_branch_point).await,
+        }
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), NameServiceError> {
+        match self {
+            Self::DynamoDb(ns) => ns.reset_head(ledger_id, snapshot).await,
+            Self::Storage(ns) => ns.reset_head(ledger_id, snapshot).await,
         }
     }
 }
@@ -230,7 +280,10 @@ impl GraphSourcePublisher for AwsNameService {
             Self::Storage(ns) => ns.retract_graph_source(name, branch).await,
         }
     }
+}
 
+#[async_trait]
+impl GraphSourceLookup for AwsNameService {
     async fn lookup_graph_source(
         &self,
         address: &str,

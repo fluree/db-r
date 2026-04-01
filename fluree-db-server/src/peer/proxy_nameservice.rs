@@ -84,6 +84,8 @@ impl NsRecordResponse {
                 .default_context
                 .and_then(|s| s.parse::<ContentId>().ok()),
             retracted: self.retracted,
+            branch_point: None,
+            branches: 0,
         }
     }
 }
@@ -167,6 +169,46 @@ impl NameService for ProxyNameService {
         // The peer maintains its own view of known ledgers via SSE events
         Ok(Vec::new())
     }
+
+    async fn create_branch(
+        &self,
+        _ledger_name: &str,
+        _new_branch: &str,
+        _branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> Result<()> {
+        // Proxy peers forward branch creation to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "create_branch not supported in proxy mode".to_string(),
+        ))
+    }
+
+    async fn drop_branch(&self, _ledger_id: &str) -> Result<Option<u32>> {
+        // Proxy peers forward branch deletion to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "drop_branch not supported in proxy mode".to_string(),
+        ))
+    }
+
+    async fn update_branch_point(
+        &self,
+        _ledger_id: &str,
+        _new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> Result<()> {
+        // Proxy peers forward rebase to the tx server via HTTP
+        Err(NameServiceError::storage(
+            "update_branch_point not supported in proxy mode".to_string(),
+        ))
+    }
+
+    async fn reset_head(
+        &self,
+        _ledger_id: &str,
+        _snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "reset_head not supported in proxy mode".to_string(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -189,6 +231,64 @@ impl Publication for ProxyNameService {
         // Proxy mode doesn't track commit history locally.
         // Return empty - the transaction server has this information.
         Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::GraphSourceLookup for ProxyNameService {
+    async fn lookup_graph_source(
+        &self,
+        _graph_source_id: &str,
+    ) -> Result<Option<fluree_db_nameservice::GraphSourceRecord>> {
+        Ok(None) // Proxy doesn't have local graph source records
+    }
+
+    async fn lookup_any(
+        &self,
+        _resource_id: &str,
+    ) -> Result<fluree_db_nameservice::NsLookupResult> {
+        Ok(fluree_db_nameservice::NsLookupResult::NotFound)
+    }
+
+    async fn all_graph_source_records(
+        &self,
+    ) -> Result<Vec<fluree_db_nameservice::GraphSourceRecord>> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::GraphSourcePublisher for ProxyNameService {
+    async fn publish_graph_source(
+        &self,
+        _name: &str,
+        _branch: &str,
+        _source_type: fluree_db_nameservice::GraphSourceType,
+        _config: &str,
+        _dependencies: &[String],
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Graph source publishing is not supported in proxy mode. \
+             Forward the request to the transaction server.",
+        ))
+    }
+
+    async fn publish_graph_source_index(
+        &self,
+        _name: &str,
+        _branch: &str,
+        _index_id: &fluree_db_core::ContentId,
+        _index_t: i64,
+    ) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Graph source index publishing is not supported in proxy mode.",
+        ))
+    }
+
+    async fn retract_graph_source(&self, _name: &str, _branch: &str) -> Result<()> {
+        Err(NameServiceError::storage(
+            "Graph source retraction is not supported in proxy mode.",
+        ))
     }
 }
 

@@ -3,7 +3,7 @@
 //! Provides `S3Storage` which implements the core `Storage` and `StorageWrite` traits
 //! for reading and writing data to Amazon S3.
 //!
-//! Also implements the extended storage traits from `fluree-db-nameservice`:
+//! Also implements the extended storage traits from `fluree-db-core`:
 //! - `StorageDelete`
 //! - `StorageList`
 //! - `StorageCas`
@@ -35,12 +35,9 @@ use aws_smithy_types::retry::RetryConfig;
 use aws_smithy_types::timeout::TimeoutConfig;
 use fluree_db_core::error::Error as CoreError;
 use fluree_db_core::{
-    content_address, sha256_hex, ContentAddressedWrite, ContentKind, ContentWriteResult,
-    StorageRead, StorageWrite,
-};
-use fluree_db_nameservice::{
-    ListResult as NsListResult, StorageCas, StorageDelete, StorageExtError, StorageExtResult,
-    StorageList,
+    content_address, sha256_hex, CasAction, CasOutcome, ContentAddressedWrite, ContentKind,
+    ContentWriteResult, ListResult as NsListResult, StorageCas, StorageDelete, StorageExtError,
+    StorageExtResult, StorageList, StorageRead, StorageWrite,
 };
 use std::fmt::Debug;
 use std::time::Duration;
@@ -494,17 +491,17 @@ impl StorageList for S3Storage {
     }
 }
 
-#[async_trait]
-impl StorageCas for S3Storage {
-    async fn write_if_absent(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
-        let key = address_to_key(address, self.prefix.as_deref())
-            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
+/// Maximum number of CAS retries for S3 optimistic concurrency.
+const MAX_S3_CAS_RETRIES: u32 = 5;
 
+impl S3Storage {
+    /// S3 put with `If-None-Match: *` (create-if-absent).
+    async fn put_if_absent(&self, key: &str, bytes: &[u8]) -> StorageExtResult<bool> {
         let result = self
             .client
             .put_object()
             .bucket(&self.bucket)
-            .key(&key)
+            .key(key)
             .body(ByteStream::from(bytes.to_vec()))
             .if_none_match("*")
             .send()
@@ -513,31 +510,23 @@ impl StorageCas for S3Storage {
         match result {
             Ok(_) => Ok(true),
             Err(e) if is_precondition_failed_sdk(&e) => Ok(false),
-            Err(e) => Err(map_s3_error_ext(e, &key)),
+            Err(e) => Err(map_s3_error_ext(e, key)),
         }
     }
 
-    async fn write_if_match(
-        &self,
-        address: &str,
-        bytes: &[u8],
-        expected_etag: &str,
-    ) -> StorageExtResult<String> {
-        let key = address_to_key(address, self.prefix.as_deref())
-            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
-
-        // AWS expects ETags to be quoted
-        let etag_quoted = if expected_etag.starts_with('"') {
-            expected_etag.to_string()
+    /// S3 put with `If-Match: <etag>` (conditional update).
+    async fn put_if_match(&self, key: &str, bytes: &[u8], etag: &str) -> StorageExtResult<String> {
+        let etag_quoted = if etag.starts_with('"') {
+            etag.to_string()
         } else {
-            format!("\"{}\"", expected_etag)
+            format!("\"{}\"", etag)
         };
 
         let result = self
             .client
             .put_object()
             .bucket(&self.bucket)
-            .key(&key)
+            .key(key)
             .body(ByteStream::from(bytes.to_vec()))
             .if_match(&etag_quoted)
             .send()
@@ -548,23 +537,23 @@ impl StorageCas for S3Storage {
                 let new_etag = output.e_tag().map(normalize_etag).unwrap_or_default();
                 Ok(new_etag)
             }
-            Err(e) if is_precondition_failed_sdk(&e) => Err(StorageExtError::PreconditionFailed),
-            Err(e) => Err(map_s3_error_ext(e, &key)),
+            Err(e) if is_precondition_failed_sdk(&e) => {
+                Err(StorageExtError::PreconditionFailed("ETag mismatch".into()))
+            }
+            Err(e) => Err(map_s3_error_ext(e, key)),
         }
     }
 
-    async fn read_with_etag(&self, address: &str) -> StorageExtResult<(Vec<u8>, String)> {
-        let key = address_to_key(address, self.prefix.as_deref())
-            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
-
+    /// S3 get with ETag extraction.
+    async fn get_with_etag(&self, key: &str) -> StorageExtResult<(Vec<u8>, String)> {
         let response = self
             .client
             .get_object()
             .bucket(&self.bucket)
-            .key(&key)
+            .key(key)
             .send()
             .await
-            .map_err(|e| map_s3_error_ext(e, &key))?;
+            .map_err(|e| map_s3_error_ext(e, key))?;
 
         let etag = response.e_tag().map(normalize_etag).unwrap_or_default();
 
@@ -577,6 +566,70 @@ impl StorageCas for S3Storage {
             .to_vec();
 
         Ok((bytes, etag))
+    }
+}
+
+#[async_trait]
+impl StorageCas for S3Storage {
+    async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+        let key = address_to_key(address, self.prefix.as_deref())
+            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
+        self.put_if_absent(&key, bytes).await
+    }
+
+    async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
+    where
+        F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
+        T: Send,
+    {
+        let key = address_to_key(address, self.prefix.as_deref())
+            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
+
+        for attempt in 0..MAX_S3_CAS_RETRIES {
+            // Read current value with ETag
+            let current = match self.get_with_etag(&key).await {
+                Ok((bytes, etag)) => Some((bytes, etag)),
+                Err(StorageExtError::NotFound(_)) => None,
+                Err(e) => return Err(e),
+            };
+
+            // Call the closure
+            let current_bytes = current.as_ref().map(|(b, _)| b.as_slice());
+            match f(current_bytes)? {
+                CasAction::Abort(t) => return Ok(CasOutcome::Aborted(t)),
+                CasAction::Write(new_bytes) => {
+                    // Write with appropriate condition
+                    let write_result = match &current {
+                        Some((_, etag)) => self.put_if_match(&key, &new_bytes, etag).await,
+                        None => match self.put_if_absent(&key, &new_bytes).await {
+                            Ok(true) => Ok(String::new()),
+                            Ok(false) => Err(StorageExtError::PreconditionFailed(
+                                "concurrent insert".into(),
+                            )),
+                            Err(e) => Err(e),
+                        },
+                    };
+
+                    match write_result {
+                        Ok(_) => return Ok(CasOutcome::Written),
+                        Err(StorageExtError::PreconditionFailed(_)) => {
+                            // Concurrent modification — retry with backoff
+                            if attempt + 1 < MAX_S3_CAS_RETRIES {
+                                let jitter = rand::random::<u64>() % 50;
+                                let delay = Duration::from_millis(50 * (1u64 << attempt) + jitter);
+                                tokio::time::sleep(delay).await;
+                            }
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+
+        Err(StorageExtError::io(format!(
+            "CAS update failed after {} retries for {}",
+            MAX_S3_CAS_RETRIES, address
+        )))
     }
 }
 
@@ -628,7 +681,7 @@ fn map_s3_error_ext<E: std::fmt::Debug>(
                 404 => StorageExtError::not_found(format!("Key not found: {}", key)),
                 401 => StorageExtError::unauthorized(format!("Unauthorized for key: {}", key)),
                 403 => StorageExtError::forbidden(format!("Access denied for key: {}", key)),
-                412 => StorageExtError::PreconditionFailed,
+                412 => StorageExtError::PreconditionFailed(format!("key: {}", key)),
                 // Retryable server errors: throttling (429), server errors (500/502/503/504)
                 429 | 500 | 502 | 503 | 504 => StorageExtError::throttled(format!(
                     "Retryable error for key '{}' (HTTP {})",
@@ -668,7 +721,9 @@ fn ext_error_to_core(err: StorageExtError) -> CoreError {
         StorageExtError::Unauthorized(msg) => CoreError::storage(format!("Unauthorized: {}", msg)),
         StorageExtError::Forbidden(msg) => CoreError::storage(format!("Forbidden: {}", msg)),
         StorageExtError::Throttled(msg) => CoreError::io(format!("Throttled: {}", msg)),
-        StorageExtError::PreconditionFailed => CoreError::storage("Precondition failed"),
+        StorageExtError::PreconditionFailed(msg) => {
+            CoreError::storage(format!("Precondition failed: {}", msg))
+        }
         StorageExtError::Other(msg) => CoreError::other(msg),
     }
 }

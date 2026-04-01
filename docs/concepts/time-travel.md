@@ -168,6 +168,73 @@ This provides:
 - **Real-time current queries**: Include latest transactions
 - **Consistent snapshots**: Each query sees a consistent state
 
+## Consistency and Read-After-Write
+
+Fluree's query engine is **eventually consistent**. When a transaction commits at `t=N`, queries running against a different process or a warm cache may still see a state older than `t=N` until the cache is refreshed.
+
+### The Problem
+
+```text
+Process A: transact → receives t=42
+Process B: query    → sees t=40 (stale cache)
+```
+
+This is expected in architectures where the query server is a separate peer, or in serverless environments where a warm Lambda invocation holds a cached ledger state from a previous request.
+
+### The Solution: `refresh()` with `min_t`
+
+The `refresh()` API accepts a `min_t` parameter that asserts the cached ledger has reached at least a specific transaction time. If the ledger hasn't reached that `t` after pulling the latest state from the nameservice, the call returns an error so the caller can retry.
+
+**Flow:**
+
+```text
+1. Client transacts → receives t=42
+2. Client calls refresh(ledger, min_t=42)
+3. Fluree checks cached t:
+   - If cached t >= 42 → immediate success (no I/O)
+   - If cached t < 42  → pull latest from nameservice, apply commits
+   - If still t < 42   → return AwaitTNotReached error
+4. Client queries at t >= 42 with confidence
+```
+
+### Usage Patterns
+
+**Same-process (embedded Fluree):**
+
+In a single process where you transact and query through the same `Fluree` instance, the cache is updated in-place by the transaction. `min_t` is typically not needed, but can serve as a safety assertion.
+
+**Multi-process / Serverless:**
+
+When the transacting process and querying process are separate (e.g., a Lambda that writes and another that reads), pass the `t` from the transaction receipt through your event/message payload and use `min_t` to gate the query:
+
+```text
+Writer Lambda:
+  receipt = transact(data)
+  publish_event({ t: receipt.t, ... })
+
+Reader Lambda:
+  event = receive_event()
+  refresh(ledger, min_t=event.t, timeout=5s)
+  query(ledger)  // guaranteed to see at least t=event.t
+```
+
+**HTTP API:**
+
+The HTTP query endpoint does not yet expose `min_t` directly. For HTTP clients, use the SSE events endpoint (`GET /fluree/events`) to receive real-time commit notifications, or poll the ledger info endpoint until the desired `t` is reached.
+
+### Rust API
+
+See [Using Fluree as a Rust Library — Read-After-Write Consistency](../getting-started/rust-api.md#read-after-write-consistency) for full code examples including retry-with-backoff patterns.
+
+```rust
+use fluree_db_api::RefreshOpts;
+
+// After a transaction returns t=42:
+let opts = RefreshOpts { min_t: Some(42) };
+let result = fluree.refresh("mydb:main", opts).await?;
+// result.t >= 42 is guaranteed if Ok
+```
+
 ## History Queries for Change Tracking
 
 History queries let you see all changes (assertions and retractions) within a time range. Specify the range using `from` and `to` keys with time-specced endpoints.

@@ -87,7 +87,10 @@ Query across multiple named graph sources:
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from-named": ["mydb:main", "otherdb:main"],
+  "fromNamed": {
+    "mydb": { "@id": "mydb:main" },
+    "otherdb": { "@id": "otherdb:main" }
+  },
   "select": ["?graph", "?name"],
   "where": [
     ["graph", "?graph", { "@id": "?person", "ex:name": "?name" }]
@@ -178,7 +181,7 @@ to select a graph **within** the ledger in the URL.
 **Ingesting data with named graphs (TriG):**
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: application/trig" \
   -d '@prefix ex: <http://example.org/ns/> .
 
@@ -229,13 +232,12 @@ Query across the default graph and user-defined named graphs:
 {
   "@context": { "ex": "http://example.org/ns/" },
   "from": "mydb:main",
-  "from-named": [
-    {
+  "fromNamed": {
+    "products": {
       "@id": "mydb:main",
-      "alias": "products",
-      "graph": "http://example.org/graphs/products"
+      "@graph": "http://example.org/graphs/products"
     }
-  ],
+  },
   "select": ["?company", "?product", "?price"],
   "where": [
     { "@id": "?company", "@type": "ex:Company" },
@@ -246,13 +248,27 @@ Query across the default graph and user-defined named graphs:
 
 **Notes:**
 - Named graphs are queryable after indexing completes
-- The `graph` field accepts the full graph IRI (no URL-encoding required)
+- The `@graph` field accepts the full graph IRI (no URL-encoding required)
 - Time-travel is specified via the `t`, `iso`, or `sha` field in the object form
-- Use `alias` to create a short reference name for use in GRAPH patterns
+- Object keys in `fromNamed` serve as dataset-local aliases for use in GRAPH patterns
 
 ## Graph Source Object Schema
 
-When using object syntax for `from` or `from-named`, the following fields are available:
+### `fromNamed` (named graphs) — preferred format
+
+`fromNamed` is an object whose keys are dataset-local aliases. Each value has:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `@id` | string | Yes | Ledger reference (e.g., `mydb:main`, `mydb:main@t:100`) |
+| `@graph` | string | No | Graph selector: `"default"`, `"txn-meta"`, or full IRI |
+| `t` | integer | No | Time-travel: specific transaction number |
+| `at` | string | No | Time-travel: ISO-8601 timestamp or `commit:<hash>` |
+| `policy` | object | No | Per-source policy override (see below) |
+
+### `from` (default graphs) — object syntax
+
+When using object syntax for `from`, the following fields are available:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -263,6 +279,8 @@ When using object syntax for `from` or `from-named`, the following fields are av
 | `iso` | string | No | Time-travel: ISO-8601 timestamp |
 | `commit_id` | string | No | Time-travel: commit ContentId |
 | `policy` | object | No | Per-source policy override (see below) |
+
+> **Legacy format:** The array format `"from-named": [...]` with `"alias"` and `"graph"` fields is still accepted for backward compatibility. The `"fromNamed"` object format is preferred.
 
 ### Dataset-Local Aliases
 
@@ -276,18 +294,16 @@ Aliases provide short names for referencing graphs in query patterns. They are e
 ```json
 {
   "@context": { "ex": "http://example.org/ns/" },
-  "from-named": [
-    {
+  "fromNamed": {
+    "salesProducts": {
       "@id": "sales:main",
-      "alias": "salesProducts",
-      "graph": "http://example.org/vocab#products"
+      "@graph": "http://example.org/vocab#products"
     },
-    {
+    "inventoryProducts": {
       "@id": "inventory:main",
-      "alias": "inventoryProducts",
-      "graph": "http://example.org/vocab#products"
+      "@graph": "http://example.org/vocab#products"
     }
-  ],
+  },
   "select": ["?g", "?sku", "?data"],
   "where": [
     ["graph", "?g", { "@id": "?sku", "ex:data": "?data" }]
@@ -295,10 +311,10 @@ Aliases provide short names for referencing graphs in query patterns. They are e
 }
 ```
 
-In this example, both ledgers have a graph with the same IRI (`http://example.org/vocab#products`). The aliases `salesProducts` and `inventoryProducts` allow you to reference them distinctly.
+In this example, both ledgers have a graph with the same IRI (`http://example.org/vocab#products`). The aliases `salesProducts` and `inventoryProducts` (the object keys) allow you to reference them distinctly.
 
 **Validation Rules:**
-- Aliases must be unique across the entire dataset (both `from` and `from-named`)
+- Aliases must be unique across the entire dataset (both `from` and `fromNamed`)
 - Aliases cannot collide with identifiers (the `@id` values)
 - Duplicate aliases will cause an error
 
@@ -323,7 +339,7 @@ Each graph source can have its own policy, enabling fine-grained access control 
 - `policy-class`: Policy class IRI or array of IRIs
 - `policy`: Inline policy JSON
 - `policy-values`: Policy parameter values
-- `default-allow`: Boolean (default: false)
+- `default-allow`: Boolean (default: false). Governs access when no policies match. Ignored (forced false) if `identity` is specified but has no subject node in the ledger.
 
 **Example:**
 

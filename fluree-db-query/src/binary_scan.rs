@@ -14,24 +14,27 @@ use async_trait::async_trait;
 use fluree_db_binary_index::format::column_block::ColumnId;
 use fluree_db_binary_index::read::column_types::ColumnSet;
 use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore, ColumnBatch,
-    ColumnProjection, OverlayOp,
+    resolve_overlay_ops, sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView,
+    BinaryIndexStore, ColumnBatch, ColumnProjection, OverlayOp,
 };
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::value_id::ObjKey;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
-    dt_compatible, range_with_overlay, Flake, FlakeValue, GraphId, IndexType, LedgerSnapshot,
-    NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest, Sid,
+    dt_compatible, range_with_overlay, Flake, FlakeMeta, FlakeValue, GraphId, IndexType,
+    LedgerSnapshot, NoOverlay, ObjectBounds, OverlayProvider, RangeMatch, RangeOptions, RangeTest,
+    Sid,
 };
 
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::ir::{Expression, Function};
+use crate::object_binding::{late_materialized_object_binding, materialized_object_binding};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
 use crate::operator::{Operator, OperatorState};
+use crate::sid_iri;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
 
@@ -41,9 +44,6 @@ use crate::var_registry::VarId;
 
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
-use fluree_db_core::ids::DatatypeDictId;
-use fluree_db_core::value_id::ObjKind;
-
 /// Mask indicating which triple components should be emitted as columns.
 ///
 /// Used by plan-time optimizations to prune unused output columns.
@@ -128,7 +128,7 @@ fn expr_needs_t(expr: &Expression) -> bool {
 #[inline]
 fn inline_ops_need_t(ops: &[InlineOperator]) -> bool {
     ops.iter().any(|op| match op {
-        InlineOperator::Filter(e) => expr_needs_t(e),
+        InlineOperator::Filter(e) => expr_needs_t(e.expr()),
         InlineOperator::Bind { expr, .. } => expr_needs_t(expr),
     })
 }
@@ -257,7 +257,7 @@ fn compile_encoded_pre_filters_and_prune_inline_ops(
             pruned.push(op.clone());
             continue;
         };
-        let Expression::Call { func, args } = expr else {
+        let Expression::Call { func, args } = expr.expr() else {
             pruned.push(op.clone());
             continue;
         };
@@ -675,54 +675,67 @@ impl BinaryScanOperator {
             .map_err(|e| QueryError::Policy(e.to_string()))
     }
 
-    /// Extract bound Sids from the pattern, normalizing to the V6 store's
-    /// namespace encoding.
+    /// Extract bound terms from the pattern in the *snapshot* namespace space.
     ///
-    /// SPARQL lowers IRIs to `Ref::Sid` / `Term::Sid` using the snapshot's
-    /// namespace codes, which may differ from the V6 store's codes after a
-    /// rebuild. Re-encoding through the store ensures the Sid matches decoded
-    /// values from the index.
-    fn extract_bound_terms(&self) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
-        let s_sid = match &self.pattern.s {
-            Ref::Sid(s) => Some(self.re_encode_sid(s)),
-            Ref::Iri(iri) => Some(self.store().encode_iri(iri)),
+    /// Important invariants:
+    /// - Novelty / overlay flakes carry `Sid`s in the snapshot's namespace-code space.
+    /// - The binary index store carries its own namespace table and prefix trie (from the index root).
+    ///
+    /// Therefore, we keep the bound SIDs in snapshot space for overlay matching, and only
+    /// translate into store space (via full IRI strings) when constructing persisted ID filters.
+    fn extract_bound_terms_snapshot(
+        snapshot: &LedgerSnapshot,
+        pattern: &TriplePattern,
+    ) -> (Option<Sid>, Option<Sid>, Option<FlakeValue>) {
+        // Re-encode Sids through the snapshot so that uncompressed Sids
+        // (e.g., Sid(0, "http://example.org/s")) are normalized to the
+        // compressed form (Sid(ex_code, "s")) matching novelty flakes.
+        let normalize = |sid: &Sid| -> Sid {
+            // Fast path: already compressed in snapshot namespace space.
+            // Avoid allocating a full IRI string just to feed it back into encode_iri().
+            if sid.namespace_code != fluree_vocab::namespaces::EMPTY {
+                return sid.clone();
+            }
+
+            // EMPTY namespace: treat name as a full IRI and try to compress.
+            // If it doesn't match any known prefix, encode_iri will keep it in EMPTY.
+            snapshot
+                .encode_iri(sid.name.as_ref())
+                .unwrap_or_else(|| sid.clone())
+        };
+        let s_sid = match &pattern.s {
+            Ref::Sid(s) => Some(normalize(s)),
+            Ref::Iri(iri) => snapshot.encode_iri(iri),
             _ => None,
         };
-        let p_sid = match &self.pattern.p {
-            Ref::Sid(s) => Some(self.re_encode_sid(s)),
-            Ref::Iri(iri) => Some(self.store().encode_iri(iri)),
+        let p_sid = match &pattern.p {
+            Ref::Sid(p) => Some(normalize(p)),
+            Ref::Iri(iri) => snapshot.encode_iri(iri),
             _ => None,
         };
-        let o_val = match &self.pattern.o {
-            Term::Sid(sid) => Some(FlakeValue::Ref(self.re_encode_sid(sid))),
-            Term::Iri(iri) => Some(FlakeValue::Ref(self.store().encode_iri(iri))),
+        let o_val = match &pattern.o {
+            Term::Sid(sid) => Some(FlakeValue::Ref(normalize(sid))),
+            Term::Iri(iri) => snapshot.encode_iri(iri).map(FlakeValue::Ref),
             Term::Value(v) => Some(v.clone()),
             Term::Var(_) => None,
         };
         (s_sid, p_sid, o_val)
     }
 
-    /// Re-encode a Sid from the pattern's namespace space into the V6 store's
-    /// namespace space. Reconstructs the full IRI and re-encodes via the store's
-    /// prefix trie, ensuring namespace codes match decoded index values.
-    #[inline]
-    fn re_encode_sid(&self, sid: &Sid) -> Sid {
-        let iri = self.store().sid_to_iri(sid);
-        self.store().encode_iri(&iri)
-    }
-
     /// Build a `BinaryFilter` from bound pattern terms.
-    fn build_filter(
-        &self,
+    fn build_filter_from_snapshot_sids(
+        store: &BinaryIndexStore,
         s_sid: &Option<Sid>,
         p_sid: &Option<Sid>,
     ) -> std::io::Result<BinaryFilter> {
-        let s_id = if let Some(sid) = s_sid {
-            self.store().sid_to_s_id(sid)?
-        } else {
-            None
+        let s_id = match s_sid.as_ref() {
+            Some(sid) => sid_iri::sid_to_store_s_id(store, sid)?,
+            None => None,
         };
-        let p_id = p_sid.as_ref().and_then(|sid| self.store().sid_to_p_id(sid));
+        let p_id = match p_sid.as_ref() {
+            Some(sid) => sid_iri::sid_to_store_p_id(store, sid),
+            None => None,
+        };
 
         Ok(BinaryFilter {
             s_id,
@@ -862,103 +875,31 @@ impl BinaryScanOperator {
         let base_len = self.base_schema_len();
         let mut bindings = Vec::with_capacity(ncols.max(base_len));
         let store_arc: Arc<BinaryIndexStore> = Arc::clone(self.store());
-        let view = BinaryGraphView::new(Arc::clone(&store_arc), self.g_id);
-        let dict_overlay = ctx.and_then(|c| c.dict_novelty.clone()).map(|dn| {
-            crate::dict_overlay::DictOverlay::new(
-                BinaryGraphView::new(Arc::clone(&store_arc), self.g_id),
-                dn,
-            )
-        });
+        let dict_novelty_arc = ctx.and_then(|c| c.dict_novelty.clone());
+        let view = BinaryGraphView::with_novelty(
+            Arc::clone(&store_arc),
+            self.g_id,
+            dict_novelty_arc.clone(),
+        );
+        // DictOverlay is no longer needed here for decoding — BinaryGraphView
+        // handles watermark routing internally. DictOverlay is still used for
+        // overlay translation (translate_overlay_flakes) in BinaryScanOperator::open.
 
         // Late materialization is safe only when the BinaryIndexStore is authoritative
         // for decoding (no novelty overlay with ephemeral IDs).
         //
         // Note: ExecutionContext always carries an overlay provider; `NoOverlay` has epoch=0.
-        let late_materialize = ctx.is_some_and(|c| c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0)
+        // When `eager_materialization` is set (via `GraphDbRef::eager()`), always resolve
+        // bindings eagerly — infrastructure queries (config, policy) need concrete
+        // `Binding::Sid`/`Lit`, not `EncodedSid`/`EncodedLit`.
+        let late_materialize = ctx.is_some_and(|c| {
+            c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 && !c.eager_materialization
+        })
             // If a repeated variable forces two components into the same output slot,
             // late-materialization must produce comparable binding representations.
             // In particular, `?x ?x ?o` would otherwise compare EncodedSid vs EncodedPid.
             && !self.check_s_eq_p
             && !self.check_p_eq_o;
-
-        let encode_object =
-            |o_type: u16, o_key: u64, p_id: u32, t: i64, o_i: u32| -> Option<Binding> {
-                let ot = OType::from_u16(o_type);
-                match ot.decode_kind() {
-                    fluree_db_core::o_type::DecodeKind::IriRef => {
-                        Some(Binding::EncodedSid { s_id: o_key })
-                    }
-                    fluree_db_core::o_type::DecodeKind::BlankNode => {
-                        // Blank nodes aren't subject-dict IDs in V3; materialize to a Sid now.
-                        Some(Binding::Sid(Sid::new(0, format!("_:b{}", o_key))))
-                    }
-                    fluree_db_core::o_type::DecodeKind::StringDict => {
-                        let (dt_id, lang_id) = if ot.is_lang_string() {
-                            (DatatypeDictId::LANG_STRING.as_u16(), ot.payload())
-                        } else if o_type == OType::FULLTEXT.as_u16() {
-                            (DatatypeDictId::FULL_TEXT.as_u16(), 0)
-                        } else {
-                            // Default string dict values to xsd:string for late materialization.
-                            (DatatypeDictId::STRING.as_u16(), 0)
-                        };
-                        Some(Binding::EncodedLit {
-                            o_kind: ObjKind::LEX_ID.as_u8(),
-                            o_key,
-                            p_id,
-                            dt_id,
-                            lang_id,
-                            i_val: if o_i == u32::MAX {
-                                i32::MIN
-                            } else {
-                                o_i as i32
-                            },
-                            t,
-                        })
-                    }
-                    fluree_db_core::o_type::DecodeKind::JsonArena => Some(Binding::EncodedLit {
-                        o_kind: ObjKind::JSON_ID.as_u8(),
-                        o_key,
-                        p_id,
-                        dt_id: DatatypeDictId::JSON.as_u16(),
-                        lang_id: 0,
-                        i_val: if o_i == u32::MAX {
-                            i32::MIN
-                        } else {
-                            o_i as i32
-                        },
-                        t,
-                    }),
-                    fluree_db_core::o_type::DecodeKind::VectorArena => Some(Binding::EncodedLit {
-                        o_kind: ObjKind::VECTOR_ID.as_u8(),
-                        o_key,
-                        p_id,
-                        dt_id: DatatypeDictId::VECTOR.as_u16(),
-                        lang_id: 0,
-                        i_val: if o_i == u32::MAX {
-                            i32::MIN
-                        } else {
-                            o_i as i32
-                        },
-                        t,
-                    }),
-                    fluree_db_core::o_type::DecodeKind::NumBigArena => Some(Binding::EncodedLit {
-                        o_kind: ObjKind::NUM_BIG.as_u8(),
-                        o_key,
-                        p_id,
-                        // Best-effort: treat as decimal for late materialization; NUM_BIG identity
-                        // relies on (kind,key,dt/lang) and includes p_id in eq/hash when needed.
-                        dt_id: DatatypeDictId::DECIMAL.as_u16(),
-                        lang_id: 0,
-                        i_val: if o_i == u32::MAX {
-                            i32::MIN
-                        } else {
-                            o_i as i32
-                        },
-                        t,
-                    }),
-                    _ => None,
-                }
-            };
 
         for row in 0..batch.row_count {
             let s_id = batch.s_id.get(row);
@@ -1003,26 +944,12 @@ impl BinaryScanOperator {
             let needs_o_decode = self.bound_o.is_some()
                 || self.object_bounds.is_some()
                 || (!late_materialize && self.o_var_pos.is_some());
+            // BinaryGraphView::decode_value is novelty-aware: dict-backed types
+            // (IriRef, StringDict, JsonArena) automatically route through
+            // watermark checks when dict_novelty is present.
             let decode_value = |o_type: u16, o_key: u64, p_id: u32| -> Result<FlakeValue> {
-                use fluree_db_core::o_type::{DecodeKind, OType};
-                let ot = OType::from_u16(o_type);
-                match (ot.decode_kind(), dict_overlay.as_ref()) {
-                    (DecodeKind::IriRef, Some(ov)) => {
-                        let iri = ov.resolve_subject_iri(o_key).map_err(|e| {
-                            QueryError::Internal(format!("resolve_subject_iri: {e}"))
-                        })?;
-                        Ok(FlakeValue::Ref(store_arc.encode_iri(&iri)))
-                    }
-                    (DecodeKind::StringDict, Some(ov)) => {
-                        let s = ov.resolve_string_value(o_key as u32).map_err(|e| {
-                            QueryError::Internal(format!("resolve_string_value: {e}"))
-                        })?;
-                        Ok(FlakeValue::String(s))
-                    }
-                    _ => Ok(view
-                        .decode_value(o_type, o_key, p_id)
-                        .map_err(|e| QueryError::Internal(format!("decode_value_v3: {e}")))?),
-                }
+                view.decode_value(o_type, o_key, p_id)
+                    .map_err(|e| QueryError::Internal(format!("decode_value: {e}")))
             };
 
             let decoded_o = if needs_o_decode {
@@ -1061,15 +988,12 @@ impl BinaryScanOperator {
                 let binding = if late_materialize {
                     Binding::EncodedSid { s_id }
                 } else {
-                    match dict_overlay.as_ref() {
-                        Some(ov) => {
-                            let iri = ov.resolve_subject_iri(s_id).map_err(|e| {
-                                QueryError::Internal(format!("resolve_subject_iri: {e}"))
-                            })?;
-                            Binding::Sid(store_arc.encode_iri(&iri))
-                        }
-                        None => Binding::Sid(self.resolve_s_id(s_id)?),
-                    }
+                    // BinaryGraphView::resolve_subject_sid is novelty-aware:
+                    // novel subjects return Sid directly without IRI round-trip.
+                    let sid = view
+                        .resolve_subject_sid(s_id)
+                        .map_err(|e| QueryError::Internal(format!("resolve_subject_sid: {e}")))?;
+                    Binding::Sid(sid)
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;
@@ -1092,53 +1016,25 @@ impl BinaryScanOperator {
             if let Some(pos) = self.o_var_pos {
                 let binding = if needs_o_decode || !late_materialize {
                     let val = decoded_o.expect("decoded object required");
-                    match &val {
-                        FlakeValue::Ref(sid) => Binding::Sid(sid.clone()),
-                        _ => {
-                            let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from) {
-                                Some(lang) => DatatypeConstraint::LangTag(lang),
-                                None => DatatypeConstraint::Explicit(
-                                    self.store()
-                                        .resolve_datatype_sid(o_type)
-                                        .unwrap_or_else(|| Sid::new(0, "")),
-                                ),
-                            };
-                            Binding::Lit {
-                                val,
-                                dtc,
-                                t: t_opt,
-                                op: None,
-                                p_id: Some(p_id),
-                            }
+                    materialized_object_binding(self.store(), o_type, p_id, val, t_opt)
+                } else if let Some(encoded) =
+                    late_materialized_object_binding(o_type, o_key, p_id, t_enc, o_i)
+                {
+                    encoded
+                } else {
+                    // Fallback: decode if we don't have a safe encoded representation.
+                    // This preserves correctness for uncommon/custom OTypes.
+                    match decode_value(o_type, o_key, p_id) {
+                        Ok(val) => {
+                            materialized_object_binding(self.store(), o_type, p_id, val, t_opt)
+                        }
+                        Err(e) => {
+                            return Err(QueryError::dictionary_lookup(format!(
+                                "binary scan object decode fallback failed: o_type={}, o_key={}, p_id={}: {}",
+                                o_type, o_key, p_id, e
+                            )));
                         }
                     }
-                } else {
-                    encode_object(o_type, o_key, p_id, t_enc, o_i).unwrap_or_else(|| {
-                        // Fallback: decode if we don't have a safe encoded representation.
-                        // This preserves correctness for uncommon/custom OTypes.
-                        match decode_value(o_type, o_key, p_id) {
-                            Ok(FlakeValue::Ref(sid)) => Binding::Sid(sid),
-                            Ok(val) => {
-                                let dtc = match self.store().resolve_lang_tag(o_type).map(Arc::from)
-                                {
-                                    Some(lang) => DatatypeConstraint::LangTag(lang),
-                                    None => DatatypeConstraint::Explicit(
-                                        self.store()
-                                            .resolve_datatype_sid(o_type)
-                                            .unwrap_or_else(|| Sid::new(0, "")),
-                                    ),
-                                };
-                                Binding::Lit {
-                                    val,
-                                    dtc,
-                                    t: t_opt,
-                                    op: None,
-                                    p_id: Some(p_id),
-                                }
-                            }
-                            Err(_) => Binding::Unbound,
-                        }
-                    })
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
                     continue;
@@ -1189,7 +1085,7 @@ impl BinaryScanOperator {
         });
 
         flakes.sort_by(cmp);
-        flakes = remove_stale_overlay_flakes(flakes);
+        flakes = resolve_overlay_retractions(flakes);
 
         // Apply equality match (subject/predicate/object).
         if s_sid.is_some() || p_sid.is_some() || self.bound_o.is_some() {
@@ -1234,26 +1130,41 @@ impl BinaryScanOperator {
     }
 }
 
-fn remove_stale_overlay_flakes(flakes: Vec<Flake>) -> Vec<Flake> {
+/// Resolve assert/retract pairs in overlay flakes.
+///
+/// For each distinct fact `(s, p, o, dt, m)`, the latest entry (highest `t`)
+/// determines the current state: if it's an assertion, the fact is kept;
+/// if it's a retraction, the fact is excluded from query results.
+///
+/// Novelty enforces RDF set semantics at write time (`apply_commit`), so
+/// duplicate assertions for the same fact cannot exist. This function only
+/// needs to resolve assert/retract lifecycles, not deduplicate.
+fn resolve_overlay_retractions(flakes: Vec<Flake>) -> Vec<Flake> {
     use std::collections::HashSet;
 
+    // Full fact identity includes metadata (lang tags, list indices).
+    // Two flakes with same (s, p, o, dt) but different `m` are distinct facts.
     #[derive(Clone, Copy, Hash, PartialEq, Eq)]
     struct FactKeyRef<'a> {
         s: &'a Sid,
         p: &'a Sid,
         o: &'a FlakeValue,
         dt: &'a Sid,
+        m: &'a Option<FlakeMeta>,
     }
 
     let mut seen: HashSet<FactKeyRef<'_>> = HashSet::new();
     let mut keep = vec![false; flakes.len()];
 
+    // Walk in reverse (highest t first). First occurrence per fact key is
+    // the latest state. Keep it only if it's an assertion.
     for (idx, f) in flakes.iter().enumerate().rev() {
         let key = FactKeyRef {
             s: &f.s,
             p: &f.p,
             o: &f.o,
             dt: &f.dt,
+            m: &f.m,
         };
         if !seen.insert(key) {
             continue;
@@ -1370,6 +1281,14 @@ impl Operator for BinaryScanOperator {
         self.store = ctx.binary_store.clone();
         self.g_id = ctx.binary_g_id;
 
+        // Dataset (multi-ledger) execution cannot use the binary cursor path:
+        // - Binary scans are single-graph and do not represent dataset unions.
+        // - Late-materialized IDs (`Binding::EncodedSid`) are single-ledger only and
+        //   break correlated OPTIONAL substitution when a binary graph view is unavailable.
+        if ctx.is_multi_ledger() {
+            return self.open_range_fallback(ctx).await;
+        }
+
         if self.store.is_none() {
             return self.open_range_fallback(ctx).await;
         }
@@ -1388,19 +1307,20 @@ impl Operator for BinaryScanOperator {
                 "BinaryScanOperator::open: no binary_store on ExecutionContext".into(),
             )
         })?;
+        let store_ref = store.as_ref();
         for p_id in 0u32.. {
-            match store.resolve_predicate_iri(p_id) {
-                Some(iri) => p_sids.push(store.encode_iri(iri)),
+            match store_ref.resolve_predicate_iri(p_id) {
+                Some(iri) => p_sids.push(store_ref.encode_iri(iri)),
                 None => break,
             }
         }
         self.p_sids = p_sids;
 
-        // Extract bound terms and build filter.
-        let (s_sid, p_sid, o_val) = self.extract_bound_terms();
+        // Extract bound terms in snapshot namespace space and build the persisted-ID filter
+        // by translating through full IRIs into store namespace space.
+        let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
         self.bound_o = o_val;
-        let mut filter = self
-            .build_filter(&s_sid, &p_sid)
+        let mut filter = Self::build_filter_from_snapshot_sids(store_ref, &s_sid, &p_sid)
             .map_err(|e| QueryError::Internal(format!("build_filter: {e}")))?;
         tracing::debug!(
             ?self.pattern,
@@ -1424,7 +1344,6 @@ impl Operator for BinaryScanOperator {
             let lang = dtc.and_then(|d| d.lang_tag());
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
-            let store_ref = store.as_ref();
 
             let encoded = match (dt_sid, lang) {
                 (Some(dt_sid), lang) => {
@@ -1617,16 +1536,17 @@ impl Operator for BinaryScanOperator {
 
             // Extend p_sids table with novelty-only predicates so that ephemeral
             // p_ids from overlay ops can be decoded back to Sids during row binding.
-            for (iri, ep_id) in &ephemeral_preds {
+            for (sid, ep_id) in &ephemeral_preds {
                 let idx = *ep_id as usize;
                 if idx >= self.p_sids.len() {
                     self.p_sids.resize(idx + 1, Sid::new(0, ""));
                 }
-                self.p_sids[idx] = store_ref.encode_iri(iri);
+                self.p_sids[idx] = sid.clone();
             }
 
             if !ops.is_empty() {
                 sort_overlay_ops(&mut ops, order);
+                resolve_overlay_ops(&mut ops);
                 let epoch = ctx.overlay().epoch();
                 cursor.set_overlay_ops(ops);
                 cursor.set_epoch(epoch);
@@ -1637,7 +1557,7 @@ impl Operator for BinaryScanOperator {
             if !untranslated.is_empty() {
                 let cmp = self.index.comparator();
                 untranslated.sort_by(cmp);
-                untranslated = remove_stale_overlay_flakes(untranslated);
+                untranslated = resolve_overlay_retractions(untranslated);
 
                 // Apply equality match (subject/predicate/object) against pattern constants.
                 let s_sid = match &self.pattern.s {
@@ -1839,10 +1759,10 @@ fn translate_overlay_flakes_with_untranslated(
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
     to_t: i64,
     g_id: GraphId,
-) -> (Vec<OverlayOp>, Vec<Flake>, HashMap<String, u32>) {
+) -> (Vec<OverlayOp>, Vec<Flake>, HashMap<Sid, u32>) {
     let mut ops = Vec::new();
     let mut untranslated = Vec::new();
-    let mut ephemeral_preds: HashMap<String, u32> = HashMap::new();
+    let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
     let mut next_ephemeral_p_id = store.predicate_count();
 
     overlay.for_each_overlay_flake(
@@ -1880,15 +1800,25 @@ pub(crate) fn translate_one_flake_v3_pub(
     flake: &fluree_db_core::Flake,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
-    ephemeral_preds: &mut HashMap<String, u32>,
+    ephemeral_preds: &mut HashMap<Sid, u32>,
     next_ephemeral_p_id: &mut u32,
 ) -> std::io::Result<OverlayOp> {
     // Subject: persisted → DictNovelty → error
     let s_id = resolve_subject_v3(&flake.s, store, dict_novelty)?;
 
-    // Predicate: persisted → ephemeral
-    let p_iri = store.sid_to_iri(&flake.p);
-    let p_id = resolve_predicate_v3(&p_iri, store, ephemeral_preds, next_ephemeral_p_id);
+    // Predicate: persisted → ephemeral (keyed by Sid to avoid namespace decode issues).
+    //
+    // For novelty-only predicates (not present in the persisted predicate dictionary),
+    // we allocate ephemeral p_ids and later extend `p_sids` so decode produces the
+    // original Sid (in snapshot namespace space).
+    let p_id = match store.sid_to_p_id(&flake.p) {
+        Some(id) => id,
+        None => *ephemeral_preds.entry(flake.p.clone()).or_insert_with(|| {
+            let id = *next_ephemeral_p_id;
+            *next_ephemeral_p_id += 1;
+            id
+        }),
+    };
 
     // Object value → (o_type, o_key), using flake.dt + lang for proper OType.
     let lang = flake.m.as_ref().and_then(|m| m.lang.as_deref());
@@ -1913,36 +1843,13 @@ pub(crate) fn translate_one_flake_v3_pub(
     })
 }
 
-/// Resolve a predicate IRI to p_id.
-///
-/// Predicates are not tracked in DictNovelty (they're per-query ephemeral in V5).
-/// For V3 overlay, novel predicates get an ephemeral p_id above the persisted count.
-/// These ephemeral IDs won't match any persisted data (correct: the predicate
-/// is novelty-only), but will match overlay ops that use the same ID.
-fn resolve_predicate_v3(
-    iri: &str,
-    store: &BinaryIndexStore,
-    ephemeral_preds: &mut HashMap<String, u32>,
-    next_ephemeral_p_id: &mut u32,
-) -> u32 {
-    if let Some(id) = store.find_predicate_id(iri) {
-        return id;
-    }
-    // Ephemeral allocation for novel predicates.
-    *ephemeral_preds.entry(iri.to_string()).or_insert_with(|| {
-        let id = *next_ephemeral_p_id;
-        *next_ephemeral_p_id += 1;
-        id
-    })
-}
-
 /// Resolve a subject Sid to s_id using persisted dict then DictNovelty.
 fn resolve_subject_v3(
     sid: &Sid,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
 ) -> std::io::Result<u64> {
-    // 1. Persisted
+    // 1. Persisted (canonical encoding guarantees exact-parts match)
     if let Some(id) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
         return Ok(id);
     }
@@ -2121,12 +2028,80 @@ fn value_to_otype_okey(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EncodedObjectPrefilter {
+    pub o_type: Option<OType>,
+    pub o_key: u64,
+}
+
+/// Build the narrowest safe binary prefilter for a bound object.
+///
+/// When the query does not specify a numeric datatype, we intentionally leave
+/// `o_type` unset and rely on post-decode equality checks. This preserves the
+/// broader integer/float family semantics instead of forcing `Long` through
+/// `xsd:integer` on the binary path.
+pub(crate) fn encode_bound_object_prefilter(
+    val: &FlakeValue,
+    dt_sid: Option<&Sid>,
+    lang: Option<&str>,
+    store: &BinaryIndexStore,
+    dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+) -> std::io::Result<EncodedObjectPrefilter> {
+    use fluree_db_core::value_id::ObjKey;
+
+    match (dt_sid, lang) {
+        (Some(dt_sid), lang) => {
+            let (ot, key) = value_to_otype_okey(val, dt_sid, lang, store, dict_novelty)?;
+            Ok(EncodedObjectPrefilter {
+                o_type: Some(ot),
+                o_key: key,
+            })
+        }
+        (None, Some(_)) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "lang tag requires datatype constraint",
+        )),
+        (None, None) => match val {
+            // Without a datatype constraint, plain strings are ambiguous:
+            // could be xsd:string or rdf:langString.
+            FlakeValue::String(_) => Err(std::io::Error::other(
+                "string without dtc: type ambiguous (could be langString)",
+            )),
+            // Untyped numerics should not pre-commit to a specific numeric OType.
+            FlakeValue::Long(n) => Ok(EncodedObjectPrefilter {
+                o_type: None,
+                o_key: ObjKey::encode_i64(*n).as_u64(),
+            }),
+            FlakeValue::Double(d) => {
+                if d.is_finite() {
+                    ObjKey::encode_f64(*d)
+                        .map(|key| EncodedObjectPrefilter {
+                            o_type: None,
+                            o_key: key.as_u64(),
+                        })
+                        .map_err(|_| std::io::Error::other("cannot encode f64 for V6 index"))
+                } else {
+                    Err(std::io::Error::other("non-finite double in bound object"))
+                }
+            }
+            _ => {
+                let (ot, key) = value_to_otype_okey_simple(val, store)
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
+                Ok(EncodedObjectPrefilter {
+                    o_type: Some(ot),
+                    o_key: key,
+                })
+            }
+        },
+    }
+}
+
 /// Resolve a datatype Sid to its OType constant.
 ///
 /// Reconstructs the IRI from the Sid and matches against well-known XSD types.
 /// Returns `None` for unrecognized datatypes (caller uses FlakeValue-inferred default).
 fn otype_from_dt_sid(dt_sid: &Sid, store: &BinaryIndexStore) -> Option<OType> {
-    let iri = store.sid_to_iri(dt_sid);
+    let iri = store.sid_to_iri(dt_sid)?;
     fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri)
 }
 
@@ -2160,8 +2135,8 @@ pub(crate) fn value_to_otype_okey_simple(
         }
         FlakeValue::Ref(sid) => {
             let s_id = store
-                .sid_to_s_id(sid)
-                .map_err(|e| QueryError::execution(format!("sid_to_s_id: {e}")))?
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}")))?
                 .ok_or_else(|| {
                     QueryError::execution("ref object not found in V6 dict".to_string())
                 })?;
@@ -2175,6 +2150,15 @@ pub(crate) fn value_to_otype_okey_simple(
                     QueryError::execution("string value not found in V6 dict".to_string())
                 })?;
             Ok((OType::XSD_STRING, str_id as u64))
+        }
+        FlakeValue::Json(s) => {
+            let str_id = store
+                .find_string_id(s)
+                .map_err(|e| QueryError::execution(format!("find_string_id: {e}")))?
+                .ok_or_else(|| {
+                    QueryError::execution("JSON value not found in V6 dict".to_string())
+                })?;
+            Ok((OType::RDF_JSON, str_id as u64))
         }
         FlakeValue::Date(d) => Ok((
             OType::XSD_DATE,

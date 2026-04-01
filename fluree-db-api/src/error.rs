@@ -227,6 +227,19 @@ pub enum ApiError {
     #[error("Indexing is disabled - no background indexer configured")]
     IndexingDisabled,
 
+    /// Refresh did not reach the requested minimum `t` value.
+    ///
+    /// The nameservice was polled and any available commits were applied,
+    /// but the ledger's `t` is still below the caller's `min_t` threshold.
+    /// The caller should decide whether to retry (with backoff) or give up.
+    #[error("Ledger has not reached t={requested}, current t={current}")]
+    AwaitTNotReached {
+        /// The `t` value the caller asked for.
+        requested: i64,
+        /// The ledger's `t` after the refresh attempt.
+        current: i64,
+    },
+
     /// Ledger advanced during reindex (conflict)
     #[error("Ledger advanced during reindex: expected t={expected}, found t={found}")]
     ReindexConflict {
@@ -250,6 +263,16 @@ pub enum ApiError {
 }
 
 impl ApiError {
+    /// Check if this error represents a "not found" condition.
+    ///
+    /// Matches both `ApiError::NotFound` and `ApiError::Ledger(LedgerError::NotFound)`.
+    pub fn is_not_found(&self) -> bool {
+        matches!(
+            self,
+            ApiError::NotFound(_) | ApiError::Ledger(fluree_db_ledger::LedgerError::NotFound(_))
+        )
+    }
+
     /// Create a configuration error
     pub fn config(msg: impl Into<String>) -> Self {
         ApiError::Config(msg.into())

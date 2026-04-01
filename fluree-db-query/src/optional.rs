@@ -254,13 +254,14 @@ impl PatternOptionalBuilder {
                         }
                         Binding::EncodedSid { s_id } => {
                             // Late materialized subject ID: resolve to IRI for correlation.
-                            let store = ctx.binary_store.as_ref().ok_or_else(|| {
+                            // Uses novelty-aware BinaryGraphView via ctx.graph_view().
+                            let gv = ctx.graph_view().ok_or_else(|| {
                                 QueryError::Internal(
                                     "OPTIONAL correlation requires binary store for EncodedSid"
                                         .into(),
                                 )
                             })?;
-                            let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
+                            let iri = gv.resolve_subject_iri(*s_id).map_err(|e| {
                                 QueryError::Internal(format!("resolve subject iri: {e}"))
                             })?;
                             pattern.s = Ref::Iri(Arc::<str>::from(iri));
@@ -541,6 +542,13 @@ impl OptionalBuilder for PlanTreeOptionalBuilder {
         // Create a seed operator from the required row
         let seed = SeedOperator::from_batch_row(required_batch, row);
 
+        tracing::debug!(
+            required_schema_cols = required_batch.schema().len(),
+            optional_pattern_count = self.inner_patterns.len(),
+            optional_only_vars = self.optional_only_vars.len(),
+            "planning correlated optional with seeded row"
+        );
+
         // Build the operator tree using build_where_operators_seeded
         // Propagate errors - planning failures should not be silently swallowed
         let op = crate::execute::build_where_operators_seeded(
@@ -804,6 +812,9 @@ impl Operator for OptionalOperator {
             .map(|_| Vec::with_capacity(batch_size))
             .collect();
         let mut rows_added = 0;
+        let mut built_optionals = 0usize;
+        let mut cache_hits = 0usize;
+        let mut optional_result_batches = 0usize;
 
         // Process until we have a full batch or exhaust input
         loop {
@@ -958,6 +969,8 @@ impl Operator for OptionalOperator {
 
                 if let Some(key) = cache_key.as_ref() {
                     if let Some(cached) = self.result_cache.get(key) {
+                        cache_hits += 1;
+                        optional_result_batches += cached.len();
                         self.pending_output.push_back(PendingOptionalMatch {
                             required_row,
                             optional_batches: (**cached).clone(),
@@ -985,6 +998,7 @@ impl Operator for OptionalOperator {
                         });
                     }
                     Some(mut optional_op) => {
+                        built_optionals += 1;
                         // Execute optional operator
                         optional_op.open(ctx).await?;
 
@@ -995,6 +1009,7 @@ impl Operator for OptionalOperator {
                                 optional_batches.push(opt_batch);
                             }
                         }
+                        optional_result_batches += optional_batches.len();
 
                         optional_op.close();
 
@@ -1020,10 +1035,12 @@ impl Operator for OptionalOperator {
         }
 
         if rows_added == 0 {
+            let _ = (built_optionals, cache_hits, optional_result_batches);
             return Ok(None);
         }
 
         let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
+        let _ = (built_optionals, cache_hits, optional_result_batches);
         Ok(trim_batch(&self.out_schema, batch))
     }
 

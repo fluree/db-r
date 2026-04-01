@@ -751,6 +751,7 @@ mod inner {
                 txn_signature: None,
                 txn_meta: Vec::new(),
                 graph_delta: HashMap::new(),
+                ns_split_mode: None,
             }
         }
 

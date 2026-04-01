@@ -123,7 +123,7 @@ See [Debugging Queries](debugging-queries.md).
 # Use online validator: json-ld.org/playground
 
 # Check permissions
-curl -X POST http://localhost:8090/v1/fluree/transact?dryRun=true \
+curl -X POST http://localhost:8090/v1/fluree/update?dryRun=true \
   -d '{...}'
 
 # Check transaction stats

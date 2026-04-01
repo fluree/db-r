@@ -76,6 +76,8 @@ pub use scan::{
 
 // AWS/Send-safe types
 #[cfg(feature = "aws")]
+pub use catalog::SendDirectCatalogClient;
+#[cfg(feature = "aws")]
 pub use io::{S3IcebergStorage, SendIcebergStorage, SendParquetReader};
 #[cfg(feature = "aws")]
 pub use scan::SendScanPlanner;

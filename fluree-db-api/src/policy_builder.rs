@@ -16,7 +16,7 @@ use crate::dataset::QueryConnectionOptions;
 use crate::error::{ApiError, Result};
 use fluree_db_core::{is_rdf_type, ClassPropertyUsage, ClassStatEntry, IndexStats};
 use fluree_db_core::{FlakeValue, GraphDbRef, IndexType, LedgerSnapshot, Sid};
-use fluree_db_core::{RangeMatch, RangeTest};
+use fluree_db_core::{RangeMatch, RangeOptions, RangeTest};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::{
     build_policy_set, PolicyAction, PolicyContext, PolicyQuery, PolicyRestriction, PolicyValue,
@@ -156,45 +156,62 @@ pub async fn build_policy_context_from_opts(
     // Build policy values map first (SID mappings for policy variables)
     let mut policy_values = build_policy_values(snapshot, &opts.policy_values)?;
 
-    // Resolve identity SID (used for ?$identity binding)
-    // Priority: opts.identity > policy_values["?$identity"]
-    let identity_sid = if let Some(identity_iri) = &opts.identity {
-        // Explicit identity option takes precedence
-        let sid = resolve_identity_iri_to_sid(snapshot, identity_iri)?;
-        // Also add to policy_values so policy queries can bind ?$identity
-        policy_values.insert("?$identity".to_string(), sid.clone());
-        Some(sid)
-    } else if let Some(sid) = policy_values.get("?$identity") {
-        // Identity may be provided via `policy_values`.
-        Some(sid.clone())
-    } else if let Some(pv) = &opts.policy_values {
-        // Check if ?$identity was provided but failed to encode (treat as error)
-        if pv.contains_key("?$identity") {
-            return Err(ApiError::query(
-                "?$identity provided in policy-values but could not be encoded",
-            ));
+    // Load policies and resolve identity SID.
+    //
+    // When opts.identity is set, load_policies_by_identity handles both the f:policyClass
+    // lookup and the subject-existence check in a single code path, returning an enum that
+    // distinguishes three cases: identity not in ledger, identity exists with no policies,
+    // identity exists with policies.  This avoids encoding the IRI twice (once here and once
+    // inside load_policies_by_identity) and makes the "not found" vs "found-no-policy" split
+    // explicit at the type level rather than inferred from an empty Vec.
+    //
+    // Priority: identity > policy_class > policy > policy_values["?$identity"]
+    let (identity_sid, restrictions, identity_found) = if let Some(identity_iri) = &opts.identity {
+        match load_policies_by_identity(snapshot, overlay, to_t, identity_iri).await? {
+            IdentityLookupResult::NotFound => {
+                // IRI unresolvable or no subject node in this ledger. Fail-closed: the
+                // system cannot vouch for this requester, so no data should be exposed.
+                (None, vec![], false)
+            }
+            IdentityLookupResult::FoundNoPolicies { identity_sid } => {
+                policy_values.insert("?$identity".to_string(), identity_sid.clone());
+                (Some(identity_sid), vec![], true)
+            }
+            IdentityLookupResult::FoundWithPolicies {
+                identity_sid,
+                restrictions,
+            } => {
+                policy_values.insert("?$identity".to_string(), identity_sid.clone());
+                (Some(identity_sid), restrictions, true)
+            }
         }
-        None
     } else {
-        None
-    };
+        // Non-identity paths: resolve ?$identity from policy_values if present,
+        // then load restrictions from policy_class / inline policy / none.
+        let identity_sid = if let Some(sid) = policy_values.get("?$identity") {
+            Some(sid.clone())
+        } else if let Some(pv) = &opts.policy_values {
+            if pv.contains_key("?$identity") {
+                return Err(ApiError::query(
+                    "?$identity provided in policy-values but could not be encoded",
+                ));
+            }
+            None
+        } else {
+            None
+        };
 
-    // Load or parse policies based on options.
-    // Priority: identity > policy_class > policy
-    // If identity is present, it triggers f:policyClass lookup AND binds ?$identity.
-    // For inline policies with identity binding, use policy_values["?$identity"] instead.
-    let restrictions = if let Some(identity) = &opts.identity {
-        // Identity-based: query for policies via f:policyClass (highest priority)
-        load_policies_by_identity(snapshot, overlay, to_t, identity).await?
-    } else if let Some(classes) = &opts.policy_class {
-        // Class-based: query for policies of given types
-        load_policies_by_class(snapshot, overlay, to_t, classes).await?
-    } else if let Some(policy_json) = &opts.policy {
-        // Inline: parse policy JSON-LD (lowest priority)
-        parse_inline_policy(snapshot, policy_json)?
-    } else {
-        // No policy specified - return empty (will use default_allow)
-        vec![]
+        let restrictions = if let Some(classes) = &opts.policy_class {
+            load_policies_by_class(snapshot, overlay, to_t, classes).await?
+        } else if let Some(policy_json) = &opts.policy {
+            parse_inline_policy(snapshot, policy_json)?
+        } else {
+            vec![]
+        };
+
+        // identity_found is only meaningful for the opts.identity path; use true here
+        // so effective_default_allow is unchanged for non-identity queries.
+        (identity_sid, restrictions, true)
     };
 
     let has_class_policies = restrictions.iter().any(|r| r.class_policy);
@@ -231,15 +248,38 @@ pub async fn build_policy_context_from_opts(
     let view_set = build_policy_set(restrictions.clone(), stats.as_ref(), PolicyAction::View);
     let modify_set = build_policy_set(restrictions, stats.as_ref(), PolicyAction::Modify);
 
-    // Check if this is a root policy (unrestricted access)
-    let is_root = view_set.restrictions.is_empty() && modify_set.restrictions.is_empty();
+    // Check if this is a root policy (unrestricted access).
+    //
+    // is_root = true ONLY when no explicit policy inputs (identity / policy-class / policy)
+    // were provided. When an identity IS specified but has no matching policies, is_root must
+    // be false so that effective_default_allow (not a blanket bypass) governs access.
+    let has_explicit_policy_input = opts.identity.is_some()
+        || opts.policy_class.as_ref().is_some_and(|v| !v.is_empty())
+        || opts.policy.is_some();
+    let is_root = !has_explicit_policy_input
+        && view_set.restrictions.is_empty()
+        && modify_set.restrictions.is_empty();
+
+    // When an identity was asserted but the subject is not in this ledger, force
+    // default_allow to false regardless of what the caller requested. An unrecognized
+    // identity cannot be vouched for by any policy, so exposing data via a permissive
+    // default would silently bypass the intent of identity-scoped access control.
+    //
+    // This does NOT affect identities that ARE in the ledger but simply have no
+    // f:policyClass — those are known subjects with no restrictions, and default_allow
+    // governs them as expected by the policy combining algorithm.
+    let effective_default_allow = if opts.identity.is_some() && !identity_found {
+        false
+    } else {
+        opts.default_allow
+    };
 
     // Create wrapper
     let wrapper = PolicyWrapper::new(
         view_set,
         modify_set,
         is_root,
-        opts.default_allow,
+        effective_default_allow,
         policy_values,
     );
 
@@ -251,7 +291,32 @@ pub async fn build_policy_context_from_opts(
 // Identity-based policy loading
 // ============================================================================
 
-/// Load policies by querying the identity's `f:policyClass` property.
+/// Outcome of looking up an identity's policies in the ledger.
+///
+/// The three-way split is intentional: callers need to distinguish "subject not in
+/// ledger" from "subject exists but has no f:policyClass", because `default_allow`
+/// should only apply to the latter.  Collapsing both into an empty Vec would allow
+/// an unrecognized identity to gain access when `default_allow: true` is set,
+/// which violates the intent of identity-scoped access control.
+enum IdentityLookupResult {
+    /// The identity IRI cannot be resolved (unregistered namespace) or has no subject
+    /// node in this ledger. Access must be denied regardless of `default_allow`.
+    NotFound,
+    /// The identity IRI exists as a subject in the ledger but has no `f:policyClass`
+    /// property. No restrictions apply; `default_allow` governs access.
+    FoundNoPolicies { identity_sid: Sid },
+    /// The identity IRI exists and has associated policy restrictions.
+    FoundWithPolicies {
+        identity_sid: Sid,
+        restrictions: Vec<PolicyRestriction>,
+    },
+}
+
+/// Look up the policies for `identity_iri` via its `f:policyClass` property.
+///
+/// Returns an [`IdentityLookupResult`] that distinguishes whether the identity
+/// subject exists in the ledger, which determines how `default_allow` is applied
+/// by the caller.
 ///
 /// Legacy equivalent: `wrap-identity-policy`
 ///
@@ -267,10 +332,19 @@ async fn load_policies_by_identity(
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     identity_iri: &str,
-) -> Result<Vec<PolicyRestriction>> {
-    // Step 1: Get policy classes for identity
-    let identity_sid = resolve_iri_to_sid(snapshot, identity_iri)?;
-    let policy_class_sid = resolve_iri_to_sid(snapshot, policy_iris::POLICY_CLASS)?;
+) -> Result<IdentityLookupResult> {
+    // Encode the identity IRI strictly — unregistered namespaces (including CURIEs
+    // passed as opts.identity) produce NotFound rather than a silent empty result.
+    let identity_sid = match resolve_identity_iri_to_sid(snapshot, identity_iri) {
+        Ok(sid) => sid,
+        Err(_) => return Ok(IdentityLookupResult::NotFound),
+    };
+
+    // `https://ns.flur.ee/db#` is in default_namespace_codes() and is pre-registered in
+    // every ledger from genesis, so this encoding cannot fail in practice. Propagate as an
+    // internal error rather than silently absorbing an invariant violation.
+    let policy_class_sid =
+        resolve_system_iri_to_sid(snapshot, policy_iris::POLICY_CLASS, "f:policyClass")?;
 
     let mut vars = VarRegistry::new();
     let class_var = vars.get_or_insert("?class");
@@ -282,10 +356,12 @@ async fn load_policies_by_identity(
         Term::Var(class_var),
     );
 
-    // Collect class SIDs
+    // Collect class SIDs from the default graph (where policy data lives).
+    // Eager materialization: `as_sid()` needs concrete `Binding::Sid`, not
+    // late-materialized `EncodedSid` from binary scans with epoch=0.
     let mut class_sids: Vec<Sid> = Vec::new();
     for g_id in POLICY_GRAPHS {
-        let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+        let db = GraphDbRef::new(snapshot, g_id, overlay, to_t).eager();
         let batches = execute_pattern_with_overlay_at(db, &vars, pattern.clone(), None).await?;
         for batch in &batches {
             for row in 0..batch.len() {
@@ -299,11 +375,44 @@ async fn load_policies_by_identity(
     }
 
     if class_sids.is_empty() {
-        return Ok(vec![]);
+        // No f:policyClass found. Determine whether the identity subject itself exists
+        // in any policy graph.
+        //
+        // We iterate POLICY_GRAPHS (rather than hard-coding [0]) for the same reason
+        // the policyClass lookup above iterates it: identity subjects are normally in
+        // graph 0 (the default graph, assigned when no @graph is specified in the
+        // transaction), but Fluree's JSON-LD transaction parser supports per-object
+        // @graph selectors, so a subject could land in a named graph if the caller
+        // explicitly specified one. If POLICY_GRAPHS is ever expanded to include named
+        // graphs, both lookups must cover the same set of graphs.
+        //
+        // Each seek is O(log n) with flake_limit=1; the loop runs once today since
+        // POLICY_GRAPHS = [0].
+        let range_opts = RangeOptions::default().with_flake_limit(1);
+        for g_id in POLICY_GRAPHS {
+            let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
+            let exists = db
+                .range_with_opts(
+                    IndexType::Spot,
+                    RangeTest::Eq,
+                    RangeMatch::subject(identity_sid.clone()),
+                    range_opts.clone(),
+                )
+                .await
+                .map_err(|e| ApiError::internal(format!("identity existence check failed: {e}")))?;
+            if !exists.is_empty() {
+                return Ok(IdentityLookupResult::FoundNoPolicies { identity_sid });
+            }
+        }
+        return Ok(IdentityLookupResult::NotFound);
     }
 
-    // Step 2: Get policies of those classes
-    load_policies_of_classes(snapshot, overlay, to_t, &class_sids).await
+    // Step 2: Load policies of those classes
+    let restrictions = load_policies_of_classes(snapshot, overlay, to_t, &class_sids).await?;
+    Ok(IdentityLookupResult::FoundWithPolicies {
+        identity_sid,
+        restrictions,
+    })
 }
 
 // ============================================================================

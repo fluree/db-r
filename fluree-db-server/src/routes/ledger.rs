@@ -11,7 +11,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use fluree_db_api::{ApiError, DropMode, DropReport, DropStatus};
+use fluree_db_api::{ApiError, BranchDropReport, DropMode, DropReport, DropStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -258,7 +258,8 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
             DropMode::Soft
         };
 
-        // Ledger drop is only in transaction mode (peers forward)
+        // Ledger drop is only in transaction mode (peers forward).
+        // Try ledger first, then fall back to graph source if not found.
         let report = match state.fluree.as_file().drop_ledger(&req.ledger, mode).await {
             Ok(report) => report,
             Err(e) => {
@@ -269,12 +270,150 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
             }
         };
 
+        // If ledger not found, try graph source drop
+        if matches!(report.status, DropStatus::NotFound) {
+            let gs_report = match state
+                .fluree
+                .as_file()
+                .drop_graph_source(&req.ledger, None, mode)
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    set_span_error_code(&span, "error:NotFound");
+                    tracing::error!(error = %e, "graph source drop also failed");
+                    return Err(ServerError::Api(e));
+                }
+            };
+
+            let gs_status = match gs_report.status {
+                DropStatus::Dropped => "dropped",
+                DropStatus::AlreadyRetracted => "already_retracted",
+                DropStatus::NotFound => "not_found",
+            };
+
+            tracing::info!(
+                status = "success",
+                drop_status = gs_status,
+                "graph source dropped"
+            );
+            return Ok(Json(DropResponse {
+                ledger_id: format!("{}:{}", gs_report.name, gs_report.branch),
+                status: gs_status.to_string(),
+                files_deleted: None,
+                warnings: gs_report.warnings,
+            }));
+        }
+
         tracing::info!(status = "success", drop_status = ?report.status, "ledger dropped");
         Ok(Json(DropResponse::from(report)))
     }
     .instrument(span)
     .await
 }
+
+// =============================================================================
+// List ledgers + graph sources
+// =============================================================================
+
+/// Entry in the ledger/graph-source list response
+#[derive(Serialize)]
+pub struct ListEntry {
+    pub name: String,
+    pub branch: String,
+    #[serde(rename = "type")]
+    pub entry_type: String,
+    pub t: i64,
+}
+
+/// List all ledgers and graph sources
+///
+/// GET /fluree/ledgers
+pub async fn list_ledgers(State(state): State<Arc<AppState>>) -> Result<Json<Vec<ListEntry>>> {
+    let ledger_records = state
+        .fluree
+        .all_ns_records()
+        .await
+        .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {}", e)))?;
+
+    let gs_records = state
+        .fluree
+        .all_graph_source_records()
+        .await
+        .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {}", e)))?;
+
+    let mut entries = Vec::new();
+
+    for r in &ledger_records {
+        if r.retracted {
+            continue;
+        }
+        entries.push(ListEntry {
+            name: r.name.clone(),
+            branch: r.branch.clone(),
+            entry_type: "Ledger".to_string(),
+            t: r.commit_t,
+        });
+    }
+
+    for gs in &gs_records {
+        if gs.retracted {
+            continue;
+        }
+        entries.push(ListEntry {
+            name: gs.name.clone(),
+            branch: gs.branch.clone(),
+            entry_type: format_source_type(&gs.source_type),
+            t: gs.index_t,
+        });
+    }
+
+    Ok(Json(entries))
+}
+
+fn format_source_type(st: &fluree_db_nameservice::GraphSourceType) -> String {
+    match st {
+        fluree_db_nameservice::GraphSourceType::Bm25 => "BM25".to_string(),
+        fluree_db_nameservice::GraphSourceType::Vector => "Vector".to_string(),
+        fluree_db_nameservice::GraphSourceType::Geo => "Geo".to_string(),
+        fluree_db_nameservice::GraphSourceType::R2rml => "R2RML".to_string(),
+        fluree_db_nameservice::GraphSourceType::Iceberg => "Iceberg".to_string(),
+        fluree_db_nameservice::GraphSourceType::Unknown(s) => format!("Unknown({s})"),
+    }
+}
+
+/// Build a JSON representation of a graph source record for the info endpoint.
+fn graph_source_info_json(gs: &fluree_db_nameservice::GraphSourceRecord) -> JsonValue {
+    let mut obj = serde_json::json!({
+        "name": gs.name,
+        "branch": gs.branch,
+        "type": format_source_type(&gs.source_type),
+        "graph_source_id": gs.graph_source_id,
+        "retracted": gs.retracted,
+        "index_t": gs.index_t,
+    });
+
+    if let Some(ref id) = gs.index_id {
+        obj["index_id"] = serde_json::Value::String(id.to_string());
+    }
+
+    if !gs.dependencies.is_empty() {
+        obj["dependencies"] = serde_json::json!(gs.dependencies);
+    }
+
+    // Include parsed config if non-empty
+    if !gs.config.is_empty() && gs.config != "{}" {
+        if let Ok(parsed) = serde_json::from_str::<JsonValue>(&gs.config) {
+            obj["config"] = parsed;
+        }
+    }
+
+    obj
+}
+
+// =============================================================================
+// Info
+// =============================================================================
 
 /// Ledger info response (simplified, used in proxy storage mode fallback)
 #[derive(Serialize)]
@@ -363,8 +502,21 @@ pub async fn info(
             return info_simplified(&state, alias, &span).await;
         }
 
-        // Non-proxy mode: load ledger and return comprehensive info
-        let ledger_state = super::query::load_ledger_for_query(&state, alias, &span).await?;
+        // Non-proxy mode: load ledger and return comprehensive info.
+        // If ledger is not found, fall back to graph source lookup.
+        let ledger_state = match super::query::load_ledger_for_query(&state, alias, &span).await {
+            Ok(ls) => ls,
+            Err(ServerError::Api(ref e)) if e.is_not_found() => {
+                // Try graph source lookup
+                if let Ok(Some(gs)) = state.fluree.lookup_graph_source(alias).await {
+                    tracing::info!(status = "success", "graph source info retrieved");
+                    return Ok(Json(graph_source_info_json(&gs)).into_response());
+                }
+                set_span_error_code(&span, "error:NotFound");
+                return Err(ServerError::Api(ApiError::NotFound(alias.to_string())));
+            }
+            Err(e) => return Err(e),
+        };
 
         let t = ledger_state.snapshot.t;
 
@@ -439,38 +591,44 @@ pub async fn info_ledger_tail(
     info(State(state), headers, bearer, axum::extract::Query(query)).await
 }
 
-/// Simplified ledger info for proxy storage mode (nameservice lookup only)
+/// Simplified ledger info for proxy storage mode (nameservice lookup only).
+/// Falls back to graph source lookup if ledger is not found.
 async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) -> Result<Response> {
     // Lookup ledger in nameservice
-    let record = match state.fluree.nameservice_lookup(alias).await {
-        Ok(Some(record)) => record,
-        Ok(None) => {
-            let server_error = ServerError::Api(ApiError::NotFound(alias.to_string()));
-            set_span_error_code(span, "error:NotFound");
-            tracing::warn!(error = %server_error, "ledger not found in nameservice");
-            return Err(server_error);
+    match state.fluree.nameservice_lookup(alias).await {
+        Ok(Some(record)) => {
+            tracing::info!(
+                status = "success",
+                commit_t = record.commit_t,
+                "ledger info retrieved (simplified)"
+            );
+            return Ok(Json(LedgerInfoResponse {
+                ledger_id: record.ledger_id.clone(),
+                t: record.commit_t,
+                commit_head_id: record.commit_head_id.clone(),
+                index_head_id: record.index_head_id.clone(),
+            })
+            .into_response());
         }
+        Ok(None) => { /* fall through to graph source lookup */ }
         Err(e) => {
             let server_error = ServerError::Api(ApiError::NameService(e));
             set_span_error_code(span, "error:InternalError");
             tracing::error!(error = %server_error, "nameservice lookup failed");
             return Err(server_error);
         }
-    };
+    }
 
-    // Return simplified ledger info from nameservice record
-    tracing::info!(
-        status = "success",
-        commit_t = record.commit_t,
-        "ledger info retrieved (simplified)"
-    );
-    Ok(Json(LedgerInfoResponse {
-        ledger_id: record.ledger_id.clone(),
-        t: record.commit_t,
-        commit_head_id: record.commit_head_id.clone(),
-        index_head_id: record.index_head_id.clone(),
-    })
-    .into_response())
+    // Try graph source lookup
+    if let Ok(Some(gs)) = state.fluree.lookup_graph_source(alias).await {
+        tracing::info!(status = "success", "graph source info retrieved");
+        return Ok(Json(graph_source_info_json(&gs)).into_response());
+    }
+
+    let server_error = ServerError::Api(ApiError::NotFound(alias.to_string()));
+    set_span_error_code(span, "error:NotFound");
+    tracing::warn!(error = %server_error, "not found as ledger or graph source");
+    Err(server_error)
 }
 
 /// Query parameters for ledger-info
@@ -597,8 +755,464 @@ pub async fn exists_ledger_tail(
     exists(State(state), headers, bearer, axum::extract::Query(query)).await
 }
 
-/// Forward a write request to the transaction server (peer mode)
-async fn forward_write_request(state: &AppState, request: Request) -> Response {
+// ── Branch endpoints ──────────────────────────────────────────────────────
+
+/// Branch info in list response
+#[derive(Serialize)]
+pub struct BranchInfo {
+    /// Branch name (e.g., "main", "feature-x")
+    pub branch: String,
+    /// Full ledger:branch identifier
+    pub ledger_id: String,
+    /// Current transaction time on this branch
+    pub t: i64,
+    /// Source branch this was created from, if any
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Create branch request body
+#[derive(Deserialize)]
+pub struct CreateBranchRequest {
+    /// Ledger name (e.g., "mydb")
+    pub ledger: String,
+    /// New branch name (e.g., "feature-x")
+    pub branch: String,
+    /// Source branch to create from (defaults to "main")
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Create branch response
+#[derive(Serialize)]
+pub struct CreateBranchResponse {
+    /// Full ledger:branch identifier
+    pub ledger_id: String,
+    /// Branch name
+    pub branch: String,
+    /// Source branch this was created from
+    pub source: String,
+    /// Transaction time at branch point
+    pub t: i64,
+}
+
+/// Create a new branch
+///
+/// POST /fluree/branch
+///
+/// Request body:
+/// - `ledger`: Ledger name (e.g., "mydb")
+/// - `branch`: New branch name (e.g., "feature-x")
+/// - `source`: Source branch (optional, defaults to "main")
+///
+/// Returns 201 Created on success, 409 Conflict if branch already exists,
+/// 404 Not Found if source branch does not exist.
+pub async fn create_branch(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    if state.config.server_role == ServerRole::Peer {
+        return forward_write_request(&state, request).await;
+    }
+
+    create_branch_local(state, request).await.into_response()
+}
+
+async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<impl IntoResponse> {
+    let (parts, body) = request.into_parts();
+    let headers = FlureeHeaders::from_headers(&parts.headers)?;
+
+    let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
+        .await
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+    let req: CreateBranchRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+
+    let source = req.source.unwrap_or_else(|| "main".to_string());
+    let ledger = req.ledger;
+    let branch = req.branch;
+
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+    let span = create_request_span(
+        "branch:create",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&ledger),
+        None,
+        None,
+    );
+
+    async move {
+        let span = tracing::Span::current();
+
+        tracing::info!(
+            status = "start",
+            branch = %branch,
+            source = %source,
+            "branch creation requested"
+        );
+
+        let record = match state
+            .fluree
+            .as_file()
+            .create_branch(&ledger, &branch, Some(&source))
+            .await
+        {
+            Ok(record) => record,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&span, "error:BranchCreateFailed");
+                tracing::error!(error = %server_error, "branch creation failed");
+                return Err(server_error);
+            }
+        };
+
+        let bp = record.branch_point.as_ref();
+        let response = CreateBranchResponse {
+            ledger_id: record.ledger_id,
+            branch: record.branch,
+            source: bp.map(|b| b.source.clone()).unwrap_or_default(),
+            t: bp.map(|b| b.t).unwrap_or(0),
+        };
+
+        tracing::info!(status = "success", "branch created");
+        Ok((StatusCode::CREATED, Json(response)))
+    }
+    .instrument(span)
+    .await
+}
+
+/// List branches for a ledger
+///
+/// GET /fluree/branch/*ledger
+///
+/// Returns all non-retracted branches for the specified ledger.
+pub async fn list_branches(
+    State(state): State<Arc<AppState>>,
+    Path(ledger): Path<String>,
+    headers: FlureeHeaders,
+    bearer: MaybeDataBearer,
+) -> Result<Json<Vec<BranchInfo>>> {
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+
+    let span = create_request_span(
+        "branch:list",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&ledger),
+        None,
+        None,
+    );
+    async move {
+        let span = tracing::Span::current();
+
+        // Enforce data auth (list-branches is a read operation; Bearer token only)
+        let data_auth = state.config.data_auth();
+        if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {
+            set_span_error_code(&span, "error:Unauthorized");
+            return Err(ServerError::unauthorized("Bearer token required"));
+        }
+        if let Some(p) = bearer.0.as_ref() {
+            if !p.can_read(&ledger) {
+                set_span_error_code(&span, "error:Forbidden");
+                return Err(ServerError::not_found("Ledger not found"));
+            }
+        }
+
+        let records = state
+            .fluree
+            .list_branches(&ledger)
+            .await
+            .map_err(ServerError::Api)?;
+
+        let branches = records
+            .into_iter()
+            .map(|r| BranchInfo {
+                branch: r.branch,
+                ledger_id: r.ledger_id,
+                t: r.commit_t,
+                source: r.branch_point.map(|bp| bp.source),
+            })
+            .collect();
+
+        Ok(Json(branches))
+    }
+    .instrument(span)
+    .await
+}
+
+// =============================================================================
+// Drop Branch
+// =============================================================================
+
+/// Drop branch request body
+#[derive(Deserialize)]
+pub struct DropBranchRequest {
+    /// Ledger name (e.g., "mydb")
+    pub ledger: String,
+    /// Branch name to drop (e.g., "feature-x")
+    pub branch: String,
+}
+
+/// Drop branch response
+#[derive(Serialize)]
+pub struct DropBranchResponse {
+    /// Full ledger:branch identifier
+    pub ledger_id: String,
+    /// Drop status
+    pub status: String,
+    /// Whether the drop was deferred (branch has children)
+    pub deferred: bool,
+    /// Files deleted
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files_deleted: Option<usize>,
+    /// Ancestor branches that were cascade-dropped
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub cascaded: Vec<String>,
+    /// Warnings (if any)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+impl From<BranchDropReport> for DropBranchResponse {
+    fn from(report: BranchDropReport) -> Self {
+        let status = match report.status {
+            DropStatus::Dropped => "dropped",
+            DropStatus::AlreadyRetracted => "already_retracted",
+            DropStatus::NotFound => "not_found",
+        };
+
+        let files_deleted = if report.artifacts_deleted > 0 {
+            Some(report.artifacts_deleted)
+        } else {
+            None
+        };
+
+        DropBranchResponse {
+            ledger_id: report.ledger_id,
+            status: status.to_string(),
+            deferred: report.deferred,
+            files_deleted,
+            cascaded: report.cascaded,
+            warnings: report.warnings,
+        }
+    }
+}
+
+/// Drop a branch
+///
+/// POST /fluree/drop-branch
+///
+/// Request body:
+/// - `ledger`: Ledger name (e.g., "mydb")
+/// - `branch`: Branch name to drop (e.g., "feature-x")
+///
+/// Cannot drop the "main" branch.
+pub async fn drop_branch(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    if state.config.server_role == ServerRole::Peer {
+        return forward_write_request(&state, request).await;
+    }
+
+    drop_branch_local(state, request).await.into_response()
+}
+
+async fn drop_branch_local(
+    state: Arc<AppState>,
+    request: Request,
+) -> Result<Json<DropBranchResponse>> {
+    let headers_result = FlureeHeaders::from_headers(request.headers());
+    let headers = match headers_result {
+        Ok(h) => h,
+        Err(e) => return Err(e),
+    };
+
+    let body_bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
+        .await
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+    let req: DropBranchRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+
+    let span = create_request_span(
+        "branch:drop",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&req.ledger),
+        None,
+        None,
+    );
+    async move {
+        let span = tracing::Span::current();
+
+        tracing::info!(
+            status = "start",
+            branch = %req.branch,
+            "branch drop requested"
+        );
+
+        let report = match state
+            .fluree
+            .as_file()
+            .drop_branch(&req.ledger, &req.branch)
+            .await
+        {
+            Ok(report) => report,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&span, "error:BranchDropFailed");
+                tracing::error!(error = %server_error, "branch drop failed");
+                return Err(server_error);
+            }
+        };
+
+        tracing::info!(
+            status = "success",
+            deferred = report.deferred,
+            "branch dropped"
+        );
+        Ok(Json(DropBranchResponse::from(report)))
+    }
+    .instrument(span)
+    .await
+}
+
+// =============================================================================
+// Rebase Branch
+// =============================================================================
+
+/// Rebase branch request body
+#[derive(Deserialize)]
+pub struct RebaseBranchRequest {
+    /// Ledger name (e.g., "mydb")
+    pub ledger: String,
+    /// Branch name to rebase (e.g., "feature-x")
+    pub branch: String,
+    /// Conflict resolution strategy (optional, defaults to "take-both")
+    #[serde(default)]
+    pub strategy: Option<String>,
+}
+
+/// Rebase branch response
+#[derive(Serialize)]
+pub struct RebaseBranchResponse {
+    /// Full ledger:branch identifier
+    pub ledger_id: String,
+    /// Branch name
+    pub branch: String,
+    /// Whether this was a fast-forward (no unique branch commits)
+    pub fast_forward: bool,
+    /// Number of commits replayed
+    pub replayed: usize,
+    /// Number of commits skipped
+    pub skipped: usize,
+    /// Number of conflicts detected
+    pub conflicts: usize,
+    /// Number of failures
+    pub failures: usize,
+    /// Total commits considered
+    pub total_commits: usize,
+    /// New branch point t
+    pub new_branch_point_t: i64,
+}
+
+/// Rebase a branch onto its source branch's current HEAD
+///
+/// POST /fluree/rebase
+///
+/// Request body:
+/// - `ledger`: Ledger name (e.g., "mydb")
+/// - `branch`: Branch name to rebase (e.g., "feature-x")
+/// - `strategy`: Conflict strategy (optional: "take-both", "abort", "take-source", "take-branch", "skip")
+///
+/// Cannot rebase the "main" branch.
+pub async fn rebase(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    if state.config.server_role == ServerRole::Peer {
+        return forward_write_request(&state, request).await;
+    }
+
+    rebase_local(state, request).await.into_response()
+}
+
+async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl IntoResponse> {
+    let (parts, body) = request.into_parts();
+    let headers = FlureeHeaders::from_headers(&parts.headers)?;
+
+    let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
+        .await
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+    let req: RebaseBranchRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+
+    let strategy = match req.strategy.as_deref() {
+        Some(s) => fluree_db_api::ConflictStrategy::from_str_name(s)
+            .ok_or_else(|| ServerError::bad_request(format!("Unknown conflict strategy: {}", s)))?,
+        None => fluree_db_api::ConflictStrategy::default(),
+    };
+
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+    let span = create_request_span(
+        "branch:rebase",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&req.ledger),
+        None,
+        None,
+    );
+
+    async move {
+        let span = tracing::Span::current();
+
+        tracing::info!(
+            status = "start",
+            branch = %req.branch,
+            strategy = strategy.as_str(),
+            "branch rebase requested"
+        );
+
+        let report = match state
+            .fluree
+            .as_file()
+            .rebase_branch(&req.ledger, &req.branch, strategy)
+            .await
+        {
+            Ok(report) => report,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&span, "error:BranchRebaseFailed");
+                tracing::error!(error = %server_error, "branch rebase failed");
+                return Err(server_error);
+            }
+        };
+
+        let ledger_id = fluree_db_core::ledger_id::format_ledger_id(&req.ledger, &req.branch);
+        let response = RebaseBranchResponse {
+            ledger_id,
+            branch: req.branch,
+            fast_forward: report.fast_forward,
+            replayed: report.replayed,
+            skipped: report.skipped,
+            conflicts: report.conflicts.len(),
+            failures: report.failures.len(),
+            total_commits: report.total_commits,
+            new_branch_point_t: report.new_branch_point_t,
+        };
+
+        tracing::info!(
+            status = "success",
+            fast_forward = report.fast_forward,
+            replayed = report.replayed,
+            "branch rebased"
+        );
+        Ok((StatusCode::OK, Json(response)))
+    }
+    .instrument(span)
+    .await
+}
+
+/// Forward a transaction request to the transaction server (peer mode)
+pub(super) async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {
         Some(c) => c,
         None => {
@@ -606,7 +1220,7 @@ async fn forward_write_request(state: &AppState, request: Request) -> Response {
         }
     };
 
-    tracing::debug!("Forwarding write request to transaction server");
+    tracing::debug!("Forwarding transaction request to transaction server");
 
     // Forward the request and return the response directly
     // This preserves the upstream status codes (including 502/504 for errors)

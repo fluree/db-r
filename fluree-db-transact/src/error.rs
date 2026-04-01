@@ -37,6 +37,10 @@ pub enum TransactError {
     #[error("Parse error: {0}")]
     Parse(String),
 
+    /// SPARQL lowering error (structured, includes source spans)
+    #[error("SPARQL lowering error: {0}")]
+    SparqlLower(#[from] fluree_db_sparql::LowerError),
+
     /// Flake generation error
     #[error("Flake generation error: {0}")]
     FlakeGeneration(String),
@@ -48,6 +52,10 @@ pub enum TransactError {
     /// Commit ID mismatch during commit (head CID does not match expected)
     #[error("Commit ID mismatch: expected {expected}, found {found}")]
     CommitIdMismatch { expected: String, found: String },
+
+    /// Ledger or branch has been retracted (soft-deleted)
+    #[error("Ledger has been retracted: {0}")]
+    Retracted(String),
 
     /// Empty transaction (no flakes to commit)
     #[error("Empty transaction: no flakes to commit")]

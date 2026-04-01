@@ -3,7 +3,7 @@ use crate::error::{CliError, CliResult};
 use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
 use colored::Colorize;
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_api::{FileStorage, Fluree, FlureeBuilder};
+use fluree_db_api::{FileStorage, Fluree, FlureeBuilder, IndexConfig};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{
@@ -11,6 +11,24 @@ use fluree_db_nameservice_sync::{
 };
 use serde::Deserialize;
 use std::fs;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+/// Global HTTP timeout for remote operations, set once from CLI args.
+static REMOTE_TIMEOUT: OnceLock<Duration> = OnceLock::new();
+
+/// Set the remote HTTP timeout (called once at startup from CLI args).
+pub fn set_remote_timeout(timeout: Duration) {
+    let _ = REMOTE_TIMEOUT.set(timeout);
+}
+
+/// Get the configured remote HTTP timeout.
+fn remote_timeout() -> Duration {
+    REMOTE_TIMEOUT
+        .get()
+        .copied()
+        .unwrap_or(RemoteLedgerClient::DEFAULT_TIMEOUT)
+}
 
 /// Resolved ledger mode: either local or tracked (remote-only).
 pub enum LedgerMode {
@@ -259,7 +277,7 @@ pub async fn build_remote_client(
 
 /// Build a `RemoteLedgerClient` from auth config, wiring up refresh if available.
 pub fn build_client_from_auth(base_url: &str, auth: &RemoteAuth) -> RemoteLedgerClient {
-    let client = RemoteLedgerClient::new(base_url, auth.token.clone());
+    let client = RemoteLedgerClient::with_timeout(base_url, auth.token.clone(), remote_timeout());
 
     // Attach refresh config for OIDC remotes that have a refresh_token + exchange_url
     if auth.auth_type.as_ref() == Some(&RemoteAuthType::OidcDevice) {
@@ -287,13 +305,30 @@ pub fn resolve_ledger(explicit: Option<&str>, dirs: &FlureeDir) -> CliResult<Str
 
 /// Build a Fluree instance using the resolved storage path.
 ///
-/// Honors `[server].storage_path` from the config file if set,
-/// otherwise falls back to `dirs.data_dir()/storage`.
+/// Honors `[server].storage_path` and `[server.indexing]` thresholds
+/// from the config file if set, otherwise falls back to defaults.
 pub fn build_fluree(dirs: &FlureeDir) -> CliResult<Fluree<FileStorage, FileNameService>> {
     let storage = config::resolve_storage_path(dirs);
     let storage_str = storage.to_string_lossy().to_string();
-    FlureeBuilder::file(storage_str)
-        .without_ledger_caching()
+    let mut builder = FlureeBuilder::file(storage_str).without_ledger_caching();
+
+    // Apply novelty backpressure thresholds from config file so that
+    // limits set via `fluree config set` are respected when executing
+    // transactions directly (without a running server).
+    // Uses with_novelty_thresholds (not with_indexing_thresholds) because
+    // the CLI is a short-lived process — a background indexer would be
+    // killed before it could finish.
+    let thresholds = config::read_indexing_thresholds(dirs.config_dir());
+    let default_config = IndexConfig::default();
+    let min_bytes = thresholds
+        .reindex_min_bytes
+        .unwrap_or(default_config.reindex_min_bytes);
+    let max_bytes = thresholds
+        .reindex_max_bytes
+        .unwrap_or(default_config.reindex_max_bytes);
+    builder = builder.with_novelty_thresholds(min_bytes, max_bytes);
+
+    builder
         .build()
         .map_err(|e| CliError::Config(format!("failed to initialize Fluree: {e}")))
 }
@@ -411,7 +446,7 @@ pub fn try_server_route(mode: LedgerMode, dirs: &FlureeDir) -> LedgerMode {
     // api_base_url). This is the same path that `fluree remote add` resolves via
     // /.well-known/fluree.json.
     let base_url = format!("http://{}/v1/fluree", meta.listen_addr);
-    let client = RemoteLedgerClient::new(&base_url, None);
+    let client = RemoteLedgerClient::with_timeout(&base_url, None, remote_timeout());
 
     eprintln!(
         "  {} routing through local server at {} (use {} to bypass)",
@@ -451,7 +486,11 @@ pub fn try_server_route_client(dirs: &FlureeDir) -> Option<RemoteLedgerClient> {
         "--direct".bold()
     );
 
-    Some(RemoteLedgerClient::new(&base_url, None))
+    Some(RemoteLedgerClient::with_timeout(
+        &base_url,
+        None,
+        remote_timeout(),
+    ))
 }
 
 // ---------------------------------------------------------------------------

@@ -5,12 +5,14 @@
 //! async runtimes.
 
 use crate::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher,
+    check_cas_expectation, ref_values_match, AdminPublisher, BranchPoint, CasResult,
+    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher,
     GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord,
     Publication, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
     StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
+use fluree_db_core::format_ledger_id;
 use fluree_db_core::ledger_id as core_ledger_id;
 use fluree_db_core::ContentId;
 use parking_lot::RwLock;
@@ -114,6 +116,104 @@ impl NameService for MemoryNameService {
 
     async fn all_records(&self) -> Result<Vec<NsRecord>> {
         Ok(self.records.read().values().cloned().collect())
+    }
+
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        Ok(self
+            .records
+            .read()
+            .values()
+            .filter(|r| r.name == ledger_name && !r.retracted)
+            .cloned()
+            .collect())
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: BranchPoint,
+    ) -> Result<()> {
+        let new_id = format_ledger_id(ledger_name, new_branch);
+        let key = self.normalize_ledger_id(&new_id);
+
+        let source_key =
+            self.normalize_ledger_id(&format_ledger_id(ledger_name, &branch_point.source));
+
+        let mut records = self.records.write();
+
+        if records.contains_key(&key) {
+            return Err(crate::NameServiceError::ledger_already_exists(&key));
+        }
+
+        // Increment source branch's child count
+        let source = records.get_mut(&source_key).ok_or_else(|| {
+            crate::NameServiceError::not_found(format!(
+                "source branch {}:{}",
+                ledger_name, branch_point.source
+            ))
+        })?;
+        source.branches += 1;
+
+        let mut record = NsRecord::new(ledger_name, new_branch);
+        record.commit_head_id = Some(branch_point.commit_id.clone());
+        record.commit_t = branch_point.t;
+        record.branch_point = Some(branch_point);
+        records.insert(key, record);
+
+        Ok(())
+    }
+
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>> {
+        let key = self.normalize_ledger_id(ledger_id);
+        let mut records = self.records.write();
+
+        let record = records
+            .remove(&key)
+            .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
+
+        // Decrement parent's child count if this branch had a parent
+        let parent_new_count = record.branch_point.as_ref().and_then(|bp| {
+            let parent_id = format_ledger_id(&record.name, &bp.source);
+            let parent_key = self.normalize_ledger_id(&parent_id);
+            let parent = records.get_mut(&parent_key)?;
+            parent.branches = parent.branches.saturating_sub(1);
+            Some(parent.branches)
+        });
+
+        Ok(parent_new_count)
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: BranchPoint,
+    ) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
+        let mut records = self.records.write();
+
+        let record = records
+            .get_mut(&key)
+            .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
+
+        record.branch_point = Some(new_branch_point);
+        Ok(())
+    }
+
+    async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
+        let mut records = self.records.write();
+
+        let record = records
+            .get_mut(&key)
+            .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
+
+        record.commit_head_id = snapshot.commit_head_id;
+        record.commit_t = snapshot.commit_t;
+        record.index_head_id = snapshot.index_head_id;
+        record.index_t = snapshot.index_t;
+        record.branch_point = snapshot.branch_point;
+        Ok(())
     }
 }
 
@@ -395,13 +495,7 @@ impl RefPublisher for MemoryNameService {
                 return Ok(CasResult::Conflict { actual: None });
             }
             (Some(exp), Some(actual)) => {
-                // Compare `id` (ContentId) for identity.
-                let identity_matches = match (&exp.id, &actual.id) {
-                    (Some(a), Some(b)) => a == b,
-                    (None, None) => true,
-                    _ => false,
-                };
-                if !identity_matches {
+                if !ref_values_match(exp, actual) {
                     return Ok(CasResult::Conflict {
                         actual: Some(actual.clone()),
                     });
@@ -564,7 +658,10 @@ impl GraphSourcePublisher for MemoryNameService {
         }
         Ok(())
     }
+}
 
+#[async_trait]
+impl GraphSourceLookup for MemoryNameService {
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,
@@ -576,12 +673,10 @@ impl GraphSourcePublisher for MemoryNameService {
     async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult> {
         let key = self.normalize_ledger_id(resource_id);
 
-        // Check graph source records first
         if let Some(record) = self.graph_source_records.read().get(&key).cloned() {
             return Ok(NsLookupResult::GraphSource(record));
         }
 
-        // Then check ledger records
         if let Some(record) = self.records.read().get(&key).cloned() {
             return Ok(NsLookupResult::Ledger(record));
         }
@@ -638,30 +733,14 @@ impl StatusPublisher for MemoryNameService {
             }
         };
 
-        // Compare expected with current
-        match (&expected, &current) {
-            (None, None) => {
-                // Cannot create status without record
-                return Ok(StatusCasResult::Conflict { actual: None });
-            }
-            (None, Some(actual)) => {
-                // Expected None but status exists → conflict
-                return Ok(StatusCasResult::Conflict {
-                    actual: Some(actual.clone()),
-                });
-            }
-            (Some(_), None) => {
-                // Expected a value but record doesn't exist → conflict
-                return Ok(StatusCasResult::Conflict { actual: None });
-            }
-            (Some(exp), Some(actual)) => {
-                // Both exist — compare watermarks and payloads
-                if exp.v != actual.v || exp.payload != actual.payload {
-                    return Ok(StatusCasResult::Conflict {
-                        actual: Some(actual.clone()),
-                    });
-                }
-            }
+        if let Some(conflict) = check_cas_expectation(
+            &expected.cloned(),
+            &current,
+            false,
+            |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+            |actual| StatusCasResult::Conflict { actual },
+        ) {
+            return Ok(conflict);
         }
 
         // Validate monotonic constraint: new.v > current.v
@@ -721,30 +800,14 @@ impl ConfigPublisher for MemoryNameService {
             }
         };
 
-        // Compare expected with current
-        match (&expected, &current) {
-            (None, None) => {
-                // Cannot create config without record
-                return Ok(ConfigCasResult::Conflict { actual: None });
-            }
-            (None, Some(actual)) => {
-                // Expected None but config exists (even unborn) → conflict
-                return Ok(ConfigCasResult::Conflict {
-                    actual: Some(actual.clone()),
-                });
-            }
-            (Some(_), None) => {
-                // Expected a value but record doesn't exist → conflict
-                return Ok(ConfigCasResult::Conflict { actual: None });
-            }
-            (Some(exp), Some(actual)) => {
-                // Both exist — compare watermarks and payloads
-                if exp.v != actual.v || exp.payload != actual.payload {
-                    return Ok(ConfigCasResult::Conflict {
-                        actual: Some(actual.clone()),
-                    });
-                }
-            }
+        if let Some(conflict) = check_cas_expectation(
+            &expected.cloned(),
+            &current,
+            false,
+            |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+            |actual| ConfigCasResult::Conflict { actual },
+        ) {
+            return Ok(conflict);
         }
 
         // Validate monotonic constraint: new.v > current.v
@@ -1660,5 +1723,104 @@ mod tests {
             }
             _ => panic!("expected conflict when no record exists"),
         }
+    }
+
+    // =========================================================================
+    // Branch tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_create_branch_from_main() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-5");
+        ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 5,
+        };
+        ns.create_branch("mydb", "feature-x", bp).await.unwrap();
+
+        let record = ns.lookup("mydb:feature-x").await.unwrap().unwrap();
+        assert_eq!(record.name, "mydb");
+        assert_eq!(record.branch, "feature-x");
+        assert_eq!(record.commit_head_id, Some(cid.clone()));
+        assert_eq!(record.commit_t, 5);
+        let bp = record.branch_point.unwrap();
+        assert_eq!(bp.source, "main");
+        assert_eq!(bp.commit_id, cid);
+        assert_eq!(bp.t, 5);
+    }
+
+    #[tokio::test]
+    async fn test_create_branch_duplicate_fails() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+
+        let result = ns.create_branch("mydb", "dev", bp).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_branches() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-3");
+        ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 3,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+        ns.create_branch("mydb", "staging", bp).await.unwrap();
+
+        // Also create a different ledger to ensure filtering works
+        ns.publish_ledger_init("other:main").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 3);
+        let mut names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["dev", "main", "staging"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_branches_unknown_ledger() {
+        let ns = MemoryNameService::new();
+        let branches = ns.list_branches("nonexistent").await.unwrap();
+        assert!(branches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_branches_excludes_retracted() {
+        let ns = MemoryNameService::new();
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_commit_id("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dead", bp).await.unwrap();
+        ns.retract("mydb:dead").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].branch, "main");
     }
 }

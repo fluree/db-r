@@ -5,17 +5,17 @@
 //!
 //! This module is only available with the `iceberg` feature.
 
-use crate::graph_source::cache::R2rmlCache;
-use crate::graph_source::config::{IcebergCreateConfig, R2rmlCreateConfig};
+use crate::graph_source::cache::{CachedScanFiles, R2rmlCache};
+use crate::graph_source::config::{CatalogMode, IcebergCreateConfig, R2rmlCreateConfig};
 use crate::graph_source::result::{IcebergCreateResult, R2rmlCreateResult};
 use crate::Result;
 use async_trait::async_trait;
-use fluree_db_core::Storage;
+use fluree_db_core::{ContentStore, Storage};
 use fluree_db_iceberg::{
     catalog::{RestCatalogClient, RestCatalogConfig, SendCatalogClient},
     io::{ColumnBatch, S3IcebergStorage, SendIcebergStorage, SendParquetReader},
     metadata::TableMetadata,
-    scan::{ScanConfig, SendScanPlanner},
+    scan::{FileScanTask, ScanConfig, SendScanPlanner},
     IcebergGsConfig,
 };
 use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
@@ -47,22 +47,27 @@ where
         let graph_source_id = config.graph_source_id();
         info!(
             graph_source_id = %graph_source_id,
-            catalog_uri = %config.catalog_uri,
-            table = %config.table_identifier,
+            catalog = %config.catalog_uri_or_location(),
+            table = %config.table_identifier_display(),
             "Creating Iceberg graph source"
         );
 
         // 1. Validate configuration
         config.validate()?;
 
-        // 2. Test catalog connection (optional but recommended)
-        let connection_tested = self.test_iceberg_connection(&config).await.is_ok();
-        if !connection_tested {
-            warn!(
-                graph_source_id = %graph_source_id,
-                "Could not verify catalog connection - graph source will be created but may fail at query time"
-            );
-        }
+        // 2. Test catalog connection (REST mode only — Direct mode verified at query time)
+        let connection_tested = if config.is_rest() {
+            let ok = self.test_iceberg_connection(&config).await.is_ok();
+            if !ok {
+                warn!(
+                    graph_source_id = %graph_source_id,
+                    "Could not verify catalog connection - graph source will be created but may fail at query time"
+                );
+            }
+            ok
+        } else {
+            false
+        };
 
         // 3. Convert config to storage format
         let iceberg_config = config.to_iceberg_gs_config();
@@ -89,110 +94,121 @@ where
 
         Ok(IcebergCreateResult {
             graph_source_id,
-            table_identifier: config.table_identifier.clone(),
-            catalog_uri: config.catalog_uri.clone(),
+            table_identifier: config.table_identifier_display(),
+            catalog_uri: config.catalog_uri_or_location().to_string(),
             connection_tested,
         })
     }
 
     /// Create an R2RML graph source (Iceberg table with R2RML mapping).
     ///
-    /// This operation:
-    /// 1. Validates the configuration
-    /// 2. Loads and validates the R2RML mapping
-    /// 3. Optionally tests the catalog connection
-    /// 4. Publishes the graph source record to the nameservice
+    /// For `R2rmlMappingInput::Content`, validates the mapping content and
+    /// stores it to CAS. For `R2rmlMappingInput::Address`, validates from
+    /// the pre-existing storage address.
     pub async fn create_r2rml_graph_source(
         &self,
         config: R2rmlCreateConfig,
     ) -> Result<R2rmlCreateResult> {
-        let graph_source_id = config.graph_source_id();
-        info!(
-            graph_source_id = %graph_source_id,
-            catalog_uri = %config.iceberg.catalog_uri,
-            table = %config.iceberg.table_identifier,
-            mapping = %config.mapping_source,
-            "Creating R2RML graph source"
-        );
+        use crate::graph_source::config::R2rmlMappingInput;
 
-        // 1. Validate configuration
+        let graph_source_id = config.graph_source_id();
+        info!(graph_source_id = %graph_source_id, "Creating R2RML graph source");
+
         config.validate()?;
 
-        // 2. Load and validate the R2RML mapping
-        let (triples_map_count, mapping_validated) = self
-            .validate_r2rml_mapping(&config)
-            .await
-            .map(|count| (count, true))
-            .unwrap_or_else(|e| {
-                warn!(
-                    graph_source_id = %graph_source_id,
-                    error = %e,
-                    "Could not validate R2RML mapping - graph source will be created but may fail at query time"
-                );
-                (0, false)
-            });
+        // Resolve mapping: validate and store to CAS if inline content
+        let (mapping_address, triples_map_count, mapping_validated) = match &config.mapping {
+            R2rmlMappingInput::Content(content) => {
+                let compiled = Self::compile_r2rml_content(content, &config)?;
+                let count = compiled.len();
+                let gs_id = config.graph_source_id();
+                let cs = fluree_db_core::content_store_for(self.storage().clone(), &gs_id);
+                let cid = cs
+                    .put(
+                        fluree_db_core::ContentKind::GraphSourceMapping,
+                        content.as_bytes(),
+                    )
+                    .await
+                    .map_err(|e| {
+                        crate::ApiError::Config(format!("Failed to store R2RML mapping: {e}"))
+                    })?;
+                let addr = cid.to_string();
+                info!(graph_source_id = %graph_source_id, mapping_cid = %addr, "R2RML mapping stored to CAS");
+                (addr, count, true)
+            }
+            R2rmlMappingInput::Address(address) => {
+                let (count, validated) = self
+                    .validate_r2rml_mapping_from_address(address, &config)
+                    .await
+                    .map(|c| (c, true))
+                    .unwrap_or_else(|e| {
+                        warn!(graph_source_id = %graph_source_id, error = %e, "Could not validate R2RML mapping from address");
+                        (0, false)
+                    });
+                (address.clone(), count, validated)
+            }
+        };
 
-        // 3. Test catalog connection (optional but recommended)
-        let connection_tested = self.test_iceberg_connection(&config.iceberg).await.is_ok();
-        if !connection_tested {
-            warn!(
-                graph_source_id = %graph_source_id,
-                "Could not verify catalog connection - graph source will be created but may fail at query time"
-            );
-        }
+        // Test catalog connection (REST mode only)
+        let connection_tested = if config.iceberg.is_rest() {
+            self.test_iceberg_connection(&config.iceberg).await.is_ok()
+        } else {
+            false
+        };
 
-        // 4. Convert config to storage format
-        let iceberg_config = config.to_iceberg_gs_config();
+        // Store config with CAS mapping address
+        let iceberg_config = config.to_iceberg_gs_config(&mapping_address);
         let config_json = iceberg_config
             .to_json()
-            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {e}")))?;
 
-        // 5. Publish graph source record to nameservice
         self.nameservice
             .publish_graph_source(
                 &config.iceberg.name,
                 config.iceberg.effective_branch(),
                 GraphSourceType::Iceberg,
                 &config_json,
-                &[], // No ledger dependencies for Iceberg/R2RML graph sources
+                &[],
             )
             .await?;
 
-        info!(
-            graph_source_id = %graph_source_id,
-            triples_map_count = triples_map_count,
-            connection_tested = connection_tested,
-            mapping_validated = mapping_validated,
-            "Created R2RML graph source"
-        );
+        info!(graph_source_id = %graph_source_id, mapping_address = %mapping_address, "Created R2RML graph source");
 
         Ok(R2rmlCreateResult {
             graph_source_id,
-            table_identifier: config.iceberg.table_identifier.clone(),
-            catalog_uri: config.iceberg.catalog_uri.clone(),
-            mapping_source: config.mapping_source.clone(),
+            table_identifier: config.iceberg.table_identifier_display(),
+            catalog_uri: config.iceberg.catalog_uri_or_location().to_string(),
+            mapping_source: mapping_address,
             triples_map_count,
             connection_tested,
             mapping_validated,
         })
     }
 
-    /// Test connection to an Iceberg catalog.
+    /// Test connection to an Iceberg REST catalog.
     ///
-    /// This performs a lightweight connection test by attempting to load
-    /// the table metadata from the catalog.
+    /// Only applicable to REST mode. Direct mode has no catalog to test.
     async fn test_iceberg_connection(&self, config: &IcebergCreateConfig) -> Result<()> {
         use fluree_db_iceberg::catalog::parse_table_identifier;
 
+        let rest = match &config.catalog_mode {
+            CatalogMode::Rest(rest) => rest,
+            CatalogMode::Direct { .. } => {
+                return Err(crate::ApiError::Config(
+                    "Connection test is not supported for Direct catalog mode".to_string(),
+                ));
+            }
+        };
+
         // Create auth provider
-        let auth = config.auth.create_provider_arc().map_err(|e| {
+        let auth = rest.auth.create_provider_arc().map_err(|e| {
             crate::ApiError::Config(format!("Failed to create auth provider: {}", e))
         })?;
 
         // Create catalog client
         let catalog_config = RestCatalogConfig {
-            uri: config.catalog_uri.clone(),
-            warehouse: config.warehouse.clone(),
+            uri: rest.catalog_uri.clone(),
+            warehouse: rest.warehouse.clone(),
             ..Default::default()
         };
 
@@ -201,12 +217,12 @@ where
         })?;
 
         // Parse table identifier
-        let table_id = parse_table_identifier(&config.table_identifier)
+        let table_id = parse_table_identifier(&rest.table_identifier)
             .map_err(|e| crate::ApiError::Config(format!("Invalid table identifier: {}", e)))?;
 
         // Attempt to load table metadata (this tests the connection)
         catalog
-            .load_table(&table_id, config.vended_credentials)
+            .load_table(&table_id, rest.vended_credentials)
             .await
             .map_err(|e| {
                 crate::ApiError::Config(format!("Failed to load table from catalog: {}", e))
@@ -215,53 +231,44 @@ where
         Ok(())
     }
 
-    /// Validate an R2RML mapping by loading and compiling it.
-    ///
-    /// Returns the number of TriplesMap definitions in the mapping.
-    async fn validate_r2rml_mapping(&self, config: &R2rmlCreateConfig) -> Result<usize> {
-        // Load the mapping content from storage
-        let mapping_bytes = self
-            .storage()
-            .read_bytes(&config.mapping_source)
-            .await
-            .map_err(|e| {
-                crate::ApiError::Config(format!(
-                    "Failed to load R2RML mapping from '{}': {}",
-                    config.mapping_source, e
-                ))
-            })?;
-
-        let mapping_content = String::from_utf8(mapping_bytes).map_err(|e| {
-            crate::ApiError::Config(format!("R2RML mapping is not valid UTF-8: {}", e))
-        })?;
-
-        // Determine format by extension or media type
-        let is_turtle = config.mapping_media_type.as_ref().map_or_else(
-            || {
-                config.mapping_source.ends_with(".ttl")
-                    || config.mapping_source.ends_with(".turtle")
-            },
-            |mt| mt.contains("turtle"),
-        );
-
-        // Parse and compile the mapping
-        let compiled = if is_turtle {
-            fluree_db_r2rml::loader::R2rmlLoader::from_turtle(&mapping_content)
-                .map_err(|e| {
-                    crate::ApiError::Config(format!("Failed to parse R2RML Turtle: {}", e))
-                })?
+    /// Compile R2RML content and return the compiled mapping.
+    fn compile_r2rml_content(
+        content: &str,
+        config: &R2rmlCreateConfig,
+    ) -> Result<fluree_db_r2rml::mapping::CompiledR2rmlMapping> {
+        let is_turtle = config
+            .mapping_media_type
+            .as_ref()
+            .is_none_or(|mt| mt.contains("turtle"));
+        if is_turtle {
+            fluree_db_r2rml::loader::R2rmlLoader::from_turtle(content)
+                .map_err(|e| crate::ApiError::Config(format!("Failed to parse R2RML Turtle: {e}")))?
                 .compile()
                 .map_err(|e| {
-                    crate::ApiError::Config(format!("Failed to compile R2RML mapping: {}", e))
-                })?
+                    crate::ApiError::Config(format!("Failed to compile R2RML mapping: {e}"))
+                })
         } else {
-            return Err(crate::ApiError::Config(
-                "R2RML mapping must be in Turtle format (.ttl). JSON-LD is not yet supported."
-                    .to_string(),
-            ));
-        };
+            Err(crate::ApiError::Config(
+                "R2RML mapping must be in Turtle format. JSON-LD is not yet supported.".into(),
+            ))
+        }
+    }
 
-        Ok(compiled.len())
+    /// Validate an R2RML mapping from a pre-existing storage address.
+    async fn validate_r2rml_mapping_from_address(
+        &self,
+        address: &str,
+        config: &R2rmlCreateConfig,
+    ) -> Result<usize> {
+        let bytes = self.storage().read_bytes(address).await.map_err(|e| {
+            crate::ApiError::Config(format!(
+                "Failed to load R2RML mapping from '{address}': {e}"
+            ))
+        })?;
+        let content = String::from_utf8(bytes).map_err(|e| {
+            crate::ApiError::Config(format!("R2RML mapping is not valid UTF-8: {e}"))
+        })?;
+        Ok(Self::compile_r2rml_content(&content, config)?.len())
     }
 }
 
@@ -306,7 +313,7 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> 
 impl<S, N> R2rmlProvider for FlureeR2rmlProvider<'_, S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + GraphSourcePublisher,
+    N: NameService,
 {
     /// Check if a graph source has an R2RML mapping.
     async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
@@ -326,10 +333,9 @@ where
                 }
 
                 // Parse into typed config to stay aligned with real config schema
-                if let Ok(config) = IcebergGsConfig::from_json(&record.config) {
-                    config.mapping.is_some()
-                } else {
-                    false
+                match IcebergGsConfig::from_json(&record.config) {
+                    Ok(config) => config.mapping.is_some(),
+                    Err(_) => false,
                 }
             }
             Ok(None) => false,
@@ -404,18 +410,28 @@ where
             "R2RML mapping cache miss - loading from storage"
         );
 
-        // Cache miss - load the mapping content
-        let mapping_bytes = self
-            .fluree
-            .storage()
-            .read_bytes(mapping_source)
-            .await
-            .map_err(|e| {
+        // Cache miss - load the mapping content.
+        // Try CID-based content store first (CAS-stored mappings),
+        // fall back to raw storage read (legacy address-based mappings).
+        let mapping_bytes = if let Ok(cid) = mapping_source.parse::<fluree_db_core::ContentId>() {
+            let cs =
+                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            cs.get(&cid).await.map_err(|e| {
                 QueryError::InvalidQuery(format!(
-                    "Failed to load R2RML mapping from '{}': {}",
-                    mapping_source, e
+                    "Failed to load R2RML mapping (CID {mapping_source}): {e}"
                 ))
-            })?;
+            })?
+        } else {
+            let storage = self.fluree.storage();
+            storage.read_bytes(mapping_source).await.map_err(|e| {
+                QueryError::InvalidQuery(format!(
+                    "Failed to load R2RML mapping from '{}' (storage: {}): {}",
+                    mapping_source,
+                    storage.storage_method(),
+                    e
+                ))
+            })?
+        };
 
         let mapping_content = String::from_utf8(mapping_bytes).map_err(|e| {
             QueryError::InvalidQuery(format!(
@@ -477,7 +493,7 @@ where
 impl<S, N> R2rmlTableProvider for FlureeR2rmlProvider<'_, S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + GraphSourcePublisher,
+    N: NameService,
 {
     /// Scan an Iceberg table and return column batches.
     ///
@@ -520,82 +536,163 @@ where
         info!(
             graph_source_id = %graph_source_id,
             table_name = %table_name,
-            catalog_uri = %iceberg_config.catalog.uri,
             projection = ?projection,
             "Starting Iceberg table scan"
         );
 
-        // Create auth provider
-        let auth = iceberg_config
-            .catalog
-            .auth
-            .create_provider_arc()
-            .map_err(|e| QueryError::Internal(format!("Failed to create auth provider: {}", e)))?;
-
-        // Create REST catalog client
-        let catalog_config = RestCatalogConfig {
-            uri: iceberg_config.catalog.uri.clone(),
-            warehouse: iceberg_config.catalog.warehouse.clone(),
-            ..Default::default()
-        };
-
-        let catalog = RestCatalogClient::new(catalog_config, auth)
-            .map_err(|e| QueryError::Internal(format!("Failed to create catalog client: {}", e)))?;
+        // Branch on catalog mode: REST vs Direct
+        use fluree_db_iceberg::config::CatalogConfig;
+        use fluree_db_iceberg::SendDirectCatalogClient;
 
         // Parse the table identifier
         use fluree_db_iceberg::catalog::parse_table_identifier;
-        let table_id = if table_name.is_empty() {
-            iceberg_config.table_identifier().map_err(|e| {
-                QueryError::Internal(format!("Failed to parse table identifier: {}", e))
-            })?
-        } else {
+        let table_id = if !table_name.is_empty() {
             parse_table_identifier(table_name).map_err(|e| {
                 QueryError::Internal(format!(
                     "Failed to parse table identifier '{}': {}",
                     table_name, e
                 ))
             })?
+        } else {
+            iceberg_config.table_identifier().map_err(|e| {
+                QueryError::Internal(format!("Failed to parse table identifier: {}", e))
+            })?
         };
 
-        info!(
-            namespace = %table_id.namespace,
-            table = %table_id.table,
-            "Loading table from catalog"
-        );
+        // Resolve metadata location and create storage based on catalog mode
+        let (load_response, storage) = match &iceberg_config.catalog {
+            CatalogConfig::Rest {
+                uri,
+                warehouse,
+                auth,
+                ..
+            } => {
+                info!(
+                    catalog_uri = %uri,
+                    namespace = %table_id.namespace,
+                    table = %table_id.table,
+                    "Loading table from REST catalog"
+                );
 
-        // Load table metadata from catalog
-        let load_response = catalog
-            .load_table(&table_id, iceberg_config.io.vended_credentials)
-            .await
-            .map_err(|e| {
-                QueryError::Internal(format!("Failed to load table from catalog: {}", e))
-            })?;
+                let auth_provider = auth.create_provider_arc().map_err(|e| {
+                    QueryError::Internal(format!("Failed to create auth provider: {}", e))
+                })?;
 
-        info!(
-            metadata_location = %load_response.metadata_location,
-            has_credentials = load_response.credentials.is_some(),
-            "Loaded table metadata location"
-        );
+                let catalog_config = RestCatalogConfig {
+                    uri: uri.clone(),
+                    warehouse: warehouse.clone(),
+                    ..Default::default()
+                };
 
-        // Create S3 storage
-        let storage = if let Some(credentials) = load_response.credentials {
-            info!("Using vended credentials from catalog");
-            S3IcebergStorage::from_vended_credentials(&credentials)
-                .await
-                .map_err(|e| QueryError::Internal(format!("Failed to create S3 storage: {}", e)))?
-        } else {
-            info!(
-                region = ?iceberg_config.io.s3_region,
-                endpoint = ?iceberg_config.io.s3_endpoint,
-                "Using ambient AWS credentials"
-            );
-            S3IcebergStorage::from_default_chain(
-                iceberg_config.io.s3_region.as_deref(),
-                iceberg_config.io.s3_endpoint.as_deref(),
-                iceberg_config.io.s3_path_style,
-            )
-            .await
-            .map_err(|e| QueryError::Internal(format!("Failed to create S3 storage: {}", e)))?
+                let catalog =
+                    RestCatalogClient::new(catalog_config, auth_provider).map_err(|e| {
+                        QueryError::Internal(format!("Failed to create catalog client: {}", e))
+                    })?;
+
+                let load_response = catalog
+                    .load_table(&table_id, iceberg_config.io.vended_credentials)
+                    .await
+                    .map_err(|e| {
+                        QueryError::Internal(format!("Failed to load table from catalog: {}", e))
+                    })?;
+
+                info!(
+                    metadata_location = %load_response.metadata_location,
+                    has_credentials = load_response.credentials.is_some(),
+                    "Loaded table metadata location"
+                );
+
+                let storage = if let Some(ref credentials) = load_response.credentials {
+                    info!("Using vended credentials from catalog");
+                    S3IcebergStorage::from_vended_credentials(credentials)
+                        .await
+                        .map_err(|e| {
+                            QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                        })?
+                } else {
+                    info!(
+                        region = ?iceberg_config.io.s3_region,
+                        endpoint = ?iceberg_config.io.s3_endpoint,
+                        "Using ambient AWS credentials"
+                    );
+                    S3IcebergStorage::from_default_chain(
+                        iceberg_config.io.s3_region.as_deref(),
+                        iceberg_config.io.s3_endpoint.as_deref(),
+                        iceberg_config.io.s3_path_style,
+                    )
+                    .await
+                    .map_err(|e| {
+                        QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                    })?
+                };
+
+                (load_response, Arc::new(storage))
+            }
+            CatalogConfig::Direct { table_location } => {
+                info!(
+                    table_location = %table_location,
+                    "Loading table via direct S3 access"
+                );
+
+                // Direct mode: create storage once, share via Arc
+                let storage = Arc::new(
+                    S3IcebergStorage::from_default_chain(
+                        iceberg_config.io.s3_region.as_deref(),
+                        iceberg_config.io.s3_endpoint.as_deref(),
+                        iceberg_config.io.s3_path_style,
+                    )
+                    .await
+                    .map_err(|e| {
+                        QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                    })?,
+                );
+
+                let cache = self.fluree.r2rml_cache();
+                let load_response = if let Some(metadata_location) =
+                    cache.get_direct_metadata_location(table_location).await
+                {
+                    debug!(
+                        table_location = %table_location,
+                        metadata_location = %metadata_location,
+                        "Direct metadata-location cache hit"
+                    );
+                    fluree_db_iceberg::catalog::LoadTableResponse {
+                        metadata_location,
+                        config: Default::default(),
+                        credentials: None,
+                    }
+                } else {
+                    debug!(table_location = %table_location, "Direct metadata-location cache miss");
+
+                    let direct_catalog =
+                        SendDirectCatalogClient::new(table_location.clone(), Arc::clone(&storage));
+
+                    let load_response =
+                        direct_catalog
+                            .load_table(&table_id, false)
+                            .await
+                            .map_err(|e| {
+                                QueryError::Internal(format!(
+                                    "Failed to resolve table metadata from {}: {}",
+                                    table_location, e
+                                ))
+                            })?;
+                    cache
+                        .put_direct_metadata_location(
+                            table_location.clone(),
+                            load_response.metadata_location.clone(),
+                        )
+                        .await;
+                    load_response
+                };
+
+                info!(
+                    metadata_location = %load_response.metadata_location,
+                    "Resolved table metadata via version-hint.text"
+                );
+
+                (load_response, storage)
+            }
         };
 
         // Check cache for table metadata
@@ -608,9 +705,13 @@ where
         } else {
             debug!(metadata_location = %metadata_location, "Table metadata cache miss");
 
-            let metadata_bytes = storage.read(metadata_location).await.map_err(|e| {
-                QueryError::Internal(format!("Failed to read table metadata: {}", e))
-            })?;
+            let metadata_bytes = storage
+                .as_ref()
+                .read(metadata_location)
+                .await
+                .map_err(|e| {
+                    QueryError::Internal(format!("Failed to read table metadata: {}", e))
+                })?;
 
             let parsed = TableMetadata::from_json(&metadata_bytes).map_err(|e| {
                 QueryError::Internal(format!("Failed to parse table metadata: {}", e))
@@ -664,33 +765,89 @@ where
             )));
         }
 
-        // Create scan configuration with projection
-        let scan_config = ScanConfig::new().with_projection(projected_field_ids.clone());
+        let schema_arc = Arc::new(schema.clone());
 
-        // Create scan planner and generate scan plan
-        let planner = SendScanPlanner::new(&storage, &metadata, scan_config);
-        let plan = planner
-            .plan_scan()
-            .await
-            .map_err(|e| QueryError::Internal(format!("Failed to plan scan: {}", e)))?;
+        // Reuse manifest-derived file selections across repeated scans of the
+        // same snapshot. Projection still varies per scan, so we rebuild tasks.
+        let (tasks, files_selected, files_pruned, estimated_row_count) =
+            if let Some(cached) = cache.get_scan_files(metadata_location).await {
+                debug!(
+                    metadata_location = %metadata_location,
+                    cached_files = cached.data_files.len(),
+                    "Iceberg scan-files cache hit"
+                );
+
+                let tasks = cached
+                    .data_files
+                    .iter()
+                    .cloned()
+                    .map(|data_file| {
+                        FileScanTask::for_whole_file_with_schema(
+                            data_file,
+                            projected_field_ids.clone(),
+                            None,
+                            Arc::clone(&schema_arc),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                (
+                    tasks,
+                    cached.files_selected,
+                    cached.files_pruned,
+                    cached.estimated_row_count,
+                )
+            } else {
+                debug!(metadata_location = %metadata_location, "Iceberg scan-files cache miss");
+
+                // Create scan configuration with projection for the first plan.
+                let scan_config = ScanConfig::new().with_projection(projected_field_ids.clone());
+                let planner = SendScanPlanner::new(storage.as_ref(), &metadata, scan_config);
+                let plan = planner
+                    .plan_scan()
+                    .await
+                    .map_err(|e| QueryError::Internal(format!("Failed to plan scan: {}", e)))?;
+
+                let cached = Arc::new(CachedScanFiles {
+                    data_files: Arc::new(
+                        plan.tasks
+                            .iter()
+                            .map(|task| task.data_file.clone())
+                            .collect(),
+                    ),
+                    estimated_row_count: plan.estimated_row_count,
+                    files_selected: plan.files_selected,
+                    files_pruned: plan.files_pruned,
+                });
+                cache
+                    .put_scan_files(metadata_location.clone(), Arc::clone(&cached))
+                    .await;
+
+                (
+                    plan.tasks,
+                    cached.files_selected,
+                    cached.files_pruned,
+                    cached.estimated_row_count,
+                )
+            };
 
         info!(
-            files_selected = plan.files_selected,
-            files_pruned = plan.files_pruned,
-            estimated_rows = plan.estimated_row_count,
+            files_selected,
+            files_pruned,
+            estimated_rows = estimated_row_count,
             "Scan plan created"
         );
 
-        if plan.is_empty() {
+        if tasks.is_empty() {
             info!("Scan plan has no files - returning empty result");
             return Ok(Vec::new());
         }
 
         // Read data files
-        let reader = SendParquetReader::new(&storage);
+        let reader = SendParquetReader::with_cache(storage.as_ref(), cache.parquet_footers());
         let mut all_batches = Vec::new();
 
-        for task in &plan.tasks {
+        for task in &tasks {
             info!(
                 file_path = %task.data_file.file_path,
                 record_count = task.data_file.record_count,

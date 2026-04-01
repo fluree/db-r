@@ -39,6 +39,11 @@ pub struct Cli {
     /// 0 = auto (system cores, default cap 6). Explicit values are not capped.
     #[arg(long, global = true, default_value_t = 0)]
     pub parallelism: usize,
+
+    /// Timeout in seconds for remote HTTP requests (default: 300).
+    /// Set higher for long-running queries or transactions.
+    #[arg(long, global = true, default_value_t = 300)]
+    pub timeout: u64,
 }
 
 #[derive(Subcommand)]
@@ -113,6 +118,12 @@ pub enum Commands {
         /// Query a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,
+    },
+
+    /// Manage branches for a ledger
+    Branch {
+        #[command(subcommand)]
+        action: BranchAction,
     },
 
     /// Drop (delete) a ledger
@@ -385,6 +396,20 @@ pub enum Commands {
         count: Option<usize>,
     },
 
+    /// Show the contents of a commit (decoded flakes with resolved IRIs)
+    Show {
+        /// Commit identifier: t:<N>, hex-digest prefix (min 6 chars), or full CID
+        commit: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
     /// Manage configuration
     Config {
         #[command(subcommand)]
@@ -485,6 +510,26 @@ pub enum Commands {
         action: TrackAction,
     },
 
+    /// Build or update the binary index for a ledger
+    ///
+    /// Performs incremental indexing when possible (merges only new commits
+    /// into the existing index). Falls back to a full rebuild otherwise.
+    /// Run this after transactions to clear novelty and speed up queries.
+    Index {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+    },
+
+    /// Full reindex from commit history
+    ///
+    /// Rebuilds the binary index from scratch by replaying all commits.
+    /// Use this when the index is corrupted or you want a clean rebuild.
+    /// For routine indexing after transactions, prefer `fluree index`.
+    Reindex {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+    },
+
     /// Manage the Fluree HTTP server
     Server {
         #[command(subcommand)]
@@ -501,6 +546,77 @@ pub enum Commands {
     Mcp {
         #[command(subcommand)]
         action: McpAction,
+    },
+
+    /// Manage Apache Iceberg table connections
+    Iceberg {
+        #[command(subcommand)]
+        action: IcebergAction,
+    },
+}
+
+/// Branch subcommands.
+#[derive(Subcommand)]
+pub enum BranchAction {
+    /// Create a new branch
+    Create {
+        /// New branch name (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Source branch to create from (defaults to "main")
+        #[arg(long)]
+        from: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Drop a branch
+    Drop {
+        /// Branch name to drop (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// List all branches
+    List {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// List branches on a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Rebase a branch onto its source branch's current HEAD
+    Rebase {
+        /// Branch name to rebase (e.g., "dev", "feature-x")
+        name: String,
+
+        /// Ledger name (defaults to active ledger)
+        #[arg(long)]
+        ledger: Option<String>,
+
+        /// Conflict resolution strategy (default: "take-both")
+        /// Options: take-both, abort, take-source (theirs), take-branch (ours), skip
+        #[arg(long, default_value = "take-both")]
+        strategy: String,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
     },
 }
 
@@ -1107,4 +1223,95 @@ pub enum UpstreamAction {
 
     /// List all upstream configurations
     List,
+}
+
+// =============================================================================
+// Iceberg subcommands
+// =============================================================================
+
+/// Iceberg subcommands.
+#[derive(Subcommand)]
+pub enum IcebergAction {
+    /// Map an Iceberg table as a graph source
+    ///
+    /// Examples:
+    ///   fluree iceberg map my-gs --catalog-uri https://polaris.example.com --table openflights.airlines
+    ///   fluree iceberg map my-gs --catalog-uri https://... --r2rml mappings/airlines.ttl
+    ///   fluree iceberg map my-gs --mode direct --table-location s3://bucket/warehouse/ns/table
+    Map(Box<IcebergMapArgs>),
+}
+
+/// Arguments for mapping an Iceberg table as a graph source.
+#[derive(Debug, Clone, clap::Args)]
+pub struct IcebergMapArgs {
+    /// Graph source name (e.g., "my-iceberg-gs")
+    pub name: String,
+
+    /// Catalog mode: "rest" (default) or "direct"
+    #[arg(long, default_value = "rest")]
+    pub mode: String,
+
+    /// REST catalog URI (required for rest mode)
+    #[arg(long)]
+    pub catalog_uri: Option<String>,
+
+    /// Table identifier in namespace.table format (e.g., "openflights.airlines").
+    /// Required for rest mode without --r2rml. When using --r2rml, tables are
+    /// defined in the mapping file.
+    #[arg(long)]
+    pub table: Option<String>,
+
+    /// S3 table location for direct mode (e.g., "s3://bucket/warehouse/ns/table")
+    #[arg(long)]
+    pub table_location: Option<String>,
+
+    /// R2RML mapping file (Turtle format). Defines how Iceberg table rows
+    /// are mapped to RDF triples. When provided, table references come from
+    /// the mapping's rr:tableName entries.
+    #[arg(long)]
+    pub r2rml: Option<PathBuf>,
+
+    /// R2RML mapping media type (e.g., "text/turtle"); inferred from extension if omitted
+    #[arg(long)]
+    pub r2rml_type: Option<String>,
+
+    /// Branch name (defaults to "main")
+    #[arg(long)]
+    pub branch: Option<String>,
+
+    /// Bearer token for REST catalog authentication
+    #[arg(long)]
+    pub auth_bearer: Option<String>,
+
+    /// OAuth2 token URL for client credentials auth
+    #[arg(long)]
+    pub oauth2_token_url: Option<String>,
+
+    /// OAuth2 client ID
+    #[arg(long)]
+    pub oauth2_client_id: Option<String>,
+
+    /// OAuth2 client secret
+    #[arg(long)]
+    pub oauth2_client_secret: Option<String>,
+
+    /// Warehouse identifier (REST mode)
+    #[arg(long)]
+    pub warehouse: Option<String>,
+
+    /// Disable vended credentials (REST mode, enabled by default)
+    #[arg(long)]
+    pub no_vended_credentials: bool,
+
+    /// S3 region override
+    #[arg(long)]
+    pub s3_region: Option<String>,
+
+    /// S3 endpoint override (for MinIO, LocalStack)
+    #[arg(long)]
+    pub s3_endpoint: Option<String>,
+
+    /// Use path-style S3 URLs
+    #[arg(long)]
+    pub s3_path_style: bool,
 }

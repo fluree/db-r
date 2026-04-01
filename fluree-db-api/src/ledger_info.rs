@@ -146,7 +146,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     let parsed_context = context
         .map(|c| ParsedContext::parse(None, c).unwrap_or_default())
         .unwrap_or_default();
-    let compactor = IriCompactor::new(&ledger.snapshot.namespace_codes, &parsed_context);
+    let compactor = IriCompactor::new(ledger.snapshot.namespaces(), &parsed_context);
 
     // Build schema index for hierarchy lookups
     let schema_index = ledger
@@ -196,14 +196,14 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                     graph_entry,
                     &ledger.novelty,
                     store,
-                    &ledger.snapshot.namespace_codes,
+                    ledger.snapshot.namespaces(),
                     graph_iri.as_deref(),
                     options.realtime_property_details,
                 );
                 merge_graph_class_counts_from_novelty(
                     graph_entry,
                     &ledger.novelty,
-                    &ledger.snapshot.namespace_codes,
+                    ledger.snapshot.namespaces(),
                     graph_iri.as_deref(),
                     store,
                 );
@@ -217,7 +217,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
                         ledger.t(),
                         g_id,
                         graph_entry,
-                        &ledger.snapshot.namespace_codes,
+                        ledger.snapshot.namespaces(),
                         graph_iri.as_deref(),
                         store,
                     )
@@ -1268,6 +1268,10 @@ fn decode_class_stats(
 fn datatype_display_string(tag: u8) -> String {
     if tag == ValueTypeTag::JSON_LD_ID.as_u8() {
         "@id".to_string()
+    } else if tag == ValueTypeTag::VECTOR.as_u8() {
+        "@vector".to_string()
+    } else if tag == ValueTypeTag::FULL_TEXT.as_u8() {
+        "@fulltext".to_string()
     } else {
         ValueTypeTag::from_u8(tag).to_string()
     }
@@ -1552,6 +1556,8 @@ mod tests {
         assert_eq!(datatype_display_string(16), "@id");
         assert_eq!(datatype_display_string(7), "xsd:double");
         assert_eq!(datatype_display_string(14), "rdf:langString");
+        assert_eq!(datatype_display_string(38), "@vector");
+        assert_eq!(datatype_display_string(39), "@fulltext");
     }
 
     #[test]
@@ -1570,6 +1576,8 @@ mod tests {
             index_t: 40,
             default_context: None,
             retracted: false,
+            branch_point: None,
+            branches: 0,
         };
 
         let json = ns_record_to_jsonld(&record);
@@ -1599,6 +1607,8 @@ mod tests {
             index_t: 0,
             default_context: None,
             retracted: true,
+            branch_point: None,
+            branches: 0,
         };
 
         let json = ns_record_to_jsonld(&record);

@@ -22,8 +22,45 @@ use fluree_db_core::{FlakeValue, Sid};
 use fluree_db_novelty::TxnMetaEntry;
 use fluree_db_query::parse::UnresolvedPattern;
 use fluree_db_query::{VarId, VarRegistry};
+use fluree_db_sparql::ast::{GraphPattern as SparqlGraphPattern, Prologue as SparqlPrologue};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+
+/// Named graph spec for scoping JSON-LD UPDATE `where` evaluation.
+#[derive(Debug, Clone)]
+pub struct UpdateNamedGraph {
+    /// Graph IRI (expanded)
+    pub iri: String,
+    /// Optional dataset-local alias that may be used in `["graph", <name>, ...]` patterns.
+    pub alias: Option<String>,
+}
+
+/// SPARQL WHERE clause for Update operations (parsed from SPARQL UPDATE).
+///
+/// Stored in the transaction IR so staging can lower it using the current ledger
+/// snapshot as the IRI encoder, reusing the same query engine as SELECT queries.
+#[derive(Debug, Clone)]
+pub struct SparqlWhereClause {
+    pub prologue: SparqlPrologue,
+    /// Optional WITH clause graph (expanded IRI) for SPARQL UPDATE Modify operations.
+    ///
+    /// Fluree uses this as the default graph for WHERE evaluation when no `USING` clause
+    /// is provided, matching SPARQL Update semantics (WITH can be overridden by USING).
+    pub with_graph_iri: Option<String>,
+    /// Optional USING default graph(s) (expanded IRIs) for SPARQL UPDATE Modify operations.
+    ///
+    /// SPARQL Update semantics:
+    /// - `USING <g>` scopes the dataset used to evaluate WHERE (default graph)
+    /// - Multiple USING clauses are treated as a merged default graph for WHERE evaluation
+    /// - When both are present, `USING` overrides `WITH` for WHERE evaluation
+    pub using_default_graph_iris: Vec<String>,
+    /// Optional USING NAMED graph IRI(s) (expanded IRIs) for SPARQL UPDATE Modify operations.
+    ///
+    /// When present, Fluree restricts the set of named graphs visible to WHERE evaluation
+    /// (i.e., `GRAPH <iri> { ... }` patterns) to this set.
+    pub using_named_graph_iris: Vec<String>,
+    pub pattern: SparqlGraphPattern,
+}
 
 /// Type of transaction operation
 ///
@@ -76,6 +113,13 @@ pub struct Txn {
     /// This reuses the query parser's full pattern support (OPTIONAL, UNION, etc.).
     pub where_patterns: Vec<UnresolvedPattern>,
 
+    /// Optional SPARQL WHERE clause (for SPARQL UPDATE Modify operations).
+    ///
+    /// When present, staging executes this WHERE clause using the SPARQL lowering
+    /// pipeline and the shared query engine. `where_patterns` is typically empty
+    /// in this case.
+    pub sparql_where: Option<SparqlWhereClause>,
+
     /// Templates for flakes to delete
     pub delete_templates: Vec<TripleTemplate>,
 
@@ -84,6 +128,26 @@ pub struct Txn {
 
     /// Optional inline VALUES bindings
     pub values: Option<InlineValues>,
+
+    /// Optional default graph IRI(s) for JSON-LD update WHERE execution.
+    ///
+    /// When present, staging executes `where_patterns` against the merged default
+    /// graph of these IRIs. An empty list means "use the implicit default graph".
+    ///
+    /// This is the JSON-LD UPDATE analog of SPARQL UPDATE `USING <iri>` scoping.
+    ///
+    /// Notes:
+    /// - If JSON-LD update includes `from`, it populates this field.
+    /// - If `from` is absent, JSON-LD update falls back to the top-level `graph`
+    ///   (WITH equivalent) for WHERE default graph scoping.
+    pub update_where_default_graph_iris: Option<Vec<String>>,
+
+    /// Optional allowlist of named graphs visible to JSON-LD update WHERE evaluation.
+    ///
+    /// When present (parsed from the JSON-LD update top-level `fromNamed` key), staging
+    /// restricts the runtime dataset's named graphs to this set. Any `alias` entries are
+    /// added as additional named-graph keys, allowing `["graph", "<alias>", ...]` patterns.
+    pub update_where_named_graphs: Option<Vec<UpdateNamedGraph>>,
 
     /// Transaction options
     pub opts: TxnOpts,
@@ -118,9 +182,12 @@ impl Txn {
         Self {
             txn_type: TxnType::Insert,
             where_patterns: Vec::new(),
+            sparql_where: None,
             delete_templates: Vec::new(),
             insert_templates: Vec::new(),
             values: None,
+            update_where_default_graph_iris: None,
+            update_where_named_graphs: None,
             opts: TxnOpts::default(),
             vars: VarRegistry::new(),
             txn_meta: Vec::new(),

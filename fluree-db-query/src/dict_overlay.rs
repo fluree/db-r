@@ -96,12 +96,28 @@ const EPHEMERAL_SUBJECT_LOCAL_BASE: u64 = 0x0000_8000_0000_0000;
 
 impl DictOverlay {
     /// Create a new overlay wrapping the given graph view and DictNovelty.
+    ///
+    /// The graph view is upgraded to be novelty-aware (if it isn't already)
+    /// so that the final delegation in `decode_value()` handles watermark
+    /// routing for dict-backed types automatically.
     pub fn new(graph_view: BinaryGraphView, dict_novelty: Arc<DictNovelty>) -> Self {
         let store = graph_view.store();
         let base_p_count = store.predicate_count();
         let base_g_count = store.graph_ids().len() as GraphId;
         let base_lang_count = store.language_tag_count();
         let base_str_count = store.string_count();
+
+        // Ensure the graph view carries dict_novelty so the delegation at
+        // the end of decode_value() is itself novelty-aware.
+        let graph_view = if graph_view.has_dict_novelty() {
+            graph_view
+        } else {
+            BinaryGraphView::with_novelty(
+                graph_view.clone_store(),
+                graph_view.g_id(),
+                Some(Arc::clone(&dict_novelty)),
+            )
+        };
 
         Self {
             graph_view,
@@ -167,7 +183,7 @@ impl DictOverlay {
     /// prefix_trie decomposition since we already have ns_code + suffix).
     /// Falls back to ephemeral allocation when DictNovelty is uninitialized.
     pub fn assign_subject_id_from_sid(&mut self, sid: &Sid) -> io::Result<u64> {
-        // 1. Persisted tree
+        // 1. Persisted tree (canonical encoding guarantees exact-parts match)
         if let Some(id) = self
             .graph_view
             .store()
@@ -239,10 +255,13 @@ impl DictOverlay {
         ))
     }
 
-    /// Resolve a subject ID back to a Sid (encodes IRI via namespace trie).
+    /// Resolve a subject ID back to a Sid.
+    ///
+    /// Delegates to the novelty-aware `BinaryGraphView::resolve_subject_sid`
+    /// which returns `Sid::new(ns_code, suffix)` directly for novel subjects
+    /// (no IRI string allocation or trie lookup).
     pub fn resolve_subject_sid(&self, id: u64) -> io::Result<Sid> {
-        let iri = self.resolve_subject_iri(id)?;
-        Ok(self.graph_view.store().encode_iri(&iri))
+        self.graph_view.resolve_subject_sid(id)
     }
 
     // ========================================================================
@@ -255,12 +274,6 @@ impl DictOverlay {
             return id;
         }
         self.ext_predicates.assign_or_lookup(iri)
-    }
-
-    /// Assign a predicate ID from a Sid.
-    pub fn assign_predicate_id_from_sid(&mut self, sid: &Sid) -> u32 {
-        let iri = self.graph_view.store().sid_to_iri(sid);
-        self.assign_predicate_id(&iri)
     }
 
     /// Resolve a predicate ID back to an IRI.
@@ -564,9 +577,15 @@ impl DictOverlay {
 
     /// Decode a value from integer-ID space back to `FlakeValue`.
     ///
-    /// Uses watermark routing for subject refs and string IDs:
-    /// IDs above the watermark are novel (resolved from DictNovelty).
-    /// IDs at or below the watermark are persisted (delegated to store).
+    /// Handles DictOverlay-specific concerns:
+    /// - **Ephemeral IDs** (uninitialized DictNovelty): subjects/strings from
+    ///   `ext_subjects`/`ext_strings` (range provider fallback path only).
+    /// - **Ephemeral NumBig/Vector handles**: per-query allocations above
+    ///   `EPHEMERAL_*_BASE`.
+    ///
+    /// For the common case (initialized DictNovelty), watermark-based routing
+    /// of subject refs and string IDs is handled by `BinaryGraphView` itself
+    /// — no duplication here.
     pub fn decode_value(
         &self,
         o_kind: u8,
@@ -575,51 +594,32 @@ impl DictOverlay {
         dt_id: u16,
         lang_id: u16,
     ) -> io::Result<FlakeValue> {
-        let initialized = self.dict_novelty.is_initialized();
-
-        // REF_ID — check for novel/ephemeral subject IDs
-        if o_kind == ObjKind::REF_ID.as_u8() {
-            let ref_id = o_key;
-            let is_novel = if initialized {
-                let sid64 = SubjectId::from_u64(ref_id);
-                let wm = self.dict_novelty.subjects.watermark_for_ns(sid64.ns_code());
-                sid64.local_id() > wm
-            } else {
-                // Ephemeral IDs are namespace-aware sid64 allocations.
-                self.ext_subjects.resolve_subject(ref_id).is_some()
-            };
-            if is_novel {
-                let iri = self.resolve_subject_iri(ref_id)?;
+        // Ephemeral-only checks: these handle IDs that only exist in this
+        // DictOverlay instance (not in DictNovelty or the persisted store).
+        if !self.dict_novelty.is_initialized() {
+            // REF_ID — check ephemeral subject IDs (range provider fallback)
+            if o_kind == ObjKind::REF_ID.as_u8()
+                && self.ext_subjects.resolve_subject(o_key).is_some()
+            {
+                let iri = self.resolve_subject_iri(o_key)?;
                 return Ok(FlakeValue::Ref(self.graph_view.store().encode_iri(&iri)));
             }
-        }
-        // LEX_ID — check for novel/ephemeral string IDs
-        if o_kind == ObjKind::LEX_ID.as_u8() {
-            let str_id = o_key as u32;
-            let is_novel = if initialized {
-                str_id > self.dict_novelty.strings.watermark()
-            } else {
-                self.ext_strings.resolve(str_id).is_some()
-            };
-            if is_novel {
-                let s = self.resolve_string_value(str_id)?;
+            // LEX_ID — check ephemeral string IDs
+            if o_kind == ObjKind::LEX_ID.as_u8() && self.ext_strings.resolve(o_key as u32).is_some()
+            {
+                let s = self.resolve_string_value(o_key as u32)?;
                 return Ok(FlakeValue::String(s));
             }
-        }
-        // JSON_ID — check for novel/ephemeral string IDs
-        if o_kind == ObjKind::JSON_ID.as_u8() {
-            let str_id = o_key as u32;
-            let is_novel = if initialized {
-                str_id > self.dict_novelty.strings.watermark()
-            } else {
-                self.ext_strings.resolve(str_id).is_some()
-            };
-            if is_novel {
-                let s = self.resolve_string_value(str_id)?;
+            // JSON_ID — check ephemeral string IDs
+            if o_kind == ObjKind::JSON_ID.as_u8()
+                && self.ext_strings.resolve(o_key as u32).is_some()
+            {
+                let s = self.resolve_string_value(o_key as u32)?;
                 return Ok(FlakeValue::Json(s));
             }
         }
-        // NUM_BIG with ephemeral handle
+
+        // NUM_BIG with ephemeral handle (per-query, independent of DictNovelty)
         if o_kind == ObjKind::NUM_BIG.as_u8() {
             let handle = o_key as u32;
             if let Some(val) = self.resolve_numbig(handle) {
@@ -627,7 +627,7 @@ impl DictOverlay {
             }
         }
 
-        // VECTOR_ID with ephemeral handle
+        // VECTOR_ID with ephemeral handle (per-query, independent of DictNovelty)
         if o_kind == ObjKind::VECTOR_ID.as_u8() {
             let handle = o_key as u32;
             if handle >= EPHEMERAL_VECTOR_BASE {
@@ -638,7 +638,9 @@ impl DictOverlay {
             }
         }
 
-        // Delegate to graph view for all persisted entries (graph-scoped decode)
+        // Delegate to novelty-aware graph view for everything else.
+        // BinaryGraphView handles watermark routing for IriRef, StringDict,
+        // JsonArena internally — no duplication needed here.
         self.graph_view
             .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id)
     }

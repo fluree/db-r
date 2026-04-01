@@ -425,3 +425,127 @@ async fn typed_json_tabular_query_works() {
     assert!(name.get("@value").is_some(), "tabular name has @value");
     assert!(name.get("@type").is_some(), "tabular name has @type");
 }
+
+// ============================================================================
+// Regression: novelty-only @json value equality match
+// ============================================================================
+
+/// Regression: querying with a novelty-only @json object as an equality filter
+/// must return matches. Before the fix, `FlakeValue::Json` fell through to the
+/// catch-all in `binary_range_eq_v3` which failed to set any filter, potentially
+/// returning wrong results or missing novelty data entirely.
+#[tokio::test]
+async fn typed_json_novelty_only_json_equality_match() {
+    use fluree_db_api::ReindexOptions;
+    use fluree_db_core::comparator::IndexType;
+    use fluree_db_core::range::{RangeMatch, RangeTest};
+    use fluree_db_core::value::FlakeValue;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/typed-json-eq:main";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    // Phase 1: Seed base @json data and build an index.
+    let base_tx = json!({
+        "@context": ctx(),
+        "@graph": [
+            {
+                "@id": "ex:cfg1",
+                "ex:settings": {"@value": {"mode": "production"}, "@type": "@json"}
+            }
+        ]
+    });
+    let mut ledger = fluree
+        .insert(ledger0, &base_tx)
+        .await
+        .expect("insert base")
+        .ledger;
+
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex");
+
+    // Phase 2: Insert novelty @json data (not indexed).
+    let novelty_tx = json!({
+        "@context": ctx(),
+        "@graph": [
+            {
+                "@id": "ex:cfg2",
+                "ex:settings": {"@value": {"mode": "staging", "debug": true}, "@type": "@json"}
+            }
+        ]
+    });
+    ledger = fluree
+        .insert_with_opts(
+            ledger,
+            &novelty_tx,
+            TxnOpts::default(),
+            CommitOpts::default(),
+            &fluree_db_api::IndexConfig {
+                reindex_min_bytes: 1_000_000_000,
+                reindex_max_bytes: 1_000_000_000,
+            },
+        )
+        .await
+        .expect("insert novelty")
+        .ledger;
+    let _t = ledger.t();
+
+    // Phase 3: Load a view using the binary index + overlay.
+    let db = fluree.db(ledger_id).await.expect("load db");
+
+    // Query the novelty-only subject to verify its @json data is accessible.
+    let cfg2_sid = db
+        .snapshot
+        .encode_iri("http://example.org/ns/cfg2")
+        .expect("encode ex:cfg2");
+    let settings_pid = db
+        .snapshot
+        .encode_iri("http://example.org/ns/settings")
+        .expect("encode ex:settings");
+
+    let dbref = db.as_graph_db_ref();
+    let flakes = dbref
+        .range(
+            IndexType::Spot,
+            RangeTest::Eq,
+            RangeMatch::subject_predicate(cfg2_sid, settings_pid),
+        )
+        .await
+        .expect("range query for novelty @json subject");
+
+    assert!(
+        flakes
+            .iter()
+            .any(|f| matches!(&f.o, FlakeValue::Json(s) if s.contains("staging"))),
+        "novelty-only @json value should be returned via range query; got: {flakes:?}"
+    );
+
+    // Also verify the indexed @json subject still works.
+    let cfg1_sid = db
+        .snapshot
+        .encode_iri("http://example.org/ns/cfg1")
+        .expect("encode ex:cfg1");
+    let settings_pid2 = db
+        .snapshot
+        .encode_iri("http://example.org/ns/settings")
+        .expect("encode ex:settings");
+
+    let flakes = dbref
+        .range(
+            IndexType::Spot,
+            RangeTest::Eq,
+            RangeMatch::subject_predicate(cfg1_sid, settings_pid2),
+        )
+        .await
+        .expect("range query for indexed @json subject");
+
+    assert!(
+        flakes
+            .iter()
+            .any(|f| matches!(&f.o, FlakeValue::Json(s) if s.contains("production"))),
+        "indexed @json value should still be returned; got: {flakes:?}"
+    );
+}

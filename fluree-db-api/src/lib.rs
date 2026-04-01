@@ -47,6 +47,7 @@ pub mod export;
 pub mod export_builder;
 pub mod format;
 pub mod graph;
+pub mod graph_commit_builder;
 pub mod graph_query_builder;
 pub mod graph_snapshot;
 pub mod graph_source;
@@ -55,11 +56,13 @@ pub mod import;
 mod ledger;
 pub mod ledger_info;
 pub mod nameservice_query;
+pub(crate) mod ns_helpers;
 mod overlay;
 pub mod pack;
 pub mod policy_builder;
 pub mod policy_view;
 mod query;
+mod rebase;
 pub mod server_defaults;
 mod time_resolve;
 pub mod tx;
@@ -75,6 +78,7 @@ pub mod ledger_manager;
 pub mod search;
 
 pub use admin::{
+    BranchDropReport,
     DropMode,
     DropReport,
     DropStatus,
@@ -100,8 +104,9 @@ pub use dataset::{
 };
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
 pub use fluree_db_core::ContentId;
-pub use format::{FormatError, FormatterConfig, JsonLdRowShape, OutputFormat, QueryOutput};
+pub use format::{AgentJsonContext, FormatError, FormatterConfig, OutputFormat, QueryOutput};
 pub use graph::Graph;
+pub use graph_commit_builder::{CommitBuilder, CommitDetail, ResolvedFlake, ResolvedValue};
 pub use graph_query_builder::{GraphQueryBuilder, GraphSnapshotQueryBuilder};
 pub use graph_snapshot::GraphSnapshot;
 pub use graph_source::{
@@ -116,7 +121,8 @@ pub use import::{
 pub use ledger_info::LedgerInfoBuilder;
 pub use ledger_manager::{
     CachedLedgerState, FreshnessCheck, FreshnessSource, LedgerHandle, LedgerManager,
-    LedgerManagerConfig, LedgerWriteGuard, NotifyResult, NsNotify, RemoteWatermark, UpdatePlan,
+    LedgerManagerConfig, LedgerWriteGuard, NotifyResult, NsNotify, RefreshOpts, RefreshResult,
+    RemoteWatermark, UpdatePlan,
 };
 pub use pack::{
     compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
@@ -131,6 +137,7 @@ pub use query::builder::{
 };
 pub use query::nameservice_builder::NameserviceQueryBuilder;
 pub use query::{QueryResult, TrackedErrorResponse, TrackedQueryResponse};
+pub use rebase::{ConflictStrategy, RebaseConflict, RebaseFailure, RebaseReport};
 pub use tx::{
     IndexingMode, IndexingStatus, StageResult, TrackedTransactionInput, TransactResult,
     TransactResultRef,
@@ -140,8 +147,8 @@ pub use view::{DataSetDb, GraphDb, QueryInput, ReasoningModePrecedence};
 
 #[cfg(feature = "iceberg")]
 pub use graph_source::{
-    FlureeR2rmlProvider, IcebergCreateConfig, IcebergCreateResult, R2rmlCreateConfig,
-    R2rmlCreateResult,
+    CatalogMode, FlureeR2rmlProvider, IcebergCreateConfig, IcebergCreateResult, R2rmlCreateConfig,
+    R2rmlCreateResult, R2rmlMappingInput, RestCatalogMode,
 };
 
 pub use bm25_worker::{
@@ -181,8 +188,8 @@ pub use fluree_db_ledger::{
     HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
 };
 pub use fluree_db_nameservice::{
-    ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, GraphSourcePublisher,
-    NameService, NsRecord, Publisher,
+    ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, GraphSourceLookup,
+    GraphSourcePublisher, NameService, NsRecord, Publisher,
 };
 pub use fluree_db_novelty::{verify_commit_v2_blob, Novelty};
 pub use fluree_db_query::{
@@ -350,12 +357,14 @@ pub trait NameServicePublisher:
     fluree_db_nameservice::NameService
     + fluree_db_nameservice::Publisher
     + fluree_db_nameservice::RefPublisher
+    + fluree_db_nameservice::GraphSourcePublisher
 {
 }
 impl<T> NameServicePublisher for T where
     T: fluree_db_nameservice::NameService
         + fluree_db_nameservice::Publisher
         + fluree_db_nameservice::RefPublisher
+        + fluree_db_nameservice::GraphSourcePublisher
 {
 }
 
@@ -393,6 +402,42 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         fluree_db_nameservice::NameServiceError,
     > {
         self.0.all_records().await
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
+        self.0.drop_branch(ledger_id).await
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .update_branch_point(ledger_id, new_branch_point)
+            .await
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0.reset_head(ledger_id, snapshot).await
     }
 }
 
@@ -464,6 +509,74 @@ impl fluree_db_nameservice::RefPublisher for AnyNameService {
     }
 }
 
+#[async_trait]
+impl fluree_db_nameservice::GraphSourcePublisher for AnyNameService {
+    async fn publish_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+        source_type: fluree_db_nameservice::GraphSourceType,
+        config: &str,
+        dependencies: &[String],
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .publish_graph_source(name, branch, source_type, config, dependencies)
+            .await
+    }
+
+    async fn publish_graph_source_index(
+        &self,
+        name: &str,
+        branch: &str,
+        index_id: &fluree_db_core::ContentId,
+        index_t: i64,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0
+            .publish_graph_source_index(name, branch, index_id, index_t)
+            .await
+    }
+
+    async fn retract_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.0.retract_graph_source(name, branch).await
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::GraphSourceLookup for AnyNameService {
+    async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0.lookup_graph_source(graph_source_id).await
+    }
+
+    async fn lookup_any(
+        &self,
+        resource_id: &str,
+    ) -> std::result::Result<
+        fluree_db_nameservice::NsLookupResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0.lookup_any(resource_id).await
+    }
+
+    async fn all_graph_source_records(
+        &self,
+    ) -> std::result::Result<
+        Vec<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.0.all_graph_source_records().await
+    }
+}
+
 /// Transparent delegating nameservice wrapper.
 ///
 /// This wrapper is retained so that builder call-sites do not need
@@ -505,6 +618,42 @@ where
         fluree_db_nameservice::NameServiceError,
     > {
         self.inner.all_records().await
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .create_branch(ledger_name, new_branch, branch_point)
+            .await
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
+        self.inner.drop_branch(ledger_id).await
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .update_branch_point(ledger_id, new_branch_point)
+            .await
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner.reset_head(ledger_id, snapshot).await
     }
 }
 
@@ -588,6 +737,89 @@ where
         self.inner
             .compare_and_set_ref(ledger_id, kind, expected, new)
             .await
+    }
+}
+
+#[async_trait::async_trait]
+impl<N> fluree_db_nameservice::GraphSourcePublisher for DelegatingNameService<N>
+where
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + fluree_db_nameservice::GraphSourcePublisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
+{
+    async fn publish_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+        source_type: fluree_db_nameservice::GraphSourceType,
+        config: &str,
+        dependencies: &[String],
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .publish_graph_source(name, branch, source_type, config, dependencies)
+            .await
+    }
+
+    async fn publish_graph_source_index(
+        &self,
+        name: &str,
+        branch: &str,
+        index_id: &fluree_db_core::ContentId,
+        index_t: i64,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner
+            .publish_graph_source_index(name, branch, index_id, index_t)
+            .await
+    }
+
+    async fn retract_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        self.inner.retract_graph_source(name, branch).await
+    }
+}
+
+#[async_trait::async_trait]
+impl<N> fluree_db_nameservice::GraphSourceLookup for DelegatingNameService<N>
+where
+    N: fluree_db_nameservice::NameService
+        + fluree_db_nameservice::Publisher
+        + std::fmt::Debug
+        + Send
+        + Sync,
+{
+    async fn lookup_graph_source(
+        &self,
+        graph_source_id: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner.lookup_graph_source(graph_source_id).await
+    }
+
+    async fn lookup_any(
+        &self,
+        resource_id: &str,
+    ) -> std::result::Result<
+        fluree_db_nameservice::NsLookupResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner.lookup_any(resource_id).await
+    }
+
+    async fn all_graph_source_records(
+        &self,
+    ) -> std::result::Result<
+        Vec<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.inner.all_graph_source_records().await
     }
 }
 
@@ -1101,32 +1333,6 @@ fn derive_index_config(config: &ConnectionConfig) -> IndexConfig {
     }
 }
 
-/// Convenience helper: connect with in-memory storage.
-pub async fn connect_memory() -> Result<FlureeClient> {
-    FlureeBuilder::memory().build_client().await
-}
-
-/// Convenience helper: connect with filesystem storage.
-#[cfg(feature = "native")]
-pub async fn connect_filesystem(path: impl AsRef<str>) -> Result<FlureeClient> {
-    FlureeBuilder::file(path.as_ref()).build_client().await
-}
-
-/// Convenience helper: connect with S3 storage.
-///
-/// Notes:
-/// - Requires the `aws` feature on `fluree-db-api`.
-/// - For LocalStack/MinIO/custom endpoints, `endpoint` should be provided.
-#[cfg(feature = "aws")]
-pub async fn connect_s3(
-    bucket: impl AsRef<str>,
-    endpoint: impl AsRef<str>,
-) -> Result<FlureeClient> {
-    FlureeBuilder::s3(bucket.as_ref(), endpoint.as_ref())
-        .build_client()
-        .await
-}
-
 /// Builder for creating Fluree instances
 ///
 /// Provides a fluent API for configuring storage, cache, and nameservice options.
@@ -1154,6 +1360,13 @@ pub struct FlureeBuilder {
     /// Optional background indexing configuration.
     /// When set, `build()` will spawn a `BackgroundIndexerWorker`.
     indexing_config: Option<IndexingBuilderConfig>,
+    /// Optional novelty backpressure thresholds (independent of background indexing).
+    ///
+    /// When set, these override the thresholds from `indexing_config` for
+    /// `derive_indexing()`. Use `with_novelty_thresholds()` to set this without
+    /// enabling background indexing — useful for CLI or embedded scenarios where
+    /// the process is too short-lived for a background indexer.
+    novelty_thresholds: Option<IndexConfig>,
 }
 
 /// Configuration for background indexing in `FlureeBuilder`.
@@ -1174,9 +1387,12 @@ fn make_leaflet_cache(
 }
 
 impl FlureeBuilder {
-    /// Create a new builder with default settings (memory storage)
+    /// Create a new builder with default settings (memory storage).
+    ///
+    /// Equivalent to [`FlureeBuilder::memory()`] — ledger caching is enabled
+    /// by default.
     pub fn new() -> Self {
-        Self::default()
+        Self::memory()
     }
 
     /// Configure for file-based storage
@@ -1191,6 +1407,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1203,6 +1420,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1266,6 +1484,7 @@ impl FlureeBuilder {
             encryption_key: None,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
+            novelty_thresholds: None,
         }
     }
 
@@ -1443,6 +1662,7 @@ impl FlureeBuilder {
             encryption_key,
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config,
+            novelty_thresholds: None,
         })
     }
 
@@ -1536,6 +1756,20 @@ impl FlureeBuilder {
         self
     }
 
+    /// Set novelty backpressure thresholds without enabling background indexing.
+    ///
+    /// Use this for short-lived processes (CLI, one-shot scripts) that need
+    /// the correct commit-blocking limits but exit before a background indexer
+    /// could finish. The thresholds take priority over any values set via
+    /// `with_indexing()` or `with_indexing_thresholds()`.
+    pub fn with_novelty_thresholds(mut self, min_bytes: usize, max_bytes: usize) -> Self {
+        self.novelty_thresholds = Some(IndexConfig {
+            reindex_min_bytes: min_bytes,
+            reindex_max_bytes: max_bytes,
+        });
+        self
+    }
+
     /// Build a file-backed Fluree instance
     ///
     /// Returns an error if storage_path is not set.
@@ -1545,55 +1779,24 @@ impl FlureeBuilder {
     /// When indexing is enabled via `with_indexing()`, a `BackgroundIndexerWorker`
     /// is spawned on the tokio runtime. This must be called within a tokio context.
     #[cfg(feature = "native")]
-    pub fn build(self) -> Result<Fluree<FileStorage, FileNameService>> {
+    pub fn build(mut self) -> Result<Fluree<FileStorage, FileNameService>> {
         let path = self
             .storage_path
+            .take()
             .ok_or_else(|| ApiError::config("File storage requires a path"))?;
 
         let storage = FileStorage::new(&path);
-        let connection = Connection::new(self.config, storage.clone());
-
         let nameservice = FileNameService::new(&path);
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        // Create LedgerManager if caching is enabled
-        let ledger_manager = self.ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(
-                storage.clone(),
-                nameservice.clone(),
-                config,
-            ))
-        });
-
-        // Start background indexing if configured
-        let (indexing_mode, index_config) = if let Some(idx_config) = self.indexing_config {
-            let (worker, handle) = BackgroundIndexerWorker::new(
-                storage,
-                Arc::new(nameservice.clone()),
-                idx_config.indexer_config,
-            );
-            tokio::spawn(worker.run());
-            (
-                tx::IndexingMode::Background(handle),
-                idx_config.index_config,
-            )
-        } else {
-            (tx::IndexingMode::Disabled, IndexConfig::default())
-        };
-
-        Ok(Fluree {
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
             indexing_mode,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        })
+        ))
     }
 
     /// Build a Fluree instance with custom storage and nameservice.
@@ -1608,25 +1811,15 @@ impl FlureeBuilder {
         S: Storage + Clone + Send + Sync + 'static,
         N: NameService + Clone + Send + Sync + 'static,
     {
-        let connection = Connection::new(self.config, storage.clone());
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let ledger_manager = self.ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(storage, nameservice.clone(), config))
-        });
-
-        Fluree {
+        let index_config = self.derive_indexing();
+        let connection = Connection::new(self.config, storage);
+        Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
-            index_config: IndexConfig::default(),
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        }
+            tx::IndexingMode::Disabled,
+            index_config,
+        )
     }
 
     /// Build a file-backed Fluree instance with AES-256-GCM encryption.
@@ -1706,39 +1899,29 @@ impl FlureeBuilder {
     /// Internal helper to build encrypted storage
     #[cfg(feature = "native")]
     fn build_encrypted_internal(
-        self,
+        mut self,
         key: [u8; 32],
     ) -> Result<Fluree<EncryptedStorage<FileStorage, StaticKeyProvider>, FileNameService>> {
         let path = self
             .storage_path
+            .take()
             .ok_or_else(|| ApiError::config("File storage requires a path"))?;
 
         let file_storage = FileStorage::new(&path);
         let encryption_key = EncryptionKey::new(key, 0);
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(file_storage, key_provider);
-
-        let connection = Connection::new(self.config, storage);
-
         let nameservice = FileNameService::new(&path);
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        // Note: Ledger caching not yet supported for encrypted storage
-        Ok(Fluree {
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        })
+        ))
     }
 
     /// Check if this builder has an encryption key configured.
@@ -1752,33 +1935,16 @@ impl FlureeBuilder {
     /// to enable background indexing.
     pub fn build_memory(self) -> Fluree<MemoryStorage, MemoryNameService> {
         let storage = MemoryStorage::new();
-        let connection = Connection::new(self.config, storage.clone());
         let nameservice = MemoryNameService::new();
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        // Create LedgerManager if caching is enabled
-        let ledger_manager = self.ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(storage, nameservice.clone(), config))
-        });
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        Fluree {
+        let index_config = self.derive_indexing();
+        let connection = Connection::new(self.config, storage);
+        Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            tx::IndexingMode::Disabled,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        }
+        )
     }
 
     /// Build a memory-backed Fluree instance with AES-256-GCM encryption
@@ -1796,27 +1962,16 @@ impl FlureeBuilder {
         let encryption_key = EncryptionKey::new(key, 0);
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(mem_storage, key_provider);
-
-        let connection = Connection::new(self.config, storage);
         let nameservice = MemoryNameService::new();
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        // Note: Ledger caching not yet supported for encrypted storage
-        Fluree {
+        let index_config = self.derive_indexing();
+        let connection = Connection::new(self.config, storage);
+        Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            tx::IndexingMode::Disabled,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        }
+        )
     }
 
     /// Build an S3-backed Fluree instance (storage-backed nameservice).
@@ -1826,7 +1981,7 @@ impl FlureeBuilder {
     /// Notes:
     /// - Requires the `aws` feature.
     /// - Uses the AWS default credential/region chain.
-    /// - Ledger caching is currently not enabled for this builder path.
+    /// - Ledger caching is enabled when `ledger_cache_config` is set on the builder.
     #[cfg(feature = "aws")]
     pub async fn build_s3(
         self,
@@ -1873,27 +2028,18 @@ impl FlureeBuilder {
         .await
         .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
 
-        let connection = Connection::new(self.config, storage.clone());
-
         // Empty prefix: S3Storage already applies its own key prefix.
-        let nameservice = StorageNameService::new(storage, "");
-
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
-
-        Ok(Fluree {
+        let nameservice = StorageNameService::new(storage.clone(), "");
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        })
+        ))
     }
 
     /// Build an S3-backed Fluree instance with AES-256-GCM encryption.
@@ -1904,7 +2050,7 @@ impl FlureeBuilder {
     /// Notes:
     /// - Requires the `aws` feature.
     /// - Uses the AWS default credential/region chain.
-    /// - Ledger caching is currently not enabled for this builder path.
+    /// - Ledger caching is enabled when `ledger_cache_config` is set on the builder.
     ///
     /// # Arguments
     ///
@@ -1961,27 +2107,103 @@ impl FlureeBuilder {
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(s3_storage, key_provider);
 
-        let connection = Connection::new(self.config, storage.clone());
-
         // Empty prefix: S3Storage already applies its own key prefix.
-        let nameservice = StorageNameService::new(storage, "");
+        let nameservice = StorageNameService::new(storage.clone(), "");
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
+            connection,
+            nameservice,
+            indexing_mode,
+            index_config,
+        ))
+    }
 
+    // ========================================================================
+    // Shared finalization — single source of truth for caching + assembly
+    // ========================================================================
+
+    /// Extract the `IndexConfig` from builder settings (no runtime required).
+    ///
+    /// Priority: `novelty_thresholds` > `indexing_config` thresholds > defaults.
+    fn derive_indexing(&self) -> IndexConfig {
+        if let Some(ref thresholds) = self.novelty_thresholds {
+            return thresholds.clone();
+        }
+        self.indexing_config
+            .as_ref()
+            .map(|c| c.index_config.clone())
+            .unwrap_or_default()
+    }
+
+    /// Spawn the background indexer worker if configured.
+    ///
+    /// Must be called within a tokio runtime context.
+    fn start_background_indexing<S, N>(&self, storage: &S, nameservice: &N) -> tx::IndexingMode
+    where
+        S: Storage + Clone + Send + Sync + 'static,
+        N: NameService + fluree_db_nameservice::Publisher + Clone + 'static,
+    {
+        if let Some(ref idx_config) = self.indexing_config {
+            let (worker, handle) = BackgroundIndexerWorker::new(
+                storage.clone(),
+                Arc::new(nameservice.clone()),
+                idx_config.indexer_config.clone(),
+            );
+            tokio::spawn(worker.run());
+            tx::IndexingMode::Background(handle)
+        } else {
+            tx::IndexingMode::Disabled
+        }
+    }
+
+    /// Assemble a `Fluree<S, N>` with the builder's caching config.
+    ///
+    /// This is the **single source of truth** for:
+    /// - LeafletCache creation
+    /// - LedgerManager wiring (from `ledger_cache_config`)
+    /// - R2RML cache creation
+    /// - Final struct assembly
+    ///
+    /// Callers are responsible for starting background indexing (if applicable)
+    /// and passing the result as `indexing`. This separation exists because
+    /// indexing requires `N: Publisher`, which not all callers can guarantee
+    /// (e.g., `build_with()` accepts arbitrary `N: NameService`).
+    fn finalize<S, N>(
+        ledger_cache_config: Option<LedgerManagerConfig>,
+        connection: Connection<S>,
+        nameservice: N,
+        indexing_mode: tx::IndexingMode,
+        index_config: IndexConfig,
+    ) -> Fluree<S, N>
+    where
+        S: Storage + Clone + Send + Sync + 'static,
+        N: NameService + Clone + Send + Sync + 'static,
+    {
         let leaflet_cache = make_leaflet_cache(connection.config());
 
-        let index_config = self
-            .indexing_config
-            .map(|c| c.index_config)
-            .unwrap_or_default();
+        let ledger_manager = ledger_cache_config.map(|mut config| {
+            if config.leaflet_cache.is_none() {
+                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
+            }
+            Arc::new(LedgerManager::new(
+                connection.storage().clone(),
+                nameservice.clone(),
+                config,
+            ))
+        });
 
-        Ok(Fluree {
+        Fluree {
             connection,
             nameservice,
             leaflet_cache,
-            indexing_mode: tx::IndexingMode::Disabled,
+            indexing_mode,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager: None,
-        })
+            ledger_manager,
+        }
     }
 
     /// Build a type-erased `FlureeClient` from the builder configuration.
@@ -2027,17 +2249,20 @@ impl FlureeBuilder {
         // Wrap with address identifier routing if configured
         let storage = self.wrap_address_identifiers(base_storage)?;
 
-        let connection = Connection::new(self.config, storage);
         let nameservice_inner = MemoryNameService::new();
         let nameservice =
             AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
-        Self::finalize_client(
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(self.config, storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            self.indexing_config,
-            self.ledger_cache_config,
-        )
+            indexing_mode,
+            index_config,
+        ))
     }
 
     /// Build a type-erased file-backed client.
@@ -2070,17 +2295,20 @@ impl FlureeBuilder {
             // Wrap with address identifier routing if configured
             let storage = self.wrap_address_identifiers(base_storage)?;
 
-            let connection = Connection::new(self.config, storage);
             let nameservice_inner = FileNameService::new(path.as_ref());
             let nameservice =
                 AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
-            Self::finalize_client(
+            let index_config = self.derive_indexing();
+            let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+            let connection = Connection::new(self.config, storage);
+            Ok(Self::finalize(
+                self.ledger_cache_config,
                 connection,
                 nameservice,
-                self.indexing_config,
-                self.ledger_cache_config,
-            )
+                indexing_mode,
+                index_config,
+            ))
         }
     }
 
@@ -2111,18 +2339,20 @@ impl FlureeBuilder {
             .wrap_address_identifiers_aws(base_storage, aws_handle.config())
             .await?;
 
-        let connection = Connection::new(aws_handle.config().clone(), storage);
-
         let nameservice_inner = aws_handle.nameservice().clone();
         let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
-        Self::finalize_client(
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
+        let connection = Connection::new(aws_handle.config().clone(), storage);
+        Ok(Self::finalize(
+            self.ledger_cache_config,
             connection,
             nameservice,
-            self.indexing_config,
-            self.ledger_cache_config,
-        )
+            indexing_mode,
+            index_config,
+        ))
     }
 
     /// Wrap base storage with address identifier routing for local backends.
@@ -2169,55 +2399,6 @@ impl FlureeBuilder {
         } else {
             Ok(AnyStorage::new(base_storage))
         }
-    }
-
-    /// Shared finalization: create leaflet cache, ledger manager, indexing, and
-    /// assemble the `FlureeClient`.
-    fn finalize_client(
-        connection: Connection<AnyStorage>,
-        nameservice: AnyNameService,
-        indexing_config: Option<IndexingBuilderConfig>,
-        ledger_cache_config: Option<LedgerManagerConfig>,
-    ) -> Result<FlureeClient> {
-        let leaflet_cache = make_leaflet_cache(connection.config());
-
-        // Start background indexing if configured
-        let (indexing_mode, index_config) = if let Some(idx_config) = indexing_config {
-            let (worker, handle) = BackgroundIndexerWorker::new(
-                connection.storage().clone(),
-                Arc::new(nameservice.clone()),
-                idx_config.indexer_config,
-            );
-            tokio::spawn(worker.run());
-            (
-                tx::IndexingMode::Background(handle),
-                idx_config.index_config,
-            )
-        } else {
-            (tx::IndexingMode::Disabled, IndexConfig::default())
-        };
-
-        // Create LedgerManager if caching is enabled
-        let ledger_manager = ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
-            }
-            Arc::new(LedgerManager::new(
-                connection.storage().clone(),
-                nameservice.clone(),
-                config,
-            ))
-        });
-
-        Ok(Fluree {
-            connection,
-            nameservice,
-            leaflet_cache,
-            indexing_mode,
-            index_config,
-            r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            ledger_manager,
-        })
     }
 }
 
@@ -2502,8 +2683,16 @@ where
     ///     .policy(ctx)
     ///     .execute().await?;
     /// ```
+    /// Create a FROM-driven query builder.
+    ///
+    /// When the `iceberg` feature is compiled, R2RML/Iceberg graph source
+    /// support is automatically enabled — graph sources referenced via
+    /// `FROM` or `GRAPH` patterns resolve transparently.
     pub fn query_from(&self) -> FromQueryBuilder<'_, S, N> {
-        FromQueryBuilder::new(self)
+        let builder = FromQueryBuilder::new(self);
+        #[cfg(feature = "iceberg")]
+        let builder = builder.with_r2rml();
+        builder
     }
 
     /// Create a ledger info builder for retrieving comprehensive ledger metadata.
@@ -2654,8 +2843,8 @@ where
     /// - `Ok(None)` - Nameservice lookup returned no record (ledger doesn't exist)
     /// - `Ok(Some(NotifyResult::NotLoaded))` - Record exists but ledger not cached
     /// - `Ok(Some(NotifyResult::Current))` - Ledger is already up to date
-    /// - `Ok(Some(NotifyResult::IndexUpdated))` - Index was refreshed (v1: via reload)
-    /// - `Ok(Some(NotifyResult::CommitApplied))` - Single commit applied (v1: via reload)
+    /// - `Ok(Some(NotifyResult::IndexUpdated))` - Index was refreshed incrementally
+    /// - `Ok(Some(NotifyResult::CommitsApplied { count }))` - Commits applied incrementally
     /// - `Ok(Some(NotifyResult::Reloaded))` - Full reload was performed
     ///
     /// # Use Cases
@@ -2663,6 +2852,14 @@ where
     /// - **Serverless/Lambda**: Poll for updates on warm invocations before querying
     /// - **Long-running processes**: Periodic freshness check without SSE subscriptions
     /// - **External updates**: Check if another process has committed new data
+    ///
+    /// # `min_t` enforcement
+    ///
+    /// Pass [`RefreshOpts`] with `min_t` to assert the ledger has reached at
+    /// least that transaction time.  If, after pulling and applying the latest
+    /// nameservice state, `t` is still below `min_t`, the call returns
+    /// [`ApiError::AwaitTNotReached`].  The caller owns retry / back-off /
+    /// timeout policy.
     ///
     /// # Important
     ///
@@ -2676,27 +2873,50 @@ where
     /// let _ledger = fluree.ledger_cached("mydb:main").await?;
     ///
     /// // Later (warm invocation): poll for updates
-    /// match fluree.refresh("mydb:main").await? {
-    ///     Some(NotifyResult::Current) => println!("Already up to date"),
-    ///     Some(NotifyResult::Reloaded) => println!("Refreshed from remote"),
-    ///     Some(NotifyResult::NotLoaded) => println!("Not cached, load first"),
+    /// let result = fluree.refresh("mydb:main", Default::default()).await?;
+    /// match result {
+    ///     Some(r) => println!("refreshed to t={}, action={:?}", r.t, r.action),
     ///     None => println!("Ledger not found in nameservice"),
-    ///     _ => {}
     /// }
     ///
-    /// // Query with fresh data
-    /// let handle = fluree.ledger_cached("mydb:main").await?;
-    /// let snapshot = handle.snapshot().await;
+    /// // With min_t enforcement (e.g. after a transaction returned t=42):
+    /// let opts = RefreshOpts { min_t: Some(42) };
+    /// match fluree.refresh("mydb:main", opts).await {
+    ///     Ok(Some(r)) => println!("ready at t={}", r.t),
+    ///     Err(ApiError::AwaitTNotReached { current, requested }) => {
+    ///         println!("not yet: t={current}, need t={requested} — retry later");
+    ///     }
+    ///     _ => {}
+    /// }
     /// ```
-    pub async fn refresh(&self, ledger_id: &str) -> Result<Option<NotifyResult>> {
+    pub async fn refresh(
+        &self,
+        ledger_id: &str,
+        opts: RefreshOpts,
+    ) -> Result<Option<RefreshResult>> {
         // Step A: Check if caching is enabled
         let mgr = match &self.ledger_manager {
             Some(mgr) => mgr,
             None => {
                 // Caching disabled - refresh is a no-op
-                return Ok(Some(NotifyResult::NotLoaded));
+                return Ok(Some(RefreshResult {
+                    t: 0,
+                    action: NotifyResult::NotLoaded,
+                }));
             }
         };
+
+        // Fast path: if min_t is set, check current cached t before hitting NS
+        if let Some(min_t) = opts.min_t {
+            if let Some(current_t) = mgr.current_t(ledger_id).await {
+                if current_t >= min_t {
+                    return Ok(Some(RefreshResult {
+                        t: current_t,
+                        action: NotifyResult::Current,
+                    }));
+                }
+            }
+        }
 
         // Step B: Lookup nameservice record
         // The nameservice handles address resolution (mydb -> mydb:main, etc.)
@@ -2704,21 +2924,32 @@ where
             Some(record) => record,
             None => return Ok(None), // Ledger doesn't exist in nameservice
         };
-
         // Step C: Use NsRecord.ledger_id as the cache key
         // The ledger_id field contains the canonical form (e.g., "testdb:main")
         // Note: NsRecord.name field only contains the name without branch, despite docs
-        let canonical_alias = &ns_record.ledger_id;
+        let canonical_alias = ns_record.ledger_id.clone();
 
         // Step D: Delegate to notify with the fresh record
-        let result = mgr
+        let action = mgr
             .notify(NsNotify {
                 ledger_id: canonical_alias.clone(),
                 record: Some(ns_record),
             })
             .await?;
 
-        Ok(Some(result))
+        // Step E: Read resulting t from the cached state
+        let t = mgr.current_t(&canonical_alias).await.unwrap_or(0);
+        // Step F: Enforce min_t if requested
+        if let Some(min_t) = opts.min_t {
+            if t < min_t {
+                return Err(ApiError::AwaitTNotReached {
+                    requested: min_t,
+                    current: t,
+                });
+            }
+        }
+
+        Ok(Some(RefreshResult { t, action }))
     }
 
     /// Spawn the ledger manager maintenance task (idle eviction)
@@ -3064,7 +3295,10 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Refresh unknown ledger should return None (not in nameservice)
-        let result = fluree.refresh("nonexistent:main").await.unwrap();
+        let result = fluree
+            .refresh("nonexistent:main", Default::default())
+            .await
+            .unwrap();
         assert_eq!(result, None);
     }
 
@@ -3084,8 +3318,11 @@ mod tests {
             .unwrap();
 
         // Refresh should return NotLoaded (record exists but not cached)
-        let result = fluree.refresh("mydb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        let result = fluree
+            .refresh("mydb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
     }
 
     #[tokio::test]
@@ -3096,8 +3333,11 @@ mod tests {
             .build_memory();
 
         // Refresh should return NotLoaded (caching disabled = no-op)
-        let result = fluree.refresh("mydb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        let result = fluree
+            .refresh("mydb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
     }
 
     #[tokio::test]
@@ -3116,13 +3356,16 @@ mod tests {
             .unwrap();
 
         // Refresh with short alias should resolve to canonical
-        let result = fluree.refresh("mydb").await.unwrap();
+        let result = fluree.refresh("mydb", Default::default()).await.unwrap();
         // Should return NotLoaded since we haven't cached it
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
 
         // Refresh with full alias should also work
-        let result = fluree.refresh("mydb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::NotLoaded));
+        let result = fluree
+            .refresh("mydb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
     }
 
     #[tokio::test]
@@ -3139,8 +3382,11 @@ mod tests {
         assert_eq!(snapshot.t, initial_t);
 
         // Refresh should return Current (cache matches NS)
-        let result = fluree.refresh("testdb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::Current));
+        let result = fluree
+            .refresh("testdb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::Current));
 
         // Verify cached state is unchanged
         let snapshot_after = handle.snapshot().await;
@@ -3175,8 +3421,11 @@ mod tests {
         );
 
         // Refresh should return Current (cache is up to date with NS)
-        let result = fluree.refresh("txdb:main").await.unwrap();
-        assert_eq!(result, Some(NotifyResult::Current));
+        let result = fluree
+            .refresh("txdb:main", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(result.map(|r| r.action), Some(NotifyResult::Current));
     }
 
     #[tokio::test]
@@ -3197,17 +3446,20 @@ mod tests {
 
         // Refresh via SHORT alias - should find the cached entry
         // If this returns NotLoaded, there's a cache key mismatch bug
-        let result = fluree.refresh("shortdb").await.unwrap();
+        let result = fluree.refresh("shortdb", Default::default()).await.unwrap();
         assert_eq!(
-            result,
+            result.map(|r| r.action),
             Some(NotifyResult::Current),
             "Short alias refresh should find cached entry (not NotLoaded)"
         );
 
         // Also verify full alias refresh works
-        let result_full = fluree.refresh("shortdb:main").await.unwrap();
+        let result_full = fluree
+            .refresh("shortdb:main", Default::default())
+            .await
+            .unwrap();
         assert_eq!(
-            result_full,
+            result_full.map(|r| r.action),
             Some(NotifyResult::Current),
             "Full alias refresh should also find cached entry"
         );

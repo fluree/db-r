@@ -57,6 +57,7 @@ pub mod join;
 pub mod limit;
 pub mod materializer;
 pub mod minus;
+pub(crate) mod object_binding;
 pub mod offset;
 pub mod operator;
 pub mod optional;
@@ -75,6 +76,7 @@ pub mod s2_search;
 pub mod seed;
 pub(crate) mod semijoin;
 pub mod service;
+pub(crate) mod sid_iri;
 pub mod sort;
 pub mod stats_query;
 pub mod subquery;
@@ -105,8 +107,8 @@ pub use execute::{
 };
 pub use exists::ExistsOperator;
 pub use explain::{
-    explain_patterns, ExplainPlan, FallbackReason, OptimizationStatus, PatternDisplay,
-    SelectivityInputs,
+    explain_execution_hints, explain_patterns, ExecutionStrategyHint, ExplainPlan, FallbackReason,
+    OptimizationStatus, PatternDisplay, SelectivityInputs,
 };
 pub use filter::FilterOperator;
 pub use geo_rewrite::rewrite_geo_patterns;
@@ -354,6 +356,42 @@ pub async fn execute_where_with_overlay_at_strict(
 
     let ctx =
         ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t).with_strict_bind_errors();
+    let mut operator = build_where_operators_seeded(None, patterns, None, None)?;
+
+    operator.open(&ctx).await?;
+    let mut batches = Vec::new();
+    while let Some(batch) = operator.next_batch(&ctx).await? {
+        batches.push(batch);
+    }
+    operator.close();
+
+    Ok(batches)
+}
+
+/// Execute WHERE patterns with strict bind error handling, optionally providing a runtime dataset.
+///
+/// When `dataset` is provided, GRAPH patterns like `GRAPH <iri> { ... }` can resolve named
+/// graphs by IRI (via `DataSet::named_graph` / `DataSet::has_named_graph`). Without a dataset,
+/// GRAPH patterns only execute for:
+/// - R2RML graph sources (if configured via `ExecutionContext`)
+/// - a graph IRI that matches the db's `ledger_id` alias
+pub async fn execute_where_with_overlay_at_strict_in_dataset<'a>(
+    db: GraphDbRef<'a>,
+    vars: &VarRegistry,
+    patterns: &[Pattern],
+    from_t: Option<i64>,
+    dataset: Option<&'a DataSet<'a>>,
+) -> Result<Vec<Batch>> {
+    if patterns.is_empty() {
+        let schema: Arc<[VarId]> = Arc::new([]);
+        return Ok(vec![Batch::empty(schema)?]);
+    }
+
+    let mut ctx =
+        ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t).with_strict_bind_errors();
+    if let Some(ds) = dataset {
+        ctx = ctx.with_dataset(ds);
+    }
     let mut operator = build_where_operators_seeded(None, patterns, None, None)?;
 
     operator.open(&ctx).await?;

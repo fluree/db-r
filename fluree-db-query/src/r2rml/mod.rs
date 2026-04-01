@@ -27,4 +27,4 @@ mod rewrite;
 
 pub use operator::R2rmlScanOperator;
 pub use provider::{NoOpR2rmlProvider, R2rmlProvider, R2rmlTableProvider};
-pub use rewrite::{rewrite_patterns_for_r2rml, R2rmlRewriteResult};
+pub use rewrite::{convert_triple_to_r2rml, rewrite_patterns_for_r2rml, R2rmlRewriteResult};

@@ -593,8 +593,8 @@ mod tests {
 
     fn make_test_snapshot() -> LedgerSnapshot {
         let mut db = LedgerSnapshot::genesis("test:main");
-        db.namespace_codes
-            .insert(100, "http://example.org/".to_string());
+        db.insert_namespace_code(100, "http://example.org/".to_string())
+            .unwrap();
         db
     }
 
@@ -635,7 +635,7 @@ mod tests {
 
         QueryResult {
             vars,
-            t: 0,
+            t: Some(0),
             novelty: None,
             context,
             orig_context: None,

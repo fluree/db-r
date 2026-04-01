@@ -77,7 +77,7 @@ Not yet supported:
 - DROP
 - COPY, MOVE, ADD
 
-Use JSON-LD transactions for write operations.
+Use JSON-LD transactions for transaction operations.
 
 **Specification:** https://www.w3.org/TR/sparql11-update/
 
@@ -145,7 +145,7 @@ These features are controlled at compile time via Cargo:
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `native` | Yes | File storage support |
-| `aws` | No | AWS-backed storage support (S3, storage-backed nameservice). Enables `FlureeBuilder::s3()`, `connect_s3()`, and S3-based JSON-LD configs. |
+| `aws` | No | AWS-backed storage support (S3, storage-backed nameservice). Enables `FlureeBuilder::s3()` and S3-based JSON-LD configs. |
 | `credential` | No | DID/JWS/VerifiableCredential support for signed queries/transactions. Pulls in crypto dependencies (`ed25519-dalek`, `bs58`). |
 | `iceberg` | No | Apache Iceberg/R2RML graph source support |
 | `shacl` | No | SHACL validation support (requires fluree-db-transact + fluree-db-shacl) |

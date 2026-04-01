@@ -23,9 +23,9 @@ use fluree_db_core::ledger_id::{
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
-    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue,
+    GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
+    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
+    StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
 };
 use schema::*;
 use std::collections::HashMap;
@@ -193,6 +193,31 @@ impl DynamoDbNameService {
             .and_then(|v| v.as_s().ok())
             .and_then(|s| fluree_db_nameservice::parse_default_context_value(s));
 
+        let branch_point = meta
+            .get(ATTR_BP_SOURCE)
+            .and_then(|v| v.as_s().ok())
+            .and_then(|source_branch| {
+                let commit_id = meta
+                    .get(ATTR_BP_COMMIT_ID)
+                    .and_then(|v| v.as_s().ok())
+                    .and_then(|s| s.parse::<ContentId>().ok())?;
+                let t = meta
+                    .get(ATTR_BP_T)
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok())?;
+                Some(fluree_db_nameservice::BranchPoint {
+                    source: source_branch.clone(),
+                    commit_id,
+                    t,
+                })
+            });
+
+        let branches = meta
+            .get(ATTR_BRANCHES)
+            .and_then(|v| v.as_n().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
         Some(NsRecord {
             ledger_id: pk.to_string(),
             name,
@@ -204,6 +229,8 @@ impl DynamoDbNameService {
             index_t,
             default_context,
             retracted,
+            branch_point,
+            branches,
         })
     }
 
@@ -512,6 +539,419 @@ impl NameService for DynamoDbNameService {
 
         Ok(records)
     }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = format_ledger_id(ledger_name, new_branch);
+        let now = Self::now_epoch_ms().to_string();
+        let sv = SCHEMA_VERSION.to_string();
+
+        let base_item = |sk: &str| -> Item {
+            HashMap::from([
+                (ATTR_PK.to_string(), AttributeValue::S(pk.clone())),
+                (ATTR_SK.to_string(), AttributeValue::S(sk.to_string())),
+                (
+                    ATTR_UPDATED_AT_MS.to_string(),
+                    AttributeValue::N(now.clone()),
+                ),
+                (ATTR_SCHEMA.to_string(), AttributeValue::N(sv.clone())),
+            ])
+        };
+
+        let cond = "attribute_not_exists(pk)";
+
+        // 1. Meta — includes branch point attributes
+        let mut meta = base_item(SK_META);
+        meta.insert(
+            ATTR_KIND.to_string(),
+            AttributeValue::S(KIND_LEDGER.to_string()),
+        );
+        meta.insert(
+            ATTR_NAME.to_string(),
+            AttributeValue::S(ledger_name.to_string()),
+        );
+        meta.insert(
+            ATTR_BRANCH.to_string(),
+            AttributeValue::S(new_branch.to_string()),
+        );
+        meta.insert(ATTR_RETRACTED.to_string(), AttributeValue::Bool(false));
+        meta.insert(
+            ATTR_BP_SOURCE.to_string(),
+            AttributeValue::S(branch_point.source.clone()),
+        );
+        meta.insert(
+            ATTR_BP_COMMIT_ID.to_string(),
+            AttributeValue::S(branch_point.commit_id.to_string()),
+        );
+        meta.insert(
+            ATTR_BP_T.to_string(),
+            AttributeValue::N(branch_point.t.to_string()),
+        );
+
+        // 2. Head — starts at source commit
+        let mut head = base_item(SK_HEAD);
+        head.insert(
+            ATTR_COMMIT_ID.to_string(),
+            AttributeValue::S(branch_point.commit_id.to_string()),
+        );
+        head.insert(
+            ATTR_COMMIT_T.to_string(),
+            AttributeValue::N(branch_point.t.to_string()),
+        );
+
+        // 3. Index (unborn)
+        let mut index = base_item(SK_INDEX);
+        index.insert(ATTR_INDEX_T.to_string(), AttributeValue::N("0".to_string()));
+
+        // 4. Status (ready, v=1)
+        let mut status = base_item(SK_STATUS);
+        status.insert(
+            ATTR_STATUS.to_string(),
+            AttributeValue::S(STATUS_READY.to_string()),
+        );
+        status.insert(
+            ATTR_STATUS_V.to_string(),
+            AttributeValue::N("1".to_string()),
+        );
+
+        // 5. Config (unborn)
+        let mut config = base_item(SK_CONFIG);
+        config.insert(
+            ATTR_CONFIG_V.to_string(),
+            AttributeValue::N("0".to_string()),
+        );
+
+        let make_put = |item: Item| -> TransactWriteItem {
+            TransactWriteItem::builder()
+                .put(
+                    Put::builder()
+                        .table_name(&self.table_name)
+                        .set_item(Some(item))
+                        .condition_expression(cond)
+                        .build()
+                        .expect("valid Put"),
+                )
+                .build()
+        };
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(make_put(meta))
+            .transact_items(make_put(head))
+            .transact_items(make_put(index))
+            .transact_items(make_put(status))
+            .transact_items(make_put(config))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => {}
+            Err(e) if Self::is_transaction_canceled(&e) => {
+                return Err(NameServiceError::ledger_already_exists(&pk));
+            }
+            Err(e) => {
+                return Err(NameServiceError::storage(format!(
+                    "DynamoDB TransactWriteItems failed: {e}"
+                )));
+            }
+        }
+
+        // Increment source branch's child count atomically
+        let source_pk = format_ledger_id(ledger_name, &branch_point.source);
+        let _ = self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(source_pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #b = if_not_exists(#b, :zero) + :one")
+            .expression_attribute_names("#b", ATTR_BRANCHES)
+            .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+            .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+            .send()
+            .await
+            .map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB increment branches failed: {e}"))
+            })?;
+
+        Ok(())
+    }
+
+    async fn drop_branch(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<Option<u32>, NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+
+        // Read all items for this branch to find the parent
+        let items = self.query_all_items(&pk).await?;
+        let meta = Self::find_item_by_sk(&items, SK_META)
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_source = meta
+            .get(ATTR_BP_SOURCE)
+            .and_then(|v| v.as_s().ok())
+            .cloned();
+
+        let ledger_name = meta
+            .get(ATTR_NAME)
+            .and_then(|v| v.as_s().ok())
+            .cloned()
+            .unwrap_or_default();
+
+        // Conditionally delete the meta item first — this is the linearization
+        // point that prevents a double-drop race. If two callers race, only one
+        // wins the conditional delete; the other gets ConditionalCheckFailed and
+        // we return NotFound, avoiding a double parent-count decrement.
+        match self
+            .client
+            .delete_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await
+        {
+            Ok(_) => {}
+            Err(aws_sdk_dynamodb::error::SdkError::ServiceError(se))
+                if matches!(
+                    se.err(),
+                    aws_sdk_dynamodb::operation::delete_item::DeleteItemError::ConditionalCheckFailedException(_)
+                ) =>
+            {
+                return Err(NameServiceError::not_found(ledger_id));
+            }
+            Err(e) => {
+                return Err(NameServiceError::storage(format!(
+                    "DynamoDB conditional delete failed: {e}"
+                )));
+            }
+        }
+
+        // Delete remaining (non-meta) items via BatchWriteItem
+        let delete_requests: Vec<_> = items
+            .iter()
+            .filter_map(|item| {
+                let sk_val = item.get(ATTR_SK)?.as_s().ok()?;
+                if sk_val == SK_META {
+                    return None; // already deleted above
+                }
+                Some(
+                    aws_sdk_dynamodb::types::WriteRequest::builder()
+                        .delete_request(
+                            aws_sdk_dynamodb::types::DeleteRequest::builder()
+                                .key(ATTR_PK, AttributeValue::S(pk.clone()))
+                                .key(ATTR_SK, AttributeValue::S(sk_val.to_string()))
+                                .build()
+                                .expect("delete request keys set"),
+                        )
+                        .build(),
+                )
+            })
+            .collect();
+
+        let mut remaining: std::collections::HashMap<String, Vec<_>> =
+            std::collections::HashMap::new();
+        remaining.insert(self.table_name.clone(), delete_requests);
+
+        while !remaining.is_empty() {
+            // DynamoDB BatchWriteItem accepts at most 25 items total per call.
+            // We already chunked into ≤25-item batches per table, but after
+            // unprocessed retries the map may have items across tables.
+            let mut builder = self.client.batch_write_item();
+            for (table, items) in &remaining {
+                builder = builder.request_items(table, items.clone());
+            }
+
+            let result = builder.send().await.map_err(|e| {
+                NameServiceError::storage(format!("DynamoDB batch delete failed: {e}"))
+            })?;
+
+            remaining = result.unprocessed_items().cloned().unwrap_or_default();
+
+            if !remaining.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_source {
+            Some(source) => {
+                let parent_pk = format_ledger_id(&ledger_name, &source);
+                let result = self
+                    .client
+                    .update_item()
+                    .table_name(&self.table_name)
+                    .key(ATTR_PK, AttributeValue::S(parent_pk))
+                    .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+                    .update_expression("SET #b = if_not_exists(#b, :zero) - :one")
+                    .expression_attribute_names("#b", ATTR_BRANCHES)
+                    .expression_attribute_values(":zero", AttributeValue::N("0".to_string()))
+                    .expression_attribute_values(":one", AttributeValue::N("1".to_string()))
+                    .return_values(aws_sdk_dynamodb::types::ReturnValue::UpdatedNew)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        NameServiceError::storage(format!(
+                            "DynamoDB decrement branches failed: {e}"
+                        ))
+                    })?;
+
+                let new_count = result
+                    .attributes()
+                    .and_then(|attrs| attrs.get(ATTR_BRANCHES))
+                    .and_then(|v| v.as_n().ok())
+                    .and_then(|s| s.parse().ok());
+
+                Ok(new_count)
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: fluree_db_nameservice::BranchPoint,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+
+        match self
+            .client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk))
+            .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+            .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :t")
+            .expression_attribute_names("#bps", ATTR_BP_SOURCE)
+            .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
+            .expression_attribute_names("#bpt", ATTR_BP_T)
+            .expression_attribute_values(
+                ":source",
+                AttributeValue::S(new_branch_point.source),
+            )
+            .expression_attribute_values(
+                ":commit_id",
+                AttributeValue::S(new_branch_point.commit_id.to_string()),
+            )
+            .expression_attribute_values(
+                ":t",
+                AttributeValue::N(new_branch_point.t.to_string()),
+            )
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(aws_sdk_dynamodb::error::SdkError::ServiceError(se))
+                if matches!(
+                    se.err(),
+                    aws_sdk_dynamodb::operation::update_item::UpdateItemError::ConditionalCheckFailedException(_)
+                ) =>
+            {
+                Err(NameServiceError::not_found(ledger_id))
+            }
+            Err(e) => Err(NameServiceError::storage(format!(
+                "DynamoDB update_branch_point failed: {e}"
+            ))),
+        }
+    }
+
+    async fn reset_head(
+        &self,
+        ledger_id: &str,
+        snapshot: fluree_db_nameservice::NsRecordSnapshot,
+    ) -> std::result::Result<(), NameServiceError> {
+        let pk = Self::normalize(ledger_id);
+        let now = Self::now_epoch_ms().to_string();
+
+        // Build commit head update
+        let mut head = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_HEAD.to_string()))
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":now", AttributeValue::N(now.clone()))
+            .expression_attribute_names("#ct", ATTR_COMMIT_T)
+            .expression_attribute_names("#ci", ATTR_COMMIT_ID)
+            .expression_attribute_values(":t", AttributeValue::N(snapshot.commit_t.to_string()));
+        if let Some(ref cid) = snapshot.commit_head_id {
+            head = head
+                .update_expression("SET #ci = :cid, #ct = :t, #ua = :now")
+                .expression_attribute_values(":cid", AttributeValue::S(cid.to_string()));
+        } else {
+            head = head.update_expression("SET #ct = :t, #ua = :now REMOVE #ci");
+        }
+
+        // Build index head update
+        let mut idx = Update::builder()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.clone()))
+            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":now", AttributeValue::N(now.clone()))
+            .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ii", ATTR_INDEX_ID)
+            .expression_attribute_values(":it", AttributeValue::N(snapshot.index_t.to_string()));
+        if let Some(ref id) = snapshot.index_head_id {
+            idx = idx
+                .update_expression("SET #ii = :iid, #it = :it, #ua = :now")
+                .expression_attribute_values(":iid", AttributeValue::S(id.to_string()));
+        } else {
+            idx = idx.update_expression("SET #it = :it, #ua = :now REMOVE #ii");
+        }
+
+        // Combine into a single atomic transaction
+        let mut txn = self
+            .client
+            .transact_write_items()
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(head.build().expect("valid Update"))
+                    .build(),
+            )
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(idx.build().expect("valid Update"))
+                    .build(),
+            );
+
+        if let Some(ref bp) = snapshot.branch_point {
+            let meta = Update::builder()
+                .table_name(&self.table_name)
+                .key(ATTR_PK, AttributeValue::S(pk))
+                .key(ATTR_SK, AttributeValue::S(SK_META.to_string()))
+                .update_expression("SET #bps = :source, #bpc = :commit_id, #bpt = :bpt, #ua = :now")
+                .expression_attribute_names("#bps", ATTR_BP_SOURCE)
+                .expression_attribute_names("#bpc", ATTR_BP_COMMIT_ID)
+                .expression_attribute_names("#bpt", ATTR_BP_T)
+                .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+                .expression_attribute_values(":now", AttributeValue::N(now))
+                .expression_attribute_values(":source", AttributeValue::S(bp.source.clone()))
+                .expression_attribute_values(
+                    ":commit_id",
+                    AttributeValue::S(bp.commit_id.to_string()),
+                )
+                .expression_attribute_values(":bpt", AttributeValue::N(bp.t.to_string()))
+                .build()
+                .expect("valid Update");
+            txn = txn.transact_items(TransactWriteItem::builder().update(meta).build());
+        }
+
+        txn.send()
+            .await
+            .map_err(|e| NameServiceError::storage(format!("DynamoDB reset_head failed: {e}")))?;
+
+        Ok(())
+    }
 }
 
 // ─── Publisher ──────────────────────────────────────────────────────────────
@@ -701,10 +1141,12 @@ impl Publisher for DynamoDbNameService {
 impl DynamoDbNameService {
     /// Shared helper for publish_index and publish_index_allow_equal.
     ///
-    /// Uses `attribute_not_exists(#it) OR {condition}` so that missing index
-    /// items are created (fixing ledgers where `sk="index"` was never written
-    /// by older migration paths), while existing items are only updated when
-    /// the monotonicity condition is met.
+    /// First attempts the update with only the monotonicity `condition`
+    /// (e.g., `#it < :t`). If the item doesn't exist yet (legacy ledgers
+    /// where `sk="index"` was never written), the condition check fails;
+    /// in that case we retry with `attribute_not_exists(#it) OR {condition}`
+    /// to create the missing item. This keeps the common (item-exists) path
+    /// free of the extra `attribute_not_exists` evaluation.
     ///
     /// A `meta_exists` pre-check guards against publishing to a completely
     /// uninitialized alias — matching the `publish_commit` contract.
@@ -726,43 +1168,70 @@ impl DynamoDbNameService {
 
         let now = Self::now_epoch_ms().to_string();
 
-        // `attribute_not_exists(#it)` is true when the item is absent
-        // (DynamoDB UpdateItem creates items by default), while `{condition}`
-        // (e.g., "#it < :t") gates updates to existing items. This handles
-        // ledgers where the sk="index" record was never created (e.g., older
-        // migration paths that pre-date create_ledger_with_ref).
-        let full_condition = format!("attribute_not_exists(#it) OR {condition}");
-
+        // Fast path: assume the index item already exists (common case).
         let result = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_PK, AttributeValue::S(pk.clone()))
-            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
-            .update_expression("SET #ii = :iid, #it = :t, #ua = :now")
-            .condition_expression(full_condition)
-            .expression_attribute_names("#ii", ATTR_INDEX_ID)
-            .expression_attribute_names("#it", ATTR_INDEX_T)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
-            .expression_attribute_values(":iid", AttributeValue::S(index_id.to_string()))
-            .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now))
-            .send()
+            .send_index_update(&pk, index_id, index_t, &now, condition)
             .await;
 
         match result {
             Ok(_) => Ok(()),
             Err(e) if Self::is_conditional_check_failed(&e) => {
-                // With the condition `attribute_not_exists(#it) OR #it < :t`,
-                // ConditionalCheckFailedException means the index item exists
-                // and its index_t >= the incoming t. This is a stale/duplicate
-                // publish — safe to ignore.
-                Ok(())
+                // Either (a) the item exists and index_t >= incoming t
+                // (stale/duplicate — safe to ignore), or (b) the item is
+                // absent so the condition on `#it` failed because the
+                // attribute doesn't exist. Retry with the fallback
+                // condition to disambiguate.
+                let fallback = format!("attribute_not_exists(#it) OR {condition}");
+                let retry = self
+                    .send_index_update(&pk, index_id, index_t, &now, &fallback)
+                    .await;
+
+                match retry {
+                    Ok(_) => Ok(()),
+                    Err(e) if Self::is_conditional_check_failed(&e) => {
+                        // Item exists and index_t >= incoming t — stale publish.
+                        Ok(())
+                    }
+                    Err(e) => Err(NameServiceError::storage(format!(
+                        "DynamoDB UpdateItem failed: {e}"
+                    ))),
+                }
             }
             Err(e) => Err(NameServiceError::storage(format!(
                 "DynamoDB UpdateItem failed: {e}"
             ))),
         }
+    }
+
+    /// Send a single DynamoDB UpdateItem for the index record.
+    async fn send_index_update(
+        &self,
+        pk: &str,
+        index_id: &ContentId,
+        index_t: i64,
+        now: &str,
+        condition_expression: &str,
+    ) -> std::result::Result<
+        aws_sdk_dynamodb::operation::update_item::UpdateItemOutput,
+        aws_sdk_dynamodb::error::SdkError<
+            aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+        >,
+    > {
+        self.client
+            .update_item()
+            .table_name(&self.table_name)
+            .key(ATTR_PK, AttributeValue::S(pk.to_string()))
+            .key(ATTR_SK, AttributeValue::S(SK_INDEX.to_string()))
+            .update_expression("SET #ii = :iid, #it = :t, #ua = :now")
+            .condition_expression(condition_expression)
+            .expression_attribute_names("#ii", ATTR_INDEX_ID)
+            .expression_attribute_names("#it", ATTR_INDEX_T)
+            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
+            .expression_attribute_values(":iid", AttributeValue::S(index_id.to_string()))
+            .expression_attribute_values(":t", AttributeValue::N(index_t.to_string()))
+            .expression_attribute_values(":now", AttributeValue::N(now.to_string()))
+            .send()
+            .await
     }
 
     /// Create a new ledger via TransactWriteItems with one ref pre-set.
@@ -1283,7 +1752,10 @@ impl GraphSourcePublisher for DynamoDbNameService {
 
         Ok(())
     }
+}
 
+#[async_trait]
+impl GraphSourceLookup for DynamoDbNameService {
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,

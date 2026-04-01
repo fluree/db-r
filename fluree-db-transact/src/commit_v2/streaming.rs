@@ -267,6 +267,7 @@ mod tests {
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         }
     }
 
@@ -499,6 +500,7 @@ mod tests {
             txn_signature: None,
             txn_meta: Vec::new(),
             graph_delta: HashMap::new(),
+            ns_split_mode: None,
         };
 
         let result = writer.finish(&envelope).unwrap();

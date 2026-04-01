@@ -1,4 +1,4 @@
-//! Bearer token extraction for data API authentication (query/transact/info/exists).
+//! Bearer token extraction for data API authentication (query/update/info/exists).
 //!
 //! This extractor verifies JWT/JWS Bearer tokens and yields a `DataPrincipal`
 //! containing ledger read/write scopes and policy identity.

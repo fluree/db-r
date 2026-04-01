@@ -41,6 +41,25 @@ pub async fn rebuild_index_from_commits<S>(
 where
     S: Storage + Clone + Send + Sync + 'static,
 {
+    let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
+    rebuild_index_from_commits_with_store(storage, content_store, ledger_id, record, config).await
+}
+
+/// Like [`rebuild_index_from_commits`], but accepts a caller-provided
+/// [`ContentStore`] for reading commit blobs. Use this when commit history
+/// spans multiple storage namespaces (e.g. rebasing a branch whose commit
+/// chain falls through to parent namespaces via `BranchedContentStore`).
+pub async fn rebuild_index_from_commits_with_store<S, C>(
+    storage: &S,
+    commit_store: C,
+    ledger_id: &str,
+    record: &fluree_db_nameservice::NsRecord,
+    config: IndexerConfig,
+) -> Result<IndexResult>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    C: ContentStore + Clone + Send + Sync + 'static,
+{
     use fluree_db_novelty::commit_v2::read_commit_envelope;
     use run_index::resolver::{RebuildChunk, SharedResolverState};
     use run_index::spool::SortedCommitInfo;
@@ -84,18 +103,17 @@ where
             std::fs::create_dir_all(&run_dir)
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            // Build a content store bridge for CID → address resolution
-            let content_store =
-                fluree_db_core::storage::content_store_for(storage.clone(), &ledger_id);
+            let content_store = commit_store;
 
             // Phase spans below use .entered() — safe because block_on inside
             // spawn_blocking pins this async task to a single OS thread.
 
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
-            let commit_cids = {
+            let (commit_cids, ledger_split_mode) = {
                 let mut cids = Vec::new();
                 let mut current = Some(head_commit_id.clone());
+                let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
 
                 while let Some(cid) = current {
                     let bytes = content_store
@@ -104,12 +122,16 @@ where
                         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
                     let envelope = read_commit_envelope(&bytes)
                         .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
+                    // Extract ns_split_mode (last seen = genesis = authoritative).
+                    if let Some(mode) = envelope.ns_split_mode {
+                        split_mode = mode;
+                    }
                     current = envelope.previous_id().cloned();
                     cids.push(cid);
                 }
 
                 cids.reverse(); // chronological order (genesis first)
-                cids
+                (cids, split_mode)
             };
             drop(_span_a);
 
@@ -1130,6 +1152,13 @@ where
                 ledger_id: ledger_id.clone(),
                 index_t: commit_t,
                 namespace_codes: ns_codes,
+                // Namespace reconciliation at publish time: `shared.ns_prefixes` is the
+                // commit-derived namespace table at `commit_t` (after applying all
+                // commit namespace deltas in forward order with bimap conflict validation).
+                // Root assembly will diff this against the root's materialized table
+                // and fail fast on divergence (indexer/publisher bug).
+                commit_derived_ns: shared.ns_prefixes.clone(),
+                ns_split_mode: ledger_split_mode,
                 predicate_sids,
                 uploaded_dicts,
                 v3_uploaded,

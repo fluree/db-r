@@ -29,7 +29,6 @@ Fluree supports Turtle and TriG on different endpoints with different semantics:
 |----------|------------------------|---------------------------|
 | `/insert` | Supported (fast direct path) | Not supported (400 error) |
 | `/upsert` | Supported | Supported |
-| `/transact` | Supported (treated as upsert) | Supported |
 
 - **Insert** (`/insert`): Pure insert semantics. Uses fast direct flake parsing. Will fail if subjects already exist with conflicting data. TriG is not supported because named graphs require the upsert path for GRAPH block extraction.
 - **Upsert** (`/upsert`): For each (subject, predicate) pair, existing values are retracted before new values are asserted. Supports TriG with GRAPH blocks for named graph ingestion.
@@ -192,7 +191,7 @@ Equivalent to linked list structure in RDF.
 ### From File
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   --data-binary '@large-dataset.ttl'
 ```
@@ -200,7 +199,7 @@ curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
 ### From URL
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
   -H "Content-Type: text/turtle" \
   -d "@https://example.org/data.ttl"
 ```
@@ -215,7 +214,7 @@ split -l 10000 large-dataset.ttl batch-
 
 # Import batches
 for file in batch-*; do
-  curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+  curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=mydb:main" \
     -H "Content-Type: text/turtle" \
     --data-binary "@$file"
   sleep 1  # Allow indexing time
@@ -540,13 +539,13 @@ After ingesting TriG data, query specific graphs using JSON-LD with the structur
 }
 ```
 
-For cross-graph queries, use `from-named` with aliases:
+For cross-graph queries, use `fromNamed` with aliases:
 
 ```json
 {
   "@context": { "schema": "http://schema.org/" },
   "from": "mydb:main",
-  "from-named": [
+  "fromNamed": [
     { "@id": "mydb:main", "alias": "products", "graph": "http://example.org/graphs/products" },
     { "@id": "mydb:main", "alias": "inventory", "graph": "http://example.org/graphs/inventory" }
   ],

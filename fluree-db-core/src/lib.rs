@@ -28,6 +28,7 @@ pub mod address;
 pub mod address_path;
 pub mod coerce;
 pub mod comparator;
+pub mod conflict_key;
 pub mod content_id;
 pub mod content_kind;
 pub mod datatype_constraint;
@@ -45,6 +46,7 @@ pub mod index_stats;
 pub mod ledger_config;
 pub mod ledger_id;
 pub mod namespaces;
+pub mod ns_encoding;
 pub mod ns_vec_bi_dict;
 pub mod o_type;
 pub mod o_type_registry;
@@ -74,6 +76,7 @@ pub use address::{
 };
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
 pub use comparator::IndexType;
+pub use conflict_key::ConflictKey;
 pub use content_id::{CommitId, ContentId, IndexRootId, TxnId};
 pub use content_kind::{
     ContentKind, DictKind, CODEC_FLUREE_COMMIT, CODEC_FLUREE_DICT_BLOB, CODEC_FLUREE_GARBAGE,
@@ -100,7 +103,8 @@ pub use index_stats::{
 };
 pub use ledger_id::{
     format_ledger_id, normalize_ledger_id, parse_ledger_id_with_time, split_ledger_id,
-    split_time_travel_suffix, LedgerIdParseError, LedgerIdTimeSpec, ParsedLedgerId, DEFAULT_BRANCH,
+    split_time_travel_suffix, validate_branch_name, LedgerIdParseError, LedgerIdTimeSpec,
+    ParsedLedgerId, DEFAULT_BRANCH,
 };
 pub use namespaces::{
     default_namespace_codes, is_owl_equivalent_class, is_owl_equivalent_property,
@@ -108,13 +112,17 @@ pub use namespaces::{
     is_rdf_first, is_rdf_nil, is_rdf_rest, is_rdf_type, is_rdfs_domain, is_rdfs_range,
     is_rdfs_subclass_of, is_rdfs_subproperty_of,
 };
+pub use ns_encoding::{
+    builtin_prefix_trie, canonical_split, NamespaceCodes, NsAllocError, NsLookup, NsSplitMode,
+    HOST_PLUS_N_MAX,
+};
 pub use o_type::{DecodeKind, OType};
 pub use o_type_registry::OTypeRegistry;
 pub use overlay::{NoOverlay, OverlayProvider};
 pub use prefix_trie::PrefixTrie;
 pub use range::{
-    range, range_bounded_with_overlay, range_with_overlay, ObjectBounds, RangeMatch, RangeOptions,
-    RangeTest, BATCHED_JOIN_SIZE,
+    flake_matches_range_eq, range, range_bounded_with_overlay, range_with_overlay, ObjectBounds,
+    RangeMatch, RangeOptions, RangeTest, BATCHED_JOIN_SIZE,
 };
 pub use range_provider::RangeProvider;
 pub use schema_hierarchy::SchemaHierarchy;
@@ -130,14 +138,23 @@ pub use storage::{
     // Helper functions for storage implementations
     ledger_id_prefix_for_path,
     sha256_hex,
+    BranchedContentStore,
+    CasAction,
+    CasOutcome,
     ContentAddressedWrite,
     ContentStore,
     ContentWriteResult,
+    ListResult,
     MemoryContentStore,
     MemoryStorage,
     ReadHint,
     Storage,
+    StorageCas,
     StorageContentStore,
+    StorageDelete,
+    StorageExtError,
+    StorageExtResult,
+    StorageList,
     StorageMethod,
     StorageRead,
     StorageWrite,
@@ -173,7 +190,8 @@ pub mod prelude {
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::storage::FileStorage;
     pub use crate::storage::{
-        ContentAddressedWrite, ContentStore, ContentWriteResult, MemoryContentStore, MemoryStorage,
-        ReadHint, Storage, StorageContentStore, StorageRead, StorageWrite,
+        CasAction, CasOutcome, ContentAddressedWrite, ContentStore, ContentWriteResult, ListResult,
+        MemoryContentStore, MemoryStorage, ReadHint, Storage, StorageCas, StorageContentStore,
+        StorageDelete, StorageExtError, StorageExtResult, StorageList, StorageRead, StorageWrite,
     };
 }

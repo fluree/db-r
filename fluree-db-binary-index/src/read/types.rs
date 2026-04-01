@@ -131,6 +131,44 @@ pub fn sort_overlay_ops(ops: &mut [OverlayOp], order: RunSortOrder) {
     ops.sort_unstable_by(|a, b| cmp_overlay_v3(a, b, order));
 }
 
+/// Resolve assert/retract lifecycles within overlay ops.
+///
+/// When the same fact (same `FactKeyV3`) has both an assertion and a retraction
+/// in the overlay — e.g., an insert at t=N followed by an upsert at t=N+1 that
+/// retracts the old value — only the latest operation (highest `t`) should
+/// survive. This collapses each fact's lifecycle to its current state.
+///
+/// The `BinaryCursor` merge assumes each fact appears at most once in the overlay
+/// ops. Without this resolution, both the stale assertion and the retraction are
+/// processed independently, causing the stale value to leak into query results.
+///
+/// **Must be called after [`sort_overlay_ops`]** so that ops with the same fact
+/// key are adjacent.
+pub fn resolve_overlay_ops(ops: &mut Vec<OverlayOp>) {
+    if ops.len() < 2 {
+        return;
+    }
+    // Walk backwards: for each run of adjacent ops with the same fact key,
+    // keep only the one with the highest `t`.
+    let mut write = 0;
+    let mut read = 0;
+    while read < ops.len() {
+        // Start of a new fact-key group. Find the op with max t in this group.
+        let mut best = read;
+        let key = ops[read].fact_key();
+        read += 1;
+        while read < ops.len() && ops[read].fact_key() == key {
+            if ops[read].t > ops[best].t {
+                best = read;
+            }
+            read += 1;
+        }
+        ops[write] = ops[best];
+        write += 1;
+    }
+    ops.truncate(write);
+}
+
 /// Compare a decoded row (from a `ColumnBatch`) against an overlay op
 /// using the V3 sort order. Used by the two-pointer merge in `BinaryCursor`.
 #[inline]

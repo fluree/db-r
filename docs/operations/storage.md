@@ -477,7 +477,7 @@ curl -X POST http://localhost:8090/export?ledger=mydb:main > mydb-export.jsonld
 ./fluree-db-server --storage file --data-dir /var/lib/fluree
 
 # Import to file storage
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/insert?ledger=mydb:main" \
   --data-binary @mydb-export.jsonld
 ```
 

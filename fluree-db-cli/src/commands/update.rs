@@ -1,4 +1,4 @@
-use crate::commands::insert::{print_txn_result, resolve_positional_args};
+use crate::commands::insert::{print_txn_result, resolve_positional_args, warn_novelty_if_needed};
 use crate::context::{self, LedgerMode};
 use crate::error::{CliError, CliResult};
 use crate::input;
@@ -161,6 +161,7 @@ pub async fn run(
                     "Committed t={}, {} flakes",
                     result.receipt.t, result.receipt.flake_count
                 );
+                warn_novelty_if_needed(&result.indexing);
             }
         },
     }

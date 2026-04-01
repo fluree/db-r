@@ -9,7 +9,7 @@ Insert operations add new data to Fluree. This is the most common transaction ty
 Insert a single entity with properties:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/insert?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": {

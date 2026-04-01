@@ -9,13 +9,15 @@ use fluree_db_connection::{connect_async, ConnectionHandle};
 use fluree_db_core::{ContentId, ContentKind, StorageRead, StorageWrite};
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceType, NameService, NsLookupResult, Publisher, RefKind,
-    RefPublisher, RefValue, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    GraphSourceLookup, GraphSourcePublisher, GraphSourceType, NameService, NsLookupResult,
+    Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPayload, StatusPublisher,
+    StatusValue,
 };
 use fluree_db_storage_aws::DynamoDbNameService;
+use fs2::FileExt;
 use serde_json::json;
 use std::time::Duration;
-use testcontainers::core::IntoContainerPort;
+use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
 
 /// Helper to create a deterministic `ContentId` for test commit refs.
@@ -31,6 +33,10 @@ fn test_index_id(label: &str) -> ContentId {
 const LOCALSTACK_EDGE_PORT: u16 = 4566;
 const REGION: &str = "us-east-1";
 
+struct LocalstackTestLock {
+    _file: std::fs::File,
+}
+
 fn set_localstack_env(endpoint: &str) {
     // Dummy credentials accepted by LocalStack
     std::env::set_var("AWS_ACCESS_KEY_ID", "test");
@@ -43,17 +49,6 @@ fn set_localstack_env(endpoint: &str) {
 
     // Used by the AWS Rust SDK for local endpoints (matches existing repo tests)
     std::env::set_var("AWS_ENDPOINT_URL", endpoint);
-}
-
-async fn wait_for_localstack(sdk_config: &aws_config::SdkConfig) {
-    let s3 = aws_sdk_s3::Client::new(sdk_config);
-    for _ in 0..60 {
-        if s3.list_buckets().send().await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    panic!("LocalStack did not become ready in time");
 }
 
 async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
@@ -79,15 +74,64 @@ async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &
         .expect("DynamoDB table creation failed");
 }
 
-#[tokio::test]
-async fn localstack_s3_and_dynamodb_smoke() {
-    // 1) Boot LocalStack (edge port 4566)
+async fn acquire_localstack_test_lock() -> LocalstackTestLock {
+    tokio::task::spawn_blocking(|| {
+        let lock_path = std::env::temp_dir().join("fluree-localstack-tests.lock");
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap_or_else(|e| panic!("open LocalStack test lock {}: {e}", lock_path.display()));
+
+        lock_file
+            .lock_exclusive()
+            .unwrap_or_else(|e| panic!("lock LocalStack test lock {}: {e}", lock_path.display()));
+
+        LocalstackTestLock { _file: lock_file }
+    })
+    .await
+    .expect("join LocalStack test lock task")
+}
+
+async fn wait_for_localstack_host_port(
+    container: &testcontainers::ContainerAsync<GenericImage>,
+) -> u16 {
+    let mut last_err = None;
+
+    for _ in 0..40 {
+        match container.get_host_port_ipv4(LOCALSTACK_EDGE_PORT).await {
+            Ok(host_port) => return host_port,
+            Err(err) => {
+                last_err = Some(err);
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+
+    panic!(
+        "LocalStack edge port mapped after retries: {:?}",
+        last_err.expect("at least one port lookup attempt")
+    );
+}
+
+async fn start_localstack(
+    services: &str,
+) -> (
+    LocalstackTestLock,
+    testcontainers::ContainerAsync<GenericImage>,
+    String,
+) {
+    let lock = acquire_localstack_test_lock().await;
     // Note: call `GenericImage` methods before `ImageExt` methods (per testcontainers docs).
-    let image = GenericImage::new("localstack/localstack", "latest")
+    let image = GenericImage::new("localstack/localstack", "4.4")
         .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
-        .with_env_var("SERVICES", "s3,dynamodb")
+        .with_wait_for(WaitFor::message_on_stdout("Ready."))
+        .with_env_var("SERVICES", services)
         .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
+        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1")
+        .with_startup_timeout(Duration::from_secs(300));
     let container = match image.start().await {
         Ok(c) => c,
         Err(e) => {
@@ -103,18 +147,19 @@ async fn localstack_s3_and_dynamodb_smoke() {
             );
         }
     };
+    let host_port = wait_for_localstack_host_port(&container).await;
+    let endpoint = format!("http://127.0.0.1:{host_port}");
+    (lock, container, endpoint)
+}
 
-    let host_port = container
-        .get_host_port_ipv4(LOCALSTACK_EDGE_PORT)
-        .await
-        .expect("LocalStack edge port mapped");
-    let endpoint = format!("http://127.0.0.1:{}", host_port);
+#[tokio::test]
+async fn localstack_s3_and_dynamodb_smoke() {
+    // 1) Boot LocalStack (edge port 4566)
+    let (_lock, _container, endpoint) = start_localstack("s3,dynamodb").await;
 
     // 2) Configure AWS SDK to talk to LocalStack
     set_localstack_env(&endpoint);
     let sdk_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
-
-    wait_for_localstack(&sdk_config).await;
 
     // 3) Provision minimal infra
     let bucket = "test-fluree-bucket";
@@ -228,55 +273,32 @@ async fn sdk_config_for_endpoint(endpoint: &str) -> aws_config::SdkConfig {
         .await
 }
 
-async fn wait_for_dynamodb(sdk_config: &aws_config::SdkConfig) {
-    let ddb = aws_sdk_dynamodb::Client::new(sdk_config);
-    for _ in 0..60 {
-        if ddb.list_tables().send().await.is_ok() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    panic!("DynamoDB did not become ready in time");
-}
-
 /// Helper: boot LocalStack + provision infra, returning (container, DynamoDbNameService, sdk_config).
 async fn setup_localstack_ns() -> (
+    LocalstackTestLock,
     testcontainers::ContainerAsync<GenericImage>,
     DynamoDbNameService,
 ) {
-    let (_container, ns, _sdk_config) = setup_localstack_ns_with_config().await;
-    (_container, ns)
+    let (_lock, _container, ns, _sdk_config) = setup_localstack_ns_with_config().await;
+    (_lock, _container, ns)
 }
 
 /// Like `setup_localstack_ns` but also returns the SDK config for direct DynamoDB access in tests.
 async fn setup_localstack_ns_with_config() -> (
+    LocalstackTestLock,
     testcontainers::ContainerAsync<GenericImage>,
     DynamoDbNameService,
     aws_config::SdkConfig,
 ) {
-    let image = GenericImage::new("localstack/localstack", "latest")
-        .with_exposed_port(LOCALSTACK_EDGE_PORT.tcp())
-        .with_env_var("SERVICES", "dynamodb")
-        .with_env_var("DEFAULT_REGION", REGION)
-        .with_env_var("SKIP_SSL_CERT_DOWNLOAD", "1");
-    let container = image
-        .start()
-        .await
-        .expect("LocalStack started (Docker must be running)");
-    let host_port = container
-        .get_host_port_ipv4(LOCALSTACK_EDGE_PORT)
-        .await
-        .expect("LocalStack edge port mapped");
-    let endpoint = format!("http://127.0.0.1:{host_port}");
+    let (lock, container, endpoint) = start_localstack("dynamodb").await;
     let sdk_config = sdk_config_for_endpoint(&endpoint).await;
-    wait_for_dynamodb(&sdk_config).await;
 
     let table = "fluree-ns-test";
     ensure_dynamodb_table(&sdk_config, table).await;
 
     let client = aws_sdk_dynamodb::Client::new(&sdk_config);
     let ns = DynamoDbNameService::from_client(client, table.to_string());
-    (container, ns, sdk_config)
+    (lock, container, ns, sdk_config)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -285,7 +307,7 @@ async fn setup_localstack_ns_with_config() -> (
 
 #[tokio::test]
 async fn nameservice_ledger_lifecycle() {
-    let (_container, ns) = setup_localstack_ns().await;
+    let (_lock, _container, ns) = setup_localstack_ns().await;
 
     let alias = "lifecycle-test:main";
 
@@ -380,7 +402,7 @@ async fn nameservice_ledger_lifecycle() {
 
 #[tokio::test]
 async fn nameservice_admin_publisher() {
-    let (_container, ns) = setup_localstack_ns().await;
+    let (_lock, _container, ns) = setup_localstack_ns().await;
 
     let alias = "admin-test:main";
     ns.publish_ledger_init(alias).await.unwrap();
@@ -422,7 +444,7 @@ async fn nameservice_admin_publisher() {
 /// swallowed — publish_index returned Ok(()) without writing anything.
 #[tokio::test]
 async fn publish_index_without_preexisting_index_item() {
-    let (_container, ns, sdk_config) = setup_localstack_ns_with_config().await;
+    let (_lock, _container, ns, sdk_config) = setup_localstack_ns_with_config().await;
 
     let alias = "missing-index-item:main";
 
@@ -491,7 +513,7 @@ async fn publish_index_without_preexisting_index_item() {
 
 #[tokio::test]
 async fn nameservice_ref_publisher() {
-    let (_container, ns) = setup_localstack_ns().await;
+    let (_lock, _container, ns) = setup_localstack_ns().await;
 
     let alias = "ref-test:main";
 
@@ -634,7 +656,7 @@ async fn nameservice_ref_publisher() {
 
 #[tokio::test]
 async fn nameservice_status_publisher() {
-    let (_container, ns) = setup_localstack_ns().await;
+    let (_lock, _container, ns) = setup_localstack_ns().await;
 
     let alias = "status-test:main";
 
@@ -673,7 +695,7 @@ async fn nameservice_status_publisher() {
 
 #[tokio::test]
 async fn nameservice_config_publisher() {
-    let (_container, ns) = setup_localstack_ns().await;
+    let (_lock, _container, ns) = setup_localstack_ns().await;
 
     let alias = "config-test:main";
 
@@ -734,7 +756,7 @@ async fn nameservice_config_publisher() {
 
 #[tokio::test]
 async fn nameservice_graph_source_publisher() {
-    let (_container, ns) = setup_localstack_ns().await;
+    let (_lock, _container, ns) = setup_localstack_ns().await;
 
     let graph_source_id = "search-bm25:main";
 

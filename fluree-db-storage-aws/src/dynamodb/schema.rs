@@ -54,6 +54,14 @@ pub const ATTR_BRANCH: &str = "branch";
 pub const ATTR_RETRACTED: &str = "retracted";
 /// Graph-source type string (e.g., "f:Bm25Index")
 pub const ATTR_SOURCE_TYPE: &str = "source_type";
+/// Branch point: source branch name (e.g., "main")
+pub const ATTR_BP_SOURCE: &str = "bp_source";
+/// Branch point: commit CID at branch time
+pub const ATTR_BP_COMMIT_ID: &str = "bp_commit_id";
+/// Branch point: transaction time at branch time
+pub const ATTR_BP_T: &str = "bp_t";
+/// Number of child branches (reference count for safe deletion)
+pub const ATTR_BRANCHES: &str = "branches";
 /// Dependent ledger aliases (List<String>)
 pub const ATTR_DEPENDENCIES: &str = "dependencies";
 

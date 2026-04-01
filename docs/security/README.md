@@ -55,7 +55,7 @@ How policies affect query execution:
 
 ### [Policy in Transactions](policy-in-transactions.md)
 
-How policies affect write operations:
+How policies affect transaction operations:
 - Transaction validation
 - Authorization checks
 - Entity-level permissions
@@ -140,7 +140,7 @@ Policy filters results to only show authorized people.
 
 ### Transaction Time
 
-Policies validate write operations:
+Policies validate transaction operations:
 
 ```json
 {
@@ -321,7 +321,7 @@ Policies are optimized during query planning:
 Policies are created via transactions:
 
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=policies:main" \
+curl -X POST "http://localhost:8090/v1/fluree/upsert?ledger=policies:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@graph": [

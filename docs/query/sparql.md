@@ -789,7 +789,7 @@ WHERE {
 
 ## SPARQL UPDATE
 
-Fluree supports SPARQL 1.1 Update for modifying data using standard SPARQL syntax. SPARQL UPDATE requests use the `application/sparql-update` content type and are sent to the transact endpoints.
+Fluree supports SPARQL 1.1 Update for modifying data using standard SPARQL syntax. SPARQL UPDATE requests use the `application/sparql-update` content type and are sent to the update endpoints.
 
 ### INSERT DATA
 
@@ -808,7 +808,7 @@ INSERT DATA {
 **HTTP Request:**
 
 ```bash
-curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+curl -X POST http://localhost:8090/v1/fluree/update/mydb:main \
   -H "Content-Type: application/sparql-update" \
   -d 'PREFIX ex: <http://example.org/ns/>
       INSERT DATA { ex:alice ex:name "Alice" }'
@@ -880,6 +880,14 @@ WHERE {
 }
 ```
 
+### Dataset scoping for MODIFY (`WITH` / `USING` / `USING NAMED`)
+
+SPARQL UPDATE `MODIFY` supports dataset scoping for named graphs:
+
+- **`WITH <iri>`**: sets the default graph for INSERT/DELETE templates that don’t use an explicit `GRAPH <iri> { ... }` block.
+- **`USING <iri>`**: scopes the default graph(s) for `WHERE` evaluation. Repeated `USING` clauses are evaluated as a **merged default graph**.
+- **`USING NAMED <iri>`**: scopes which named graphs are visible to `WHERE` `GRAPH <iri> { ... }` patterns. Repeated `USING NAMED` clauses allow multiple named graphs.
+
 ### Blank Nodes in INSERT
 
 Blank nodes can be used in INSERT templates to create new entities:
@@ -924,32 +932,34 @@ INSERT DATA {
 
 ### SPARQL UPDATE Restrictions
 
-Current MVP restrictions:
+Current restrictions / boundaries:
 
-- **WHERE patterns**: Only basic triple patterns are supported. OPTIONAL, FILTER, UNION, and VALUES in WHERE clauses are not yet supported.
-- **Blank nodes in WHERE**: Blank nodes cannot be used in WHERE patterns (use variables instead).
-- **WITH/USING clauses**: Graph scoping via WITH and USING is not yet supported.
+- **Graph management operations**: `LOAD`, `CLEAR`, `DROP`, `CREATE`, `ADD`, `MOVE`, `COPY` are not yet supported.
+- **Template graph variables**: INSERT/DELETE templates support `GRAPH <iri> { ... }` blocks, but `GRAPH ?g { ... }` is not yet supported.
+- **DELETE WHERE + GRAPH blocks**: `GRAPH <iri> { ... }` blocks are not yet supported inside `DELETE WHERE { ... }`.
+- **SERVICE**: Only local-ledger endpoints of the form `fluree:ledger:<name>[:<branch>]` are supported; arbitrary remote HTTP `SERVICE` endpoints are not supported.
+- **Property paths**: Supported in `WHERE` (subject to Fluree capability settings).
 
 ### Endpoint Usage
 
-SPARQL UPDATE uses the transact endpoints with `Content-Type: application/sparql-update`:
+SPARQL UPDATE uses the update endpoints with `Content-Type: application/sparql-update`:
 
 | Endpoint | Description |
 |----------|-------------|
-| `POST /fluree/transact` | Connection-scoped, requires `Fluree-Ledger` header |
-| `POST /:ledger/transact` | Ledger-scoped, ledger from URL path |
+| `POST /v1/fluree/update` | Connection-scoped, requires `Fluree-Ledger` header |
+| `POST /v1/fluree/update/<ledger...>` | Ledger-scoped, ledger from URL path |
 
 **Examples:**
 
 ```bash
 # Ledger-scoped (recommended)
-curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+curl -X POST http://localhost:8090/v1/fluree/update/mydb:main \
   -H "Content-Type: application/sparql-update" \
   -d 'PREFIX ex: <http://example.org/ns/>
       INSERT DATA { ex:alice ex:name "Alice" }'
 
 # Connection-scoped with header
-curl -X POST http://localhost:8090/fluree/transact \
+curl -X POST http://localhost:8090/v1/fluree/update \
   -H "Content-Type: application/sparql-update" \
   -H "Fluree-Ledger: mydb:main" \
   -d 'PREFIX ex: <http://example.org/ns/>

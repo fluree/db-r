@@ -283,7 +283,15 @@ pub fn decode_leaf_block(
                 .decode_value(o_type, o_key, p_id)
                 .map_err(BlockFetchError::LeafDecode)?;
             if let fluree_db_core::FlakeValue::Ref(sid) = &o {
-                let iri = store.sid_to_iri(sid);
+                let iri = store.sid_to_iri(sid).ok_or_else(|| {
+                    BlockFetchError::LeafDecode(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "sid_to_iri failed: unknown namespace code {} for object ref {:?}",
+                            sid.namespace_code, sid.name
+                        ),
+                    ))
+                })?;
                 o = fluree_db_core::FlakeValue::Ref(
                     snapshot
                         .encode_iri(&iri)
@@ -291,15 +299,23 @@ pub fn decode_leaf_block(
                 );
             }
 
-            let dt = store.resolve_datatype_sid(o_type).map_or_else(
-                || fluree_db_core::Sid::new(0, ""),
-                |sid| {
-                    let iri = store.sid_to_iri(&sid);
+            let dt = match store.resolve_datatype_sid(o_type) {
+                None => fluree_db_core::Sid::new(0, ""),
+                Some(sid) => {
+                    let iri = store.sid_to_iri(&sid).ok_or_else(|| {
+                        BlockFetchError::LeafDecode(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!(
+                                "sid_to_iri failed: unknown namespace code {} for datatype {:?}",
+                                sid.namespace_code, sid.name
+                            ),
+                        ))
+                    })?;
                     snapshot
                         .encode_iri(&iri)
                         .unwrap_or_else(|| fluree_db_core::Sid::new(0, iri))
-                },
-            );
+                }
+            };
 
             let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
             let meta = if lang.is_some() || o_i != u32::MAX {

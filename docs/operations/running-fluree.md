@@ -56,7 +56,7 @@ Configuration is resolved in this precedence order (highest wins):
 ### Server Roles
 
 **Transaction Server** (default, `--server-role=transaction`):
-- Handles reads and writes
+- Handles reads and transactions
 - Produces an event stream for replication
 - Manages the nameservice (ledger metadata)
 
@@ -90,7 +90,7 @@ fluree-server \
 
 **Data Operations:**
 - `POST /query` — JSON-LD and SPARQL queries
-- `POST /transact` — Writes (INSERT / UPSERT / UPDATE / DELETE)
+- `POST /update` — Update transactions (WHERE/DELETE/INSERT JSON-LD or SPARQL UPDATE)
 - `POST /insert` / `POST /upsert` — Direct insert or upsert
 
 **Ledger Management:**
@@ -118,7 +118,7 @@ Three scopes can each be set to `none`, `optional`, or `required`:
 
 | Scope | Endpoints | Flag |
 |-------|-----------|------|
-| Data API | `/query`, `/transact`, etc. | `--data-auth-mode` |
+| Data API | `/query`, `/update`, etc. | `--data-auth-mode` |
 | Events | SSE stream | `--events-auth-mode` |
 | Admin | `/fluree/create`, `/fluree/drop` | `--admin-auth-mode` |
 
@@ -275,14 +275,14 @@ let fluree = FlureeBuilder::from_json_ld(&json!({
 }))?.build_client().await?;
 ```
 
-Convenience helpers are also available for quick setup:
+Quick setup with typed builders:
 
 ```rust
-use fluree_db_api::prelude::*;
+use fluree_db_api::FlureeBuilder;
 
-let fluree = connect_memory().await?;           // In-memory
-let fluree = connect_filesystem("./data").await?; // File-based
-let fluree = connect_s3("bucket", "endpoint").await?; // S3
+let fluree = FlureeBuilder::memory().build_memory();                               // In-memory
+let fluree = FlureeBuilder::file("./data").build()?;                               // File-based
+let fluree = FlureeBuilder::s3("bucket", "endpoint").build_client().await?;        // S3
 ```
 
 ### Creating & Querying Ledgers
@@ -358,7 +358,7 @@ fluree query mydb query.rq
 
 ```rust
 // Rust: fully offline, memory-only
-let fluree = connect_memory().await?;
+let fluree = FlureeBuilder::memory().build_memory();
 fluree.create_ledger("test").await?;
 // ... use normally, no network calls
 ```

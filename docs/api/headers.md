@@ -41,7 +41,7 @@ For Turtle RDF format transactions. Supported on `/insert` (fast direct path) an
 ```http
 Content-Type: application/trig
 ```
-For TriG format transactions with named graphs (GRAPH blocks). **Only supported on `/upsert` and `/transact`** - returns 400 error on `/insert` because named graph ingestion requires the upsert path.
+For TriG format transactions with named graphs (GRAPH blocks). **Only supported on `/upsert`** - returns 400 error on `/insert` because named graph ingestion requires the upsert path.
 
 ```http
 Content-Type: application/n-triples
@@ -88,6 +88,16 @@ Turtle RDF format (for CONSTRUCT queries).
 Accept: application/rdf+xml
 ```
 RDF/XML graph format (for CONSTRUCT/DESCRIBE queries).
+
+```http
+Accept: application/vnd.fluree.agent+json
+```
+Agent JSON format — optimized for LLM/agent consumption. Returns a self-describing envelope with schema, compact rows, and pagination support. See [Output Formats](../query/output-formats.md#agent-json-format) for details.
+
+Use the `Fluree-Max-Bytes` header to set a byte budget for response truncation:
+```http
+Fluree-Max-Bytes: 32768
+```
 
 ```http
 Accept: application/n-triples

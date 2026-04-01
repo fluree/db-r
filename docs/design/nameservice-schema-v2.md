@@ -1015,10 +1015,23 @@ All items share:
 | `name` | String | Base name |
 | `branch` | String | Branch name |
 | `retracted` | Boolean | Soft-delete flag |
+| `branches` | Number | Child branch reference count (0 for leaf branches, omitted when 0 in JSON-LD) |
 | `dependencies` | List\<String\> \| null | Graph-source dependencies (optional) |
 | `source_type` | String \| null | Graph-source type (e.g., `f:Bm25Index`) |
 | `created_at` | Number | Creation timestamp (epoch seconds, optional) |
 | `updated_at_ms` | Number | Last update time (epoch millis, optional) |
+
+### `meta` item: Branch Point Attributes
+
+For branches created via `create_branch`, the `meta` item carries additional attributes recording the branch origin:
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `bp_source` | String \| null | Source branch name (e.g., `"main"`) |
+| `bp_commit_id` | String \| null | Source commit ContentId (CIDv1) at branch point |
+| `bp_t` | Number \| null | Source transaction time at branch point |
+
+These attributes are `null`/absent for the original `main` branch. The JSON-LD format uses `f:branchPoint` with nested `f:source`, `f:commitCid`, and `f:t` fields.
 
 ### `head` item (ledgers only)
 

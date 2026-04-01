@@ -316,8 +316,8 @@ fluree-server \
 
 ### Data API Authentication
 
-Protect query/write endpoints (including `/:ledger/query`, `/:ledger/insert`, `/:ledger/upsert`,
-`/:ledger/transact`, `/fluree/ledger-info`, and `/fluree/exists`):
+Protect query/transaction endpoints (including `/:ledger/query`, `/:ledger/insert`, `/:ledger/upsert`,
+`/:ledger/update`, `/fluree/ledger-info`, and `/fluree/exists`):
 
 | Flag                               | Env Var                                 | Default |
 | ---------------------------------- | --------------------------------------- | ------- |

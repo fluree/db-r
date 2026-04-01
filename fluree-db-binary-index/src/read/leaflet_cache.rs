@@ -149,8 +149,8 @@ pub struct LeafletCacheKey {
     /// Uses 128-bit hash to make collisions astronomically unlikely (~1 in 3.4×10^38).
     /// Leaves are content-addressed (`{sha256}.fli`), so this is stable.
     pub leaf_id: u128,
-    /// Leaflet slot within the leaf (0..leaflet_count, max 255).
-    pub leaflet_index: u8,
+    /// Leaflet slot within the leaf (0..leaflet_count).
+    pub leaflet_index: u32,
     /// Effective "state-at" t — always the resolved numeric t, never a sentinel.
     /// For current-time queries: `to_t = store.max_t()`.
     /// For time-travel: `to_t` = the target t requested by the query.
@@ -197,7 +197,7 @@ pub struct V3BatchCacheKey {
     /// `xxh3_128(leaf_cid.to_bytes())` — content-addressed, self-invalidating.
     pub leaf_id: u128,
     /// Leaflet slot within the leaf (0..leaflet_count).
-    pub leaflet_idx: u8,
+    pub leaflet_idx: u32,
 }
 
 // ============================================================================
@@ -580,7 +580,7 @@ impl LeafletCache {
 mod tests {
     use super::*;
 
-    fn make_key(leaf_id: u128, leaflet_index: u8, to_t: i64, epoch: u64) -> LeafletCacheKey {
+    fn make_key(leaf_id: u128, leaflet_index: u32, to_t: i64, epoch: u64) -> LeafletCacheKey {
         LeafletCacheKey {
             leaf_id,
             leaflet_index,

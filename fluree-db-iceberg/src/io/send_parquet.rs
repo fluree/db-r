@@ -23,8 +23,8 @@ use crate::io::batch::ColumnBatch;
 use crate::io::chunk_reader::RangeBackedChunkReader;
 use crate::io::parquet::{
     build_batch_schema, build_batch_schema_with_iceberg, build_columns_from_values,
-    build_projected_schema, convert_field_to_column_value, parse_parquet_metadata_from_bytes,
-    ColumnValue, ParquetFooterCache, NULL_COLUMN_SENTINEL,
+    build_projected_schema, calculate_column_chunk_ranges, convert_field_to_column_value,
+    parse_parquet_metadata_from_bytes, ColumnValue, ParquetFooterCache, NULL_COLUMN_SENTINEL,
 };
 use crate::io::SendIcebergStorage;
 use crate::scan::FileScanTask;
@@ -156,32 +156,33 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
         use parquet::record::reader::RowIter;
 
         let path = &task.data_file.file_path;
+        let metadata = self.read_metadata(path).await?;
+
+        // Resolve the exact Parquet column indices first so sparse-range reads
+        // and row-iterator projection stay in lock-step.
+        let (batch_schema, column_indices) = if let Some(ref iceberg_schema) = task.iceberg_schema {
+            build_batch_schema_with_iceberg(&metadata, iceberg_schema, &task.projected_field_ids)?
+        } else {
+            build_batch_schema(&metadata, &task.projected_field_ids)?
+        };
+        let batch_schema = Arc::new(batch_schema);
+
+        let real_column_indices: Vec<usize> = column_indices
+            .iter()
+            .copied()
+            .filter(|&idx| idx != NULL_COLUMN_SENTINEL)
+            .collect();
 
         // Read the file bytes via range reads for the needed column chunks
-        let file_bytes = self.read_file_for_task(path, task).await?;
+        let file_bytes = self
+            .read_file_for_task(path, task, &real_column_indices, &metadata)
+            .await?;
 
         // Parse using parquet-rs
         let reader = SerializedFileReader::new(file_bytes)
             .map_err(|e| IcebergError::Storage(format!("Failed to read Parquet file: {}", e)))?;
 
         let metadata = reader.metadata();
-
-        // Build schema for batch and get column indices for projected columns
-        // Use Iceberg schema when available for correct field ID mapping
-        let (batch_schema, column_indices) = if let Some(ref iceberg_schema) = task.iceberg_schema {
-            build_batch_schema_with_iceberg(metadata, iceberg_schema, &task.projected_field_ids)?
-        } else {
-            build_batch_schema(metadata, &task.projected_field_ids)?
-        };
-        let batch_schema = Arc::new(batch_schema);
-
-        // Separate real columns from NULL columns (schema evolution)
-        // NULL_COLUMN_SENTINEL indicates a field that doesn't exist in this Parquet file
-        let real_column_indices: Vec<usize> = column_indices
-            .iter()
-            .copied()
-            .filter(|&idx| idx != NULL_COLUMN_SENTINEL)
-            .collect();
 
         // Build mapping from batch position to row position (or None for NULL columns)
         let batch_to_row_mapping: Vec<Option<usize>> = column_indices
@@ -391,14 +392,25 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
     }
 
     /// Read file bytes needed for the task using range reads (small files only).
-    async fn read_file_for_task(&self, path: &str, task: &FileScanTask) -> Result<Bytes> {
+    async fn read_file_for_task(
+        &self,
+        path: &str,
+        task: &FileScanTask,
+        real_column_indices: &[usize],
+        metadata: &Arc<ParquetMetaData>,
+    ) -> Result<Bytes> {
         let file_size = task.data_file.file_size_in_bytes as u64;
 
-        // Get metadata (may be cached)
-        let metadata = self.read_metadata(path).await?;
+        // For small files (< 1MB), read the entire file to avoid sparse buffer issues
+        // where the row iterator may need column chunks not included in the projection.
+        if file_size < 1_024 * 1_024 {
+            tracing::debug!(path, file_size, "Reading entire small Parquet file");
+            let data = self.storage.read(path).await?;
+            return Ok(data);
+        }
 
-        // Calculate column chunk ranges for projected columns
-        let column_ranges = calculate_column_chunk_ranges(&metadata, &task.projected_field_ids);
+        // Calculate column chunk ranges using the exact resolved Parquet indices.
+        let column_ranges = calculate_column_chunk_ranges(metadata, real_column_indices);
 
         // Calculate footer range
         let footer_and_size = self
@@ -443,54 +455,6 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
 
         Ok(Bytes::from(sparse_buffer))
     }
-}
-
-/// Calculate byte ranges for column chunks needed for projection.
-fn calculate_column_chunk_ranges(
-    metadata: &ParquetMetaData,
-    projected_field_ids: &[i32],
-) -> Vec<(u64, u64)> {
-    let mut ranges = Vec::new();
-
-    let parquet_schema = metadata.file_metadata().schema();
-    let fields = parquet_schema.get_fields();
-
-    for rg_idx in 0..metadata.num_row_groups() {
-        let row_group = metadata.row_group(rg_idx);
-
-        for (col_idx, parquet_field) in fields.iter().enumerate() {
-            // Extract actual Iceberg field_id from Parquet schema
-            let basic_info = parquet_field.get_basic_info();
-            let field_id = if basic_info.has_id() {
-                basic_info.id()
-            } else {
-                col_idx as i32
-            };
-
-            // Skip if not projected
-            if !projected_field_ids.is_empty() && !projected_field_ids.contains(&field_id) {
-                continue;
-            }
-
-            let col_chunk = row_group.column(col_idx);
-
-            // Handle dictionary page offset
-            let dict_offset = col_chunk.dictionary_page_offset();
-            let data_offset = col_chunk.data_page_offset();
-
-            let start_offset = match dict_offset {
-                Some(dict) => dict.min(data_offset) as u64,
-                None => data_offset as u64,
-            };
-
-            let compressed_size = col_chunk.compressed_size() as u64;
-            let end_offset = start_offset + compressed_size;
-
-            ranges.push((start_offset, end_offset));
-        }
-    }
-
-    ranges
 }
 
 /// Coalesce byte ranges that are within `gap_threshold` of each other.

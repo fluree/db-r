@@ -4,8 +4,9 @@
 
 mod support;
 
-use fluree_db_api::{FlureeBuilder, LedgerState, Novelty};
+use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::LedgerSnapshot;
+use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
 
 fn ctx_ex_schema() -> JsonValue {
@@ -1454,4 +1455,725 @@ async fn update_where_bind_error_handling_in_requires_list() {
             err
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Regression: wildcard delete via values should retract ALL triples
+// ---------------------------------------------------------------------------
+
+/// The "full" context matching the bug report — declaring many prefixes
+/// that happen to overlap with property namespaces used in the data.
+fn ctx_full() -> JsonValue {
+    json!({
+        "fsys": "https://ns.flur.ee/system#",
+        "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+        "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+        "xsd": "http://www.w3.org/2001/XMLSchema#",
+        "schema": "http://schema.org/",
+        "f": "https://ns.flur.ee/db#"
+    })
+}
+
+/// Reproduce reported bug: `values` + `"?p": "?o"` wildcard delete with
+/// a rich @context only retracts a subset of triples.
+///
+/// With a minimal context (just "fsys") all triples are retracted.
+/// With the full context (rdf, rdfs, xsd, schema, f), only some are.
+#[tokio::test]
+async fn update_values_wildcard_delete_retracts_all_triples() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let db0 = LedgerSnapshot::genesis("it/transact-update:values-wildcard-delete");
+    let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+    // Seed entity using urn: IRI format and fsys properties (matching production).
+    let seeded = fluree
+        .update(
+            ledger0,
+            &json!({
+                "@context": {
+                    "fsys": "https://ns.flur.ee/system#",
+                    "schema": "http://schema.org/"
+                },
+                "insert": {
+                    "@id": "urn:fsys:space:space-001",
+                    "@type": "fsys:Space",
+                    "fsys:name": "My Space",
+                    "fsys:spaceId": "space-001",
+                    "fsys:status": "active",
+                    "fsys:owner": {"@id": "urn:fsys:user:user1"},
+                    "fsys:createdBy": {"@id": "urn:fsys:user:user1"},
+                    "fsys:dateCreated": "2026-03-25",
+                    "fsys:dateModified": "2026-03-25",
+                    "fsys:mcpTools": ["tool-a", "tool-b", "tool-c", "tool-d"],
+                    "fsys:knowledgeBases": [{"@id": "urn:fsys:kb:kb1"}, {"@id": "urn:fsys:kb:kb2"}],
+                    "fsys:spaceLedger": {"@id": "urn:fsys:ledger:ledger1"}
+                }
+            }),
+        )
+        .await
+        .expect("seed space entity");
+
+    // Delete with the FULL context (6 prefixes) — this is the failing case.
+    let deleted = fluree
+        .update(
+            seeded.ledger,
+            &json!({
+                "@context": ctx_full(),
+                "values": ["?s", [{"@type": "@id", "@value": "urn:fsys:space:space-001"}]],
+                "where": {
+                    "@id": "?s",
+                    "?p": "?o"
+                },
+                "delete": {
+                    "@id": "?s",
+                    "?p": "?o"
+                }
+            }),
+        )
+        .await
+        .expect("wildcard delete via values (full context)");
+
+    // Use minimal context for the verification query to avoid the same bug.
+    let remaining = support::query_jsonld(
+        &fluree,
+        &deleted.ledger,
+        &json!({
+            "@context": {"fsys": "https://ns.flur.ee/system#"},
+            "select": ["?p", "?o"],
+            "where": { "@id": "urn:fsys:space:space-001", "?p": "?o" }
+        }),
+    )
+    .await
+    .expect("query remaining triples")
+    .to_jsonld(&deleted.ledger.snapshot)
+    .expect("to_jsonld");
+
+    assert_eq!(
+        remaining,
+        json!([]),
+        "Expected zero remaining triples with full context delete, but found: {remaining}"
+    );
+}
+
+/// Control test: same entity, same delete pattern, but minimal context.
+/// Per the bug report, this succeeds.
+#[tokio::test]
+async fn update_values_wildcard_delete_minimal_context_works() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let db0 = LedgerSnapshot::genesis("it/transact-update:values-wildcard-delete-minimal");
+    let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+    let seeded = fluree
+        .update(
+            ledger0,
+            &json!({
+                "@context": {
+                    "fsys": "https://ns.flur.ee/system#",
+                    "schema": "http://schema.org/"
+                },
+                "insert": {
+                    "@id": "fsys:space1",
+                    "@type": "fsys:Space",
+                    "schema:name": "My Space",
+                    "fsys:spaceId": "space-001",
+                    "fsys:status": "active",
+                    "fsys:owner": {"@id": "fsys:user1"},
+                    "fsys:createdBy": {"@id": "fsys:user1"},
+                    "schema:dateCreated": "2026-03-25",
+                    "schema:dateModified": "2026-03-25",
+                    "fsys:mcpTools": ["tool-a", "tool-b", "tool-c", "tool-d"],
+                    "fsys:knowledgeBases": [{"@id": "fsys:kb1"}, {"@id": "fsys:kb2"}],
+                    "fsys:spaceLedger": {"@id": "fsys:ledger1"}
+                }
+            }),
+        )
+        .await
+        .expect("seed space entity");
+
+    // Delete with MINIMAL context (just fsys) — this is the working case.
+    let deleted = fluree
+        .update(
+            seeded.ledger,
+            &json!({
+                "@context": {"fsys": "https://ns.flur.ee/system#"},
+                "values": ["?s", [{"@type": "@id", "@value": "fsys:space1"}]],
+                "where": {
+                    "@id": "?s",
+                    "?p": "?o"
+                },
+                "delete": {
+                    "@id": "?s",
+                    "?p": "?o"
+                }
+            }),
+        )
+        .await
+        .expect("wildcard delete via values (minimal context)");
+
+    let remaining = support::query_jsonld(
+        &fluree,
+        &deleted.ledger,
+        &json!({
+            "@context": {"fsys": "https://ns.flur.ee/system#"},
+            "select": ["?p", "?o"],
+            "where": { "@id": "fsys:space1", "?p": "?o" }
+        }),
+    )
+    .await
+    .expect("query remaining triples")
+    .to_jsonld(&deleted.ledger.snapshot)
+    .expect("to_jsonld");
+
+    assert_eq!(
+        remaining,
+        json!([]),
+        "Expected zero remaining triples for fsys:space1 with minimal context delete, but found: {remaining}"
+    );
+}
+
+/// Same as above but with a hardcoded @id (no values clause) to isolate
+/// whether `values` is the problem or the wildcard pattern itself.
+#[tokio::test]
+async fn update_hardcoded_id_wildcard_delete_retracts_all_triples() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let db0 = LedgerSnapshot::genesis("it/transact-update:hardcoded-wildcard-delete");
+    let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+    let seeded = fluree
+        .update(
+            ledger0,
+            &json!({
+                "@context": ctx_ex_schema(),
+                "insert": {
+                    "@id": "ex:space1",
+                    "@type": "ex:Space",
+                    "schema:name": "My Space",
+                    "ex:spaceId": "space-001",
+                    "ex:status": "active",
+                    "ex:owner": {"@id": "ex:user1"},
+                    "ex:createdBy": {"@id": "ex:user1"},
+                    "schema:dateCreated": "2026-03-25",
+                    "schema:dateModified": "2026-03-25",
+                    "ex:mcpTools": ["tool-a", "tool-b", "tool-c", "tool-d"],
+                    "ex:knowledgeBases": [{"@id": "ex:kb1"}, {"@id": "ex:kb2"}],
+                    "ex:spaceLedger": {"@id": "ex:ledger1"}
+                }
+            }),
+        )
+        .await
+        .expect("seed space entity");
+
+    // Delete using hardcoded @id (no values clause)
+    let deleted = fluree
+        .update(
+            seeded.ledger,
+            &json!({
+                "@context": ctx_ex_schema(),
+                "where": {
+                    "@id": "ex:space1",
+                    "?p": "?o"
+                },
+                "delete": {
+                    "@id": "ex:space1",
+                    "?p": "?o"
+                }
+            }),
+        )
+        .await
+        .expect("hardcoded wildcard delete");
+
+    let remaining = support::query_jsonld(
+        &fluree,
+        &deleted.ledger,
+        &json!({
+            "@context": ctx_ex_schema(),
+            "select": ["?p", "?o"],
+            "where": { "@id": "ex:space1", "?p": "?o" }
+        }),
+    )
+    .await
+    .expect("query remaining triples")
+    .to_jsonld(&deleted.ledger.snapshot)
+    .expect("to_jsonld");
+
+    assert_eq!(
+        remaining,
+        json!([]),
+        "Expected zero remaining triples for ex:space1 (hardcoded), but found: {remaining}"
+    );
+}
+
+/// Test wildcard delete when data is split across two transactions
+/// (simulating index/novelty split in production).
+#[tokio::test]
+async fn update_values_wildcard_delete_across_two_transactions() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let db0 = LedgerSnapshot::genesis("it/transact-update:values-wildcard-delete-2txn");
+    let ledger0 = LedgerState::new(db0, Novelty::new(0));
+
+    // First transaction: core properties
+    let txn1 = fluree
+        .update(
+            ledger0,
+            &json!({
+                "@context": ctx_ex_schema(),
+                "insert": {
+                    "@id": "ex:space1",
+                    "@type": "ex:Space",
+                    "schema:name": "My Space",
+                    "ex:spaceId": "space-001",
+                    "ex:status": "active",
+                    "ex:owner": {"@id": "ex:user1"},
+                    "ex:createdBy": {"@id": "ex:user1"}
+                }
+            }),
+        )
+        .await
+        .expect("txn1");
+
+    // Second transaction: add more properties (these will be in a different
+    // novelty segment from the first batch).
+    let txn2 = fluree
+        .update(
+            txn1.ledger,
+            &json!({
+                "@context": ctx_ex_schema(),
+                "insert": {
+                    "@id": "ex:space1",
+                    "schema:dateCreated": "2026-03-25",
+                    "schema:dateModified": "2026-03-25",
+                    "ex:mcpTools": ["tool-a", "tool-b", "tool-c", "tool-d"],
+                    "ex:knowledgeBases": [{"@id": "ex:kb1"}, {"@id": "ex:kb2"}],
+                    "ex:spaceLedger": {"@id": "ex:ledger1"}
+                }
+            }),
+        )
+        .await
+        .expect("txn2");
+
+    // Now delete all triples via values + wildcard
+    let deleted = fluree
+        .update(
+            txn2.ledger,
+            &json!({
+                "@context": ctx_ex_schema(),
+                "values": ["?s", [{"@type": "@id", "@value": "ex:space1"}]],
+                "where": {
+                    "@id": "?s",
+                    "?p": "?o"
+                },
+                "delete": {
+                    "@id": "?s",
+                    "?p": "?o"
+                }
+            }),
+        )
+        .await
+        .expect("wildcard delete via values (2 txn)");
+
+    let remaining = support::query_jsonld(
+        &fluree,
+        &deleted.ledger,
+        &json!({
+            "@context": ctx_ex_schema(),
+            "select": ["?p", "?o"],
+            "where": { "@id": "ex:space1", "?p": "?o" }
+        }),
+    )
+    .await
+    .expect("query remaining triples")
+    .to_jsonld(&deleted.ledger.snapshot)
+    .expect("to_jsonld");
+
+    assert_eq!(
+        remaining,
+        json!([]),
+        "Expected zero remaining triples for ex:space1 after 2-txn split, but found: {remaining}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Regression: wildcard delete with data split across index + novelty
+// ---------------------------------------------------------------------------
+
+/// Test wildcard delete when some data has been indexed and newer data
+/// is still in novelty. This is the most likely production scenario for
+/// the reported partial-deletion bug.
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn update_values_wildcard_delete_index_plus_novelty() {
+    use support::{start_background_indexer_local, trigger_index_and_wait};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/transact-update:wildcard-delete-indexed";
+    let index_cfg = IndexConfig::default();
+    let ledger0 = LedgerSnapshot::genesis(ledger_id);
+    let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        Default::default(),
+    );
+
+    local
+        .run_until(async {
+            // Transaction 1: core properties
+            let txn1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "@graph": [{
+                            "@id": "ex:space1",
+                            "@type": "ex:Space",
+                            "schema:name": "My Space",
+                            "ex:spaceId": "space-001",
+                            "ex:status": "active",
+                            "ex:owner": {"@id": "ex:user1"},
+                            "ex:createdBy": {"@id": "ex:user1"}
+                        }]
+                    }),
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("txn1");
+
+            // Index transaction 1 — moves flakes from novelty to index
+            trigger_index_and_wait(&handle, ledger_id, txn1.receipt.t).await;
+
+            // Reload ledger after indexing
+            let indexed_ledger = fluree
+                .ledger(ledger_id)
+                .await
+                .expect("load after index");
+
+            // Transaction 2: add more properties (these stay in novelty)
+            let txn2 = fluree
+                .insert_with_opts(
+                    indexed_ledger,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "@graph": [{
+                            "@id": "ex:space1",
+                            "schema:dateCreated": "2026-03-25",
+                            "schema:dateModified": "2026-03-25",
+                            "ex:mcpTools": ["tool-a", "tool-b", "tool-c", "tool-d"],
+                            "ex:knowledgeBases": [{"@id": "ex:kb1"}, {"@id": "ex:kb2"}],
+                            "ex:spaceLedger": {"@id": "ex:ledger1"}
+                        }]
+                    }),
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("txn2");
+
+            // Now delete all triples via values + wildcard.
+            // Data is split: txn1 flakes in index, txn2 flakes in novelty.
+            let deleted = fluree
+                .update(
+                    txn2.ledger,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "values": ["?s", [{"@type": "@id", "@value": "ex:space1"}]],
+                        "where": {
+                            "@id": "?s",
+                            "?p": "?o"
+                        },
+                        "delete": {
+                            "@id": "?s",
+                            "?p": "?o"
+                        }
+                    }),
+                )
+                .await
+                .expect("wildcard delete via values (indexed)");
+
+            let remaining = support::query_jsonld(
+                &fluree,
+                &deleted.ledger,
+                &json!({
+                    "@context": ctx_ex_schema(),
+                    "select": ["?p", "?o"],
+                    "where": { "@id": "ex:space1", "?p": "?o" }
+                }),
+            )
+            .await
+            .expect("query remaining triples")
+            .to_jsonld(&deleted.ledger.snapshot)
+            .expect("to_jsonld");
+
+            assert_eq!(
+                remaining,
+                json!([]),
+                "Expected zero remaining triples for ex:space1 after index+novelty delete, but found: {remaining}"
+            );
+        })
+        .await;
+}
+
+/// Regression: duplicate facts across index + novelty cause incomplete retraction.
+///
+/// Scenario:
+///   1. Commit 1: insert entity with properties
+///   2. Index runs → flakes move from novelty to index
+///   3. Commit 2: re-insert the SAME triples (upsert/idempotent pattern)
+///      - Novelty dedup only checks novelty, not the index
+///      - So the duplicate is accepted → same fact now lives in BOTH index AND novelty
+///   4. Query sees each fact once (collapsed at query time)
+///   5. Wildcard delete generates one retraction per collapsed fact
+///   6. BUG: only one copy is retracted; the other survives
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn update_wildcard_delete_duplicate_facts_across_index_and_novelty() {
+    use support::{start_background_indexer_local, trigger_index_and_wait};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/transact-update:wildcard-delete-dup-index-novelty";
+    let index_cfg = IndexConfig::default();
+    let ledger0 = LedgerSnapshot::genesis(ledger_id);
+    let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        Default::default(),
+    );
+
+    local
+        .run_until(async {
+            let entity_data = json!({
+                "@context": ctx_ex_schema(),
+                "@graph": [{
+                    "@id": "ex:space1",
+                    "@type": "ex:Space",
+                    "schema:name": "My Space",
+                    "ex:spaceId": "space-001",
+                    "ex:status": "active",
+                    "ex:owner": {"@id": "ex:user1"},
+                    "ex:createdBy": {"@id": "ex:user1"},
+                    "schema:dateCreated": "2026-03-25",
+                    "schema:dateModified": "2026-03-25",
+                    "ex:mcpTools": ["tool-a", "tool-b", "tool-c", "tool-d"],
+                    "ex:knowledgeBases": [{"@id": "ex:kb1"}, {"@id": "ex:kb2"}],
+                    "ex:spaceLedger": {"@id": "ex:ledger1"}
+                }]
+            });
+
+            // Commit 1: insert the entity
+            let txn1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &entity_data,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("txn1 insert");
+
+            // Index → flakes move from novelty to persistent index
+            trigger_index_and_wait(&handle, ledger_id, txn1.receipt.t).await;
+            let ledger_after_index = fluree.ledger(ledger_id).await.expect("load after index");
+
+            // Commit 2: re-insert the SAME entity data (idempotent upsert).
+            // Novelty dedup only checks novelty (now empty after indexing),
+            // so these duplicate assertions should be accepted.
+            let txn2 = fluree
+                .insert_with_opts(
+                    ledger_after_index,
+                    &entity_data,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("txn2 re-insert (duplicate)");
+
+            // Sanity: query should still show one entity (collapsed)
+            let before_delete = support::query_jsonld(
+                &fluree,
+                &txn2.ledger,
+                &json!({
+                    "@context": ctx_ex_schema(),
+                    "select": ["?name"],
+                    "where": { "@id": "ex:space1", "schema:name": "?name" }
+                }),
+            )
+            .await
+            .expect("query before delete")
+            .to_jsonld(&txn2.ledger.snapshot)
+            .expect("to_jsonld");
+            assert_eq!(
+                before_delete,
+                json!(["My Space"]),
+                "should see one name before delete"
+            );
+
+            // Now wildcard delete
+            let deleted = fluree
+                .update(
+                    txn2.ledger,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "values": ["?s", [{"@type": "@id", "@value": "ex:space1"}]],
+                        "where": {"@id": "?s", "?p": "?o"},
+                        "delete": {"@id": "?s", "?p": "?o"}
+                    }),
+                )
+                .await
+                .expect("wildcard delete");
+
+            let remaining = support::query_jsonld(
+                &fluree,
+                &deleted.ledger,
+                &json!({
+                    "@context": ctx_ex_schema(),
+                    "select": ["?p", "?o"],
+                    "where": { "@id": "ex:space1", "?p": "?o" }
+                }),
+            )
+            .await
+            .expect("query remaining triples")
+            .to_jsonld(&deleted.ledger.snapshot)
+            .expect("to_jsonld");
+
+            assert_eq!(
+                remaining,
+                json!([]),
+                "Expected zero remaining triples after wildcard delete of entity with \
+                 duplicate facts across index+novelty, but found: {remaining}"
+            );
+        })
+        .await;
+}
+
+/// Test wildcard delete on an entity that was built up over many transactions
+/// with updates (not just inserts) — closer to the real production lifecycle.
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn update_values_wildcard_delete_after_updates_and_indexing() {
+    use support::{start_background_indexer_local, trigger_index_and_wait};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/transact-update:wildcard-delete-updates-indexed";
+    let index_cfg = IndexConfig::default();
+    let ledger0 = LedgerSnapshot::genesis(ledger_id);
+    let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.storage().clone(),
+        fluree.nameservice().clone(),
+        Default::default(),
+    );
+
+    local
+        .run_until(async {
+            // Txn 1: initial entity
+            let txn1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "@graph": [{
+                            "@id": "ex:space1",
+                            "@type": "ex:Space",
+                            "schema:name": "Draft Space",
+                            "ex:spaceId": "space-001",
+                            "ex:status": "draft",
+                            "ex:owner": {"@id": "ex:user1"},
+                            "ex:createdBy": {"@id": "ex:user1"},
+                            "schema:dateCreated": "2026-03-20"
+                        }]
+                    }),
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &index_cfg,
+                )
+                .await
+                .expect("txn1");
+
+            // Index txn1
+            trigger_index_and_wait(&handle, ledger_id, txn1.receipt.t).await;
+            let ledger = fluree.ledger(ledger_id).await.expect("load after index1");
+
+            // Txn 2: update name, status; add multi-valued properties
+            let txn2 = fluree
+                .update(
+                    ledger,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "where": {"@id": "ex:space1", "schema:name": "?oldName", "ex:status": "?oldStatus"},
+                        "delete": {"@id": "ex:space1", "schema:name": "?oldName", "ex:status": "?oldStatus"},
+                        "insert": {
+                            "@id": "ex:space1",
+                            "schema:name": "My Space",
+                            "ex:status": "active",
+                            "schema:dateModified": "2026-03-25",
+                            "ex:mcpTools": ["tool-a", "tool-b", "tool-c", "tool-d"],
+                            "ex:knowledgeBases": [{"@id": "ex:kb1"}, {"@id": "ex:kb2"}],
+                            "ex:spaceLedger": {"@id": "ex:ledger1"}
+                        }
+                    }),
+                )
+                .await
+                .expect("txn2");
+
+            // Index txn2
+            trigger_index_and_wait(&handle, ledger_id, txn2.receipt.t).await;
+            let ledger = fluree.ledger(ledger_id).await.expect("load after index2");
+
+            // Txn 3: one more small update (stays in novelty)
+            let txn3 = fluree
+                .update(
+                    ledger,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "where": {"@id": "ex:space1", "schema:dateModified": "?old"},
+                        "delete": {"@id": "ex:space1", "schema:dateModified": "?old"},
+                        "insert": {"@id": "ex:space1", "schema:dateModified": "2026-03-25T17:12:33Z"}
+                    }),
+                )
+                .await
+                .expect("txn3");
+
+            // Now delete everything via values + wildcard
+            let deleted = fluree
+                .update(
+                    txn3.ledger,
+                    &json!({
+                        "@context": ctx_ex_schema(),
+                        "values": ["?s", [{"@type": "@id", "@value": "ex:space1"}]],
+                        "where": {"@id": "?s", "?p": "?o"},
+                        "delete": {"@id": "?s", "?p": "?o"}
+                    }),
+                )
+                .await
+                .expect("wildcard delete");
+
+            let remaining = support::query_jsonld(
+                &fluree,
+                &deleted.ledger,
+                &json!({
+                    "@context": ctx_ex_schema(),
+                    "select": ["?p", "?o"],
+                    "where": {"@id": "ex:space1", "?p": "?o"}
+                }),
+            )
+            .await
+            .expect("query remaining")
+            .to_jsonld(&deleted.ledger.snapshot)
+            .expect("to_jsonld");
+
+            assert_eq!(
+                remaining,
+                json!([]),
+                "Expected zero remaining triples after multi-txn+index wildcard delete, but found: {remaining}"
+            );
+        })
+        .await;
 }

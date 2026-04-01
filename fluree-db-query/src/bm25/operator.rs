@@ -253,9 +253,18 @@ impl Bm25SearchOperator {
                         let val = gv
                             .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                             .map_err(|e| {
-                                crate::error::QueryError::Internal(format!(
-                                    "decode EncodedLit for BM25: {}",
-                                    e
+                                tracing::debug!(
+                                    o_kind,
+                                    o_key,
+                                    p_id,
+                                    dt_id,
+                                    lang_id,
+                                    error = %e,
+                                    "BM25 failed to decode encoded literal target"
+                                );
+                                crate::error::QueryError::dictionary_lookup(format!(
+                                    "BM25 target decode: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
+                                    o_kind, o_key, p_id, dt_id, lang_id, e
                                 ))
                             })?;
                         Ok(Some(val.to_string()))
@@ -279,13 +288,20 @@ impl Bm25SearchOperator {
                 Some(Binding::Grouped(_)) => Ok(None),
                 // EncodedSid/EncodedPid: decode to IRI string if store available
                 Some(Binding::EncodedSid { s_id }) => {
-                    if let Some(store) = ctx.binary_store.as_deref() {
-                        match store.resolve_subject_iri(*s_id) {
-                            Ok(iri) => Ok(Some(iri)),
-                            Err(_) => Ok(None),
+                    // Novelty-aware: use graph_view() for subject resolution.
+                    match ctx.resolve_subject_iri(*s_id) {
+                        Some(Ok(iri)) => Ok(Some(iri)),
+                        Some(Err(e)) => {
+                            tracing::debug!(
+                                s_id,
+                                error = %e,
+                                "BM25 failed to resolve encoded subject target"
+                            );
+                            Err(crate::error::QueryError::dictionary_lookup(format!(
+                                "BM25 target subject lookup: s_id={s_id}: {e}"
+                            )))
                         }
-                    } else {
-                        Ok(None)
+                        None => Ok(None),
                     }
                 }
                 Some(Binding::EncodedPid { p_id }) => {
@@ -663,8 +679,8 @@ mod tests {
         let mut snapshot = LedgerSnapshot::genesis("test/main");
         // Ensure example IRIs used by BM25 tests are encodable to SIDs.
         snapshot
-            .namespace_codes
-            .insert(100, "http://example.org/".to_string());
+            .insert_namespace_code(100, "http://example.org/".to_string())
+            .unwrap();
         snapshot
     }
 

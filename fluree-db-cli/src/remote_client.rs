@@ -1,4 +1,4 @@
-//! HTTP client for remote ledger query/transact operations
+//! HTTP client for remote ledger query/update operations
 //!
 //! Used by the CLI's "track" mode to forward data operations to a remote
 //! Fluree server instead of executing them locally. This is distinct from
@@ -109,13 +109,25 @@ impl fmt::Display for RemoteLedgerError {
 }
 
 impl RemoteLedgerClient {
-    /// Create a new remote ledger client.
+    /// Default HTTP request timeout (5 minutes).
+    ///
+    /// Long-running queries and transactions are expected; the server should
+    /// be the authority on when to time out. This client-side value is a
+    /// safety net, not a policy knob.
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+    /// Create a new remote ledger client with the default 5-minute timeout.
     ///
     /// `base_url` is the Fluree API base (e.g., `http://localhost:8090/fluree`
     /// or `https://example.com/v1/fluree`). Trailing slashes are stripped.
     pub fn new(base_url: &str, auth_token: Option<String>) -> Self {
+        Self::with_timeout(base_url, auth_token, Self::DEFAULT_TIMEOUT)
+    }
+
+    /// Create a new remote ledger client with a custom timeout.
+    pub fn with_timeout(base_url: &str, auth_token: Option<String>, timeout: Duration) -> Self {
         let client = Client::builder()
-            .timeout(Duration::from_secs(30))
+            .timeout(timeout)
             .build()
             .expect("Failed to build HTTP client");
 
@@ -680,13 +692,13 @@ impl RemoteLedgerClient {
     // Update (WHERE/DELETE/INSERT)
     // =========================================================================
 
-    /// Execute a JSON-LD update (WHERE/DELETE/INSERT) via the transact endpoint.
+    /// Execute a JSON-LD update (WHERE/DELETE/INSERT) via the update endpoint.
     pub async fn update_jsonld(
         &self,
         ledger: &str,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = self.op_url("transact", ledger);
+        let url = self.op_url("update", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -696,13 +708,13 @@ impl RemoteLedgerClient {
         .await
     }
 
-    /// Execute a SPARQL UPDATE via the transact endpoint.
+    /// Execute a SPARQL UPDATE via the update endpoint.
     pub async fn update_sparql(
         &self,
         ledger: &str,
         sparql: &str,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = self.op_url("transact", ledger);
+        let url = self.op_url("update", ledger);
         self.send_json(
             reqwest::Method::POST,
             &url,
@@ -719,6 +731,24 @@ impl RemoteLedgerClient {
     /// Get ledger info from the remote server.
     pub async fn ledger_info(&self, ledger: &str) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = self.op_url("info", ledger);
+        self.send_json(reqwest::Method::GET, &url, "application/json", None)
+            .await
+    }
+
+    /// Get a decoded commit from the remote server.
+    ///
+    /// Calls `GET {base_url}/show/{ledger}?commit={commit_ref}`.
+    pub async fn commit_show(
+        &self,
+        ledger: &str,
+        commit_ref: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = format!(
+            "{}/show/{}?commit={}",
+            self.base_url,
+            Self::ledger_tail(ledger),
+            urlencoding::encode(commit_ref),
+        );
         self.send_json(reqwest::Method::GET, &url, "application/json", None)
             .await
     }
@@ -781,6 +811,96 @@ impl RemoteLedgerClient {
     /// array of objects with at minimum a `name` field.
     pub async fn list_ledgers(&self) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = format!("{}/ledgers", self.base_url);
+        self.send_json(reqwest::Method::GET, &url, "application/json", None)
+            .await
+    }
+
+    // =========================================================================
+    // Branch management
+    // =========================================================================
+
+    /// Create a new branch on the remote server.
+    ///
+    /// Calls `POST {base_url}/branch` with a JSON body.
+    pub async fn create_branch(
+        &self,
+        ledger: &str,
+        branch: &str,
+        source: Option<&str>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("branch");
+        let mut body = serde_json::json!({
+            "ledger": ledger,
+            "branch": branch,
+        });
+        if let Some(s) = source {
+            body["source"] = serde_json::Value::String(s.to_string());
+        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
+    /// Drop a branch on the remote server.
+    ///
+    /// Calls `POST {base_url}/drop-branch` with a JSON body.
+    pub async fn drop_branch(
+        &self,
+        ledger: &str,
+        branch: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("drop-branch");
+        let body = serde_json::json!({
+            "ledger": ledger,
+            "branch": branch,
+        });
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
+    /// Rebase a branch on the remote server.
+    ///
+    /// Calls `POST {base_url}/rebase` with a JSON body.
+    pub async fn rebase_branch(
+        &self,
+        ledger: &str,
+        branch: &str,
+        strategy: Option<&str>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("rebase");
+        let mut body = serde_json::json!({
+            "ledger": ledger,
+            "branch": branch,
+        });
+        if let Some(s) = strategy {
+            body["strategy"] = serde_json::Value::String(s.to_string());
+        }
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
+    /// List all branches for a ledger on the remote server.
+    ///
+    /// Calls `GET {base_url}/branch/{ledger}`.
+    pub async fn list_branches(
+        &self,
+        ledger: &str,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = format!("{}/branch/{}", self.base_url, ledger);
         self.send_json(reqwest::Method::GET, &url, "application/json", None)
             .await
     }
@@ -941,6 +1061,29 @@ fn extract_error_message(body: &str) -> String {
     }
 
     trimmed.to_string()
+}
+
+impl RemoteLedgerClient {
+    // =========================================================================
+    // Iceberg graph source operations
+    // =========================================================================
+
+    /// Map an Iceberg table as a graph source on the remote server.
+    ///
+    /// Calls `POST {base_url}/iceberg/map`.
+    pub async fn iceberg_map(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("iceberg/map");
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(body)),
+        )
+        .await
+    }
 }
 
 fn push_idempotency_key(ledger: &str, request: &fluree_db_api::PushCommitsRequest) -> String {

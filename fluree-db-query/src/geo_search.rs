@@ -24,8 +24,8 @@ use async_trait::async_trait;
 use fluree_db_binary_index::format::branch::BranchManifest;
 use fluree_db_binary_index::format::run_record_v2::RunRecordV2;
 use fluree_db_binary_index::{
-    sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView, BinaryIndexStore,
-    ColumnProjection, OverlayOp, RunSortOrder,
+    resolve_overlay_ops, sort_overlay_ops, BinaryCursor, BinaryFilter, BinaryGraphView,
+    BinaryIndexStore, ColumnProjection, OverlayOp, RunSortOrder,
 };
 use fluree_db_core::geo::{geo_proximity_bounds, haversine_distance};
 use fluree_db_core::o_type::OType;
@@ -284,15 +284,18 @@ impl GeoSearchOperator {
             }
 
             // Add subject binding: s_id → Sid
+            // DictOverlay delegates to novelty-aware BinaryGraphView::resolve_subject_sid
+            // which returns Sid directly (no IRI string + trie round-trip).
+            // When no overlay, store is the only dict (no novelty), so resolve+encode is safe.
             let subject_sid = match &self.dict_overlay {
                 Some(dict_ov) => dict_ov
                     .resolve_subject_sid(s_id)
                     .map_err(|e| QueryError::Internal(e.to_string()))?,
                 None => {
-                    let subject_iri = store
+                    let iri = store
                         .resolve_subject_iri(s_id)
                         .map_err(|e| QueryError::Internal(e.to_string()))?;
-                    store.encode_iri(&subject_iri)
+                    store.encode_iri(&iri)
                 }
             };
             let subject_pos = *self.out_pos.get(&self.pattern.subject_var).unwrap();
@@ -353,22 +356,57 @@ impl Operator for GeoSearchOperator {
         // Overlay translation + DictOverlay setup (matches ScanOperator's binary path).
         let g_id = ctx.binary_g_id;
         if let Some(ovl) = ctx.overlay {
-            let (mut ops, _ephemeral_preds) = crate::binary_scan::translate_overlay_flakes(
-                ovl,
-                store,
-                ctx.dict_novelty.as_ref(),
-                ctx.to_t,
+            // Correctness first: GeoSearch depends on a predicate+o_type constrained overlay.
+            // If we cannot translate a geo overlay flake into V3 ID space, returning
+            // silently-wrong results is unacceptable; fail the query instead.
+            let mut ops: Vec<OverlayOp> = Vec::new();
+            let mut ephemeral_preds = std::collections::HashMap::new();
+            let mut next_ep = store.predicate_count();
+            let mut translate_failed = false;
+            ovl.for_each_overlay_flake(
                 g_id,
+                fluree_db_core::IndexType::Post,
+                None,
+                None,
+                true,
+                ctx.to_t,
+                &mut |flake| match crate::binary_scan::translate_one_flake_v3_pub(
+                    flake,
+                    store,
+                    ctx.dict_novelty.as_ref(),
+                    &mut ephemeral_preds,
+                    &mut next_ep,
+                ) {
+                    Ok(op) => ops.push(op),
+                    Err(e) => {
+                        // Hard fail: GeoSearch must be exact.
+                        tracing::error!(
+                            error = %e,
+                            s = %flake.s,
+                            p = %flake.p,
+                            t = flake.t,
+                            op = flake.op,
+                            "GeoSearch: failed to translate overlay flake to V3"
+                        );
+                        translate_failed = true;
+                    }
+                },
             );
+            if translate_failed {
+                return Err(QueryError::Internal(
+                    "GeoSearch: failed to translate overlay flake to V3".to_string(),
+                ));
+            }
             let epoch = ovl.epoch();
             if !ops.is_empty() {
                 sort_overlay_ops(&mut ops, RunSortOrder::Post);
+                resolve_overlay_ops(&mut ops);
                 self.overlay_ops = ops;
                 self.overlay_epoch = epoch;
             }
             // Build DictOverlay for ephemeral ID translation.
             if let Some(dict_nov) = ctx.dict_novelty.as_ref() {
-                let gv = BinaryGraphView::new(store.clone(), g_id);
+                let gv = BinaryGraphView::with_novelty(store.clone(), g_id, Some(dict_nov.clone()));
                 let dict_ov = crate::dict_overlay::DictOverlay::new(gv, dict_nov.clone());
                 self.dict_overlay = Some(dict_ov);
             }
@@ -376,7 +414,17 @@ impl Operator for GeoSearchOperator {
 
         // Resolve predicate ID once at open (may allocate ephemeral ID if overlay present).
         self.p_id = match self.dict_overlay.as_mut() {
-            Some(dict_ov) => Some(dict_ov.assign_predicate_id_from_sid(&self.pattern.predicate)),
+            Some(dict_ov) => {
+                let iri = ctx
+                    .snapshot
+                    .decode_sid(&self.pattern.predicate)
+                    .ok_or_else(|| {
+                        QueryError::Internal(
+                            "GeoSearch predicate Sid could not be decoded to an IRI".to_string(),
+                        )
+                    })?;
+                Some(dict_ov.assign_predicate_id(&iri))
+            }
             None => store.sid_to_p_id(&self.pattern.predicate),
         };
 

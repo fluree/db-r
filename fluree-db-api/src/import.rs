@@ -1791,7 +1791,7 @@ where
         let forward_handle = std::thread::Builder::new()
             .name("ttl-forwarder".into())
             .spawn(move || {
-                use fluree_db_transact::namespace::NsFallbackMode;
+                use fluree_db_core::NsSplitMode;
                 let mut ns_mode_set = false;
                 loop {
                     let payload = match reader_rx.lock().unwrap().recv() {
@@ -1801,13 +1801,13 @@ where
                     if !ns_mode_set && payload.0 == 0 {
                         if let Some(pre) = ns_preflight_cell.get() {
                             if pre.exceeded_budget {
-                                forward_shared_alloc.set_fallback_mode(NsFallbackMode::CoarseHeuristic);
+                                forward_shared_alloc.set_split_mode(NsSplitMode::HostPlusN(1));
                                 ns_mode_set = true;
                                 tracing::info!(
                                     distinct_prefixes = pre.distinct_prefixes,
                                     http_host_prefixes = pre.http_host_prefixes,
                                     http_host_seg1_prefixes = pre.http_host_seg1_prefixes,
-                                    "namespace preflight exceeded budget; enabling coarse namespace fallback heuristic"
+                                    "namespace preflight exceeded budget; enabling HostPlusN(1) split mode"
                                 );
                             }
                         } else {
@@ -1978,7 +1978,11 @@ where
                     )
                     .await
                     .map_err(|e| ImportError::Transact(e.to_string()))?;
-                    shared_alloc.sync_from_registry(&state.ns_registry);
+                    shared_alloc
+                        .sync_from_registry(&state.ns_registry)
+                        .map_err(|e| {
+                            ImportError::Transact(format!("namespace sync conflict: {}", e))
+                        })?;
                     published_codes.extend(state.ns_registry.all_codes());
                     r
                 } else {
@@ -3017,7 +3021,11 @@ where
 
         // Build predicate_sids (done inline here since
         // the shared code runs after V3 would have already returned).
-        let trie_v6 = fluree_db_core::PrefixTrie::from_namespace_codes(input.namespace_codes);
+        let ns_reverse_v6: std::collections::HashMap<String, u16> = input
+            .namespace_codes
+            .iter()
+            .map(|(&code, prefix)| (prefix.clone(), code))
+            .collect();
         let pred_path = input.run_dir.join("predicates.json");
         let predicate_sids_v6: Vec<(u16, String)> = if pred_path.exists() {
             let bytes = std::fs::read(&pred_path)?;
@@ -3026,9 +3034,15 @@ where
             })?;
             by_id
                 .iter()
-                .map(|iri| match trie_v6.longest_match(iri) {
-                    Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
-                    None => (0u16, iri.clone()),
+                .map(|iri| {
+                    let (prefix, suffix) = fluree_db_core::canonical_split(
+                        iri,
+                        fluree_db_core::NsSplitMode::default(),
+                    );
+                    match ns_reverse_v6.get(prefix) {
+                        Some(&code) => (code, suffix.to_string()),
+                        None => (0u16, iri.clone()),
+                    }
                 })
                 .collect()
         } else {
@@ -3167,6 +3181,7 @@ where
             prev_index: None,
             garbage: None,
             sketch_ref: None,
+            ns_split_mode: fluree_db_core::ns_encoding::NsSplitMode::default(),
         };
 
         // Encode and upload FIR6 root.

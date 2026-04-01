@@ -22,7 +22,7 @@ Per-operator, per-item, or per-iteration spans. Visible at `RUST_LOG=info,fluree
 
 | You're adding... | Span level | Example |
 |-------------------|-----------|---------|
-| New top-level operation, phase, or operator | `debug_span!` | `query_execute`, `reasoning_prep`, `join` |
+| New top-level operation, phase, or operator | `debug_span!` | `query_execute`, `reasoning_prep`, `join`, `binary_open_leaf` |
 | Detail or per-iteration instrumentation | `trace_span!` | `group_by`, `distinct`, `binary_cursor_next_leaf` |
 
 **Do not use `info_span!`** for new operation spans. The `request` span is the sole exception.
@@ -223,6 +223,14 @@ If you add a new query operator:
 2. For detail operators (group_by, distinct, limit, offset, etc.), use `trace_span!` in `open()`
 3. If it's a blocking/buffering operator (like sort), add a `debug_span!` timing span in `next_batch()`
 4. Add a test verifying the span emits at the correct level
+
+For lower-level remote storage diagnostics on the binary path, prefer short-lived `debug_span!` blocks around:
+- leaf-open strategy selection (`binary_open_leaf`)
+- remote leaf metadata reads (`binary_fetch_header_dir`)
+- individual range reads (`binary_range_fetch`)
+- leaflet cache hit/miss points (`binary_load_leaflet`)
+
+These spans are intended for investigation of repeated remote I/O and cache effectiveness under query load.
 
 ### New transaction phase
 

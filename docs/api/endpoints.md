@@ -41,21 +41,18 @@ This endpoint is intended for debugging and operator support. See also [Admin, h
 
 ## Transaction Endpoints
 
-### POST /transact
+### POST /update
 
-Submit a transaction to write data to a ledger. Supports both JSON-LD and SPARQL UPDATE formats.
+Submit an **update** transaction (WHERE/DELETE/INSERT JSON-LD or SPARQL UPDATE) to write data to a ledger.
 
 **URL:**
 ```
-POST /transact?ledger={ledger-id}&mode={mode}
-POST /:ledger/transact
+POST /update?ledger={ledger-id}
+POST /:ledger/update
 ```
 
 **Query Parameters:**
-- `ledger` (required for /transact): Target ledger (format: `name:branch`)
-- `mode` (optional): Transaction mode (JSON-LD only)
-  - `default` - Normal insert/update (default)
-  - `replace` - Upsert mode (replaces all entity properties)
+- `ledger` (required for /update): Target ledger (format: `name:branch`)
 - `context` (optional): URL to default JSON-LD context
 
 **Request Headers:**
@@ -72,17 +69,7 @@ Content-Type: application/sparql-update
 Accept: application/json
 ```
 
-For Turtle (RDF triples):
-```http
-Content-Type: text/turtle
-Accept: application/json
-```
-
-For TriG (named graphs):
-```http
-Content-Type: application/trig
-Accept: application/json
-```
+Note: Turtle/TriG are not accepted on `/update`. Use `/insert` (Turtle) or `/upsert` (Turtle/TriG).
 
 **Request Body (JSON-LD):**
 
@@ -170,7 +157,7 @@ WHERE {
 
 JSON-LD transaction:
 ```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
+curl -X POST "http://localhost:8090/v1/fluree/update?ledger=mydb:main" \
   -H "Content-Type: application/json" \
   -d '{
     "@context": { "ex": "http://example.org/ns/" },
@@ -180,7 +167,7 @@ curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
 
 SPARQL UPDATE (ledger-scoped endpoint):
 ```bash
-curl -X POST http://localhost:8090/ledger/mydb:main/transact \
+curl -X POST http://localhost:8090/v1/fluree/update/mydb:main \
   -H "Content-Type: application/sparql-update" \
   -d 'PREFIX ex: <http://example.org/ns/>
       INSERT DATA { ex:alice ex:name "Alice" }'
@@ -188,7 +175,7 @@ curl -X POST http://localhost:8090/ledger/mydb:main/transact \
 
 SPARQL UPDATE (connection-scoped with header):
 ```bash
-curl -X POST http://localhost:8090/fluree/transact \
+curl -X POST http://localhost:8090/v1/fluree/update \
   -H "Content-Type: application/sparql-update" \
   -H "Fluree-Ledger: mydb:main" \
   -d 'PREFIX ex: <http://example.org/ns/>
@@ -196,29 +183,7 @@ curl -X POST http://localhost:8090/fluree/transact \
       WHERE { ?s ex:name "Alice" . ?s ex:age ?old }'
 ```
 
-Turtle transaction:
-```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
-  -H "Content-Type: text/turtle" \
-  -d '@prefix ex: <http://example.org/ns/> .
-      ex:alice ex:name "Alice" ; ex:age 30 .'
-```
-
-TriG transaction with named graphs:
-```bash
-curl -X POST "http://localhost:8090/v1/fluree/transact?ledger=mydb:main" \
-  -H "Content-Type: application/trig" \
-  -d '@prefix ex: <http://example.org/ns/> .
-
-      # Default graph
-      ex:company ex:name "Acme Corp" .
-
-      # Named graph for products
-      GRAPH <http://example.org/graphs/products> {
-          ex:widget ex:name "Widget" ;
-                    ex:price "29.99"^^xsd:decimal .
-      }'
-```
+Note: Turtle and TriG are not accepted on `/update`. Use `/insert` (Turtle) or `/upsert` (Turtle/TriG).
 
 ### POST /insert
 
@@ -362,6 +327,62 @@ When `enabled` is `false` (external indexer mode), the caller should use `needed
 
 - `409 Conflict`: head changed / diverged / first commit `t` did not match next-t
 - `422 Unprocessable Entity`: invalid commit bytes, missing referenced blob, or retraction invariant violation
+
+### GET /show/*ledger
+
+Fetch and decode a single commit's contents with resolved IRIs. This is the server-side equivalent of `fluree show` — it returns assertions, retractions, and flake tuples with IRIs compacted using the ledger's namespace prefix table.
+
+**URL:**
+
+```
+GET /show/<ledger...>?commit=<ref>
+```
+
+**Query Parameters:**
+
+- `commit` (required): Commit identifier — `t:<N>` for transaction number, hex-digest prefix (min 6 chars), or full CID
+
+**Request Headers:**
+
+```http
+Authorization: Bearer <token>   (when data auth is enabled)
+```
+
+**Response Body (200 OK):**
+
+```json
+{
+  "id": "bagaybqabciq...",
+  "t": 5,
+  "time": "2026-03-12T16:58:18.395474217+00:00",
+  "size": 327,
+  "previous": "bagaybqabciq...",
+  "asserts": 1,
+  "retracts": 1,
+  "@context": {
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "schema": "http://schema.org/"
+  },
+  "flakes": [
+    ["urn:fsys:dataset:zoho3", "schema:dateModified", "2026-03-12T14:15:30Z", "xsd:string", false],
+    ["urn:fsys:dataset:zoho3", "schema:dateModified", "2026-03-12T16:58:16Z", "xsd:string", true]
+  ]
+}
+```
+
+Each flake is a tuple: `[subject, predicate, object, datatype, operation]`. Operation `true` = assert (added), `false` = retract (removed). When metadata is present (language tag, list index, or named graph), a 6th element is appended.
+
+**Policy filtering:** Flakes are filtered by the caller's data-auth identity (extracted from the Bearer token) and the server's configured `default_policy_class`. When neither is present, all flakes are returned (root/admin access). Flakes the caller cannot read are silently omitted — the `asserts` and `retracts` counts reflect only the visible flakes. Unlike the query endpoints, show does not accept per-request policy overrides via headers or request body.
+
+**Responses:**
+
+- `200 OK`: Decoded commit returned
+- `400 Bad Request`: Missing or invalid `commit` parameter
+- `401 Unauthorized`: Bearer token required but missing
+- `404 Not Found`: Ledger or commit not found
+- `501 Not Implemented`: Proxy storage mode (no local index available)
+
+**Peer mode:** Forwards to the transactor.
 
 ### GET /commits/*ledger
 
@@ -1425,6 +1446,270 @@ curl -X PUT http://localhost:8090/fluree/context/mydb:main \
   -d '{"@context": {"ex": "http://example.org/"}}'
 ```
 
+### POST /fluree/branch
+
+Create a new branch for a ledger.
+
+**URL:**
+```
+POST /fluree/branch
+```
+
+**Authentication:** When admin auth is enabled (`--admin-auth-mode=required`), requires Bearer token from a trusted issuer. See [Admin Authentication](#admin-authentication).
+
+**Request Body:**
+
+```json
+{
+  "ledger": "mydb",
+  "branch": "feature-x",
+  "source": "main"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `branch` | string | Yes | New branch name to create (e.g., "feature-x") |
+| `source` | string | No | Source branch to create from. Default: `"main"` |
+
+**Response:**
+
+```json
+{
+  "ledger_id": "mydb:feature-x",
+  "branch": "feature-x",
+  "source": "main",
+  "t": 5
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ledger_id` | Full ledger:branch identifier for the new branch |
+| `branch` | Branch name |
+| `source` | Source branch this was created from |
+| `t` | Transaction time of the source commit at branch point |
+
+**Status Codes:**
+- `201 Created` - Branch created successfully
+- `400 Bad Request` - Invalid request body
+- `401 Unauthorized` - Bearer token required (when admin auth enabled)
+- `404 Not Found` - Source branch does not exist
+- `409 Conflict` - Branch already exists
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Create branch from main (default source)
+curl -X POST http://localhost:8090/v1/fluree/branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x"}'
+
+# Create branch from a specific source branch
+curl -X POST http://localhost:8090/v1/fluree/branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "staging", "source": "dev"}'
+```
+
+### GET /fluree/branch/{ledger}
+
+List all non-retracted branches for a ledger.
+
+**URL:**
+```
+GET /fluree/branch/{ledger-name}
+```
+
+**Response:**
+
+```json
+[
+  {
+    "branch": "main",
+    "ledger_id": "mydb:main",
+    "t": 5
+  },
+  {
+    "branch": "feature-x",
+    "ledger_id": "mydb:feature-x",
+    "t": 5,
+    "source": "main"
+  }
+]
+```
+
+| Field | Description |
+|-------|-------------|
+| `branch` | Branch name |
+| `ledger_id` | Full ledger:branch identifier |
+| `t` | Current transaction time on this branch |
+| `source` | Source branch (only present for branches created via `/fluree/branch`) |
+
+**Examples:**
+
+```bash
+curl http://localhost:8090/v1/fluree/branch/mydb
+```
+
+### POST /fluree/drop-branch
+
+Drop a branch from a ledger. Admin-protected.
+
+**URL:**
+```
+POST /fluree/drop-branch
+```
+
+**Request body:**
+
+```json
+{
+  "ledger": "mydb",
+  "branch": "feature-x"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `branch` | string | Yes | Branch name to drop (e.g., "feature-x") |
+
+**Response body (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:feature-x",
+  "status": "Dropped",
+  "deferred": false,
+  "artifacts_deleted": 5,
+  "cascaded": [],
+  "warnings": []
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ledger_id` | Full ledger:branch identifier of the dropped branch |
+| `status` | Drop status (`"Dropped"`, `"AlreadyRetracted"`, `"NotFound"`) |
+| `deferred` | `true` if the branch has children — retracted but storage preserved |
+| `artifacts_deleted` | Number of storage artifacts removed |
+| `cascaded` | List of ancestor branch ledger_ids that were cascade-dropped |
+| `warnings` | Any non-fatal warnings during the drop |
+
+**Behavior:**
+
+- **Cannot drop `main`**: Returns 400 Bad Request.
+- **Leaf branch** (no children): Fully drops — deletes storage artifacts, purges NsRecord, decrements parent's child count. If the parent was previously retracted and its child count reaches 0, the parent is cascade-dropped too.
+- **Branch with children** (`branches > 0`): Retracted (hidden from listings, rejects new transactions) but storage is preserved for children. When the last child is eventually dropped, the retracted parent is cascade-purged automatically.
+
+**Status codes:**
+
+- `200 OK` - Branch dropped (or deferred) successfully
+- `400 Bad Request` - Cannot drop the main branch
+- `404 Not Found` - Ledger or branch does not exist
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Drop a leaf branch
+curl -X POST http://localhost:8090/v1/fluree/drop-branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x"}'
+
+# Drop a branch with children (will be deferred)
+curl -X POST http://localhost:8090/v1/fluree/drop-branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev"}'
+```
+
+### POST /fluree/rebase
+
+Rebase a branch onto its source branch's current HEAD. Admin-protected.
+
+**URL:**
+```
+POST /fluree/rebase
+```
+
+**Request body:**
+
+```json
+{
+  "ledger": "mydb",
+  "branch": "feature-x",
+  "strategy": "take-both"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `branch` | string | Yes | Branch name to rebase (e.g., "feature-x") |
+| `strategy` | string | No | Conflict resolution strategy (default: "take-both"). Options: `take-both`, `abort`, `take-source`, `take-branch`, `skip` |
+
+**Response body (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:feature-x",
+  "branch": "feature-x",
+  "fast_forward": false,
+  "replayed": 3,
+  "skipped": 0,
+  "conflicts": 1,
+  "failures": 0,
+  "total_commits": 3,
+  "new_branch_point_t": 8
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ledger_id` | string | Full ledger:branch identifier |
+| `branch` | string | Branch name |
+| `fast_forward` | bool | `true` if the branch had no unique commits |
+| `replayed` | number | Number of commits successfully replayed |
+| `skipped` | number | Number of commits skipped (Skip strategy) |
+| `conflicts` | number | Number of conflicts detected |
+| `failures` | number | Number of commits that failed validation |
+| `total_commits` | number | Total branch commits considered |
+| `new_branch_point_t` | number | Transaction time of the new branch point |
+
+**Conflict strategies:**
+
+| Strategy | Behavior |
+|----------|----------|
+| `take-both` | Replay as-is, both values coexist (multi-cardinality) |
+| `abort` | Fail on first conflict, no changes applied |
+| `take-source` | Drop branch's conflicting flakes (source wins) |
+| `take-branch` | Keep branch's flakes, retract source's conflicting values |
+| `skip` | Skip entire commit if any flakes conflict |
+
+**Status codes:**
+
+- `200 OK` - Rebase completed successfully
+- `400 Bad Request` - Cannot rebase main, invalid strategy, or missing branch point
+- `404 Not Found` - Ledger or branch does not exist
+- `409 Conflict` - Rebase aborted due to conflict (abort strategy)
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Rebase with default strategy (take-both)
+curl -X POST http://localhost:8090/v1/fluree/rebase \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x"}'
+
+# Rebase with abort strategy (fail on conflicts)
+curl -X POST http://localhost:8090/v1/fluree/rebase \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "feature-x", "strategy": "abort"}'
+```
+
 ### GET /fluree/info
 
 Get ledger metadata. Used by the CLI for `info`, `push`, `pull`, and `clone`.
@@ -1811,6 +2096,7 @@ This section summarizes the contract that third-party server implementations (e.
 | Endpoint | CLI commands |
 |----------|-------------|
 | `GET /info/{ledger}` | `info`, `push`, `pull`, `clone` |
+| `GET /show/{ledger}?commit=<ref>` | `show --remote` |
 | `POST /query/{ledger}` | `query` (JSON-LD and SPARQL) |
 | `POST /insert/{ledger}` | `insert` |
 | `POST /upsert/{ledger}` | `upsert` |

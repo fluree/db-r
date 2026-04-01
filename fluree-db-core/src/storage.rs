@@ -48,12 +48,15 @@
 //! }
 //! ```
 
-use crate::address_path::ledger_id_to_path_prefix;
+use crate::address_path::{ledger_id_to_path_prefix, shared_prefix_for_path};
 use crate::error::Result;
 use async_trait::async_trait;
+use parking_lot::RwLock;
 use sha2::Digest;
 use std::fmt::Debug;
-use std::sync::{Arc, RwLock};
+use std::path::PathBuf;
+use std::sync::Arc;
+use thiserror::Error;
 
 // ============================================================================
 // Read Hints
@@ -370,13 +373,12 @@ impl MemoryContentStore {
 #[async_trait]
 impl ContentStore for MemoryContentStore {
     async fn has(&self, id: &ContentId) -> Result<bool> {
-        Ok(self.data.read().expect("RwLock poisoned").contains_key(id))
+        Ok(self.data.read().contains_key(id))
     }
 
     async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
         self.data
             .read()
-            .expect("RwLock poisoned")
             .get(id)
             .cloned()
             .ok_or_else(|| crate::error::Error::not_found(id.to_string()))
@@ -384,10 +386,7 @@ impl ContentStore for MemoryContentStore {
 
     async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
         let id = ContentId::new(kind, bytes);
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .insert(id.clone(), bytes.to_vec());
+        self.data.write().insert(id.clone(), bytes.to_vec());
         Ok(id)
     }
 
@@ -398,15 +397,12 @@ impl ContentStore for MemoryContentStore {
                 id
             )));
         }
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .insert(id.clone(), bytes.to_vec());
+        self.data.write().insert(id.clone(), bytes.to_vec());
         Ok(())
     }
 
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
-        let data = self.data.read().expect("RwLock poisoned");
+        let data = self.data.read();
         let full = data
             .get(id)
             .ok_or_else(|| crate::error::Error::not_found(id.to_string()))?;
@@ -455,7 +451,7 @@ impl<S: Storage> StorageContentStore<S> {
         }
     }
 
-    /// Map a CID to a legacy address string using the existing layout.
+    /// Map a CID to an address string using the current layout.
     fn cid_to_address(&self, id: &ContentId) -> Result<String> {
         let kind = id.content_kind().ok_or_else(|| {
             crate::error::Error::storage(format!("unknown codec {} in CID {}", id.codec(), id))
@@ -464,18 +460,49 @@ impl<S: Storage> StorageContentStore<S> {
         let addr = content_address(&self.method, kind, &self.ledger_id, &hex_digest);
         Ok(addr)
     }
+
+    /// For dict blobs, return the pre-global-dicts address where dicts lived
+    /// under the per-branch namespace (`mydb/main/index/objects/dicts/{sha}.dict`).
+    /// Returns `None` for non-dict CIDs.
+    fn legacy_dict_address(&self, id: &ContentId) -> Option<String> {
+        if id.codec() != crate::CODEC_FLUREE_DICT_BLOB {
+            return None;
+        }
+        let prefix = ledger_id_prefix_for_path(&self.ledger_id);
+        let hex = id.digest_hex();
+        Some(format!(
+            "fluree:{}://{}/index/objects/dicts/{}.dict",
+            self.method, prefix, hex
+        ))
+    }
 }
 
 #[async_trait]
 impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
     async fn has(&self, id: &ContentId) -> Result<bool> {
         let address = self.cid_to_address(id)?;
-        self.storage.exists(&address).await
+        if self.storage.exists(&address).await? {
+            return Ok(true);
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.exists(&legacy).await;
+        }
+        Ok(false)
     }
 
     async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
         let address = self.cid_to_address(id)?;
-        self.storage.read_bytes(&address).await
+        match self.storage.read_bytes(&address).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(crate::error::Error::NotFound(_)) => {}
+            Err(e) => return Err(e),
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        if let Some(legacy) = self.legacy_dict_address(id) {
+            return self.storage.read_bytes(&legacy).await;
+        }
+        Err(crate::error::Error::not_found(address))
     }
 
     async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
@@ -500,7 +527,12 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
         let address = self.cid_to_address(id).ok()?;
-        self.storage.resolve_local_path(&address)
+        if let Some(path) = self.storage.resolve_local_path(&address) {
+            return Some(path);
+        }
+        // Fallback: dicts moved from per-branch to @shared namespace
+        let legacy = self.legacy_dict_address(id)?;
+        self.storage.resolve_local_path(&legacy)
     }
 
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
@@ -535,6 +567,92 @@ pub fn bridge_content_store<S: Storage>(
 pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageContentStore<S> {
     let method = storage.storage_method().to_string();
     StorageContentStore::new(storage, namespace_id, method)
+}
+
+// ============================================================================
+// BranchedContentStore (fallback from branch namespace to parent namespace)
+// ============================================================================
+
+/// Content store for branched ledgers that reads from the branch namespace
+/// first, falling back through a DAG of parent namespaces.
+///
+/// Writes always go to the branch's own namespace. Reads try the branch
+/// namespace first, then recurse into parent stores. The recursive structure
+/// supports both linear branching (branch from branch) and future merge
+/// scenarios where a branch has multiple parents.
+#[derive(Debug, Clone)]
+pub struct BranchedContentStore<S: Storage> {
+    /// Store scoped to this branch's own namespace
+    branch_store: StorageContentStore<S>,
+    /// Parent stores to fall back to on read misses. Typically one parent
+    /// for a simple branch; multiple parents after a merge.
+    parents: Vec<BranchedContentStore<S>>,
+}
+
+impl<S: Storage + Clone> BranchedContentStore<S> {
+    /// Create a leaf content store with no parents (equivalent to a root branch).
+    pub fn leaf(storage: S, namespace_id: &str) -> Self {
+        let method = storage.storage_method().to_string();
+        Self {
+            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            parents: Vec::new(),
+        }
+    }
+
+    /// Create a branched content store with parent fallbacks.
+    pub fn with_parents(storage: S, namespace_id: &str, parents: Vec<Self>) -> Self {
+        let method = storage.storage_method().to_string();
+        Self {
+            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            parents,
+        }
+    }
+}
+
+#[async_trait]
+impl<S: Storage + Send + Sync> ContentStore for BranchedContentStore<S> {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        if self.branch_store.has(id).await? {
+            return Ok(true);
+        }
+        for parent in &self.parents {
+            if parent.has(id).await? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        match self.branch_store.get(id).await {
+            Ok(bytes) => return Ok(bytes),
+            Err(e) if self.parents.is_empty() => return Err(e),
+            Err(e) if !matches!(e, crate::error::Error::NotFound(_)) => return Err(e),
+            Err(_) => {} // not-found with parents available — fall through
+        }
+        let mut last_err = None;
+        for parent in &self.parents {
+            match parent.get(id).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| crate::error::Error::not_found(id.to_string())))
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        self.branch_store.put(kind, bytes).await
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        self.branch_store.put_with_id(id, bytes).await
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        self.branch_store
+            .resolve_local_path(id)
+            .or_else(|| self.parents.iter().find_map(|p| p.resolve_local_path(id)))
+    }
 }
 
 // ============================================================================
@@ -573,8 +691,11 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
         ContentKind::IndexRoot => format!("{}/index/roots/{}.json", prefix, hash_hex),
         ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
         ContentKind::DictBlob { dict } => {
+            // Dictionaries are global per ledger — shared across all branches.
+            // Use the @shared namespace (can't collide with branch names since @ is forbidden).
+            let shared = shared_prefix_for_path(ledger_id);
             let ext = dict_kind_extension(dict);
-            format!("{}/index/objects/dicts/{}.{}", prefix, hash_hex, ext)
+            format!("{}/dicts/{}.{}", shared, hash_hex, ext)
         }
         ContentKind::IndexBranch => {
             format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex)
@@ -588,6 +709,9 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
         ContentKind::SpatialIndex => format!("{}/index/spatial/{}.bin", prefix, hash_hex),
         ContentKind::HistorySidecar => {
             format!("{}/index/objects/history/{}.fhs1", prefix, hash_hex)
+        }
+        ContentKind::GraphSourceMapping => {
+            format!("graph-sources/{}/mapping/{}.ttl", prefix, hash_hex)
         }
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
@@ -653,10 +777,7 @@ impl MemoryStorage {
     ///
     /// Note: This method takes `&self` (not `&mut self`) due to interior mutability.
     pub fn insert(&self, address: impl Into<String>, data: Vec<u8>) {
-        self.data
-            .write()
-            .expect("RwLock poisoned")
-            .insert(address.into(), data);
+        self.data.write().insert(address.into(), data);
     }
 
     /// Insert JSON data at the given address
@@ -678,22 +799,17 @@ impl StorageRead for MemoryStorage {
     async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
         self.data
             .read()
-            .expect("RwLock poisoned")
             .get(address)
             .cloned()
             .ok_or_else(|| crate::error::Error::not_found(address))
     }
 
     async fn exists(&self, address: &str) -> Result<bool> {
-        Ok(self
-            .data
-            .read()
-            .expect("RwLock poisoned")
-            .contains_key(address))
+        Ok(self.data.read().contains_key(address))
     }
 
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let data = self.data.read().expect("RwLock poisoned");
+        let data = self.data.read();
         Ok(data
             .keys()
             .filter(|k| k.starts_with(prefix))
@@ -705,7 +821,7 @@ impl StorageRead for MemoryStorage {
         if range.start >= range.end {
             return Ok(Vec::new());
         }
-        let data = self.data.read().expect("RwLock poisoned");
+        let data = self.data.read();
         let full = data
             .get(address)
             .ok_or_else(|| crate::error::Error::not_found(address))?;
@@ -723,14 +839,13 @@ impl StorageWrite for MemoryStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
         self.data
             .write()
-            .expect("RwLock poisoned")
             .insert(address.to_string(), bytes.to_vec());
         Ok(())
     }
 
     async fn delete(&self, address: &str) -> Result<()> {
         // Idempotent: ok even if not found
-        self.data.write().expect("RwLock poisoned").remove(address);
+        self.data.write().remove(address);
         Ok(())
     }
 }
@@ -757,6 +872,35 @@ impl ContentAddressedWrite for MemoryStorage {
             content_hash: content_hash_hex.to_string(),
             size_bytes: bytes.len(),
         })
+    }
+}
+
+#[async_trait]
+impl StorageCas for MemoryStorage {
+    async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+        let mut data = self.data.write();
+        if data.contains_key(address) {
+            Ok(false)
+        } else {
+            data.insert(address.to_string(), bytes.to_vec());
+            Ok(true)
+        }
+    }
+
+    async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
+    where
+        F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
+        T: Send,
+    {
+        let mut data = self.data.write();
+        let current = data.get(address).map(|v| v.as_slice());
+        match f(current)? {
+            CasAction::Write(new_bytes) => {
+                data.insert(address.to_string(), new_bytes);
+                Ok(CasOutcome::Written)
+            }
+            CasAction::Abort(t) => Ok(CasOutcome::Aborted(t)),
+        }
     }
 }
 
@@ -1086,6 +1230,409 @@ impl ContentAddressedWrite for FileStorage {
     }
 }
 
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+impl FileStorage {
+    /// Atomic file insert inside `spawn_blocking`.
+    ///
+    /// Uses `O_CREAT | O_EXCL` for atomic create-if-not-exists.
+    async fn blocking_insert(&self, path: PathBuf, bytes: Vec<u8>) -> StorageExtResult<bool> {
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    StorageExtError::io(format!("mkdir {}: {}", parent.display(), e))
+                })?;
+            }
+
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    file.write_all(&bytes).map_err(|e| {
+                        StorageExtError::io(format!("write {}: {}", path.display(), e))
+                    })?;
+                    Ok(true)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(e) => Err(StorageExtError::io(format!(
+                    "open {}: {}",
+                    path.display(),
+                    e
+                ))),
+            }
+        })
+        .await
+        .map_err(|e| StorageExtError::io(format!("spawn_blocking join: {e}")))?
+    }
+
+    /// Atomic locked read inside `spawn_blocking`.
+    ///
+    /// Acquires an exclusive flock on a sidecar `.lock` file, reads the data
+    /// file, and returns the current bytes. The lock is held across the
+    /// returned guard so the caller can write back atomically.
+    ///
+    /// Returns `(current_bytes, lock_guard_and_path)` — drop the second
+    /// element to release the lock.
+    async fn blocking_locked_read(
+        &self,
+        path: PathBuf,
+    ) -> StorageExtResult<(Option<Vec<u8>>, LockedFile)> {
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    StorageExtError::io(format!("mkdir {}: {}", parent.display(), e))
+                })?;
+            }
+
+            // Use a separate lock file so that the atomic rename of the data
+            // file doesn't invalidate the lock (rename replaces the directory
+            // entry, creating a new inode on Linux — the lock on the old inode
+            // would no longer protect the new file).
+            let lock_path = path.with_extension("lock");
+            let lock_file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .map_err(|e| {
+                    StorageExtError::io(format!("open lock {}: {}", lock_path.display(), e))
+                })?;
+
+            fs2::FileExt::lock_exclusive(&lock_file)
+                .map_err(|e| StorageExtError::io(format!("lock {}: {}", lock_path.display(), e)))?;
+
+            let current = match std::fs::read(&path) {
+                Ok(buf) if buf.is_empty() => None,
+                Ok(buf) => Some(buf),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => {
+                    return Err(StorageExtError::io(format!(
+                        "read {}: {}",
+                        path.display(),
+                        e
+                    )))
+                }
+            };
+
+            Ok((
+                current,
+                LockedFile {
+                    path,
+                    _lock_file: lock_file,
+                },
+            ))
+        })
+        .await
+        .map_err(|e| StorageExtError::io(format!("spawn_blocking join: {e}")))?
+    }
+
+    /// Atomic locked write inside `spawn_blocking`.
+    ///
+    /// Writes `new_bytes` to a temp file and renames into place while the
+    /// flock from `blocking_locked_read` is still held. The lock is released
+    /// when the `LockedFile` guard is dropped at the end.
+    async fn blocking_locked_write(
+        &self,
+        locked: LockedFile,
+        new_bytes: Vec<u8>,
+    ) -> StorageExtResult<()> {
+        tokio::task::spawn_blocking(move || {
+            let tmp_path = locked.path.with_extension("tmp");
+            {
+                use std::io::Write;
+                let mut tmp = std::fs::File::create(&tmp_path).map_err(|e| {
+                    StorageExtError::io(format!("create {}: {}", tmp_path.display(), e))
+                })?;
+                tmp.write_all(&new_bytes).map_err(|e| {
+                    StorageExtError::io(format!("write {}: {}", tmp_path.display(), e))
+                })?;
+            }
+            std::fs::rename(&tmp_path, &locked.path).map_err(|e| {
+                StorageExtError::io(format!(
+                    "rename {} -> {}: {}",
+                    tmp_path.display(),
+                    locked.path.display(),
+                    e
+                ))
+            })?;
+            Ok(())
+            // lock released when `locked._lock_file` is dropped
+        })
+        .await
+        .map_err(|e| StorageExtError::io(format!("spawn_blocking join: {e}")))?
+    }
+}
+
+/// Holds an exclusive flock and the data file path for the duration of a CAS.
+///
+/// The lock is released when this struct is dropped (the `_lock_file` field's
+/// `Drop` impl calls `flock(LOCK_UN)`).
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+struct LockedFile {
+    path: PathBuf,
+    _lock_file: std::fs::File,
+}
+
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[async_trait]
+impl StorageCas for FileStorage {
+    async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
+        let path = self
+            .resolve_path(address)
+            .map_err(|e| StorageExtError::io(e.to_string()))?;
+        self.blocking_insert(path, bytes.to_vec()).await
+    }
+
+    async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
+    where
+        F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
+        T: Send,
+    {
+        let path = self
+            .resolve_path(address)
+            .map_err(|e| StorageExtError::io(e.to_string()))?;
+
+        // Phase 1: acquire lock + read (blocking)
+        let (current, locked) = self.blocking_locked_read(path).await?;
+
+        // Phase 2: call closure on async task
+        match f(current.as_deref())? {
+            CasAction::Write(new_bytes) => {
+                // Phase 3: write under same lock (blocking)
+                self.blocking_locked_write(locked, new_bytes).await?;
+                Ok(CasOutcome::Written)
+            }
+            CasAction::Abort(t) => Ok(CasOutcome::Aborted(t)),
+        }
+        // Lock released when `locked` is dropped (on Abort path, dropped here)
+    }
+}
+
+// ============================================================================
+// Extended Storage Traits (CAS, List, Delete)
+// ============================================================================
+
+/// Error type for extended storage operations
+///
+/// These errors have specific semantics important for storage operations:
+/// - `PreconditionFailed` indicates CAS conflict (retry is appropriate)
+/// - `Throttled` indicates rate limiting (back off and retry)
+/// - Others are generally fatal for the operation
+#[derive(Debug, Error)]
+pub enum StorageExtError {
+    /// I/O or network error
+    #[error("I/O error: {0}")]
+    Io(String),
+
+    /// Resource not found
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    /// Unauthorized - invalid credentials
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    /// Forbidden - insufficient permissions
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
+    /// Throttled - rate limited
+    ///
+    /// Indicates the caller should back off and retry.
+    #[error("Throttled: {0}")]
+    Throttled(String),
+
+    /// Precondition failed (CAS conflict)
+    ///
+    /// Indicates a concurrent modification was detected. The caller should
+    /// retry with a fresh read.
+    #[error("Precondition failed: {0}")]
+    PreconditionFailed(String),
+
+    /// Other error
+    #[error("{0}")]
+    Other(String),
+}
+
+impl StorageExtError {
+    pub fn io(msg: impl Into<String>) -> Self {
+        Self::Io(msg.into())
+    }
+
+    pub fn not_found(msg: impl Into<String>) -> Self {
+        Self::NotFound(msg.into())
+    }
+
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        Self::Unauthorized(msg.into())
+    }
+
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self::Forbidden(msg.into())
+    }
+
+    pub fn throttled(msg: impl Into<String>) -> Self {
+        Self::Throttled(msg.into())
+    }
+
+    pub fn other(msg: impl Into<String>) -> Self {
+        Self::Other(msg.into())
+    }
+}
+
+/// Result type for extended storage operations
+pub type StorageExtResult<T> = std::result::Result<T, StorageExtError>;
+
+/// Result of a paginated list operation
+#[derive(Debug, Clone)]
+pub struct ListResult {
+    /// Object keys/addresses relative to storage root
+    ///
+    /// These are storage keys, not full Fluree addresses.
+    /// The caller is responsible for building Fluree addresses from context.
+    pub keys: Vec<String>,
+
+    /// Continuation token for fetching the next page
+    ///
+    /// `None` if there are no more results.
+    pub continuation_token: Option<String>,
+
+    /// Whether there are more results available
+    pub is_truncated: bool,
+}
+
+impl ListResult {
+    /// Create a new list result
+    pub fn new(keys: Vec<String>, continuation_token: Option<String>, is_truncated: bool) -> Self {
+        Self {
+            keys,
+            continuation_token,
+            is_truncated,
+        }
+    }
+
+    /// Create an empty list result
+    pub fn empty() -> Self {
+        Self {
+            keys: Vec::new(),
+            continuation_token: None,
+            is_truncated: false,
+        }
+    }
+}
+
+/// Delete stored objects
+///
+/// This trait is separate from `StorageWrite` because:
+/// 1. Not all storage backends support deletion
+/// 2. Deletion is rarely needed in normal operation (append-only data model)
+/// 3. Deletion has security implications that warrant separate consideration
+#[async_trait]
+pub trait StorageDelete: Debug + Send + Sync {
+    /// Delete an object by address
+    ///
+    /// Returns `Ok(())` if the object was deleted or did not exist.
+    /// Only returns an error for actual failures (network, permissions, etc).
+    async fn delete(&self, address: &str) -> StorageExtResult<()>;
+}
+
+/// List objects by prefix
+///
+/// This trait provides listing capabilities for storage backends.
+///
+/// # Warning
+///
+/// `list_prefix` can be expensive for large prefixes. Use only for:
+/// - Development/debugging
+/// - Admin operations
+/// - Small, bounded prefixes
+///
+/// For production iteration over large datasets, use `list_prefix_paginated`.
+#[async_trait]
+pub trait StorageList: Debug + Send + Sync {
+    /// List all objects under a prefix
+    ///
+    /// Returns all matching keys. May be expensive for large prefixes.
+    ///
+    /// # Warning
+    ///
+    /// This method loads all results into memory. For large prefixes,
+    /// use `list_prefix_paginated` instead.
+    async fn list_prefix(&self, prefix: &str) -> StorageExtResult<Vec<String>>;
+
+    /// Paginated listing for production use
+    ///
+    /// Returns up to `max_keys` addresses and a continuation token.
+    ///
+    /// # Arguments
+    ///
+    /// * `prefix` - The prefix to list under
+    /// * `continuation_token` - Token from a previous call to continue listing
+    /// * `max_keys` - Maximum number of keys to return (capped by backend limits)
+    async fn list_prefix_paginated(
+        &self,
+        prefix: &str,
+        continuation_token: Option<String>,
+        max_keys: usize,
+    ) -> StorageExtResult<ListResult>;
+}
+
+/// What a `compare_and_swap` closure decided to do.
+pub enum CasAction<T = ()> {
+    /// Write these bytes back to storage.
+    Write(Vec<u8>),
+    /// Abort without writing; carry an application-level value out.
+    Abort(T),
+}
+
+/// Outcome of a `compare_and_swap` call.
+#[derive(Debug)]
+pub enum CasOutcome<T = ()> {
+    /// The write succeeded.
+    Written,
+    /// The closure chose to abort.
+    Aborted(T),
+}
+
+/// Atomic storage operations
+///
+/// Provides insert-if-absent and read-modify-write (compare-and-swap) semantics.
+/// Implementations choose their own concurrency mechanism:
+/// - In-memory: hold a write lock across the operation
+/// - Filesystem: file locking
+/// - S3: ETag-based optimistic concurrency with internal retry
+///
+/// Callers never see ETags, version counters, or other concurrency tokens.
+#[async_trait]
+pub trait StorageCas: Debug + Send + Sync {
+    /// Write bytes only if the key does not already exist.
+    ///
+    /// Returns `true` if the write succeeded (key was created),
+    /// `false` if the key already existed (no write performed).
+    async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool>;
+
+    /// Atomic read-modify-write.
+    ///
+    /// Reads the current value at `address` (or `None` if absent), passes it to
+    /// the closure, and writes the result back atomically. If another writer
+    /// modifies the value concurrently, the implementation re-reads and calls
+    /// the closure again.
+    ///
+    /// The closure receives `Option<&[u8]>` and returns:
+    /// - `Ok(CasAction::Write(bytes))` to write new bytes
+    /// - `Ok(CasAction::Abort(t))` to stop without writing
+    /// - `Err(e)` to stop with an error
+    ///
+    /// The closure should be a pure function of its input — it may be called
+    /// multiple times on retry.
+    async fn compare_and_swap<T, F>(&self, address: &str, f: F) -> StorageExtResult<CasOutcome<T>>
+    where
+        F: Fn(Option<&[u8]>) -> std::result::Result<CasAction<T>, StorageExtError> + Send + Sync,
+        T: Send;
+}
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1295,5 +1842,57 @@ mod tests {
         let id_from_new = ContentId::new(ContentKind::Commit, data);
 
         assert_eq!(id_from_store, id_from_new);
+    }
+
+    // ========================================================================
+    // Extended storage trait tests (ListResult, StorageExtError)
+    // ========================================================================
+
+    #[test]
+    fn test_list_result_empty() {
+        let result = ListResult::empty();
+        assert!(result.keys.is_empty());
+        assert!(result.continuation_token.is_none());
+        assert!(!result.is_truncated);
+    }
+
+    #[test]
+    fn test_list_result_new() {
+        let result = ListResult::new(
+            vec!["key1".to_string(), "key2".to_string()],
+            Some("token".to_string()),
+            true,
+        );
+        assert_eq!(result.keys.len(), 2);
+        assert_eq!(result.continuation_token, Some("token".to_string()));
+        assert!(result.is_truncated);
+    }
+
+    #[test]
+    fn test_storage_ext_error_constructors() {
+        assert!(matches!(
+            StorageExtError::io("test"),
+            StorageExtError::Io(_)
+        ));
+        assert!(matches!(
+            StorageExtError::not_found("test"),
+            StorageExtError::NotFound(_)
+        ));
+        assert!(matches!(
+            StorageExtError::unauthorized("test"),
+            StorageExtError::Unauthorized(_)
+        ));
+        assert!(matches!(
+            StorageExtError::forbidden("test"),
+            StorageExtError::Forbidden(_)
+        ));
+        assert!(matches!(
+            StorageExtError::throttled("test"),
+            StorageExtError::Throttled(_)
+        ));
+        assert!(matches!(
+            StorageExtError::other("test"),
+            StorageExtError::Other(_)
+        ));
     }
 }

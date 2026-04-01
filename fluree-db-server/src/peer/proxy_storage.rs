@@ -102,24 +102,34 @@ fn cid_and_ledger_from_address(address: &str) -> Option<(String, String)> {
         match parts[n - 2] {
             "branches" => (CODEC_FLUREE_INDEX_BRANCH, n - 4),
             "leaves" => (CODEC_FLUREE_INDEX_LEAF, n - 4),
-            "dicts" => (CODEC_FLUREE_DICT_BLOB, n - 4),
             _ => return None,
         }
+    } else if n >= 3 && parts[n - 2] == "dicts" && parts[n - 3] == "@shared" {
+        // DictBlob: {name}/@shared/dicts/{hash}.{ext}
+        // The alias_end points before "@shared"; the ledger name is everything
+        // before it and we'll use the default branch below.
+        (CODEC_FLUREE_DICT_BLOB, n - 3)
     } else {
         return None;
     };
 
-    // Need at least 2 segments for the alias (name + branch)
-    if alias_end < 2 {
-        return None;
-    }
-
-    // Reconstruct ledger ID: "mydb/main" → "mydb:main".
-    // Standard ledger format is "name:branch" where the branch is the last
-    // path segment of the ledger ID prefix.
-    let branch = parts[alias_end - 1];
-    let name = parts[..alias_end - 1].join("/");
-    let ledger_id = format_ledger_id(&name, branch);
+    // Reconstruct ledger ID from the alias segments before the kind directory.
+    // DictBlob uses @shared (no branch in path) — use the default branch.
+    // All other kinds have "name/.../branch/kind_dir/file" structure.
+    let ledger_id = if codec == CODEC_FLUREE_DICT_BLOB {
+        if alias_end < 1 {
+            return None;
+        }
+        let name = parts[..alias_end].join("/");
+        format_ledger_id(&name, fluree_db_core::DEFAULT_BRANCH)
+    } else {
+        if alias_end < 2 {
+            return None;
+        }
+        let branch = parts[alias_end - 1];
+        let name = parts[..alias_end - 1].join("/");
+        format_ledger_id(&name, branch)
+    };
 
     // Build CID from codec + hex digest
     let cid = ContentId::from_hex_digest(codec, hash_hex)?;

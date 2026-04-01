@@ -7,11 +7,11 @@
 //! The separation of commit and index files allows transactors and indexers
 //! to update independently without contention.
 //!
-//! # Concurrency Warning
+//! # Concurrency
 //!
-//! When built with the `native` feature on Unix platforms, this implementation uses
-//! an OS-level file lock (flock/fcntl semantics via `libc::flock`) to make the
-//! read-modify-write cycle atomic across processes.
+//! This implementation uses `FileStorage::compare_and_swap` for atomic
+//! read-modify-write operations. `FileStorage` uses `fs2` file locking
+//! internally, providing mutual exclusion across processes on the same host.
 //!
 //! For single-writer scenarios (one transactor per ledger, one indexer per ledger),
 //! this implementation is safe. The separation of commit and index files enables
@@ -22,38 +22,30 @@
 //! - S3 with ETag conditional writes
 //! - DynamoDB with conditional expressions
 //! - A database with transactions
-//!
-//! Note: this file-locking approach provides mutual exclusion, not a distributed CAS.
 
+use crate::ns_format::{
+    ns_context, BranchPointRef, IndexRef, LedgerRef, NsFileV2, NsIndexFileV2, NS_VERSION,
+};
 use crate::{
-    parse_default_context_value, AdminPublisher, CasResult, ConfigCasResult, ConfigPayload,
-    ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
-    NameService, NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication,
-    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
-    StatusPublisher, StatusValue, Subscription,
+    check_cas_expectation, deserialize_json, parse_default_context_value, ref_values_match,
+    serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
+    GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
+    NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
+    RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
-use fluree_db_core::ContentId;
-use serde::de::DeserializeOwned;
+use fluree_db_core::{CasAction, CasOutcome, ContentId, FileStorage, StorageCas};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
-use std::fs::OpenOptions;
-use std::io::Write;
-#[cfg(all(feature = "native", unix))]
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use tokio::sync::broadcast;
 
 /// File-based nameservice using ns@v2 format
 #[derive(Clone)]
 pub struct FileNameService {
-    /// Base path for storage
-    base_path: PathBuf,
+    /// File storage for atomic read-modify-write operations
+    storage: FileStorage,
     /// In-process event sender for reactive subscriptions.
     event_tx: broadcast::Sender<NameServiceEvent>,
 }
@@ -61,107 +53,9 @@ pub struct FileNameService {
 impl Debug for FileNameService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileNameService")
-            .field("base_path", &self.base_path)
+            .field("storage", &self.storage)
             .finish()
     }
-}
-
-/// JSON structure for main ns@v2 record file
-#[derive(Debug, Serialize, Deserialize)]
-struct NsFileV2 {
-    /// Context can be either a string or an object with prefix mappings
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "@id")]
-    id: String,
-
-    #[serde(rename = "@type")]
-    record_type: Vec<String>,
-
-    #[serde(rename = "f:ledger")]
-    ledger: LedgerRef,
-
-    #[serde(rename = "f:branch")]
-    branch: String,
-
-    /// Content identifier for the head commit (CID string, e.g. "bafy...").
-    /// This is the authoritative identity for the commit head pointer.
-    #[serde(
-        rename = "f:commitCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    commit_cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
-
-    #[serde(rename = "f:ledgerIndex", skip_serializing_if = "Option::is_none")]
-    index: Option<IndexRef>,
-
-    #[serde(rename = "f:status")]
-    status: String,
-
-    /// Content identifier for the default JSON-LD context (new CID format).
-    #[serde(
-        rename = "f:defaultContextCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    default_context_cid: Option<String>,
-
-    // V2 extension fields (optional for backward compatibility)
-    /// Status watermark (v2 extension) - defaults to 1 if missing
-    #[serde(rename = "f:statusV", skip_serializing_if = "Option::is_none")]
-    status_v: Option<i64>,
-
-    /// Status metadata beyond the state field (v2 extension)
-    #[serde(rename = "f:statusMeta", skip_serializing_if = "Option::is_none")]
-    status_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-
-    /// Config watermark (v2 extension) - defaults to 0 (unborn) if missing
-    #[serde(rename = "f:configV", skip_serializing_if = "Option::is_none")]
-    config_v: Option<i64>,
-
-    /// Config metadata beyond default_context (v2 extension)
-    #[serde(rename = "f:configMeta", skip_serializing_if = "Option::is_none")]
-    config_meta: Option<std::collections::HashMap<String, serde_json::Value>>,
-
-    /// Content identifier for the ledger config object (origin discovery)
-    #[serde(
-        rename = "f:configCid",
-        skip_serializing_if = "Option::is_none",
-        default
-    )]
-    config_cid: Option<String>,
-}
-
-/// JSON structure for index-only ns@v2 file
-#[derive(Debug, Serialize, Deserialize)]
-struct NsIndexFileV2 {
-    /// Context can be either a string or an object with prefix mappings
-    #[serde(rename = "@context")]
-    context: serde_json::Value,
-
-    #[serde(rename = "f:ledgerIndex")]
-    index: IndexRef,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct LedgerRef {
-    #[serde(rename = "@id")]
-    id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct IndexRef {
-    /// Content identifier for this index root (CID string).
-    #[serde(rename = "f:cid", skip_serializing_if = "Option::is_none", default)]
-    cid: Option<String>,
-
-    #[serde(rename = "f:t")]
-    t: i64,
 }
 
 /// JSON structure for graph source ns@v2 config record file
@@ -239,220 +133,138 @@ struct GraphSourceIndexFileV2WithT {
     index_t: i64,
 }
 
-const NS_VERSION: &str = "ns@v2";
-
-/// Create the standard ns@v2 context as JSON value.
-/// Uses object format with the `"f"` prefix mapping to the Fluree DB namespace.
-fn ns_context() -> serde_json::Value {
-    serde_json::json!({"f": fluree_vocab::fluree::DB})
-}
-
-#[cfg(all(feature = "native", unix))]
-struct FlockGuard {
-    file: std::fs::File,
-}
-
-#[cfg(all(feature = "native", unix))]
-impl FlockGuard {
-    fn lock_exclusive(path: &Path) -> Result<Self> {
-        // Ensure parent directory exists for the lock file.
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(NameServiceError::Io)?;
-        }
-
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(NameServiceError::Io)?;
-
-        let fd = file.as_raw_fd();
-        let rc = unsafe { libc::flock(fd, libc::LOCK_EX) };
-        if rc != 0 {
-            return Err(NameServiceError::storage(format!(
-                "Failed to acquire file lock on {:?}",
-                path
-            )));
-        }
-
-        Ok(Self { file })
-    }
-}
-
-#[cfg(all(feature = "native", unix))]
-impl Drop for FlockGuard {
-    fn drop(&mut self) {
-        let fd = self.file.as_raw_fd();
-        unsafe {
-            libc::flock(fd, libc::LOCK_UN);
-        }
-    }
-}
-
 impl FileNameService {
     /// Create a new file-based nameservice
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
         // Small buffer; consumers should treat this as best-effort.
         let (event_tx, _event_rx) = broadcast::channel(128);
         Self {
-            base_path: base_path.into(),
+            storage: FileStorage::new(base_path),
             event_tx,
         }
     }
 
-    /// Get the path for the main ns record
+    /// Emit a `NameServiceEvent` if the CAS outcome was `Written`.
+    fn emit_on_write<T>(&self, outcome: &CasOutcome<T>, event: NameServiceEvent) {
+        if matches!(outcome, CasOutcome::Written) {
+            let _ = self.event_tx.send(event);
+        }
+    }
+
+    /// Build a `fluree:file://` address for the main ns record.
+    fn ns_address(ledger_name: &str, branch: &str) -> String {
+        format!("fluree:file://{NS_VERSION}/{ledger_name}/{branch}.json")
+    }
+
+    /// Build a `fluree:file://` address for the index-only ns record.
+    fn index_address(ledger_name: &str, branch: &str) -> String {
+        format!("fluree:file://{NS_VERSION}/{ledger_name}/{branch}.index.json")
+    }
+
+    /// Get the filesystem path for the main ns record (for directory walking).
     fn ns_path(&self, ledger_name: &str, branch: &str) -> PathBuf {
-        self.base_path
+        self.storage
+            .base_path()
             .join(NS_VERSION)
             .join(ledger_name)
-            .join(format!("{}.json", branch))
+            .join(format!("{branch}.json"))
     }
 
-    /// Get the path for the index-only ns record
+    /// Get the filesystem path for the index ns record (for directory walking).
     fn index_path(&self, ledger_name: &str, branch: &str) -> PathBuf {
-        self.base_path
+        self.storage
+            .base_path()
             .join(NS_VERSION)
             .join(ledger_name)
-            .join(format!("{}.index.json", branch))
+            .join(format!("{branch}.index.json"))
     }
 
-    /// Read and parse a JSON file
-    async fn read_json<T: for<'de> Deserialize<'de>>(&self, path: &Path) -> Result<Option<T>> {
-        if !path.exists() {
-            return Ok(None);
+    /// Recursively walk `root` and return the relative paths of main ns record
+    /// `.json` files, skipping index, snapshot, lock, and tmp files.
+    ///
+    /// Returns an empty vec if `root` does not exist.
+    async fn walk_ns_json_files(root: &Path) -> Result<Vec<PathBuf>> {
+        if !root.exists() {
+            return Ok(vec![]);
         }
 
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|e| NameServiceError::storage(format!("Failed to read {:?}: {}", path, e)))?;
+        let mut paths = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
 
-        let parsed = serde_json::from_str(&content)?;
-        Ok(Some(parsed))
-    }
-
-    /// Write a JSON file atomically (write to .tmp then rename)
-    ///
-    /// Used in non-Unix / non-locking fallback builds.
-    #[cfg(not(all(feature = "native", unix)))]
-    async fn write_json_atomic<T: Serialize>(&self, path: &Path, value: &T) -> Result<()> {
-        // Ensure parent directory exists
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                NameServiceError::storage(format!("Failed to create directory {:?}: {}", parent, e))
+        while let Some(current_dir) = stack.pop() {
+            let mut dir_entries = tokio::fs::read_dir(&current_dir).await.map_err(|e| {
+                NameServiceError::storage(format!(
+                    "Failed to read directory {:?}: {}",
+                    current_dir, e
+                ))
             })?;
+
+            while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
+                NameServiceError::storage(format!("Failed to read directory entry: {}", e))
+            })? {
+                let path = entry.path();
+
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                if !path.is_file() {
+                    continue;
+                }
+
+                let file_name = entry.file_name().to_string_lossy().to_string();
+
+                if file_name.ends_with(".index.json")
+                    || file_name.ends_with(".snapshots.json")
+                    || file_name.ends_with(".lock")
+                    || file_name.ends_with(".tmp")
+                    || !file_name.ends_with(".json")
+                {
+                    continue;
+                }
+
+                if let Ok(relative) = path.strip_prefix(root) {
+                    paths.push(relative.to_path_buf());
+                }
+            }
         }
 
-        let content = serde_json::to_string_pretty(value)?;
-
-        // Write to temp file
-        let tmp_path = path.with_extension("json.tmp");
-        tokio::fs::write(&tmp_path, &content).await.map_err(|e| {
-            NameServiceError::storage(format!("Failed to write {:?}: {}", tmp_path, e))
-        })?;
-
-        // Rename to final path (atomic on most filesystems)
-        tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-            NameServiceError::storage(format!(
-                "Failed to rename {:?} to {:?}: {}",
-                tmp_path, path, e
-            ))
-        })?;
-
-        Ok(())
+        Ok(paths)
     }
 
-    /// Atomically update a JSON file under an OS-level lock (native, unix only).
+    /// Read and deserialize JSON from a `fluree:file://` address.
     ///
-    /// Atomic JSON update: lock + read + transform + write.
-    ///
-    /// The update function receives the current parsed value (or None if missing) and
-    /// returns Some(new_value) to write, or None to perform a no-op.
-    #[cfg(all(feature = "native", unix))]
-    async fn swap_json_locked<T, F>(&self, path: PathBuf, update: F) -> Result<()>
-    where
-        T: DeserializeOwned + Serialize + Send + 'static,
-        F: FnOnce(Option<T>) -> Result<Option<T>> + Send + 'static,
-    {
-        let parent_span = tracing::Span::current();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let _guard = parent_span.enter(); // safe: spawn_blocking pins to one thread
-                                              // Lock file lives alongside the target.
-            let lock_path = {
-                let mut p = path.clone();
-                let file_name = p
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .ok_or_else(|| NameServiceError::storage("Invalid file name".to_string()))?;
-                p.set_file_name(format!("{}.lock", file_name));
-                p
-            };
-
-            let _guard = FlockGuard::lock_exclusive(&lock_path)?;
-
-            // Read existing (if any)
-            let existing: Option<T> = match std::fs::read_to_string(&path) {
-                Ok(s) => Some(serde_json::from_str(&s)?),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-                Err(e) => return Err(NameServiceError::Io(e)),
-            };
-
-            let new_value = match update(existing)? {
-                Some(v) => v,
-                None => return Ok(()),
-            };
-
-            // Ensure parent exists
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(NameServiceError::Io)?;
+    /// Returns `None` if the address does not exist (NotFound error from storage).
+    async fn read_json_from_address<T: for<'de> Deserialize<'de>>(
+        &self,
+        address: &str,
+    ) -> Result<Option<T>> {
+        use fluree_db_core::StorageRead;
+        match self.storage.read_bytes(address).await {
+            Ok(bytes) => {
+                let parsed = serde_json::from_slice(&bytes)?;
+                Ok(Some(parsed))
             }
-
-            // Write to a temp file then rename (atomic on most local filesystems).
-            let tmp_path = {
-                let mut p = path.clone();
-                let pid = std::process::id();
-                let nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                let file_name = p
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .ok_or_else(|| NameServiceError::storage("Invalid file name".to_string()))?;
-                p.set_file_name(format!("{}.tmp.{}.{}", file_name, pid, nanos));
-                p
-            };
-
-            let content = serde_json::to_string_pretty(&new_value)?;
-            {
-                let mut f = std::fs::File::create(&tmp_path).map_err(NameServiceError::Io)?;
-                f.write_all(content.as_bytes())
-                    .map_err(NameServiceError::Io)?;
-                // Optional: f.sync_all() for stronger durability; skipped for perf.
-            }
-
-            std::fs::rename(&tmp_path, &path).map_err(NameServiceError::Io)?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| NameServiceError::storage(format!("Join error in swap_json_locked: {}", e)))?
+            Err(fluree_db_core::Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(NameServiceError::from(e)),
+        }
     }
 
     /// Load and merge main record with index file
     async fn load_record(&self, ledger_name: &str, branch: &str) -> Result<Option<NsRecord>> {
-        let main_path = self.ns_path(ledger_name, branch);
-        let index_path = self.index_path(ledger_name, branch);
+        let main_address = Self::ns_address(ledger_name, branch);
+        let index_address = Self::index_address(ledger_name, branch);
 
         // Read main record
-        let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
+        let main_file: Option<NsFileV2> = self.read_json_from_address(&main_address).await?;
 
         let Some(main) = main_file else {
             return Ok(None);
         };
 
         // Read index file (if exists)
-        let index_file: Option<NsIndexFileV2> = self.read_json(&index_path).await?;
+        let index_file: Option<NsIndexFileV2> = self.read_json_from_address(&index_address).await?;
 
         // Convert to NsRecord
         let mut record = NsRecord {
@@ -479,6 +291,15 @@ impl FileNameService {
                 .config_cid
                 .as_deref()
                 .and_then(|s| s.parse::<ContentId>().ok()),
+            branch_point: main.branch_point.and_then(|bp| {
+                let commit_id = bp.commit_cid?.parse::<ContentId>().ok()?;
+                Some(crate::BranchPoint {
+                    source: bp.source,
+                    commit_id,
+                    t: bp.t,
+                })
+            }),
+            branches: main.branches,
         };
 
         // Merge index file if it has equal or higher t (READ-TIME merge rule)
@@ -539,11 +360,12 @@ impl FileNameService {
         name: &str,
         branch: &str,
     ) -> Result<Option<GraphSourceRecord>> {
-        let main_path = self.ns_path(name, branch);
-        let index_path = self.index_path(name, branch);
+        let main_address = Self::ns_address(name, branch);
+        let index_address = Self::index_address(name, branch);
 
         // Read main record
-        let main_file: Option<GraphSourceNsFileV2> = self.read_json(&main_path).await?;
+        let main_file: Option<GraphSourceNsFileV2> =
+            self.read_json_from_address(&main_address).await?;
 
         let Some(main) = main_file else {
             return Ok(None);
@@ -579,7 +401,8 @@ impl FileNameService {
         };
 
         // Read and merge graph source index file (if exists)
-        let index_file: Option<GraphSourceIndexFileV2WithT> = self.read_json(&index_path).await?;
+        let index_file: Option<GraphSourceIndexFileV2WithT> =
+            self.read_json_from_address(&index_address).await?;
         if let Some(index_data) = index_file {
             if index_data.index_t > record.index_t {
                 record.index_id = index_data.index.cid.parse::<ContentId>().ok();
@@ -588,44 +411,6 @@ impl FileNameService {
         }
 
         Ok(Some(record))
-    }
-
-    /// Create NsFileV2 from record
-    ///
-    /// Used in non-Unix / non-locking fallback builds.
-    #[cfg(not(all(feature = "native", unix)))]
-    fn record_to_file(&self, record: &NsRecord) -> NsFileV2 {
-        NsFileV2 {
-            context: ns_context(),
-            id: record.ledger_id.clone(),
-            record_type: vec!["f:LedgerSource".to_string()],
-            ledger: LedgerRef {
-                id: record.name.clone(),
-            },
-            branch: record.branch.clone(),
-            commit_cid: record.commit_head_id.as_ref().map(|cid| cid.to_string()),
-            t: record.commit_t,
-            index: if record.index_head_id.is_some() {
-                Some(IndexRef {
-                    cid: record.index_head_id.as_ref().map(|cid| cid.to_string()),
-                    t: record.index_t,
-                })
-            } else {
-                None
-            },
-            status: if record.retracted {
-                "retracted".to_string()
-            } else {
-                "ready".to_string()
-            },
-            default_context_cid: record.default_context.as_ref().map(|cid| cid.to_string()),
-            // v2 extension fields (not set by record_to_file - preserved by swap_json_locked)
-            status_v: None,
-            status_meta: None,
-            config_v: None,
-            config_meta: None,
-            config_cid: record.config_id.as_ref().map(|cid| cid.to_string()),
-        }
     }
 }
 
@@ -636,71 +421,22 @@ impl NameService for FileNameService {
         self.load_record(&ledger_name, &branch).await
     }
 
-    async fn all_records(&self) -> Result<Vec<NsRecord>> {
-        let ns_dir = self.base_path.join(NS_VERSION);
-
-        if !ns_dir.exists() {
-            return Ok(vec![]);
-        }
-
+    async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
+        let ledger_dir = self.storage.base_path().join(NS_VERSION).join(ledger_name);
         let mut records = Vec::new();
 
-        // Walk the ns@v2 directory recursively so ledger names that contain '/'
-        // (e.g., "tenant1/customers") are discovered.
-        let mut stack = vec![ns_dir];
-        let ns_dir_base = self.base_path.join(NS_VERSION);
+        for relative in Self::walk_ns_json_files(&ledger_dir).await? {
+            let branch = relative
+                .to_string_lossy()
+                .trim_end_matches(".json")
+                .to_string();
 
-        while let Some(current_dir) = stack.pop() {
-            let mut dir_entries = tokio::fs::read_dir(&current_dir).await.map_err(|e| {
-                NameServiceError::storage(format!(
-                    "Failed to read directory {:?}: {}",
-                    current_dir, e
-                ))
-            })?;
+            if self.is_graph_source_record(ledger_name, &branch).await? {
+                continue;
+            }
 
-            while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
-                NameServiceError::storage(format!("Failed to read directory entry: {}", e))
-            })? {
-                let path = entry.path();
-
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-
-                if !path.is_file() {
-                    continue;
-                }
-
-                let file_name = entry.file_name().to_string_lossy().to_string();
-
-                // Skip index files and snapshot files, only process main .json files
-                if file_name.ends_with(".index.json") || file_name.ends_with(".snapshots.json") {
-                    continue;
-                }
-
-                if !file_name.ends_with(".json") {
-                    continue;
-                }
-
-                let branch = file_name.trim_end_matches(".json");
-                let Ok(relative_path) = path.strip_prefix(&ns_dir_base) else {
-                    continue;
-                };
-                let parent = relative_path
-                    .parent()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                if parent.is_empty() {
-                    continue;
-                }
-
-                // Exclude graph source records from ledger records.
-                if self.is_graph_source_record(&parent, branch).await? {
-                    continue;
-                }
-
-                if let Ok(Some(record)) = self.load_record(&parent, branch).await {
+            if let Ok(Some(record)) = self.load_record(ledger_name, &branch).await {
+                if !record.retracted {
                     records.push(record);
                 }
             }
@@ -708,98 +444,250 @@ impl NameService for FileNameService {
 
         Ok(records)
     }
+
+    async fn all_records(&self) -> Result<Vec<NsRecord>> {
+        let ns_dir = self.storage.base_path().join(NS_VERSION);
+        let mut records = Vec::new();
+
+        for relative in Self::walk_ns_json_files(&ns_dir).await? {
+            let file_stem = relative
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let parent = relative
+                .parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if parent.is_empty() {
+                continue;
+            }
+
+            if self.is_graph_source_record(&parent, &file_stem).await? {
+                continue;
+            }
+
+            if let Ok(Some(record)) = self.load_record(&parent, &file_stem).await {
+                records.push(record);
+            }
+        }
+
+        Ok(records)
+    }
+
+    async fn create_branch(
+        &self,
+        ledger_name: &str,
+        new_branch: &str,
+        branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let address = Self::ns_address(ledger_name, new_branch);
+        let normalized_id = format_ledger_id(ledger_name, new_branch);
+
+        let bp_ref = BranchPointRef {
+            source: branch_point.source.clone(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            t: branch_point.t,
+        };
+
+        let file = NsFileV2 {
+            context: ns_context(),
+            id: normalized_id.clone(),
+            record_type: vec!["f:LedgerSource".to_string()],
+            ledger: LedgerRef {
+                id: ledger_name.to_string(),
+            },
+            branch: new_branch.to_string(),
+            commit_cid: Some(branch_point.commit_id.to_string()),
+            config_cid: None,
+            t: branch_point.t,
+            index: None,
+            status: "ready".to_string(),
+            default_context_cid: None,
+            status_v: Some(1),
+            status_meta: None,
+            config_v: Some(0),
+            config_meta: None,
+            branch_point: Some(bp_ref),
+            branches: 0,
+        };
+        let bytes = serde_json::to_vec_pretty(&file)?;
+
+        let created = self.storage.insert(&address, &bytes).await?;
+        if !created {
+            return Err(NameServiceError::ledger_already_exists(&normalized_id));
+        }
+
+        // Increment source branch's child count
+        let source_address = Self::ns_address(ledger_name, &branch_point.source);
+        let outcome = self
+            .storage
+            .compare_and_swap(&source_address, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.branches += 1;
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            // Source branch doesn't exist; clean up the file we just created
+            let created_path = self.ns_path(ledger_name, new_branch);
+            let _ = tokio::fs::remove_file(&created_path).await;
+            return Err(NameServiceError::not_found(format!(
+                "source branch {}:{}",
+                ledger_name, branch_point.source
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+
+        // Read the record to find the parent before purging
+        let record = self
+            .load_record(&ledger_name, &branch)
+            .await?
+            .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
+
+        let parent_branch_point = record.branch_point.clone();
+
+        // Remove the NS files (purge)
+        let main_path = self.ns_path(&ledger_name, &branch);
+        let _ = tokio::fs::remove_file(&main_path).await;
+        let idx_path = self.index_path(&ledger_name, &branch);
+        let _ = tokio::fs::remove_file(&idx_path).await;
+
+        // Decrement parent's child count if this branch had a parent
+        match parent_branch_point {
+            Some(bp) => {
+                let parent_address = Self::ns_address(&ledger_name, &bp.source);
+                let outcome = self
+                    .storage
+                    .compare_and_swap(&parent_address, |bytes| {
+                        let Some(data) = bytes else {
+                            return Ok(CasAction::Abort(()));
+                        };
+                        let mut file: NsFileV2 = deserialize_json(data)?;
+                        file.branches = file.branches.saturating_sub(1);
+                        let new_bytes = serialize_json(&file)?;
+                        Ok(CasAction::Write(new_bytes))
+                    })
+                    .await?;
+
+                if matches!(outcome, CasOutcome::Aborted(())) {
+                    // Parent was already deleted — nothing to decrement
+                    return Ok(None);
+                }
+
+                // Re-read the parent to get the updated count
+                let parent_record = self.load_record(&ledger_name, &bp.source).await?;
+                Ok(parent_record.map(|r| r.branches))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn update_branch_point(
+        &self,
+        ledger_id: &str,
+        new_branch_point: crate::BranchPoint,
+    ) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let address = Self::ns_address(&ledger_name, &branch);
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.branch_point = Some(BranchPointRef {
+                    source: new_branch_point.source.clone(),
+                    commit_cid: Some(new_branch_point.commit_id.to_string()),
+                    t: new_branch_point.t,
+                });
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(ledger_id));
+        }
+
+        Ok(())
+    }
+
+    async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let address = Self::ns_address(&ledger_name, &branch);
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                file.apply_snapshot(&snapshot);
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        if matches!(outcome, CasOutcome::Aborted(())) {
+            return Err(NameServiceError::not_found(ledger_id));
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Publisher for FileNameService {
     async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let main_path = self.ns_path(&ledger_name, &branch);
+        let address = Self::ns_address(&ledger_name, &branch);
         let normalized_address = format_ledger_id(&ledger_name, &branch);
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = main_path.clone();
-            let ledger_name_for_file = ledger_name.clone();
-            let branch_for_file = branch.clone();
-            let normalized_address_for_error = normalized_address.clone();
+        // Create a fresh record with no commits
+        let file = NsFileV2 {
+            context: ns_context(),
+            id: normalized_address.clone(),
+            record_type: vec!["f:LedgerSource".to_string()],
+            ledger: LedgerRef {
+                id: ledger_name.clone(),
+            },
+            branch: branch.clone(),
+            commit_cid: None,
+            config_cid: None,
+            t: 0,
+            index: None,
+            status: "ready".to_string(),
+            default_context_cid: None,
+            // v2 extension fields - initialize with defaults
+            status_v: Some(1), // Initial status
+            status_meta: None,
+            config_v: Some(0), // Unborn config
+            config_meta: None,
+            branch_point: None,
+            branches: 0,
+        };
+        let bytes = serde_json::to_vec_pretty(&file)?;
 
-            // Use swap_json_locked to atomically check-and-create
-            return self
-                .swap_json_locked::<NsFileV2, _>(path, move |existing| {
-                    if existing.is_some() {
-                        // Record exists (active or retracted) — cannot overwrite.
-                        // A hard drop removes the file entirely; that is required to reuse the alias.
-                        return Err(NameServiceError::ledger_already_exists(
-                            normalized_address_for_error,
-                        ));
-                    }
-
-                    // Create a fresh record with no commits
-                    let file = NsFileV2 {
-                        context: ns_context(),
-                        id: format_ledger_id(&ledger_name_for_file, &branch_for_file),
-                        record_type: vec!["f:LedgerSource".to_string()],
-                        ledger: LedgerRef {
-                            id: ledger_name_for_file.clone(),
-                        },
-                        branch: branch_for_file.clone(),
-                        commit_cid: None,
-                        config_cid: None,
-                        t: 0,
-                        index: None,
-                        status: "ready".to_string(),
-                        default_context_cid: None,
-                        // v2 extension fields - initialize with defaults
-                        status_v: Some(1), // Initial status
-                        status_meta: None,
-                        config_v: Some(0), // Unborn config
-                        config_meta: None,
-                    };
-                    Ok(Some(file))
-                })
-                .await;
+        // Atomic create-if-absent: returns false if file already exists.
+        let created = self.storage.insert(&address, &bytes).await?;
+        if !created {
+            return Err(NameServiceError::ledger_already_exists(normalized_address));
         }
 
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            // Non-locking fallback: check if file exists, then create.
-            // Record exists (active or retracted) — cannot overwrite.
-            // A hard drop removes the file entirely; that is required to reuse the alias.
-            if main_path.exists() {
-                return Err(NameServiceError::ledger_already_exists(normalized_address));
-            }
-
-            let file = NsFileV2 {
-                context: ns_context(),
-                id: normalized_address.clone(),
-                record_type: vec!["f:LedgerSource".to_string()],
-                ledger: LedgerRef {
-                    id: ledger_name.clone(),
-                },
-                branch: branch.clone(),
-                commit_cid: None,
-                config_cid: None,
-                t: 0,
-                index: None,
-                status: "ready".to_string(),
-                default_context_cid: None,
-                // v2 extension fields - initialize with defaults
-                status_v: Some(1), // Initial status
-                status_meta: None,
-                config_v: Some(0), // Unborn config
-                config_meta: None,
-            };
-            self.write_json_atomic(&main_path, &file).await?;
-
-            // Clean up stale index sidecar from the previous incarnation
-            if was_retracted {
-                let idx_path = self.index_path(&ledger_name, &branch);
-                let _ = tokio::fs::remove_file(&idx_path).await;
-            }
-
-            Ok(())
-        }
+        Ok(())
     }
 
     async fn publish_commit(
@@ -809,117 +697,71 @@ impl Publisher for FileNameService {
         commit_id: &ContentId,
     ) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let main_path = self.ns_path(&ledger_name, &branch);
+        let address = Self::ns_address(&ledger_name, &branch);
+        let commit_id_for_event = commit_id.clone();
+        let ledger_name_c = ledger_name.clone();
+        let branch_c = branch.clone();
+        let cid_str = commit_id.to_string();
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = main_path.clone();
-            let commit_id_for_file = commit_id.clone();
-            let commit_id_for_event = commit_id.clone();
-            let ledger_name_for_file = ledger_name.clone();
-            let branch_for_file = branch.clone();
-            let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let cid_val = Some(cid_str.clone());
 
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
-
-            let res = self
-                .swap_json_locked::<NsFileV2, _>(path, move |existing| {
-                    let cid_str = Some(commit_id_for_file.to_string());
-
-                    match existing {
-                        Some(mut file) => {
-                            // Strictly monotonic update
-                            if commit_t > file.t {
-                                file.commit_cid = cid_str;
-                                file.t = commit_t;
-                                did_update2.store(true, Ordering::SeqCst);
-                                Ok(Some(file))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        None => {
-                            // Create new record (always write)
-                            let file = NsFileV2 {
-                                context: ns_context(),
-                                id: format_ledger_id(&ledger_name_for_file, &branch_for_file),
-                                record_type: vec!["f:LedgerSource".to_string()],
-                                ledger: LedgerRef {
-                                    id: ledger_name_for_file.clone(),
-                                },
-                                branch: branch_for_file.clone(),
-                                commit_cid: cid_str,
-                                config_cid: None,
-                                t: commit_t,
-                                index: None,
-                                status: "ready".to_string(),
-                                default_context_cid: None,
-                                // v2 extension fields - initialize with defaults
-                                status_v: Some(1),
-                                status_meta: None,
-                                config_v: Some(0),
-                                config_meta: None,
-                            };
-                            did_update2.store(true, Ordering::SeqCst);
-                            Ok(Some(file))
+                match bytes {
+                    Some(data) => {
+                        let mut file: NsFileV2 = deserialize_json(data)?;
+                        // Strictly monotonic update
+                        if commit_t > file.t {
+                            file.commit_cid = cid_val;
+                            file.t = commit_t;
+                            let new_bytes = serialize_json(&file)?;
+                            Ok(CasAction::Write(new_bytes))
+                        } else {
+                            Ok(CasAction::Abort(()))
                         }
                     }
-                })
-                .await;
-
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    ledger_id: gs_id_for_event,
-                    commit_id: commit_id_for_event,
-                    commit_t,
-                });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            // Fallback: no cross-process lock available.
-            // Keep behavior for testing/dev, but this is not safe for concurrent writers.
-            let existing: Option<NsFileV2> = self.read_json(&main_path).await?;
-            let mut did_update = false;
-
-            let file = if let Some(mut file) = existing {
-                if commit_t > file.t {
-                    file.commit_cid = Some(commit_id.to_string());
-                    file.t = commit_t;
-                    did_update = true;
+                    None => {
+                        // Create new record (always write)
+                        let file = NsFileV2 {
+                            context: ns_context(),
+                            id: format_ledger_id(&ledger_name_c, &branch_c),
+                            record_type: vec!["f:LedgerSource".to_string()],
+                            ledger: LedgerRef {
+                                id: ledger_name_c.clone(),
+                            },
+                            branch: branch_c.clone(),
+                            commit_cid: cid_val,
+                            config_cid: None,
+                            t: commit_t,
+                            index: None,
+                            status: "ready".to_string(),
+                            default_context_cid: None,
+                            // v2 extension fields - initialize with defaults
+                            status_v: Some(1),
+                            status_meta: None,
+                            config_v: Some(0),
+                            config_meta: None,
+                            branch_point: None,
+                            branches: 0,
+                        };
+                        let new_bytes = serialize_json(&file)?;
+                        Ok(CasAction::Write(new_bytes))
+                    }
                 }
-                file
-            } else {
-                let record = NsRecord {
-                    ledger_id: format_ledger_id(&ledger_name, &branch),
-                    name: ledger_name.clone(),
-                    branch: branch.clone(),
-                    commit_head_id: Some(commit_id.clone()),
-                    commit_t,
-                    index_head_id: None,
-                    index_t: 0,
-                    default_context: None,
-                    retracted: false,
-                    config_id: None,
-                };
-                did_update = true;
-                self.record_to_file(&record)
-            };
+            })
+            .await?;
 
-            self.write_json_atomic(&main_path, &file).await?;
-            if did_update {
-                let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                    ledger_id: format_ledger_id(&ledger_name, &branch),
-                    commit_id: commit_id.clone(),
-                    commit_t,
-                });
-            }
-            Ok(())
-        }
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerCommitPublished {
+                ledger_id: format_ledger_id(&ledger_name, &branch),
+                commit_id: commit_id_for_event,
+                commit_t,
+            },
+        );
+
+        Ok(())
     }
 
     async fn publish_index(
@@ -929,129 +771,75 @@ impl Publisher for FileNameService {
         index_id: &ContentId,
     ) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let index_path = self.index_path(&ledger_name, &branch);
+        let address = Self::index_address(&ledger_name, &branch);
+        let index_id_for_event = index_id.clone();
+        let cid_str = index_id.to_string();
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = index_path.clone();
-            let index_id_for_event = index_id.clone();
-            let cid_str = index_id.to_string();
-            let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
-
-            let res = self
-                .swap_json_locked::<NsIndexFileV2, _>(path, move |existing| {
-                    if let Some(existing_file) = &existing {
-                        if index_t <= existing_file.index.t {
-                            return Ok(None);
-                        }
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                if let Some(data) = bytes {
+                    let existing: NsIndexFileV2 = deserialize_json(data)?;
+                    if index_t <= existing.index.t {
+                        return Ok(CasAction::Abort(()));
                     }
-
-                    let file = NsIndexFileV2 {
-                        context: ns_context(),
-                        index: IndexRef {
-                            cid: Some(cid_str.clone()),
-                            t: index_t,
-                        },
-                    };
-                    did_update2.store(true, Ordering::SeqCst);
-                    Ok(Some(file))
-                })
-                .await;
-
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: gs_id_for_event,
-                    index_id: index_id_for_event,
-                    index_t,
-                });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            let existing: Option<NsIndexFileV2> = self.read_json(&index_path).await?;
-            if let Some(existing_file) = &existing {
-                if index_t <= existing_file.index.t {
-                    return Ok(());
                 }
-            }
 
-            let file = NsIndexFileV2 {
-                context: ns_context(),
-                index: IndexRef {
-                    cid: Some(index_id.to_string()),
-                    t: index_t,
-                },
-            };
-            self.write_json_atomic(&index_path, &file).await?;
-            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
+                let file = NsIndexFileV2 {
+                    context: ns_context(),
+                    index: IndexRef {
+                        cid: Some(cid_str.clone()),
+                        t: index_t,
+                    },
+                };
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerIndexPublished {
                 ledger_id: format_ledger_id(&ledger_name, &branch),
-                index_id: index_id.clone(),
+                index_id: index_id_for_event,
                 index_t,
-            });
-            Ok(())
-        }
+            },
+        );
+
+        Ok(())
     }
 
     async fn retract(&self, ledger_id: &str) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let main_path = self.ns_path(&ledger_name, &branch);
+        let address = Self::ns_address(&ledger_name, &branch);
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = main_path.clone();
-            let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
-
-            let res = self
-                .swap_json_locked::<NsFileV2, _>(path, move |existing| {
-                    let mut file = match existing {
-                        Some(f) => f,
-                        None => return Ok(None),
-                    };
-                    if file.status == "retracted" {
-                        return Ok(None);
-                    }
-                    file.status = "retracted".to_string();
-                    // Advance status_v when retracting
-                    let current_v = file.status_v.unwrap_or(1);
-                    file.status_v = Some(current_v + 1);
-                    did_update2.store(true, Ordering::SeqCst);
-                    Ok(Some(file))
-                })
-                .await;
-
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                    ledger_id: gs_id_for_event,
-                });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            let existing: Option<NsFileV2> = self.read_json(&main_path).await?;
-            if let Some(mut file) = existing {
-                if file.status != "retracted" {
-                    file.status = "retracted".to_string();
-                    // Advance status_v when retracting
-                    let current_v = file.status_v.unwrap_or(1);
-                    file.status_v = Some(current_v + 1);
-                    self.write_json_atomic(&main_path, &file).await?;
-                    let _ = self.event_tx.send(NameServiceEvent::LedgerRetracted {
-                        ledger_id: format_ledger_id(&ledger_name, &branch),
-                    });
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: NsFileV2 = deserialize_json(data)?;
+                if file.status == "retracted" {
+                    return Ok(CasAction::Abort(()));
                 }
-            }
-            Ok(())
-        }
+                file.status = "retracted".to_string();
+                // Advance status_v when retracting
+                let current_v = file.status_v.unwrap_or(1);
+                file.status_v = Some(current_v + 1);
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerRetracted {
+                ledger_id: format_ledger_id(&ledger_name, &branch),
+            },
+        );
+
+        Ok(())
     }
 
     async fn purge(&self, ledger_id: &str) -> Result<()> {
@@ -1082,78 +870,48 @@ impl AdminPublisher for FileNameService {
         index_id: &ContentId,
     ) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let index_path = self.index_path(&ledger_name, &branch);
-        let gs_id_for_event = format_ledger_id(&ledger_name, &branch);
+        let address = Self::index_address(&ledger_name, &branch);
+        let index_id_for_event = index_id.clone();
+        let cid_str = index_id.to_string();
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let index_id_for_event = index_id.clone();
-            let cid_str = index_id.to_string();
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
-
-            let res = self
-                .swap_json_locked::<NsIndexFileV2, _>(index_path, move |existing| {
-                    let should_update = match &existing {
-                        Some(file) => index_t >= file.index.t, // Allow equal
-                        None => true,
-                    };
-
-                    if should_update {
-                        did_update2.store(true, Ordering::SeqCst);
-                        Ok(Some(NsIndexFileV2 {
-                            context: ns_context(),
-                            index: IndexRef {
-                                cid: Some(cid_str.clone()),
-                                t: index_t,
-                            },
-                        }))
-                    } else {
-                        Ok(None)
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let should_update = match bytes {
+                    Some(data) => {
+                        let existing: NsIndexFileV2 = deserialize_json(data)?;
+                        index_t >= existing.index.t // Allow equal
                     }
-                })
-                .await;
-
-            // Only emit event if update actually happened
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: gs_id_for_event,
-                    index_id: index_id_for_event,
-                    index_t,
-                });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            // Fallback for non-Unix
-            let existing: Option<NsIndexFileV2> = self.read_json(&index_path).await?;
-            let should_update = match &existing {
-                Some(file) => index_t >= file.index.t,
-                None => true,
-            };
-
-            if should_update {
-                let file = NsIndexFileV2 {
-                    context: ns_context(),
-                    index: IndexRef {
-                        cid: Some(index_id.to_string()),
-                        t: index_t,
-                    },
+                    None => true,
                 };
-                self.write_json_atomic(&index_path, &file).await?;
 
-                let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: gs_id_for_event,
-                    index_id: index_id.clone(),
-                    index_t,
-                });
-            }
+                if should_update {
+                    let file = NsIndexFileV2 {
+                        context: ns_context(),
+                        index: IndexRef {
+                            cid: Some(cid_str.clone()),
+                            t: index_t,
+                        },
+                    };
+                    let new_bytes = serialize_json(&file)?;
+                    Ok(CasAction::Write(new_bytes))
+                } else {
+                    Ok(CasAction::Abort(()))
+                }
+            })
+            .await?;
 
-            Ok(())
-        }
+        // Only emit event if update actually happened
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerIndexPublished {
+                ledger_id: format_ledger_id(&ledger_name, &branch),
+                index_id: index_id_for_event,
+                index_t,
+            },
+        );
+
+        Ok(())
     }
 }
 
@@ -1167,97 +925,65 @@ impl GraphSourcePublisher for FileNameService {
         config: &str,
         dependencies: &[String],
     ) -> Result<()> {
-        let main_path = self.ns_path(name, branch);
+        let address = Self::ns_address(name, branch);
+        let name_c = name.to_string();
+        let branch_c = branch.to_string();
+        let config_c = config.to_string();
+        let dependencies_c = dependencies.to_vec();
+        let dependencies_for_event = dependencies.to_vec();
+        let source_type_for_event = source_type.clone();
+        let kind_type_str = match source_type.kind() {
+            crate::GraphSourceKind::Index => "f:IndexSource".to_string(),
+            crate::GraphSourceKind::Mapped => "f:MappedSource".to_string(),
+            crate::GraphSourceKind::Ledger => "f:LedgerSource".to_string(),
+        };
+        let source_type_str = source_type.to_type_string();
+        let gs_id_for_event = format_ledger_id(name, branch);
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = main_path.clone();
-            let name = name.to_string();
-            let branch = branch.to_string();
-            let config = config.to_string();
-            let dependencies_for_file = dependencies.to_vec();
-            let dependencies_for_event = dependencies_for_file.clone();
-            let source_type_for_event = source_type.clone();
-            let kind_type_str = match source_type.kind() {
-                crate::GraphSourceKind::Index => "f:IndexSource".to_string(),
-                crate::GraphSourceKind::Mapped => "f:MappedSource".to_string(),
-                crate::GraphSourceKind::Ledger => "f:LedgerSource".to_string(),
-            };
-            let source_type_str = source_type.to_type_string();
-            let name_for_file = name.clone();
-            let branch_for_file = branch.clone();
-            let gs_id_for_event = format_ledger_id(&name, &branch);
+        let outcome = self
+            .storage
+            .compare_and_swap::<(), _>(&address, |bytes| {
+                // For graph source config, we always update (config changes are allowed)
+                // Only preserve retracted status if already set
+                let status = match bytes {
+                    Some(data) => {
+                        let existing: GraphSourceNsFileV2 = deserialize_json(data)?;
+                        if existing.status == "retracted" {
+                            "retracted".to_string()
+                        } else {
+                            "ready".to_string()
+                        }
+                    }
+                    None => "ready".to_string(),
+                };
 
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
+                let file = GraphSourceNsFileV2 {
+                    context: ns_context(),
+                    id: format_ledger_id(&name_c, &branch_c),
+                    record_type: vec![kind_type_str.clone(), source_type_str.clone()],
+                    name: name_c.clone(),
+                    branch: branch_c.clone(),
+                    config: ConfigRef {
+                        value: config_c.clone(),
+                    },
+                    dependencies: dependencies_c.clone(),
+                    status,
+                };
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::<()>::Write(new_bytes))
+            })
+            .await?;
 
-            let res = self
-                .swap_json_locked::<GraphSourceNsFileV2, _>(path, move |existing| {
-                    // For graph source config, we always update (config changes are allowed)
-                    // Only preserve retracted status if already set
-                    let status = existing
-                        .as_ref()
-                        .map(|f| f.status.clone())
-                        .filter(|s| s == "retracted")
-                        .unwrap_or_else(|| "ready".to_string());
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceConfigPublished {
+                graph_source_id: gs_id_for_event,
+                source_type: source_type_for_event,
+                dependencies: dependencies_for_event,
+            },
+        );
 
-                    let file = GraphSourceNsFileV2 {
-                        context: ns_context(),
-                        id: format_ledger_id(&name_for_file, &branch_for_file),
-                        record_type: vec![kind_type_str, source_type_str],
-                        name: name_for_file,
-                        branch: branch_for_file,
-                        config: ConfigRef { value: config },
-                        dependencies: dependencies_for_file,
-                        status,
-                    };
-                    did_update2.store(true, Ordering::SeqCst);
-                    Ok(Some(file))
-                })
-                .await;
-
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self
-                    .event_tx
-                    .send(NameServiceEvent::GraphSourceConfigPublished {
-                        graph_source_id: gs_id_for_event,
-                        source_type: source_type_for_event,
-                        dependencies: dependencies_for_event,
-                    });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            let kind_type_str = match source_type.kind() {
-                crate::GraphSourceKind::Index => "f:IndexSource".to_string(),
-                crate::GraphSourceKind::Mapped => "f:MappedSource".to_string(),
-                crate::GraphSourceKind::Ledger => "f:LedgerSource".to_string(),
-            };
-            let file = GraphSourceNsFileV2 {
-                context: ns_context(),
-                id: format_ledger_id(&name, &branch),
-                record_type: vec![kind_type_str, source_type.to_type_string()],
-                name: name.to_string(),
-                branch: branch.to_string(),
-                config: ConfigRef {
-                    value: config.to_string(),
-                },
-                dependencies: dependencies.to_vec(),
-                status: "ready".to_string(),
-            };
-            self.write_json_atomic(&main_path, &file).await?;
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceConfigPublished {
-                    graph_source_id: format_ledger_id(&name, &branch),
-                    source_type,
-                    dependencies: dependencies.to_vec(),
-                });
-            Ok(())
-        }
+        Ok(())
     }
 
     async fn publish_graph_source_index(
@@ -1267,129 +993,82 @@ impl GraphSourcePublisher for FileNameService {
         index_id: &ContentId,
         index_t: i64,
     ) -> Result<()> {
-        let index_path = self.index_path(name, branch);
+        let address = Self::index_address(name, branch);
+        let cid_str = index_id.to_string();
+        let index_id_for_event = index_id.clone();
+        let name_c = name.to_string();
+        let branch_c = branch.to_string();
+        let gs_id_for_event = format_ledger_id(name, branch);
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = index_path.clone();
-            let cid_str = index_id.to_string();
-            let index_id_for_event = index_id.clone();
-            let name = name.to_string();
-            let branch = branch.to_string();
-            let gs_id_for_event = format_ledger_id(&name, &branch);
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
-
-            let res = self
-                .swap_json_locked::<GraphSourceIndexFileV2WithT, _>(path, move |existing| {
-                    // Strictly monotonic: only update if new_t > existing_t
-                    if let Some(existing_file) = &existing {
-                        if index_t <= existing_file.index_t {
-                            return Ok(None);
-                        }
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                // Strictly monotonic: only update if new_t > existing_t
+                if let Some(data) = bytes {
+                    let existing: GraphSourceIndexFileV2WithT = deserialize_json(data)?;
+                    if index_t <= existing.index_t {
+                        return Ok(CasAction::Abort(()));
                     }
-
-                    let file = GraphSourceIndexFileV2WithT {
-                        context: ns_context(),
-                        id: format_ledger_id(&name, &branch),
-                        index: GraphSourceIndexRef { cid: cid_str },
-                        index_t,
-                    };
-                    did_update2.store(true, Ordering::SeqCst);
-                    Ok(Some(file))
-                })
-                .await;
-
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self
-                    .event_tx
-                    .send(NameServiceEvent::GraphSourceIndexPublished {
-                        graph_source_id: gs_id_for_event,
-                        index_id: index_id_for_event,
-                        index_t,
-                    });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            let existing: Option<GraphSourceIndexFileV2WithT> = self.read_json(&index_path).await?;
-            if let Some(existing_file) = &existing {
-                if index_t <= existing_file.index_t {
-                    return Ok(());
                 }
-            }
 
-            let file = GraphSourceIndexFileV2WithT {
-                context: ns_context(),
-                id: format_ledger_id(name, branch),
-                index: GraphSourceIndexRef {
-                    cid: index_id.to_string(),
-                },
-                index_t,
-            };
-            self.write_json_atomic(&index_path, &file).await?;
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceIndexPublished {
-                    graph_source_id: format_ledger_id(name, branch),
-                    index_id: index_id.clone(),
+                let file = GraphSourceIndexFileV2WithT {
+                    context: ns_context(),
+                    id: format_ledger_id(&name_c, &branch_c),
+                    index: GraphSourceIndexRef {
+                        cid: cid_str.clone(),
+                    },
                     index_t,
-                });
-            Ok(())
-        }
+                };
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
+
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceIndexPublished {
+                graph_source_id: gs_id_for_event,
+                index_id: index_id_for_event,
+                index_t,
+            },
+        );
+
+        Ok(())
     }
 
     async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()> {
-        let main_path = self.ns_path(name, branch);
+        let address = Self::ns_address(name, branch);
+        let gs_id_for_event = format_ledger_id(name, branch);
 
-        #[cfg(all(feature = "native", unix))]
-        {
-            let path = main_path.clone();
-            let gs_id_for_event = format_ledger_id(name, branch);
-            let did_update = Arc::new(AtomicBool::new(false));
-            let did_update2 = did_update.clone();
-
-            let res = self
-                .swap_json_locked::<GraphSourceNsFileV2, _>(path, move |existing| {
-                    let mut file = match existing {
-                        Some(f) => f,
-                        None => return Ok(None),
-                    };
-                    if file.status == "retracted" {
-                        return Ok(None);
-                    }
-                    file.status = "retracted".to_string();
-                    did_update2.store(true, Ordering::SeqCst);
-                    Ok(Some(file))
-                })
-                .await;
-
-            if res.is_ok() && did_update.load(Ordering::SeqCst) {
-                let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                    graph_source_id: gs_id_for_event,
-                });
-            }
-
-            return res;
-        }
-
-        #[cfg(not(all(feature = "native", unix)))]
-        {
-            let existing: Option<GraphSourceNsFileV2> = self.read_json(&main_path).await?;
-            if let Some(mut file) = existing {
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let Some(data) = bytes else {
+                    return Ok(CasAction::Abort(()));
+                };
+                let mut file: GraphSourceNsFileV2 = deserialize_json(data)?;
+                if file.status == "retracted" {
+                    return Ok(CasAction::Abort(()));
+                }
                 file.status = "retracted".to_string();
-                self.write_json_atomic(&main_path, &file).await?;
-                let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                    graph_source_id: format_ledger_id(&name, &branch),
-                });
-            }
-            Ok(())
-        }
-    }
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
 
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::GraphSourceRetracted {
+                graph_source_id: gs_id_for_event,
+            },
+        );
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl GraphSourceLookup for FileNameService {
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,
@@ -1428,7 +1107,7 @@ impl GraphSourcePublisher for FileNameService {
     }
 
     async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>> {
-        let ns_dir = self.base_path.join(NS_VERSION);
+        let ns_dir = self.storage.base_path().join(NS_VERSION);
 
         if !ns_dir.exists() {
             return Ok(vec![]);
@@ -1467,7 +1146,7 @@ impl GraphSourcePublisher for FileNameService {
                     if file_name.ends_with(".json") {
                         // Extract name and branch from path
                         // Path structure: ns@v2/{name}/{branch}.json or ns@v2/{name}/{subdir}/.../{branch}.json
-                        let ns_dir_base = self.base_path.join(NS_VERSION);
+                        let ns_dir_base = self.storage.base_path().join(NS_VERSION);
                         if let Ok(relative_path) = path.strip_prefix(&ns_dir_base) {
                             // relative_path is like "gs-name/main.json" or "tenant/gs/main.json"
                             let parent = relative_path
@@ -1500,8 +1179,8 @@ impl RefPublisher for FileNameService {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         match kind {
             RefKind::CommitHead => {
-                let main_path = self.ns_path(&ledger_name, &branch);
-                let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
+                let address = Self::ns_address(&ledger_name, &branch);
+                let main_file: Option<NsFileV2> = self.read_json_from_address(&address).await?;
                 match main_file {
                     None => Ok(None),
                     Some(f) => Ok(Some(RefValue {
@@ -1515,8 +1194,9 @@ impl RefPublisher for FileNameService {
             }
             RefKind::IndexHead => {
                 // Check separate index file first, then fall back to main file.
-                let index_path = self.index_path(&ledger_name, &branch);
-                let index_file: Option<NsIndexFileV2> = self.read_json(&index_path).await?;
+                let index_address = Self::index_address(&ledger_name, &branch);
+                let index_file: Option<NsIndexFileV2> =
+                    self.read_json_from_address(&index_address).await?;
 
                 if let Some(idx) = index_file {
                     return Ok(Some(RefValue {
@@ -1530,8 +1210,9 @@ impl RefPublisher for FileNameService {
                 }
 
                 // Fall back to main file's inline index.
-                let main_path = self.ns_path(&ledger_name, &branch);
-                let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
+                let main_address = Self::ns_address(&ledger_name, &branch);
+                let main_file: Option<NsFileV2> =
+                    self.read_json_from_address(&main_address).await?;
                 match main_file {
                     None => Ok(None),
                     Some(f) => Ok(Some(RefValue {
@@ -1562,66 +1243,45 @@ impl RefPublisher for FileNameService {
 
         match kind {
             RefKind::CommitHead => {
-                let path = self.ns_path(&ledger_name, &branch);
+                let address = Self::ns_address(&ledger_name, &branch);
                 let ledger_name_c = ledger_name.clone();
                 let branch_c = branch.clone();
                 let address_c = normalized_address.clone();
 
-                // Use a shared cell to communicate the CAS result out of the closure.
-                let result_cell = Arc::new(std::sync::Mutex::new(CasResult::Updated));
-                let result_cell2 = result_cell.clone();
+                let outcome = self
+                    .storage
+                    .compare_and_swap(&address, |bytes| {
+                        let existing: Option<NsFileV2> = bytes.map(deserialize_json).transpose()?;
 
-                self.swap_json_locked(path, move |existing: Option<NsFileV2>| {
-                    let current_ref = existing.as_ref().map(|f| RefValue {
-                        id: f
-                            .commit_cid
-                            .as_deref()
-                            .and_then(|s| s.parse::<ContentId>().ok()),
-                        t: f.t,
-                    });
+                        let current_ref = existing.as_ref().map(|f| RefValue {
+                            id: f
+                                .commit_cid
+                                .as_deref()
+                                .and_then(|s| s.parse::<ContentId>().ok()),
+                            t: f.t,
+                        });
 
-                    // Validate expected matches current.
-                    match (&expected_clone, &current_ref) {
-                        (None, None) => {} // OK: creating new
-                        (None, Some(actual)) => {
-                            *result_cell2.lock().unwrap() = CasResult::Conflict {
-                                actual: Some(actual.clone()),
-                            };
-                            return Ok(None); // no-op write
+                        if let Some(conflict) = check_cas_expectation(
+                            &expected_clone,
+                            &current_ref,
+                            true,
+                            ref_values_match,
+                            |actual| CasResult::Conflict { actual },
+                        ) {
+                            return Ok(CasAction::Abort(conflict));
                         }
-                        (Some(_), None) => {
-                            *result_cell2.lock().unwrap() = CasResult::Conflict { actual: None };
-                            return Ok(None);
-                        }
-                        (Some(exp), Some(actual)) => {
-                            // Compare on ContentId identity.
-                            let identity_matches = match (&exp.id, &actual.id) {
-                                (Some(a), Some(b)) => a == b,
-                                (None, None) => true,
-                                _ => false,
-                            };
-                            if !identity_matches {
-                                *result_cell2.lock().unwrap() = CasResult::Conflict {
-                                    actual: Some(actual.clone()),
-                                };
-                                return Ok(None);
+
+                        // Monotonic guard: CommitHead requires strict new.t > current.t
+                        if let Some(ref cur) = current_ref {
+                            if new_clone.t <= cur.t {
+                                return Ok(CasAction::Abort(CasResult::Conflict {
+                                    actual: Some(cur.clone()),
+                                }));
                             }
                         }
-                    }
 
-                    // Monotonic guard: CommitHead requires strict new.t > current.t
-                    if let Some(ref cur) = current_ref {
-                        if new_clone.t <= cur.t {
-                            *result_cell2.lock().unwrap() = CasResult::Conflict {
-                                actual: Some(cur.clone()),
-                            };
-                            return Ok(None);
-                        }
-                    }
-
-                    // Apply update.
-                    let mut file = existing.unwrap_or_else(|| {
-                        NsFileV2 {
+                        // Apply update.
+                        let mut file = existing.unwrap_or_else(|| NsFileV2 {
                             context: ns_context(),
                             id: address_c.clone(),
                             record_type: vec!["f:LedgerSource".to_string()],
@@ -1640,18 +1300,24 @@ impl RefPublisher for FileNameService {
                             status_meta: None,
                             config_v: Some(0),
                             config_meta: None,
-                        }
-                    });
+                            branch_point: None,
+                            branches: 0,
+                        });
 
-                    // CID goes into the commit_cid field.
-                    file.commit_cid = new_clone.id.as_ref().map(|cid| cid.to_string());
-                    file.t = new_clone.t;
+                        // CID goes into the commit_cid field.
+                        file.commit_cid = new_clone.id.as_ref().map(|cid| cid.to_string());
+                        file.t = new_clone.t;
 
-                    Ok(Some(file))
-                })
-                .await?;
+                        let new_bytes = serialize_json(&file)?;
+                        Ok(CasAction::Write(new_bytes))
+                    })
+                    .await?;
 
-                let result = result_cell.lock().unwrap().clone();
+                let result = match outcome {
+                    CasOutcome::Written => CasResult::Updated,
+                    CasOutcome::Aborted(r) => r,
+                };
+
                 if result == CasResult::Updated {
                     if let Some(ref cid) = new.id {
                         let _ = event_tx.send(NameServiceEvent::LedgerCommitPublished {
@@ -1665,72 +1331,85 @@ impl RefPublisher for FileNameService {
             }
 
             RefKind::IndexHead => {
-                let path = self.index_path(&ledger_name, &branch);
-                let result_cell = Arc::new(std::sync::Mutex::new(CasResult::Updated));
-                let result_cell2 = result_cell.clone();
+                let address = Self::index_address(&ledger_name, &branch);
 
-                self.swap_json_locked(path, move |existing: Option<NsIndexFileV2>| {
-                    let current_ref = existing.as_ref().map(|f| RefValue {
+                // Pre-read the main file's inline index ref so we can fall
+                // back to it when the separate index file doesn't exist yet.
+                // This matches the fallback logic in `get_ref(IndexHead)`.
+                let main_address = Self::ns_address(&ledger_name, &branch);
+                let main_file_inline_ref: Option<RefValue> = {
+                    let main_file: Option<NsFileV2> =
+                        self.read_json_from_address(&main_address).await?;
+                    main_file.map(|f| RefValue {
                         id: f
                             .index
-                            .cid
-                            .as_deref()
+                            .as_ref()
+                            .and_then(|i| i.cid.as_deref())
                             .and_then(|s| s.parse::<ContentId>().ok()),
-                        t: f.index.t,
-                    });
+                        t: f.index.as_ref().map(|i| i.t).unwrap_or(0),
+                    })
+                };
 
-                    // Validate expected matches current.
-                    match (&expected_clone, &current_ref) {
-                        (None, None) => {}
-                        (None, Some(actual)) => {
-                            *result_cell2.lock().unwrap() = CasResult::Conflict {
-                                actual: Some(actual.clone()),
-                            };
-                            return Ok(None);
+                let outcome = self
+                    .storage
+                    .compare_and_swap(&address, |bytes| {
+                        let existing: Option<NsIndexFileV2> =
+                            bytes.map(deserialize_json).transpose()?;
+
+                        // When the separate index file doesn't exist yet,
+                        // use the main file's inline index ref (matches get_ref
+                        // fallback). This handles freshly created ledgers where
+                        // the main file has index: None but no separate index
+                        // file has been written.
+                        let current_ref = match existing.as_ref() {
+                            Some(f) => Some(RefValue {
+                                id: f
+                                    .index
+                                    .cid
+                                    .as_deref()
+                                    .and_then(|s| s.parse::<ContentId>().ok()),
+                                t: f.index.t,
+                            }),
+                            None => main_file_inline_ref.clone(),
+                        };
+
+                        if let Some(conflict) = check_cas_expectation(
+                            &expected_clone,
+                            &current_ref,
+                            true,
+                            ref_values_match,
+                            |actual| CasResult::Conflict { actual },
+                        ) {
+                            return Ok(CasAction::Abort(conflict));
                         }
-                        (Some(_), None) => {
-                            *result_cell2.lock().unwrap() = CasResult::Conflict { actual: None };
-                            return Ok(None);
-                        }
-                        (Some(exp), Some(actual)) => {
-                            // Compare on ContentId identity.
-                            let identity_matches = match (&exp.id, &actual.id) {
-                                (Some(a), Some(b)) => a == b,
-                                (None, None) => true,
-                                _ => false,
-                            };
-                            if !identity_matches {
-                                *result_cell2.lock().unwrap() = CasResult::Conflict {
-                                    actual: Some(actual.clone()),
-                                };
-                                return Ok(None);
+
+                        // Monotonic guard: IndexHead allows new.t >= current.t
+                        if let Some(ref cur) = current_ref {
+                            if new_clone.t < cur.t {
+                                return Ok(CasAction::Abort(CasResult::Conflict {
+                                    actual: Some(cur.clone()),
+                                }));
                             }
                         }
-                    }
 
-                    // Monotonic guard: IndexHead allows new.t >= current.t
-                    if let Some(ref cur) = current_ref {
-                        if new_clone.t < cur.t {
-                            *result_cell2.lock().unwrap() = CasResult::Conflict {
-                                actual: Some(cur.clone()),
-                            };
-                            return Ok(None);
-                        }
-                    }
+                        // Apply update: CID goes into IndexRef.cid.
+                        let file = NsIndexFileV2 {
+                            context: ns_context(),
+                            index: IndexRef {
+                                cid: new_clone.id.as_ref().map(|cid| cid.to_string()),
+                                t: new_clone.t,
+                            },
+                        };
+                        let new_bytes = serialize_json(&file)?;
+                        Ok(CasAction::Write(new_bytes))
+                    })
+                    .await?;
 
-                    // Apply update: CID goes into IndexRef.cid.
-                    let file = NsIndexFileV2 {
-                        context: ns_context(),
-                        index: IndexRef {
-                            cid: new_clone.id.as_ref().map(|cid| cid.to_string()),
-                            t: new_clone.t,
-                        },
-                    };
-                    Ok(Some(file))
-                })
-                .await?;
+                let result = match outcome {
+                    CasOutcome::Written => CasResult::Updated,
+                    CasOutcome::Aborted(r) => r,
+                };
 
-                let result = result_cell.lock().unwrap().clone();
                 if result == CasResult::Updated {
                     if let Some(ref cid) = new.id {
                         let _ = event_tx.send(NameServiceEvent::LedgerIndexPublished {
@@ -1769,31 +1448,15 @@ impl Publication for FileNameService {
 // V2 Extension: StatusPublisher and ConfigPublisher
 // ---------------------------------------------------------------------------
 
-#[cfg(all(feature = "native", unix))]
 #[async_trait]
 impl StatusPublisher for FileNameService {
     async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let main_path = self.ns_path(&ledger_name, &branch);
+        let address = Self::ns_address(&ledger_name, &branch);
 
-        let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
+        let main_file: Option<NsFileV2> = self.read_json_from_address(&address).await?;
 
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                // Build StatusPayload from status field and status_meta
-                let extra = f.status_meta.unwrap_or_default();
-                let payload = StatusPayload {
-                    state: f.status.clone(),
-                    extra,
-                };
-
-                // status_v defaults to 1 if missing (for backward compatibility)
-                let v = f.status_v.unwrap_or(1);
-
-                Ok(Some(StatusValue { v, payload }))
-            }
-        }
+        Ok(main_file.map(|f| f.to_status_value()))
     }
 
     async fn push_status(
@@ -1803,133 +1466,68 @@ impl StatusPublisher for FileNameService {
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let path = self.ns_path(&ledger_name, &branch);
+        let address = Self::ns_address(&ledger_name, &branch);
 
         // Clone values for the closure
         let expected_clone = expected.cloned();
         let new_clone = new.clone();
 
-        let result_cell = std::sync::Arc::new(std::sync::Mutex::new(StatusCasResult::Updated));
-        let result_cell2 = result_cell.clone();
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let existing: Option<NsFileV2> = bytes.map(deserialize_json).transpose()?;
 
-        self.swap_json_locked::<NsFileV2, _>(path, move |existing| {
-            let current = match &existing {
-                None => None,
-                Some(f) => {
-                    let extra = f.status_meta.clone().unwrap_or_default();
-                    let payload = StatusPayload {
-                        state: f.status.clone(),
-                        extra,
-                    };
-                    let v = f.status_v.unwrap_or(1);
-                    Some(StatusValue { v, payload })
+                let current = existing.as_ref().map(NsFileV2::to_status_value);
+
+                if let Some(conflict) = check_cas_expectation(
+                    &expected_clone,
+                    &current,
+                    false,
+                    |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+                    |actual| StatusCasResult::Conflict { actual },
+                ) {
+                    return Ok(CasAction::Abort(conflict));
                 }
-            };
 
-            // Compare expected with current
-            match (&expected_clone, &current) {
-                (None, None) => {
-                    *result_cell2.lock().unwrap() = StatusCasResult::Conflict { actual: None };
-                    return Ok(None);
+                // Monotonic guard: new.v > current.v
+                let current_v = current.as_ref().map(|c| c.v).unwrap_or(0);
+                if new_clone.v <= current_v {
+                    return Ok(CasAction::Abort(StatusCasResult::Conflict {
+                        actual: current,
+                    }));
                 }
-                (None, Some(actual)) => {
-                    *result_cell2.lock().unwrap() = StatusCasResult::Conflict {
-                        actual: Some(actual.clone()),
-                    };
-                    return Ok(None);
-                }
-                (Some(_), None) => {
-                    *result_cell2.lock().unwrap() = StatusCasResult::Conflict { actual: None };
-                    return Ok(None);
-                }
-                (Some(exp), Some(actual)) => {
-                    if exp.v != actual.v || exp.payload != actual.payload {
-                        *result_cell2.lock().unwrap() = StatusCasResult::Conflict {
-                            actual: Some(actual.clone()),
-                        };
-                        return Ok(None);
-                    }
-                }
-            }
 
-            // Monotonic guard: new.v > current.v
-            let current_v = current.as_ref().map(|c| c.v).unwrap_or(0);
-            if new_clone.v <= current_v {
-                *result_cell2.lock().unwrap() = StatusCasResult::Conflict { actual: current };
-                return Ok(None);
-            }
+                // Apply update
+                let mut file = existing.unwrap();
+                file.status = new_clone.payload.state.clone();
+                file.status_v = Some(new_clone.v);
+                file.status_meta = if new_clone.payload.extra.is_empty() {
+                    None
+                } else {
+                    Some(new_clone.payload.extra.clone())
+                };
 
-            // Apply update
-            let mut file = existing.unwrap();
-            file.status = new_clone.payload.state.clone();
-            file.status_v = Some(new_clone.v);
-            file.status_meta = if new_clone.payload.extra.is_empty() {
-                None
-            } else {
-                Some(new_clone.payload.extra.clone())
-            };
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
 
-            Ok(Some(file))
-        })
-        .await?;
-
-        let result = result_cell.lock().unwrap().clone();
-        Ok(result)
+        match outcome {
+            CasOutcome::Written => Ok(StatusCasResult::Updated),
+            CasOutcome::Aborted(r) => Ok(r),
+        }
     }
 }
 
-#[cfg(all(feature = "native", unix))]
 #[async_trait]
 impl ConfigPublisher for FileNameService {
     async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let main_path = self.ns_path(&ledger_name, &branch);
+        let address = Self::ns_address(&ledger_name, &branch);
 
-        let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
+        let main_file: Option<NsFileV2> = self.read_json_from_address(&address).await?;
 
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                let has_default_ctx = f.default_context_cid.is_some();
-
-                // config_v defaults based on whether default_context exists:
-                // - If default_context exists but config_v is missing, treat as v=1 (legacy record with config)
-                // - If neither exists, treat as v=0 (unborn)
-                let v = f.config_v.unwrap_or_else(|| {
-                    if has_default_ctx || f.config_meta.is_some() {
-                        1 // Legacy record with config data
-                    } else {
-                        0 // Unborn
-                    }
-                });
-
-                let resolved_ctx = f
-                    .default_context_cid
-                    .as_deref()
-                    .and_then(parse_default_context_value);
-
-                // Build ConfigPayload if we have any config data
-                let payload = if v == 0
-                    && resolved_ctx.is_none()
-                    && f.config_meta.is_none()
-                    && f.config_cid.is_none()
-                {
-                    None
-                } else {
-                    let extra = f.config_meta.unwrap_or_default();
-                    Some(ConfigPayload {
-                        default_context: resolved_ctx,
-                        config_id: f
-                            .config_cid
-                            .as_deref()
-                            .and_then(|s| s.parse::<ContentId>().ok()),
-                        extra,
-                    })
-                };
-
-                Ok(Some(ConfigValue { v, payload }))
-            }
-        }
+        Ok(main_file.map(|f| f.to_config_value()))
     }
 
     async fn push_config(
@@ -1939,218 +1537,66 @@ impl ConfigPublisher for FileNameService {
         new: &ConfigValue,
     ) -> Result<ConfigCasResult> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let path = self.ns_path(&ledger_name, &branch);
+        let address = Self::ns_address(&ledger_name, &branch);
 
         // Clone values for the closure
         let expected_clone = expected.cloned();
         let new_clone = new.clone();
 
-        let result_cell = std::sync::Arc::new(std::sync::Mutex::new(ConfigCasResult::Updated));
-        let result_cell2 = result_cell.clone();
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let existing: Option<NsFileV2> = bytes.map(deserialize_json).transpose()?;
 
-        self.swap_json_locked::<NsFileV2, _>(path, move |existing| {
-            let current = match &existing {
-                None => None,
-                Some(f) => {
-                    let has_default_ctx = f.default_context_cid.is_some();
+                let current = existing.as_ref().map(NsFileV2::to_config_value);
 
-                    let v = f.config_v.unwrap_or_else(|| {
-                        if has_default_ctx || f.config_meta.is_some() {
-                            1 // Legacy record with config data
-                        } else {
-                            0 // Unborn
-                        }
-                    });
+                if let Some(conflict) = check_cas_expectation(
+                    &expected_clone,
+                    &current,
+                    false,
+                    |exp, actual| exp.v == actual.v && exp.payload == actual.payload,
+                    |actual| ConfigCasResult::Conflict { actual },
+                ) {
+                    return Ok(CasAction::Abort(conflict));
+                }
 
-                    let resolved_ctx = f
-                        .default_context_cid
-                        .as_deref()
-                        .and_then(parse_default_context_value);
+                // Monotonic guard: new.v > current.v
+                let current_v = current.as_ref().map(|c| c.v).unwrap_or(0);
+                if new_clone.v <= current_v {
+                    return Ok(CasAction::Abort(ConfigCasResult::Conflict {
+                        actual: current,
+                    }));
+                }
 
-                    let payload = if v == 0
-                        && resolved_ctx.is_none()
-                        && f.config_meta.is_none()
-                        && f.config_cid.is_none()
-                    {
+                // Apply update
+                let mut file = existing.unwrap();
+                file.config_v = Some(new_clone.v);
+
+                if let Some(ref payload) = new_clone.payload {
+                    // Write CID to field (CID-only)
+                    file.default_context_cid =
+                        payload.default_context.as_ref().map(|c| c.to_string());
+                    file.config_meta = if payload.extra.is_empty() {
                         None
                     } else {
-                        let extra = f.config_meta.clone().unwrap_or_default();
-                        Some(ConfigPayload {
-                            default_context: resolved_ctx,
-                            config_id: f
-                                .config_cid
-                                .as_deref()
-                                .and_then(|s| s.parse::<ContentId>().ok()),
-                            extra,
-                        })
+                        Some(payload.extra.clone())
                     };
-                    Some(ConfigValue { v, payload })
-                }
-            };
-
-            // Compare expected with current
-            match (&expected_clone, &current) {
-                (None, None) => {
-                    *result_cell2.lock().unwrap() = ConfigCasResult::Conflict { actual: None };
-                    return Ok(None);
-                }
-                (None, Some(actual)) => {
-                    *result_cell2.lock().unwrap() = ConfigCasResult::Conflict {
-                        actual: Some(actual.clone()),
-                    };
-                    return Ok(None);
-                }
-                (Some(_), None) => {
-                    *result_cell2.lock().unwrap() = ConfigCasResult::Conflict { actual: None };
-                    return Ok(None);
-                }
-                (Some(exp), Some(actual)) => {
-                    if exp.v != actual.v || exp.payload != actual.payload {
-                        *result_cell2.lock().unwrap() = ConfigCasResult::Conflict {
-                            actual: Some(actual.clone()),
-                        };
-                        return Ok(None);
-                    }
-                }
-            }
-
-            // Monotonic guard: new.v > current.v
-            let current_v = current.as_ref().map(|c| c.v).unwrap_or(0);
-            if new_clone.v <= current_v {
-                *result_cell2.lock().unwrap() = ConfigCasResult::Conflict { actual: current };
-                return Ok(None);
-            }
-
-            // Apply update
-            let mut file = existing.unwrap();
-            file.config_v = Some(new_clone.v);
-
-            if let Some(ref payload) = new_clone.payload {
-                // Write CID to field (CID-only)
-                file.default_context_cid = payload.default_context.as_ref().map(|c| c.to_string());
-                file.config_meta = if payload.extra.is_empty() {
-                    None
+                    file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
                 } else {
-                    Some(payload.extra.clone())
-                };
-                file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
-            } else {
-                file.default_context_cid = None;
-                file.config_meta = None;
-                file.config_cid = None;
-            }
+                    file.default_context_cid = None;
+                    file.config_meta = None;
+                    file.config_cid = None;
+                }
 
-            Ok(Some(file))
-        })
-        .await?;
+                let new_bytes = serialize_json(&file)?;
+                Ok(CasAction::Write(new_bytes))
+            })
+            .await?;
 
-        let result = result_cell.lock().unwrap().clone();
-        Ok(result)
-    }
-}
-
-// Non-Unix fallback implementations
-#[cfg(not(all(feature = "native", unix)))]
-#[async_trait]
-impl StatusPublisher for FileNameService {
-    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
-        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let main_path = self.ns_path(&ledger_name, &branch);
-
-        let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
-
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                let extra = f.status_meta.unwrap_or_default();
-                let payload = StatusPayload {
-                    state: f.status.clone(),
-                    extra,
-                };
-                let v = f.status_v.unwrap_or(1);
-                Ok(Some(StatusValue { v, payload }))
-            }
+        match outcome {
+            CasOutcome::Written => Ok(ConfigCasResult::Updated),
+            CasOutcome::Aborted(r) => Ok(r),
         }
-    }
-
-    async fn push_status(
-        &self,
-        _ledger_id: &str,
-        _expected: Option<&StatusValue>,
-        _new: &StatusValue,
-    ) -> Result<StatusCasResult> {
-        // Non-Unix platforms don't support file locking for CAS
-        Err(NameServiceError::storage(
-            "StatusPublisher push_status requires native Unix file locking".to_string(),
-        ))
-    }
-}
-
-#[cfg(not(all(feature = "native", unix)))]
-#[async_trait]
-impl ConfigPublisher for FileNameService {
-    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
-        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let main_path = self.ns_path(&ledger_name, &branch);
-
-        let main_file: Option<NsFileV2> = self.read_json(&main_path).await?;
-
-        match main_file {
-            None => Ok(None),
-            Some(f) => {
-                let has_default_ctx =
-                    f.default_context_cid.is_some() || f.default_context.is_some();
-
-                let v = f.config_v.unwrap_or_else(|| {
-                    if has_default_ctx || f.config_meta.is_some() {
-                        1 // Legacy record with config data
-                    } else {
-                        0 // Unborn
-                    }
-                });
-
-                let resolved_ctx = f
-                    .default_context_cid
-                    .as_deref()
-                    .and_then(parse_default_context_value)
-                    .or_else(|| {
-                        f.default_context
-                            .as_ref()
-                            .and_then(|c| parse_default_context_value(&c.id))
-                    });
-
-                let payload = if v == 0
-                    && resolved_ctx.is_none()
-                    && f.config_meta.is_none()
-                    && f.config_cid.is_none()
-                {
-                    None
-                } else {
-                    let extra = f.config_meta.unwrap_or_default();
-                    Some(ConfigPayload {
-                        default_context: resolved_ctx,
-                        config_id: f
-                            .config_cid
-                            .as_deref()
-                            .and_then(|s| s.parse::<ContentId>().ok()),
-                        extra,
-                    })
-                };
-                Ok(Some(ConfigValue { v, payload }))
-            }
-        }
-    }
-
-    async fn push_config(
-        &self,
-        _ledger_id: &str,
-        _expected: Option<&ConfigValue>,
-        _new: &ConfigValue,
-    ) -> Result<ConfigCasResult> {
-        // Non-Unix platforms don't support file locking for CAS
-        Err(NameServiceError::storage(
-            "ConfigPublisher push_config requires native Unix file locking".to_string(),
-        ))
     }
 }
 
@@ -2963,5 +2409,151 @@ mod tests {
             }
             _ => panic!("expected conflict"),
         }
+    }
+
+    // =========================================================================
+    // Branch tests
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_file_create_branch_from_main() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-5");
+        ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 5,
+        };
+        ns.create_branch("mydb", "feature-x", bp).await.unwrap();
+
+        let record = ns.lookup("mydb:feature-x").await.unwrap().unwrap();
+        assert_eq!(record.name, "mydb");
+        assert_eq!(record.branch, "feature-x");
+        assert_eq!(record.commit_head_id, Some(cid.clone()));
+        assert_eq!(record.commit_t, 5);
+        let bp = record.branch_point.unwrap();
+        assert_eq!(bp.source, "main");
+        assert_eq!(bp.commit_id, cid);
+        assert_eq!(bp.t, 5);
+    }
+
+    #[tokio::test]
+    async fn test_file_create_branch_duplicate_fails() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+
+        let result = ns.create_branch("mydb", "dev", bp).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-3");
+        ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 3,
+        };
+        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+        ns.create_branch("mydb", "staging", bp).await.unwrap();
+
+        // Also create a different ledger to ensure filtering works
+        ns.publish_ledger_init("other:main").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 3);
+        let mut names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["dev", "main", "staging"]);
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches_with_slashes() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 1,
+        };
+        ns.create_branch("mydb", "release/v1.0", bp.clone())
+            .await
+            .unwrap();
+        ns.create_branch("mydb", "feature/auth", bp).await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 3);
+        let mut names: Vec<&str> = branches.iter().map(|r| r.branch.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["feature/auth", "main", "release/v1.0"]);
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches_unknown_ledger() {
+        let (_temp, ns) = setup().await;
+        let branches = ns.list_branches("nonexistent").await.unwrap();
+        assert!(branches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_list_branches_excludes_retracted() {
+        let (_temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-1");
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid,
+            t: 1,
+        };
+        ns.create_branch("mydb", "dead", bp).await.unwrap();
+        ns.retract("mydb:dead").await.unwrap();
+
+        let branches = ns.list_branches("mydb").await.unwrap();
+        assert_eq!(branches.len(), 1);
+        assert_eq!(branches[0].branch, "main");
+    }
+
+    #[tokio::test]
+    async fn test_file_branch_point_persists_across_reload() {
+        let (temp, ns) = setup().await;
+        ns.publish_ledger_init("mydb:main").await.unwrap();
+        let cid = test_cid("commit-2");
+        ns.publish_commit("mydb:main", 2, &cid).await.unwrap();
+
+        let bp = crate::BranchPoint {
+            source: "main".to_string(),
+            commit_id: cid.clone(),
+            t: 2,
+        };
+        ns.create_branch("mydb", "persisted", bp).await.unwrap();
+
+        // Create a new FileNameService pointing to the same directory
+        let ns2 = FileNameService::new(temp.path());
+        let record = ns2.lookup("mydb:persisted").await.unwrap().unwrap();
+        let bp = record.branch_point.unwrap();
+        assert_eq!(bp.source, "main");
+        assert_eq!(bp.commit_id, cid);
+        assert_eq!(bp.t, 2);
     }
 }

@@ -94,6 +94,15 @@ The commit represents the most recent transaction that has been persisted. Commi
 
 The index represents a queryable snapshot of the ledger state. Indexes are created by background processes and may lag behind commits. Like commits, the `index_id` is a content-addressed identifier.
 
+#### Branch Metadata
+
+- **`branch_point`**: For branches created via `create_branch`, records the branch origin:
+  - `source` — the source branch name (e.g., `"main"`)
+  - `commit_id` — the source's commit head ContentId at the time of branching
+  - `t` — the source's transaction time at the time of branching
+
+This metadata is absent for the original `main` branch and present only on branches created from other branches.
+
 #### Additional Metadata
 
 - **`default_context_id`**: ContentId of the default JSON-LD @context for the ledger
@@ -153,6 +162,13 @@ Record new commits and indexes:
 - **`publish_index(ledger_id, index_id, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
 
 Publishing is **monotonic**—the nameservice only accepts updates that advance time forward, ensuring consistency.
+
+#### Branching
+
+Create and list branches:
+
+- **`create_branch(ledger_name, new_branch, branch_point)`**: Create a new branch with a `BranchPoint` linking to the source
+- **`list_branches(ledger_name)`**: List all non-retracted branches for a ledger
 
 #### Discovery
 
@@ -224,6 +240,7 @@ curl -X POST http://localhost:8090/nameservice/query \
 | `f:status` | Status: "ready" or "retracted" |
 | `f:ledgerCommit` | Reference to latest commit ContentId |
 | `f:ledgerIndex` | Index info object with `@id` (ContentId) and `f:t` |
+| `f:branchPoint` | Branch origin info with `f:source`, `f:commitCid`, `f:t` (if branched) |
 | `f:defaultContextCid` | Default JSON-LD context ContentId (if set) |
 
 **Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
@@ -337,7 +354,7 @@ Graph sources have their own nameservice records (`GraphSourceRecord`) with simi
 Ledgers are created automatically on the first transaction. Specify the ledger ID in your transaction:
 
 ```json
-POST /transact?ledger=mydb:main
+POST /insert?ledger=mydb:main
 Content-Type: application/json
 
 {
@@ -424,26 +441,168 @@ if let Some(record) = record {
 }
 ```
 
-### Branching Workflows
+### Branching
 
-Create feature branches for isolated development:
+Branches let you create isolated copies of a ledger's state for independent development. After branching, transactions on one branch are invisible to the other.
+
+#### Creating a Branch
+
+Branches are created from a source branch (default: `main`). The new branch starts at the same transaction time as the source:
 
 ```text
-# Main branch
-mydb:main (t=100)
-
-# Create feature branch (copies state from main)
-mydb:feature-x (t=100)  # Starts from same state
-
-# Develop independently
-mydb:main (t=101, t=102, ...)
-mydb:feature-x (t=101, t=102, ...)  # Different changes
-
-# Merge (application-specific logic)
-# Compare branches, resolve conflicts, apply to main
+mydb:main (t=5)
+  └── create_branch("mydb", "dev")
+mydb:dev  (t=5)  # starts with same data as main at t=5
 ```
 
-Branches are independent ledgers—they share no data unless explicitly merged through application logic.
+Branches can also be nested — you can branch from a branch:
+
+```text
+mydb:main (t=5)
+  └── mydb:dev (t=7)      # branched from main at t=5, then advanced
+        └── mydb:feature (t=8)  # branched from dev at t=7, then advanced
+```
+
+#### Data Isolation
+
+After branching, each branch has its own independent transaction history:
+
+```text
+mydb:main   → t=5 (shared) → t=6: insert Bob   → t=7: insert Dave
+mydb:dev    → t=5 (shared) → t=6: insert Carol
+```
+
+Querying `main` returns Alice + Bob + Dave. Querying `dev` returns Alice + Carol. Bob and Dave never appear on `dev`; Carol never appears on `main`.
+
+#### Storage Model
+
+Branches share storage efficiently through a **`BranchedContentStore`** — a recursive content store that reads from the branch's own namespace first, then falls back to parent namespaces for pre-branch-point content.
+
+- **Commits are not copied** — historical commits are read from the source namespace via fallback
+- **Index files are copied** — protects the branch from garbage collection on the source after reindexing
+- **String dictionaries are globally shared** — stored in a per-ledger `@shared` namespace (e.g., `mydb/@shared/dicts/`) rather than per-branch paths, so all branches read and write to the same location without copying or fallback. The `@` prefix cannot collide with branch names. See [Storage Traits — Global Dictionary Storage](../design/storage-traits.md#global-dictionary-storage-shared-namespace) for details.
+
+Each branch is a fully independent `LedgerState` with its own snapshot, novelty layer, commit chain, storage namespace, and `t` sequence.
+
+#### Nameservice Metadata
+
+When a branch is created, the nameservice records a **branch point** on the new branch's `NsRecord`:
+
+- `source` — the branch it was created from (e.g., `"main"`)
+- `commit_id` — the source branch's commit head at the time of branching
+- `t` — the source branch's transaction time at the time of branching
+
+This metadata enables the system to reconstruct the `BranchedContentStore` tree when loading a branch. For nested branches, the ancestry chain is walked recursively.
+
+#### API
+
+**Rust:**
+```rust
+// Create a branch from main (default)
+let record = fluree.create_branch("mydb", "dev", None).await?;
+
+// Create a branch from another branch
+let record = fluree.create_branch("mydb", "feature", Some("dev")).await?;
+
+// List all branches
+let branches = fluree.list_branches("mydb").await?;
+```
+
+**HTTP:**
+```bash
+# Create branch
+curl -X POST http://localhost:8090/v1/fluree/branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev"}'
+
+# List branches
+curl http://localhost:8090/v1/fluree/branch/mydb
+```
+
+**CLI:**
+```bash
+# Create branch
+fluree branch create dev --ledger mydb
+
+# Create branch from another branch
+fluree branch create feature-x --from dev --ledger mydb
+
+# List branches
+fluree branch list --ledger mydb
+```
+
+#### Dropping a Branch
+
+Branches can be deleted with `drop_branch`. The `main` branch cannot be dropped.
+
+Branches use **reference counting** (`branches` field on `NsRecord`) to track child branches. This enables safe deletion:
+
+- **Leaf branch** (no children, `branches == 0`): Fully dropped — storage artifacts are deleted, the NsRecord is purged, and the parent's child count is decremented. If the parent was previously retracted and its count reaches 0, it is cascade-dropped.
+- **Branch with children** (`branches > 0`): Retracted (hidden from listings, transactions rejected) but storage is preserved so children can still read parent data via `BranchedContentStore` fallback. When the last child is dropped and the count reaches 0, the retracted branch is automatically cascade-purged.
+
+**Rust API:**
+```rust
+// Drop a leaf branch
+let report = fluree.drop_branch("mydb", "dev").await?;
+
+// report.deferred == false for leaf branches
+// report.deferred == true for branches with children
+// report.cascaded contains any ancestor branches that were cascade-dropped
+```
+
+**HTTP API:**
+```bash
+curl -X POST http://localhost:8090/v1/fluree/drop-branch \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev"}'
+```
+
+**CLI:**
+```bash
+fluree branch drop dev --ledger mydb
+```
+
+See [POST /fluree/branch](../api/endpoints.md#post-flureebranch), [GET /fluree/branch/{ledger}](../api/endpoints.md#get-flureebranchledger), and [POST /fluree/drop-branch](../api/endpoints.md#post-flureedrop-branch) for full endpoint details.
+
+### Rebasing a Branch
+
+After a branch diverges from its source, you can **rebase** it to replay its unique commits on top of the source branch's current HEAD. This brings the branch up to date with upstream changes without merging.
+
+Rebase detects conflicts when both the branch and source have modified the same (subject, predicate, graph) tuples. Five conflict resolution strategies are available:
+
+| Strategy | Behavior |
+|----------|----------|
+| `take-both` (default) | Replay as-is, both values coexist (multi-cardinality) |
+| `abort` | Fail on first conflict, no changes applied |
+| `take-source` | Drop branch's conflicting flakes (source wins) |
+| `take-branch` | Keep branch's flakes, retract source's conflicting values |
+| `skip` | Skip entire commit if any flakes conflict |
+
+If the branch has no unique commits, rebase performs a **fast-forward**: it simply updates the branch point to the source's current HEAD without replaying anything.
+
+**Rust API:**
+```rust
+use fluree_db_api::ConflictStrategy;
+
+let report = fluree.rebase_branch("mydb", "dev", ConflictStrategy::TakeBoth).await?;
+// report.replayed — number of commits successfully replayed
+// report.conflicts — conflicts detected and resolved
+// report.fast_forward — true if no branch commits to replay
+```
+
+**HTTP API:**
+```bash
+curl -X POST http://localhost:8090/v1/fluree/rebase \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "branch": "dev", "strategy": "take-both"}'
+```
+
+**CLI:**
+```bash
+fluree branch rebase dev --ledger mydb --strategy take-both
+```
+
+See [POST /fluree/rebase](../api/endpoints.md#post-flureerebase) for full endpoint details.
 
 ## Architecture Deep Dive
 

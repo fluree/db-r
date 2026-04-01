@@ -8,6 +8,10 @@
 use crate::planner::{classify_pattern, estimate_triple_row_count, PatternType};
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
+use crate::{
+    execute::{analyze_property_join_plan, collect_inner_join_block},
+    ir::Pattern,
+};
 use fluree_db_core::StatsView;
 use std::collections::HashSet;
 use std::fmt;
@@ -79,6 +83,19 @@ pub struct SelectivityInputs {
     pub fallback: Option<FallbackReason>,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ExecutionStrategyHint {
+    pub strategy: String,
+    pub block_start: usize,
+    pub required_triples: usize,
+    pub fused_optional_triples: usize,
+    pub fused_filters: usize,
+    pub fused_binds: usize,
+    pub width_score: f32,
+    pub optional_bonus: f32,
+    pub details: Vec<String>,
+}
+
 /// Generate an explanation of pattern optimization
 ///
 /// Analyzes the input patterns and shows how they would be reordered
@@ -120,6 +137,75 @@ pub fn explain_patterns(patterns: &[TriplePattern], stats: Option<&StatsView>) -
         original_patterns,
         optimized_patterns,
     }
+}
+
+pub fn explain_execution_hints(
+    patterns: &[Pattern],
+    stats: Option<&StatsView>,
+) -> Vec<ExecutionStrategyHint> {
+    let reordered = crate::planner::reorder_patterns(patterns, stats, &HashSet::new());
+    let mut hints = Vec::new();
+    let mut i = 0usize;
+    while i < reordered.len() {
+        match &reordered[i] {
+            Pattern::Triple(_) | Pattern::Values { .. } | Pattern::Bind { .. } => {
+                let block_start = i;
+                let block = collect_inner_join_block(&reordered, i);
+                let end = block.end_index;
+                if end == i {
+                    i += 1;
+                    continue;
+                }
+                if block.triples.len() < 2 {
+                    i = end;
+                    continue;
+                }
+                let has_upstream_seed = block_start > 0;
+                let (decision, _) =
+                    analyze_property_join_plan(&reordered, end, &block.triples, has_upstream_seed);
+                i = end;
+                if !decision.can_property_join {
+                    continue;
+                }
+                let fused_filters = decision.tail_filters + block.filters.len();
+                let fused_binds = decision.tail_binds + block.binds.len();
+                let mut details = Vec::new();
+                details.push("same-subject star with bound predicates".to_string());
+                if decision.analysis.has_bound_objects {
+                    details.push("includes bound-object driver candidates".to_string());
+                }
+                if decision.tail_optional_triples > 0 {
+                    details.push("fuses trailing same-subject single-triple OPTIONALs".to_string());
+                }
+                if fused_filters > 0 {
+                    details.push("runs eligible FILTERs inline".to_string());
+                }
+                if fused_binds > 0 {
+                    details.push("runs eligible BINDs inline".to_string());
+                }
+                hints.push(ExecutionStrategyHint {
+                    strategy: if decision.tail_optional_triples > 0
+                        || decision.tail_filters > 0
+                        || decision.tail_binds > 0
+                    {
+                        "property_join_fused_star".to_string()
+                    } else {
+                        "property_join".to_string()
+                    },
+                    block_start,
+                    required_triples: block.triples.len(),
+                    fused_optional_triples: decision.tail_optional_triples,
+                    fused_filters,
+                    fused_binds,
+                    width_score: decision.width_score,
+                    optional_bonus: decision.optional_bonus,
+                    details,
+                });
+            }
+            _ => i += 1,
+        }
+    }
+    hints
 }
 
 /// Build display info for a single pattern
@@ -414,7 +500,6 @@ impl fmt::Display for PatternDisplay {
 // Generalized explain for all pattern types
 // =============================================================================
 
-use crate::ir::Pattern;
 use crate::planner::{estimate_pattern, reorder_patterns, PatternEstimate};
 
 /// Display information for any pattern type (generalized)
@@ -852,5 +937,44 @@ mod tests {
         let p3 = make_pattern(VarId(0), "age", VarId(2));
         // Different pattern should not be equal
         assert_ne!(p1, p3);
+    }
+
+    #[test]
+    fn test_explain_execution_hints_reports_fused_property_join() {
+        use crate::ir::{Expression, FilterValue, Function, Pattern};
+
+        let s = VarId(0);
+        let patterns = vec![
+            Pattern::Triple(TriplePattern::new(
+                Ref::Var(s),
+                Ref::Sid(Sid::new(100, "type")),
+                Term::Sid(Sid::new(100, "Deal")),
+            )),
+            Pattern::Triple(make_pattern(s, "name", VarId(1))),
+            Pattern::Triple(make_pattern(s, "amount", VarId(2))),
+            Pattern::Triple(make_pattern(s, "stage", VarId(3))),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(
+                s,
+                "probability",
+                VarId(4),
+            ))]),
+            Pattern::Optional(vec![Pattern::Triple(make_pattern(s, "closedAt", VarId(5)))]),
+            Pattern::Filter(Expression::not(Expression::Call {
+                func: Function::StrStarts,
+                args: vec![
+                    Expression::Call {
+                        func: Function::Str,
+                        args: vec![Expression::Var(VarId(3))],
+                    },
+                    Expression::Const(FilterValue::String("Closed".to_string())),
+                ],
+            })),
+        ];
+
+        let hints = explain_execution_hints(&patterns, None);
+        assert_eq!(hints.len(), 1);
+        assert_eq!(hints[0].strategy, "property_join_fused_star");
+        assert_eq!(hints[0].fused_optional_triples, 2);
+        assert_eq!(hints[0].fused_filters, 1);
     }
 }

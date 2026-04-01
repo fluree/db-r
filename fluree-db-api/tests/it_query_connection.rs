@@ -2,7 +2,7 @@
 //!
 //! Focus:
 //! - `query_connection` with `"from"` (combined datasets)
-//! - `query_connection` with `"from-named"` + `["graph", ...]` patterns (separate named graphs)
+//! - `query_connection` with `"fromNamed"` + `["graph", ...]` patterns (separate named graphs)
 
 mod support;
 
@@ -176,7 +176,7 @@ async fn query_connection_from_named_selecting_subgraphs_depth_3() {
 
     let q = json!({
         "@context": ctx_schema_value(),
-        "from-named": ["test/authors:main", "test/books:main", "test/movies:main"],
+        "fromNamed": ["test/authors:main", "test/books:main", "test/movies:main"],
         "select": { "?goneWithTheWind": ["*"] },
         "depth": 3,
         "where": [
@@ -258,13 +258,13 @@ async fn query_connection_from_named_with_graph_patterns() {
     seed_federated_ledgers(&fluree).await;
 
     // Equivalent:
-    // :from-named ["test/authors" "test/books" "test/movies"]
+    // :fromNamed ["test/authors" "test/books" "test/movies"]
     // :where [[:graph "test/movies" {...}] [:graph "test/books" {...}] [:graph "test/authors" {...}]]
     //
     // Rust JSON-LD WHERE uses ["graph", graphNameOrVar, pattern1, pattern2...]
     let q = json!({
         "@context": "https://schema.org",
-        "from-named": ["test/authors:main", "test/books:main", "test/movies:main"],
+        "fromNamed": ["test/authors:main", "test/books:main", "test/movies:main"],
         "select": ["?movieName", "?bookIsbn", "?authorName"],
         "where": [
             ["graph", "test/movies:main",
@@ -412,12 +412,15 @@ async fn query_connection_missing_dataset_errors() {
 }
 
 #[tokio::test]
-async fn query_connection_policy_identity_not_found_errors() {
+async fn query_connection_policy_identity_not_found_returns_empty() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();
     let _ledger = seed_people_ledger(&fluree, "people:main").await;
 
-    // Use an identity that doesn't exist in the database
+    // Use an identity that doesn't exist in the database.
+    // Per bug #106 fix: unknown identity → no policies → fail-closed with default-allow: false
+    // → empty results rather than an error. This is the correct behavior: an unrecognized
+    // identity should not expose any data, and should not reveal internal errors to the caller.
     let query = json!({
         "@context": context_ex_schema(),
         "from": "people:main",
@@ -430,12 +433,15 @@ async fn query_connection_policy_identity_not_found_errors() {
         }
     });
 
-    let err = fluree.query_connection(&query).await.unwrap_err();
-    // Identity "ex:alice" doesn't exist in the database, so IRI resolution fails
-    assert!(
-        err.to_string().contains("Failed to resolve IRI"),
-        "unexpected error: {}",
-        err
+    let result = fluree
+        .query_connection(&query)
+        .await
+        .expect("query should succeed");
+    // Unknown identity → no matching policies → default-allow: false → no rows returned
+    let total_rows: usize = result.batches.iter().map(|b| b.len()).sum();
+    assert_eq!(
+        total_rows, 0,
+        "unknown identity should return no results (fail-closed)"
     );
 }
 

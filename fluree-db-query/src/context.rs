@@ -103,6 +103,26 @@ pub struct ExecutionContext<'a> {
     /// arena-based BM25 scoring with corpus-wide IDF and avgdl stats.
     /// When absent, falls back to per-document TF-saturation scoring.
     pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Set of ledger IDs that are backed by R2RML graph sources.
+    ///
+    /// Precomputed at context setup. When a scan operator encounters a graph
+    /// with its `ledger_id` in this set, it routes triple patterns through
+    /// R2RML scan instead of native index scan.
+    pub r2rml_graph_ids: std::collections::HashSet<Arc<str>>,
+    /// Cached result of the multi-ledger check.
+    ///
+    /// `true` when the active query scope spans more than one distinct ledger ID.
+    /// Computed once at construction time (and recomputed when `active_graph` changes
+    /// via `with_active_graph` / `with_default_graph`). This avoids re-iterating
+    /// active graphs on every per-row call site.
+    multi_ledger: bool,
+    /// When true, `BinaryScanOperator` always returns resolved
+    /// `Binding::Sid`/`Lit` instead of late-materialized `EncodedSid`/`EncodedLit`.
+    ///
+    /// Propagated from [`GraphDbRef::eager`]. Use for infrastructure queries
+    /// (config resolution, policy loading) that call `binding.as_sid()` /
+    /// `binding.as_lit()` directly.
+    pub eager_materialization: bool,
 }
 
 impl<'a> ExecutionContext<'a> {
@@ -131,6 +151,9 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -165,6 +188,9 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
+            eager_materialization: db.eager,
         }
     }
 
@@ -203,6 +229,9 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
+            eager_materialization: db.eager,
         }
     }
 
@@ -236,6 +265,9 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -274,6 +306,9 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -308,6 +343,9 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None,
             spatial_providers: None,
             fulltext_providers: None,
+            r2rml_graph_ids: std::collections::HashSet::new(),
+            multi_ledger: false,
+            eager_materialization: false,
         }
     }
 
@@ -428,12 +466,36 @@ impl<'a> ExecutionContext<'a> {
         self.snapshot.decode_sid(sid)
     }
 
-    /// Check if we're in multi-ledger (dataset) mode
+    /// Check if we're in multi-ledger (dataset) mode.
     ///
-    /// Returns true if a dataset is attached, meaning cross-ledger joins may occur
-    /// and IriMatch bindings should be used instead of plain Sid bindings.
+    /// Returns `true` only when the currently active query scope spans more than
+    /// one distinct ledger ID. This is a cached value computed at construction
+    /// time, so it is free to call per-row.
+    #[inline]
     pub fn is_multi_ledger(&self) -> bool {
-        self.dataset.is_some()
+        self.multi_ledger
+    }
+
+    /// Compute the multi-ledger flag from dataset + active_graph state.
+    ///
+    /// A dataset wrapper alone is not enough: single-ledger `FROM` queries
+    /// still need binary-store-backed late materialization and should behave like
+    /// normal single-ledger execution.
+    fn compute_multi_ledger(dataset: Option<&DataSet<'_>>, active_graph: &ActiveGraph) -> bool {
+        let Some(ds) = dataset else {
+            return false;
+        };
+        let graphs: Vec<_> = match active_graph {
+            ActiveGraph::Default => ds.default_graphs().iter().collect(),
+            ActiveGraph::Named(iri) => ds.named_graph(iri).into_iter().collect(),
+        };
+        let Some(first) = graphs.first() else {
+            return false;
+        };
+        graphs
+            .iter()
+            .skip(1)
+            .any(|graph| graph.ledger_id.as_ref() != first.ledger_id.as_ref())
     }
 
     /// Decode a SID to an IRI using a specific ledger's namespace table
@@ -482,6 +544,7 @@ impl<'a> ExecutionContext<'a> {
 
     /// Attach a dataset to this execution context for multi-graph queries
     pub fn with_dataset(mut self, dataset: &'a DataSet<'a>) -> Self {
+        self.multi_ledger = Self::compute_multi_ledger(Some(dataset), &self.active_graph);
         self.dataset = Some(dataset);
         self
     }
@@ -532,7 +595,15 @@ impl<'a> ExecutionContext<'a> {
     /// single-ledger mode. Individual call sites may layer additional
     /// conditions (e.g. `to_t >= base_t`, `!history_mode`).
     pub fn has_binary_store(&self) -> bool {
-        !self.is_multi_ledger() && self.binary_store.is_some()
+        if self.is_multi_ledger() || self.binary_store.is_none() {
+            return false;
+        }
+        // Binary scan fast paths only support a single active graph.
+        match (&self.dataset, &self.active_graph) {
+            (None, _) => true,
+            (Some(ds), ActiveGraph::Default) => ds.default_graphs().len() == 1,
+            (Some(ds), ActiveGraph::Named(iri)) => ds.named_graph(iri).is_some(),
+        }
     }
 
     /// Return a `BinaryGraphView` for the current graph, combining the binary store
@@ -542,8 +613,40 @@ impl<'a> ExecutionContext<'a> {
     /// once at operator construction and store it — not call it in tight loops
     /// (each call clones an Arc).
     pub fn graph_view(&self) -> Option<BinaryGraphView> {
+        if !self.has_binary_store() {
+            return None;
+        }
         let store = self.binary_store.as_ref()?;
-        Some(store.graph(self.binary_g_id))
+        Some(store.graph_with_novelty(self.binary_g_id, self.dict_novelty.clone()))
+    }
+
+    /// Decode an `EncodedLit` binding value using DictNovelty-aware routing.
+    ///
+    /// Thin wrapper around [`BinaryGraphView::decode_value_from_kind`] which
+    /// handles watermark routing automatically when `dict_novelty` is present.
+    ///
+    /// Returns `None` if no binary store is attached.
+    pub fn decode_encoded_value(
+        &self,
+        o_kind: u8,
+        o_key: u64,
+        p_id: u32,
+        dt_id: u16,
+        lang_id: u16,
+    ) -> Option<std::io::Result<fluree_db_core::FlakeValue>> {
+        let gv = self.graph_view()?;
+        Some(gv.decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id))
+    }
+
+    /// Resolve a subject ID to an IRI, using DictNovelty-aware routing.
+    ///
+    /// Thin wrapper around [`BinaryGraphView::resolve_subject_iri`] which
+    /// handles watermark routing automatically when `dict_novelty` is present.
+    ///
+    /// Returns `None` if no binary store is attached.
+    pub fn resolve_subject_iri(&self, s_id: u64) -> Option<std::io::Result<String>> {
+        let gv = self.graph_view()?;
+        Some(gv.resolve_subject_iri(s_id))
     }
 
     /// Get the default graphs slice without allocation (for scan hot path).
@@ -564,6 +667,15 @@ impl<'a> ExecutionContext<'a> {
     /// This is cheap: just creates a new context with a different `active_graph` enum.
     /// Used by `GraphOperator` to switch graph context during GRAPH pattern execution.
     pub fn with_active_graph(&self, iri: Arc<str>) -> Self {
+        // In dataset mode, ensure binary scans route to the active graph's g_id.
+        // Without this, `BinaryScanOperator` would continue scanning the original graph
+        // even inside a `GRAPH <iri> { ... }` pattern.
+        let binary_g_id = self
+            .dataset
+            .and_then(|ds| ds.named_graph(&iri).map(|g| g.g_id))
+            .unwrap_or(self.binary_g_id);
+        let active_graph = ActiveGraph::Named(iri);
+        let multi_ledger = Self::compute_multi_ledger(self.dataset, &active_graph);
         Self {
             snapshot: self.snapshot,
             vars: self.vars,
@@ -578,15 +690,18 @@ impl<'a> ExecutionContext<'a> {
             r2rml_provider: self.r2rml_provider,
             r2rml_table_provider: self.r2rml_table_provider,
             dataset: self.dataset,
-            active_graph: ActiveGraph::Named(iri),
+            active_graph,
             tracker: self.tracker.clone(),
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
-            binary_g_id: self.binary_g_id,
+            binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
+            multi_ledger,
+            eager_materialization: self.eager_materialization,
         }
     }
 
@@ -594,6 +709,19 @@ impl<'a> ExecutionContext<'a> {
     ///
     /// Returns to querying the default graph(s) after a GRAPH pattern.
     pub fn with_default_graph(&self) -> Self {
+        // In dataset mode, ensure binary scans route back to the default graph's g_id.
+        // When multiple default graphs are active, binary scans can't represent a union;
+        // in those cases, operators should fall back to range scans (dataset-aware).
+        let binary_g_id = self
+            .dataset
+            .and_then(|ds| {
+                if ds.default_graphs().len() == 1 {
+                    ds.default_graphs().first().map(|g| g.g_id)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(self.binary_g_id);
         Self {
             snapshot: self.snapshot,
             vars: self.vars,
@@ -613,10 +741,13 @@ impl<'a> ExecutionContext<'a> {
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
             binary_store: self.binary_store.clone(),
-            binary_g_id: self.binary_g_id,
+            binary_g_id,
             dict_novelty: self.dict_novelty.clone(),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
+            multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
+            eager_materialization: self.eager_materialization,
         }
     }
 
@@ -651,6 +782,9 @@ impl<'a> ExecutionContext<'a> {
             dict_novelty: None, // GraphRef doesn't have dict novelty
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            r2rml_graph_ids: self.r2rml_graph_ids.clone(),
+            multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
+            eager_materialization: self.eager_materialization,
         }
     }
 
