@@ -388,8 +388,7 @@ async fn flpack_export_import_round_trip_with_index() {
     local
         .run_until(async {
             let src_db = fluree_db_core::LedgerSnapshot::genesis(src_ledger);
-            let src_state =
-                fluree_db_api::LedgerState::new(src_db, fluree_db_api::Novelty::new(0));
+            let src_state = fluree_db_api::LedgerState::new(src_db, fluree_db_api::Novelty::new(0));
 
             let insert_data = json!({
                 "@context": {
@@ -498,10 +497,9 @@ async fn flpack_export_import_round_trip_with_index() {
             );
 
             // ── Destination: import ────────────────────────────────
-            let dst_fluree =
-                FlureeBuilder::file(dst_dir.path().to_string_lossy().to_string())
-                    .build()
-                    .expect("build destination");
+            let dst_fluree = FlureeBuilder::file(dst_dir.path().to_string_lossy().to_string())
+                .build()
+                .expect("build destination");
 
             import_ledger_from_bytes(&dst_fluree, dst_ledger, &pack_bytes).await;
 

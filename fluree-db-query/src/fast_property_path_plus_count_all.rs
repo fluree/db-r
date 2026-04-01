@@ -15,8 +15,8 @@
 use crate::error::Result;
 use crate::fast_path_common::{
     build_count_batch, build_iri_adjacency_from_cursor, build_psot_cursor_for_predicate,
-    cursor_projection_sid_otype_okey, fast_path_store, reach_count_plus, reach_count_plus_multi,
-    subject_ref_to_s_id, FastPathOperator,
+    count_to_i64, cursor_projection_sid_otype_okey, fast_path_store, reach_count_plus,
+    reach_count_plus_multi, subject_ref_to_s_id, FastPathOperator,
 };
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
@@ -48,7 +48,7 @@ pub fn property_path_plus_count_all_operator(
             match count {
                 Some(n) => Ok(Some(build_count_batch(
                     out_var,
-                    i64::try_from(n).unwrap_or(i64::MAX),
+                    count_to_i64(n, "COUNT(*) property-path+")?,
                 )?)),
                 None => Ok(None),
             }

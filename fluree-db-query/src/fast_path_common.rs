@@ -1623,12 +1623,22 @@ impl Operator for PrecomputedSingleBatchOperator {
     }
 }
 
+/// Build a single-row batch containing an `xsd:integer` value.
+pub fn build_i64_singleton_batch(out_var: VarId, value: i64, label: &str) -> Result<Batch> {
+    let schema: Arc<[VarId]> = Arc::from(vec![out_var].into_boxed_slice());
+    let col = vec![Binding::lit(FlakeValue::Long(value), Sid::xsd_integer())];
+    Batch::new(schema, vec![col])
+        .map_err(|e| QueryError::execution(format!("fast-path {label} batch build: {e}")))
+}
+
 /// Build a single-row batch containing a count value (`xsd:integer`).
 pub fn build_count_batch(out_var: VarId, count: i64) -> Result<Batch> {
-    let schema: Arc<[VarId]> = Arc::from(vec![out_var].into_boxed_slice());
-    let col = vec![Binding::lit(FlakeValue::Long(count), Sid::xsd_integer())];
-    Batch::new(schema, vec![col])
-        .map_err(|e| QueryError::execution(format!("fast-path count batch build: {e}")))
+    build_i64_singleton_batch(out_var, count, "count")
+}
+
+/// Convert a non-negative count to `i64`, erroring on overflow instead of silently capping.
+pub fn count_to_i64(count: u64, label: &'static str) -> Result<i64> {
+    i64::try_from(count).map_err(|_| QueryError::execution(format!("{label} exceeds i64")))
 }
 
 /// Build an empty batch (zero rows) with the given schema.

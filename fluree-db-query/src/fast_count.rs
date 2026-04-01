@@ -7,9 +7,9 @@
 
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, count_rows_for_predicate_psot, fast_path_store, leaf_entries_for_predicate,
-    normalize_pred_sid, projection_okey_only, projection_otype_only, projection_sid_only,
-    FastPathOperator,
+    build_count_batch, count_rows_for_predicate_psot, count_to_i64, fast_path_store,
+    leaf_entries_for_predicate, normalize_pred_sid, projection_okey_only, projection_otype_only,
+    projection_sid_only, FastPathOperator,
 };
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
@@ -48,7 +48,7 @@ pub fn count_rows_operator(
             let count = count_rows_for_predicate_psot(store, ctx.binary_g_id, p_id)?;
             Ok(Some(build_count_batch(
                 out_var,
-                i64::try_from(count).unwrap_or(i64::MAX),
+                count_to_i64(count, "COUNT rows")?,
             )?))
         },
         fallback,
@@ -93,7 +93,7 @@ pub fn count_rows_numeric_compare_operator(
             match count {
                 Some(count) => Ok(Some(build_count_batch(
                     out_var,
-                    i64::try_from(count).unwrap_or(i64::MAX),
+                    count_to_i64(count, "COUNT rows numeric compare")?,
                 )?)),
                 None => Ok(None),
             }
@@ -285,7 +285,7 @@ pub fn count_rows_lang_filter_operator(
                 count_rows_for_predicate_lang_psot(store, ctx.binary_g_id, p_id, required_otype)?;
             Ok(Some(build_count_batch(
                 out_var,
-                i64::try_from(count).unwrap_or(i64::MAX),
+                count_to_i64(count, "COUNT rows lang filter")?,
             )?))
         },
         fallback,
@@ -353,7 +353,7 @@ pub fn count_distinct_object_operator(
             match count_distinct_object_post(store, ctx.binary_g_id, &predicate)? {
                 Some(count) => Ok(Some(build_count_batch(
                     out_var,
-                    i64::try_from(count).unwrap_or(i64::MAX),
+                    count_to_i64(count, "COUNT(DISTINCT)")?,
                 )?)),
                 None => Ok(None), // Unsupported at runtime — fall through to planned pipeline.
             }
@@ -436,8 +436,7 @@ pub fn count_triples_operator(out_var: VarId, fallback: Option<BoxedOperator>) -
                 return Ok(None);
             };
             let count = count_triples_from_branch_manifest(store, ctx.binary_g_id)?;
-            let count_i64 = i64::try_from(count)
-                .map_err(|_| QueryError::execution("COUNT exceeds i64 in triples fast-path"))?;
+            let count_i64 = count_to_i64(count, "COUNT triples")?;
             Ok(Some(build_count_batch(out_var, count_i64)?))
         },
         fallback,
@@ -476,9 +475,7 @@ pub fn count_distinct_subjects_operator(
             // SPOT key layout: s_id(8) + p_id(4) + o_type(2) + o_key(8) + o_i(4).
             // Distinct subjects = lead bytes [0..8].
             let count = count_distinct_lead_groups(store, ctx.binary_g_id, RunSortOrder::Spot, 8)?;
-            let count_i64 = i64::try_from(count).map_err(|_| {
-                QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-subject fast-path")
-            })?;
+            let count_i64 = count_to_i64(count, "COUNT(DISTINCT) subjects")?;
             Ok(Some(build_count_batch(out_var, count_i64)?))
         },
         fallback,
@@ -498,9 +495,7 @@ pub fn count_distinct_predicates_operator(
                 return Ok(None);
             };
             let count = count_distinct_predicates_psot(store, ctx.binary_g_id)?;
-            let count_i64 = i64::try_from(count).map_err(|_| {
-                QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-predicate fast-path")
-            })?;
+            let count_i64 = count_to_i64(count, "COUNT(DISTINCT) predicates")?;
             Ok(Some(build_count_batch(out_var, count_i64)?))
         },
         fallback,
@@ -522,9 +517,7 @@ pub fn count_distinct_objects_operator(
             // OPST key layout: o_type(2) + o_key(8) + o_i(4) + p_id(4) + s_id(8).
             // Distinct objects = lead bytes [0..10].
             let count = count_distinct_lead_groups(store, ctx.binary_g_id, RunSortOrder::Opst, 10)?;
-            let count_i64 = i64::try_from(count).map_err(|_| {
-                QueryError::execution("COUNT(DISTINCT) exceeds i64 in distinct-object fast-path")
-            })?;
+            let count_i64 = count_to_i64(count, "COUNT(DISTINCT) objects")?;
             Ok(Some(build_count_batch(out_var, count_i64)?))
         },
         fallback,
@@ -612,8 +605,8 @@ fn count_distinct_predicates_psot(store: &BinaryIndexStore, g_id: GraphId) -> Re
                         .get(..4)
                         .and_then(|s| s.try_into().ok())
                         .ok_or_else(|| {
-                            QueryError::execution("PSOT leaflet key shorter than 4 bytes")
-                        })?;
+                        QueryError::execution("PSOT leaflet key shorter than 4 bytes")
+                    })?;
                     u32::from_be_bytes(bytes)
                 }
             };
@@ -644,8 +637,7 @@ pub fn count_literal_objects_operator(
                 return Ok(None);
             };
             let count = count_literal_rows_psot(store, ctx.binary_g_id)?;
-            let count_i64 = i64::try_from(count)
-                .map_err(|_| QueryError::execution("COUNT exceeds i64 in literal fast-path"))?;
+            let count_i64 = count_to_i64(count, "COUNT literals")?;
             Ok(Some(build_count_batch(out_var, count_i64)?))
         },
         fallback,
@@ -708,8 +700,7 @@ pub fn count_blank_node_subjects_operator(
                 return Ok(None);
             };
             let count = count_blank_subject_rows_spot(store, ctx.binary_g_id)?;
-            let count_i64 = i64::try_from(count)
-                .map_err(|_| QueryError::execution("COUNT exceeds i64 in blank-node fast-path"))?;
+            let count_i64 = count_to_i64(count, "COUNT blank nodes")?;
             Ok(Some(build_count_batch(out_var, count_i64)?))
         },
         fallback,

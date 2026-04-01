@@ -2573,12 +2573,7 @@ fn build_operator_tree_inner(
         detect_predicate_group_by_object_count_topk(query, options)
     {
         return Ok(Box::new(PredicateGroupCountFirstsOperator::new(
-            s_var,
-            o_var,
-            count_var,
-            pred,
-            limit,
-            stats.clone(),
+            s_var, o_var, count_var, pred, limit,
         )));
     }
 
@@ -2599,11 +2594,7 @@ fn build_operator_tree_inner(
     // Fast-path: `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
     if let Some((pred, s_var, obj, count_var)) = detect_predicate_object_count(query, options) {
         let mut operator: BoxedOperator = Box::new(PredicateObjectCountFirstsOperator::new(
-            pred,
-            s_var,
-            obj,
-            count_var,
-            stats.clone(),
+            pred, s_var, obj, count_var,
         ));
 
         // ORDER BY

@@ -13,7 +13,8 @@
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, contiguous_id_range, fast_path_store, ref_to_p_id, FastPathOperator,
+    build_count_batch, build_i64_singleton_batch, contiguous_id_range, fast_path_store,
+    ref_to_p_id, FastPathOperator,
 };
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
@@ -64,7 +65,7 @@ pub fn string_prefix_sum_strstarts_operator(
             let sum_i64 = i64::try_from(sum).map_err(|_| {
                 QueryError::execution("SUM exceeds i64 in string-prefix STRSTARTS fast-path")
             })?;
-            Ok(Some(build_count_batch(out_var, sum_i64)?))
+            Ok(Some(build_i64_singleton_batch(out_var, sum_i64, "sum")?))
         },
         fallback,
         "string-prefix SUM(STRSTARTS)",
@@ -184,17 +185,17 @@ fn count_prefix_rows_opst(
 
 #[cfg(test)]
 mod tests {
-    use super::contiguous_ranges;
+    use crate::fast_path_common::contiguous_id_range;
 
     #[test]
     fn prefix_ids_accept_single_contiguous_run() {
-        let ranges = contiguous_ranges(&[10, 11, 12]).expect("contiguous ids");
+        let ranges = contiguous_id_range(&[10, 11, 12]).expect("contiguous ids");
         assert_eq!(ranges, vec![(10, 12)]);
     }
 
     #[test]
     fn prefix_ids_reject_gapped_runs() {
-        let err = contiguous_ranges(&[10, 12]).expect_err("gapped ids should reject");
+        let err = contiguous_id_range(&[10, 12]).expect_err("gapped ids should reject");
         assert!(
             err.to_string().contains("not contiguous"),
             "unexpected error: {err}"

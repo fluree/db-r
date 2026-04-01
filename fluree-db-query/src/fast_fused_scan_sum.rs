@@ -16,7 +16,7 @@
 
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
+    build_i64_singleton_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
     FastPathOperator,
 };
 use crate::operator::BoxedOperator;
@@ -129,7 +129,7 @@ pub fn fused_scan_sum_i64_operator(
                 return Ok(None);
             };
             match sum_scalar_i64(store, ctx.binary_g_id, &predicate, scalar)? {
-                Some(sum) => Ok(Some(build_count_batch(out_var, sum)?)),
+                Some(sum) => Ok(Some(build_i64_singleton_batch(out_var, sum, "sum")?)),
                 None => Ok(None),
             }
         },
