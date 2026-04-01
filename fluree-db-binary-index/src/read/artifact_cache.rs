@@ -19,7 +19,7 @@ static CACHE_REGISTRY: Lazy<Mutex<HashMap<PathBuf, Weak<DiskArtifactCache>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Debug)]
-struct DiskArtifactCache {
+pub(crate) struct DiskArtifactCache {
     root: PathBuf,
     budget_bytes: u64,
     state: Mutex<DiskArtifactCacheState>,
@@ -99,7 +99,7 @@ fn scan_cache_entries(root: &Path) -> io::Result<Vec<CacheEntry>> {
 }
 
 impl DiskArtifactCache {
-    fn for_dir(cache_dir: &Path) -> Arc<Self> {
+    pub(crate) fn for_dir(cache_dir: &Path) -> Arc<Self> {
         let root = cache_dir.to_path_buf();
         let mut registry = CACHE_REGISTRY.lock();
         if let Some(existing) = registry.get(&root).and_then(Weak::upgrade) {
@@ -133,9 +133,39 @@ impl DiskArtifactCache {
             );
             0
         });
-        let budget_bytes = available
-            .saturating_mul(CACHE_BUDGET_NUMERATOR)
-            .saturating_div(CACHE_BUDGET_DENOMINATOR);
+        let budget_bytes = match std::env::var("FLUREE_DISK_CACHE_BUDGET_BYTES") {
+            Ok(val) => match val.parse::<u64>() {
+                Ok(0) => {
+                    tracing::info!(
+                        cache_dir = %root.display(),
+                        "FLUREE_DISK_CACHE_BUDGET_BYTES=0; disk cache writes disabled"
+                    );
+                    0
+                }
+                Ok(bytes) => {
+                    tracing::info!(
+                        cache_dir = %root.display(),
+                        budget_bytes = bytes,
+                        "using FLUREE_DISK_CACHE_BUDGET_BYTES override"
+                    );
+                    bytes
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        cache_dir = %root.display(),
+                        value = %val,
+                        error = %err,
+                        "invalid FLUREE_DISK_CACHE_BUDGET_BYTES; falling back to auto-detect"
+                    );
+                    available
+                        .saturating_mul(CACHE_BUDGET_NUMERATOR)
+                        .saturating_div(CACHE_BUDGET_DENOMINATOR)
+                }
+            },
+            Err(_) => available
+                .saturating_mul(CACHE_BUDGET_NUMERATOR)
+                .saturating_div(CACHE_BUDGET_DENOMINATOR),
+        };
 
         if available > 0
             && available
@@ -149,6 +179,16 @@ impl DiskArtifactCache {
             );
         }
 
+        Self {
+            root,
+            budget_bytes,
+            state: Mutex::new(DiskArtifactCacheState::default()),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_budget(root: PathBuf, budget_bytes: u64) -> Self {
+        fs::create_dir_all(&root).expect("create test cache dir");
         Self {
             root,
             budget_bytes,
@@ -264,7 +304,7 @@ impl DiskArtifactCache {
         Ok(true)
     }
 
-    fn best_effort_write(&self, target: &Path, bytes: &[u8]) {
+    pub(crate) fn best_effort_write(&self, target: &Path, bytes: &[u8]) {
         if self.budget_bytes == 0 {
             return;
         }
@@ -375,4 +415,167 @@ pub async fn fetch_cached_bytes_cid(
     let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
     best_effort_cache_bytes_to_path(cache_dir, &cached, &bytes);
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_cache_dir(label: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "fluree-artifact-cache-test-{}-{}-{}",
+            label,
+            std::process::id(),
+            n
+        ));
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
+
+    #[test]
+    fn write_and_read_back() {
+        let dir = temp_cache_dir("write-read");
+        let cache = DiskArtifactCache::with_budget(dir.clone(), 1024 * 1024);
+        let target = dir.join("abc123.leaf");
+        let data = b"hello world";
+
+        cache.best_effort_write(&target, data);
+        assert!(target.exists());
+        assert_eq!(fs::read(&target).unwrap(), data);
+    }
+
+    #[test]
+    fn write_skipped_when_budget_is_zero() {
+        let dir = temp_cache_dir("zero-budget");
+        let cache = DiskArtifactCache::with_budget(dir.clone(), 0);
+        let target = dir.join("should-not-exist.leaf");
+
+        cache.best_effort_write(&target, b"data");
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn duplicate_write_is_idempotent() {
+        let dir = temp_cache_dir("dup-write");
+        let cache = DiskArtifactCache::with_budget(dir.clone(), 1024 * 1024);
+        let target = dir.join("dup.leaf");
+        let data = b"first write";
+
+        cache.best_effort_write(&target, data);
+        cache.best_effort_write(&target, b"second write attempt");
+        // First write wins — content unchanged.
+        assert_eq!(fs::read(&target).unwrap(), data);
+    }
+
+    #[test]
+    fn tracked_bytes_updated_on_write() {
+        let dir = temp_cache_dir("tracked");
+        let cache = DiskArtifactCache::with_budget(dir.clone(), 1024 * 1024);
+
+        cache.best_effort_write(&dir.join("a.leaf"), &[0u8; 100]);
+        cache.best_effort_write(&dir.join("b.leaf"), &[0u8; 200]);
+
+        assert_eq!(cache.current_bytes().unwrap(), 300);
+    }
+
+    #[test]
+    fn eviction_removes_oldest_files() {
+        let dir = temp_cache_dir("eviction");
+        // Budget: 500 bytes, low water mark = 500 * 8/10 = 400.
+        let cache = DiskArtifactCache::with_budget(dir.clone(), 500);
+
+        // Write three 150-byte files (total 450, under budget).
+        for name in &["old.leaf", "mid.leaf", "new.leaf"] {
+            let target = dir.join(name);
+            cache.best_effort_write(&target, &[0u8; 150]);
+            // Ensure distinct modification times for deterministic eviction order.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(cache.current_bytes().unwrap(), 450);
+
+        // Writing another 150 bytes pushes total to 600 > 500 budget.
+        // ensure_capacity should evict oldest files down to low water mark (400)
+        // or budget - incoming (350), whichever is lower → 350.
+        cache.best_effort_write(&dir.join("trigger.leaf"), &[0u8; 150]);
+
+        // The oldest file(s) should have been evicted.
+        assert!(
+            !dir.join("old.leaf").exists(),
+            "oldest file should be evicted"
+        );
+        // The newest files + trigger should survive.
+        assert!(dir.join("trigger.leaf").exists());
+    }
+
+    #[test]
+    fn scan_ignores_temp_files() {
+        let dir = temp_cache_dir("scan-temp");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("real.leaf"), [0u8; 10]).unwrap();
+        fs::write(dir.join(".cas_123_0.tmp"), [0u8; 20]).unwrap();
+
+        let entries = scan_cache_entries(&dir).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].path.ends_with("real.leaf"));
+    }
+
+    #[test]
+    fn scan_walks_subdirectories() {
+        let dir = temp_cache_dir("scan-subdir");
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(dir.join("a.leaf"), [0u8; 10]).unwrap();
+        fs::write(sub.join("b.leaf"), [0u8; 20]).unwrap();
+
+        let entries = scan_cache_entries(&dir).unwrap();
+        assert_eq!(entries.len(), 2);
+        let total: u64 = entries.iter().map(|e| e.bytes).sum();
+        assert_eq!(total, 30);
+    }
+
+    #[test]
+    fn for_dir_returns_singleton() {
+        let dir = temp_cache_dir("singleton");
+        let a = DiskArtifactCache::for_dir(&dir);
+        let b = DiskArtifactCache::for_dir(&dir);
+        assert!(Arc::ptr_eq(&a, &b), "same dir should return same Arc");
+    }
+
+    #[test]
+    fn singleton_dropped_when_no_strong_refs() {
+        let dir = temp_cache_dir("singleton-drop");
+        let a = DiskArtifactCache::for_dir(&dir);
+        let ptr1 = Arc::as_ptr(&a);
+        drop(a);
+
+        // After dropping the only strong ref, a new call should create a fresh instance.
+        let b = DiskArtifactCache::for_dir(&dir);
+        let ptr2 = Arc::as_ptr(&b);
+        assert_ne!(ptr1, ptr2, "should be a new instance after drop");
+    }
+
+    #[test]
+    fn current_bytes_scans_on_first_call() {
+        let dir = temp_cache_dir("initial-scan");
+        fs::create_dir_all(&dir).unwrap();
+        // Pre-populate some files before creating the cache.
+        fs::write(dir.join("pre1.leaf"), [0u8; 100]).unwrap();
+        fs::write(dir.join("pre2.leaf"), [0u8; 200]).unwrap();
+
+        let cache = DiskArtifactCache::with_budget(dir.clone(), 1024 * 1024);
+        assert_eq!(cache.current_bytes().unwrap(), 300);
+    }
+
+    #[test]
+    fn write_creates_parent_dirs() {
+        let dir = temp_cache_dir("nested-write");
+        let cache = DiskArtifactCache::with_budget(dir.clone(), 1024 * 1024);
+        let target = dir.join("deep").join("nested").join("file.leaf");
+
+        cache.best_effort_write(&target, b"nested data");
+        assert_eq!(fs::read(&target).unwrap(), b"nested data");
+    }
 }

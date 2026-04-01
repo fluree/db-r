@@ -30,9 +30,7 @@ use crate::format::index_root::{IndexRoot, OTypeTableEntry};
 use crate::format::leaf::DecodedLeafDirV3;
 use crate::format::run_record::RunSortOrder;
 
-use super::artifact_cache::{
-    best_effort_cache_bytes_to_path, fetch_cached_bytes, fetch_cached_bytes_cid,
-};
+use super::artifact_cache::{fetch_cached_bytes, fetch_cached_bytes_cid};
 use super::leaflet_cache::LeafletCache;
 
 const HOT_REMOTE_LEAF_PROMOTION_TOUCHES: usize = 2;
@@ -164,6 +162,9 @@ pub struct BinaryIndexStore {
     o_type_index: HashMap<u16, usize>,
     cas: Option<Arc<dyn ContentStore>>,
     cache_dir: PathBuf,
+    /// Shared disk artifact cache — kept alive here so the global `CACHE_REGISTRY`
+    /// weak ref survives across calls, avoiding repeated dir scans on every write.
+    disk_cache: Arc<super::artifact_cache::DiskArtifactCache>,
     leaflet_cache: Option<Arc<LeafletCache>>,
     /// Remote leaf metadata cache keyed by leaf CID.
     ///
@@ -289,6 +290,7 @@ impl BinaryIndexStore {
             .map(|(i, e)| (e.o_type, i))
             .collect();
 
+        let disk_cache = super::artifact_cache::DiskArtifactCache::for_dir(cache_dir);
         Ok(Self {
             dicts,
             graph_indexes,
@@ -296,6 +298,7 @@ impl BinaryIndexStore {
             o_type_index,
             cas: Some(cs),
             cache_dir: cache_dir.to_path_buf(),
+            disk_cache,
             leaflet_cache,
             remote_leaf_metadata: RwLock::new(HashMap::new()),
             remote_leaf_open_counts: RwLock::new(HashMap::new()),
@@ -385,6 +388,7 @@ impl BinaryIndexStore {
         let cs = Arc::clone(cs);
         let cid = leaf_cid.clone();
         let cache_path_owned = cache_path.clone();
+        let disk_cache = Arc::clone(&self.disk_cache);
         let timeout = cas_sync_timeout();
         run_sync_on_runtime(async move {
             let fut = cs.get(&cid);
@@ -403,9 +407,7 @@ impl BinaryIndexStore {
                 fut.await
                     .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
             };
-            if let Some(parent) = cache_path_owned.parent() {
-                best_effort_cache_bytes_to_path(parent, &cache_path_owned, &data);
-            }
+            disk_cache.best_effort_write(&cache_path_owned, &data);
             Ok(data)
         })
     }
@@ -2201,6 +2203,7 @@ mod tests {
             o_type_table: Vec::new(),
             o_type_index: HashMap::new(),
             cas: Some(cs),
+            disk_cache: crate::read::artifact_cache::DiskArtifactCache::for_dir(&cache_dir),
             cache_dir,
             leaflet_cache: None,
             remote_leaf_metadata: RwLock::new(HashMap::new()),

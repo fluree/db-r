@@ -478,7 +478,9 @@ fn write_turtle_object<W: Write>(
 ) -> io::Result<()> {
     match value {
         FlakeValue::Ref(sid) => {
-            let iri = store.sid_to_iri(sid).unwrap_or_else(|| format!("_:unknown_{}", sid));
+            let iri = store
+                .sid_to_iri(sid)
+                .unwrap_or_else(|| format!("_:unknown_{}", sid));
             write_turtle_iri_or_bnode(w, &iri, prefixes)
         }
         // For all literal types, reuse the N-Triples formatting
@@ -714,7 +716,9 @@ fn flake_to_jsonld(
 ) -> serde_json::Value {
     match value {
         FlakeValue::Ref(sid) => {
-            let iri = store.sid_to_iri(sid).unwrap_or_else(|| format!("_:unknown_{}", sid));
+            let iri = store
+                .sid_to_iri(sid)
+                .unwrap_or_else(|| format!("_:unknown_{}", sid));
             let compact = compact_iri(&iri, prefixes);
             serde_json::json!({ "@id": compact })
         }
@@ -1045,7 +1049,9 @@ fn write_object<W: Write>(
 ) -> io::Result<()> {
     match value {
         FlakeValue::Ref(sid) => {
-            let iri = store.sid_to_iri(sid).unwrap_or_else(|| format!("_:unknown_{}", sid));
+            let iri = store
+                .sid_to_iri(sid)
+                .unwrap_or_else(|| format!("_:unknown_{}", sid));
             write_iri_or_bnode(w, &iri)
         }
 
