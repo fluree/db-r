@@ -459,7 +459,7 @@ mod tests {
     fn make_test_result() -> QueryResult {
         QueryResult {
             vars: VarRegistry::new(),
-            t: 0,
+            t: Some(0),
             novelty: None,
             context: crate::ParsedContext::default(),
             orig_context: None,

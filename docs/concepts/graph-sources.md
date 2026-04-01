@@ -102,8 +102,9 @@ WHERE {
 **Key Features:**
 - Direct querying of Iceberg tables
 - Parquet file support
-- R2RML mapping for relational data
+- R2RML mapping for tabular data (Iceberg-backed)
 - Time-travel via Iceberg snapshots
+- **Direct S3 mode**: bypass REST catalog servers for `iceberg-rust` / self-managed tables — reads `version-hint.text` for automatic version discovery
 
 See the [Iceberg documentation](../graph-sources/iceberg.md) for details.
 

@@ -52,6 +52,9 @@ pub const CODEC_FLUREE_INDEX_LEAF: u64 = FLUREE_CODEC_BASE + 14;
 /// Multicodec for Fluree index root descriptors (FIR6).
 pub const CODEC_FLUREE_INDEX_ROOT: u64 = FLUREE_CODEC_BASE + 15;
 
+/// Multicodec for graph source mapping blobs (R2RML Turtle).
+pub const CODEC_FLUREE_GRAPH_SOURCE_MAPPING: u64 = FLUREE_CODEC_BASE + 16;
+
 // Legacy codec constants (pre-V3 format). Kept for backward-compatible CID
 // resolution — existing ledgers may have index artifacts stored under these
 // codecs in the nameservice.
@@ -132,6 +135,8 @@ pub enum ContentKind {
     SpatialIndex,
     /// History sidecar blob (FHS1, per-leaf time-travel data)
     HistorySidecar,
+    /// Graph source mapping blob (R2RML Turtle content, stored via CAS)
+    GraphSourceMapping,
 }
 
 // ============================================================================
@@ -156,6 +161,7 @@ impl ContentKind {
             ContentKind::GraphSourceSnapshot => CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT,
             ContentKind::SpatialIndex => CODEC_FLUREE_SPATIAL_INDEX,
             ContentKind::HistorySidecar => CODEC_FLUREE_HISTORY_SIDECAR,
+            ContentKind::GraphSourceMapping => CODEC_FLUREE_GRAPH_SOURCE_MAPPING,
         }
     }
 
@@ -180,6 +186,7 @@ impl ContentKind {
             CODEC_FLUREE_GRAPH_SOURCE_SNAPSHOT => Some(ContentKind::GraphSourceSnapshot),
             CODEC_FLUREE_SPATIAL_INDEX => Some(ContentKind::SpatialIndex),
             CODEC_FLUREE_HISTORY_SIDECAR => Some(ContentKind::HistorySidecar),
+            CODEC_FLUREE_GRAPH_SOURCE_MAPPING => Some(ContentKind::GraphSourceMapping),
             // Legacy codecs (pre-V3 format) — map to current content kinds so
             // CIDs stored by older builds can still be resolved.
             CODEC_LEGACY_INDEX_ROOT => Some(ContentKind::IndexRoot),
@@ -204,6 +211,7 @@ impl ContentKind {
             ContentKind::GraphSourceSnapshot => "graph-source-snapshot",
             ContentKind::SpatialIndex => "spatial-index",
             ContentKind::HistorySidecar => "history-sidecar",
+            ContentKind::GraphSourceMapping => "graph-source-mapping",
         }
     }
 }

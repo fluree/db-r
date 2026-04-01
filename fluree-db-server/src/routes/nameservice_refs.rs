@@ -25,7 +25,8 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use fluree_db_api::{GraphSourcePublisher, NameService, Publisher};
+use fluree_db_api::{NameService, Publisher};
+use fluree_db_nameservice::GraphSourceLookup;
 use fluree_db_nameservice::{CasResult, NameServiceError, RefKind, RefPublisher, RefValue};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

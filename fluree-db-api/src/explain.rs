@@ -8,8 +8,8 @@ use crate::format::iri::IriCompactor;
 use crate::query::helpers::{parse_jsonld_query, parse_sparql_to_ir};
 use fluree_db_core::{is_rdf_type, StatsView};
 use fluree_db_query::{
-    parse_query, ExplainPlan, OptimizationStatus, ParsedQuery, Pattern, Ref, Term, TriplePattern,
-    VarRegistry,
+    explain_execution_hints, parse_query, ExplainPlan, OptimizationStatus, ParsedQuery, Pattern,
+    Ref, Term, TriplePattern, VarRegistry,
 };
 use serde_json::{json, Map, Value as JsonValue};
 
@@ -266,11 +266,13 @@ fn explain_from_parsed(
         .as_ref()
         .map(|s| s.has_property_stats())
         .unwrap_or(false);
+    let execution_hints = explain_execution_hints(&parsed.patterns, stats_view.as_ref());
 
     if !stats_available {
         let mut plan = serde_json::Map::new();
         plan.insert("optimization".into(), json!("none"));
         plan.insert("reason".into(), json!("No statistics available"));
+        plan.insert("execution-hints".into(), json!(execution_hints));
         if let Some(wc) = where_clause {
             plan.insert("where-clause".into(), wc);
         }
@@ -296,6 +298,7 @@ fn explain_from_parsed(
             "optimization": status_to_str(explain.optimization),
             "statistics-available": explain.statistics_available,
             "statistics": statistics,
+            "execution-hints": execution_hints,
             "original": original,
             "optimized": optimized
         }

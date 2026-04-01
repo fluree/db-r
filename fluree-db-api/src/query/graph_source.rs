@@ -96,7 +96,7 @@ where
             vars,
             parsed,
             batches,
-            ledger.t(),
+            Some(ledger.t()),
             Some(ledger.novelty.clone()),
             None,
         ))
@@ -129,7 +129,7 @@ where
             vars,
             parsed,
             batches,
-            ledger.t(),
+            Some(ledger.t()),
             Some(ledger.novelty.clone()),
             None,
         ))

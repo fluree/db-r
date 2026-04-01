@@ -502,7 +502,9 @@ async fn find_instances_of_type(
         Term::Sid(type_sid.clone()),
     );
 
-    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, overlay, to_t);
+    // Eager materialization: config resolver needs concrete Sid/Lit bindings,
+    // not late-materialized EncodedSid/EncodedLit from binary scans.
+    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, overlay, to_t).eager();
     let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
 
     let mut results = Vec::new();
@@ -539,7 +541,7 @@ async fn query_config_predicate(
         Term::Var(obj_var),
     );
 
-    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, overlay, to_t);
+    let db = GraphDbRef::new(snapshot, CONFIG_GRAPH_ID, overlay, to_t).eager();
     let batches = execute_pattern_with_overlay_at(db, &vars, pattern, None).await?;
 
     let mut results = Vec::new();

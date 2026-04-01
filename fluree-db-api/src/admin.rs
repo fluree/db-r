@@ -647,15 +647,33 @@ where
         };
         report.status = status;
 
-        // 2. Delete graph source index files (Hard mode)
+        // 2. Delete graph source artifacts (Hard mode)
+        #[cfg(feature = "iceberg")]
         if matches!(mode, DropMode::Hard) {
-            // TODO: Call graph_source_artifact_prefix() from indexer crate once it exists
-            // For now, skip deletion and report a warning
-            if record.is_some() {
-                report.warnings.push(
-                    "Graph source artifact deletion not yet implemented - prefix not standardized"
-                        .to_string(),
-                );
+            if let Some(ref record) = record {
+                // Try to delete the CAS-stored mapping blob
+                if let Ok(iceberg_config) =
+                    fluree_db_iceberg::IcebergGsConfig::from_json(&record.config)
+                {
+                    if let Some(mapping) = &iceberg_config.mapping {
+                        if let Ok(cid) = mapping.source.parse::<fluree_db_core::ContentId>() {
+                            // Resolve CID to storage path and delete
+                            let path = fluree_db_core::content_path(
+                                fluree_db_core::ContentKind::GraphSourceMapping,
+                                &graph_source_id,
+                                &cid.digest_hex(),
+                            );
+                            if let Err(e) = self.storage().delete(&path).await {
+                                report.warnings.push(format!(
+                                    "Failed to delete mapping blob {}: {}",
+                                    mapping.source, e
+                                ));
+                            } else {
+                                report.files_deleted += 1;
+                            }
+                        }
+                    }
+                }
             }
         }
 

@@ -212,7 +212,7 @@ pub fn load_leaflet_columns_cached(
     order: RunSortOrder,
     cache: &super::leaflet_cache::LeafletCache,
     leaf_id: u128,
-    leaflet_idx: u8,
+    leaflet_idx: u32,
 ) -> io::Result<ColumnBatch> {
     let key = super::leaflet_cache::V3BatchCacheKey {
         leaf_id,
@@ -239,17 +239,17 @@ pub fn load_columns_cached_via_handle(
     order: RunSortOrder,
     cache: &super::leaflet_cache::LeafletCache,
     leaf_id: u128,
-    leaflet_idx_u8: u8,
+    leaflet_idx_u32: u32,
 ) -> io::Result<ColumnBatch> {
     let key = super::leaflet_cache::V3BatchCacheKey {
         leaf_id,
-        leaflet_idx: leaflet_idx_u8,
+        leaflet_idx: leaflet_idx_u32,
     };
-
-    cache.try_get_or_decode_v3_batch(key, || {
+    let batch = cache.try_get_or_decode_v3_batch(key, || {
         let all = ColumnProjection::all();
         handle.load_columns(leaflet_idx, &all, order)
-    })
+    })?;
+    Ok(batch)
 }
 
 // Re-export for convenience: callers use decode_leaf_dir_v3_with_base to get
@@ -263,6 +263,8 @@ mod tests {
     use crate::format::run_record::RunSortOrder;
     use crate::format::run_record_v2::RunRecordV2;
     use crate::read::column_types::{ColumnProjection, ColumnSet};
+    use crate::read::leaf_access::FullBlobLeafHandle;
+    use crate::read::leaflet_cache::LeafletCache;
     use fluree_db_core::o_type::OType;
     use fluree_db_core::subject_id::SubjectId;
 
@@ -442,5 +444,48 @@ mod tests {
         assert!(batch.p_id.is_absent());
         assert!(batch.o_type.is_absent());
         assert!(batch.t.is_absent());
+    }
+
+    #[test]
+    fn cached_loader_supports_leaflet_index_above_255() {
+        let mut writer = LeafWriter::new(RunSortOrder::Post, 10, 10_000, 1);
+        writer.set_skip_history(true);
+
+        let ot = OType::XSD_INTEGER.as_u16();
+        for i in 0..257u32 {
+            // POST flushes on p_id transitions, so changing p_id per row guarantees
+            // one-row leaflets and exercises the >255 leaflet index path.
+            writer
+                .push_record(make_rec(i as u64 + 1, i + 1, ot, i as u64, 1))
+                .unwrap();
+        }
+
+        let infos = writer.finish().unwrap();
+        assert_eq!(infos.len(), 1);
+        let leaf_bytes = infos.into_iter().next().unwrap().leaf_bytes;
+
+        let header = decode_leaf_header_v3(&leaf_bytes).unwrap();
+        assert_eq!(header.leaflet_count, 257);
+
+        let handle = FullBlobLeafHandle::new(leaf_bytes, None, 123).unwrap();
+        let cache = LeafletCache::with_max_mb(16);
+
+        let batch =
+            load_columns_cached_via_handle(&handle, 256, RunSortOrder::Post, &cache, 123, 256)
+                .unwrap();
+
+        assert_eq!(batch.row_count, 1);
+        assert_eq!(batch.s_id.get(0), 257);
+        assert_eq!(batch.p_id.get(0), 257);
+        assert_eq!(batch.o_key.get(0), 256);
+
+        let cached = cache
+            .get_v3_batch(&crate::read::leaflet_cache::V3BatchCacheKey {
+                leaf_id: 123,
+                leaflet_idx: 256,
+            })
+            .expect("cached batch for leaflet 256");
+        assert_eq!(cached.s_id.get(0), 257);
+        assert_eq!(cached.p_id.get(0), 257);
     }
 }

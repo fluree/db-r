@@ -112,6 +112,86 @@ Type-preserving JSON format with explicit datatype information on every value. W
 ]
 ```
 
+### Agent JSON Format
+
+**Optimized for LLM/agent consumption.** Returns a self-describing envelope with a schema header, compact object rows using native JSON types, and built-in pagination support.
+
+**Request via HTTP:**
+```http
+Accept: application/vnd.fluree.agent+json
+Fluree-Max-Bytes: 32768
+```
+
+**Characteristics:**
+- Schema-once header: datatypes declared per variable, not repeated per value
+- Native JSON types for values (strings, numbers, booleans — no wrappers for inferable types)
+- Non-inferable datatypes annotated inline only where needed (`{"@value": ..., "@type": "..."}`)
+- Byte-budget truncation with `hasMore` flag and resume query
+- Time-pinning metadata (`t` for single-ledger, `iso` wallclock timestamp for cross-ledger)
+
+**Example (single-ledger, no truncation):**
+
+```json
+{
+  "schema": {
+    "?name": "xsd:string",
+    "?age": "xsd:integer",
+    "?s": "uri"
+  },
+  "rows": [
+    {"?name": "Alice", "?age": 30, "?s": "ex:alice"},
+    {"?name": "Bob", "?age": 25, "?s": "ex:bob"}
+  ],
+  "rowCount": 2,
+  "t": 5,
+  "iso": "2026-03-26T14:30:00Z",
+  "hasMore": false
+}
+```
+
+**Example (truncated, with resume query):**
+
+```json
+{
+  "schema": {
+    "?name": "xsd:string",
+    "?age": "xsd:integer"
+  },
+  "rows": [
+    {"?name": "Alice", "?age": 30},
+    {"?name": "Bob", "?age": 25}
+  ],
+  "rowCount": 2,
+  "t": 5,
+  "iso": "2026-03-26T14:30:00Z",
+  "hasMore": true,
+  "message": "Response truncated due to size limit of 32768 bytes. Use the query below to retrieve the next batch.",
+  "resume": "SELECT ?name ?age FROM <mydb:main@t:5> WHERE { ?s ex:name ?name ; ex:age ?age } OFFSET 2 LIMIT 100"
+}
+```
+
+**Schema types:**
+- Single type → string: `"?name": "xsd:string"`
+- Mixed types → array: `"?value": ["xsd:string", "xsd:integer"]`
+- IRI references → `"uri"`
+
+**Envelope fields:**
+
+| Field | Present | Description |
+|-------|---------|-------------|
+| `schema` | Always | Per-variable datatype map |
+| `rows` | Always | Array of `{variable: value}` objects |
+| `rowCount` | Always | Number of rows included |
+| `t` | Single-ledger only | Transaction number used for the query |
+| `iso` | Always | ISO-8601 wallclock timestamp at query time |
+| `hasMore` | Always | Whether more rows exist beyond the byte budget |
+| `message` | When truncated | Human-readable truncation explanation |
+| `resume` | When truncated, single-FROM only | Ready-to-execute SPARQL with `@t:` pinning and OFFSET |
+
+**Multi-ledger queries:** The `t` field is omitted (each ledger has its own timeline). The `resume` field is also omitted; instead, the `message` instructs the caller to use `@iso:` on each FROM clause for time-pinning.
+
+**Byte budget:** Set via the `Fluree-Max-Bytes` header. When the cumulative serialized size of rows exceeds this limit, the formatter stops adding rows and sets `hasMore: true`. The budget applies to row data only (schema and envelope overhead are excluded from the count).
+
 ## Array Normalization
 
 By default, graph crawl results return single-valued properties as bare scalars and multi-valued properties as arrays:
@@ -263,16 +343,39 @@ let result = fluree.query_from()
     .format(FormatterConfig::jsonld())
     .execute_formatted()
     .await?;
+
+// AgentJson with byte budget and resume support
+use fluree_db_api::AgentJsonContext;
+
+let config = FormatterConfig::agent_json()
+    .with_max_bytes(32768)
+    .with_agent_json_context(AgentJsonContext {
+        sparql_text: Some(sparql.to_string()),
+        from_count: 1,
+        iso_timestamp: Some(chrono::Utc::now().to_rfc3339()),
+    });
+let result = db.query(&fluree)
+    .sparql("SELECT ?name ?age WHERE { ?s ex:name ?name ; ex:age ?age }")
+    .format(config)
+    .execute_formatted()
+    .await?;
+
+// Or directly on QueryResult:
+let json = result.to_agent_json(&snapshot)?;                       // no budget
+let json = result.to_agent_json_with_config(&snapshot, &config)?;  // with budget
 ```
 
 Available format constructors:
 - `FormatterConfig::jsonld()` — JSON-LD (default for JSON-LD queries)
 - `FormatterConfig::sparql_json()` — SPARQL 1.1 JSON Results (default for SPARQL queries)
 - `FormatterConfig::typed_json()` — Typed JSON with explicit datatypes on every value
+- `FormatterConfig::agent_json()` — Agent JSON envelope for LLM/agent consumers
 
 Builder methods:
 - `.with_normalize_arrays()` — Force array wrapping for all graph crawl properties
 - `.with_pretty()` — Pretty-print JSON output
+- `.with_max_bytes(n)` — Set byte budget for AgentJson truncation
+- `.with_agent_json_context(ctx)` — Set SPARQL text, FROM count, and ISO timestamp for AgentJson resume queries
 
 All three query paths (`db.query()`, `dataset.query()`, `fluree.query_from()`) support `.format()`.
 
@@ -328,6 +431,7 @@ fluree query --format typed-json --normalize-arrays '{"select": {"ex:alice": ["*
 3. **Use `normalize_arrays` for typed consumers**: Ensures `Vec<T>` fields always get arrays
 4. **Use SPARQL JSON for standard tooling**: Interoperable with SPARQL clients
 5. **Use TSV/CSV for bulk export**: Highest throughput, smallest memory footprint
+6. **Use Agent JSON for LLM/agent integrations**: Schema-once + pagination prevents context window overflow
 
 ## Related Documentation
 

@@ -343,9 +343,10 @@ The DynamoDB nameservice implements all seven nameservice traits:
 | `RefPublisher` | Compare-and-set on commit/index refs |
 | `StatusPublisher` | CAS-based status updates |
 | `ConfigPublisher` | CAS-based config updates (ledgers only) |
-| `GraphSourcePublisher` | Graph source lifecycle: create, index, retract, list |
+| `GraphSourceLookup` | Read-only graph source discovery: lookup, list all records |
+| `GraphSourcePublisher` | Graph source lifecycle (extends `GraphSourceLookup`): create, index, retract |
 
-**Note:** `ConfigPublisher` is scoped to ledgers only. Graph source configuration is managed through `GraphSourcePublisher`, which stores config as an opaque JSON string (`config_json`).
+**Note:** `ConfigPublisher` is scoped to ledgers only. Graph source configuration is managed through `GraphSourcePublisher`, which stores config as an opaque JSON string (`config_json`). `GraphSourceLookup` is a supertrait of `NameService`, so all nameservice implementations automatically support graph source discovery. `GraphSourcePublisher` adds write operations and is required only by APIs that create or drop graph sources.
 
 ## Configuration
 

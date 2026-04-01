@@ -117,7 +117,7 @@ pub(crate) fn build_query_result(
     vars: VarRegistry,
     parsed: ParsedQuery,
     batches: Vec<Batch>,
-    t: i64,
+    t: Option<i64>,
     novelty: Option<Arc<dyn OverlayProvider>>,
     binary_graph: Option<BinaryGraphView>,
 ) -> QueryResult {

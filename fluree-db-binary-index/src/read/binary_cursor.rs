@@ -227,9 +227,9 @@ impl BinaryCursor {
                                 self.order,
                                 cache,
                                 leaf.handle.leaf_id(),
-                                u8::try_from(leaflet_idx).map_err(|_| {
+                                u32::try_from(leaflet_idx).map_err(|_| {
                                     std::io::Error::other(format!(
-                                        "leaflet index {leaflet_idx} exceeds u8::MAX"
+                                        "leaflet index {leaflet_idx} exceeds u32::MAX"
                                     ))
                                 })?,
                             )?

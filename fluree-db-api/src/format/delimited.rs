@@ -635,7 +635,7 @@ mod tests {
 
         QueryResult {
             vars,
-            t: 0,
+            t: Some(0),
             novelty: None,
             context,
             orig_context: None,

@@ -415,7 +415,7 @@ pub enum NsLookupResult {
 ///
 /// Implementations provide ledger discovery by ledger ID.
 #[async_trait]
-pub trait NameService: Debug + Send + Sync {
+pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
     /// Look up a ledger by its ledger ID (e.g. "mydb:main")
     ///
     /// Returns `None` if the ledger is not found.
@@ -626,12 +626,37 @@ pub trait AdminPublisher: Publisher {
     ) -> Result<()>;
 }
 
-/// Graph source publisher trait
+/// Read-only graph source lookup trait.
 ///
-/// Implementations handle publishing graph source config and index updates.
-/// Graph source records are stored separately from ledger records.
+/// Provides discovery of graph source records without write capability.
+/// This is a supertrait of `NameService` so that query execution can
+/// detect and resolve graph sources transparently.
 #[async_trait]
-pub trait GraphSourcePublisher: Debug + Send + Sync {
+pub trait GraphSourceLookup: Debug + Send + Sync {
+    /// Look up a graph source by its graph_source_id (e.g. "my-search:main").
+    ///
+    /// Returns `None` if not found or if the record is a ledger (not a graph source).
+    async fn lookup_graph_source(&self, graph_source_id: &str)
+        -> Result<Option<GraphSourceRecord>>;
+
+    /// Look up any record (ledger or graph source) and return unified result.
+    ///
+    /// `resource_id` can be either a ledger_id or graph_source_id.
+    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult>;
+
+    /// Get all known graph source records
+    ///
+    /// Used for building in-memory query indexes over the nameservice.
+    /// Returns all graph source records including retracted ones (callers can filter by status).
+    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>>;
+}
+
+/// Graph source publisher trait (read + write).
+///
+/// Extends `GraphSourceLookup` with publish/retract operations.
+/// Required by APIs that create, update, or drop graph sources.
+#[async_trait]
+pub trait GraphSourcePublisher: GraphSourceLookup {
     /// Publish a graph source configuration record
     ///
     /// Creates or updates the graph source config in nameservice. This stores the
@@ -669,23 +694,6 @@ pub trait GraphSourcePublisher: Debug + Send + Sync {
     /// Marks the graph source as retracted. Future lookups will return the record
     /// with `retracted: true`.
     async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()>;
-
-    /// Look up a graph source by its graph_source_id (e.g. "my-search:main").
-    ///
-    /// Returns `None` if not found or if the record is a ledger (not a graph source).
-    async fn lookup_graph_source(&self, graph_source_id: &str)
-        -> Result<Option<GraphSourceRecord>>;
-
-    /// Look up any record (ledger or graph source) and return unified result.
-    ///
-    /// `resource_id` can be either a ledger_id or graph_source_id.
-    async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult>;
-
-    /// Get all known graph source records
-    ///
-    /// Used for building in-memory query indexes over the nameservice.
-    /// Returns all graph source records including retracted ones (callers can filter by status).
-    async fn all_graph_source_records(&self) -> Result<Vec<GraphSourceRecord>>;
 }
 
 /// Subscription scope for filtering nameservice events.

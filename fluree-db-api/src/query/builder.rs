@@ -25,6 +25,8 @@ use crate::{
     TrackedErrorResponse, TrackedQueryResponse, TrackingOptions,
 };
 
+use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
+
 // ============================================================================
 // GraphSourceMode
 // ============================================================================
@@ -54,6 +56,10 @@ pub(crate) struct QueryCore<'a> {
     pub(crate) tracking: Option<TrackingOptions>,
     pub(crate) format: Option<FormatterConfig>,
     pub(crate) graph_sources: GraphSourceMode,
+    pub(crate) r2rml: Option<(
+        Arc<dyn R2rmlProvider + 'a>,
+        Arc<dyn R2rmlTableProvider + 'a>,
+    )>,
     errors: Vec<BuilderError>,
 }
 
@@ -64,6 +70,7 @@ impl<'a> QueryCore<'a> {
             tracking: None,
             format: None,
             graph_sources: GraphSourceMode::None,
+            r2rml: None,
             errors: Vec::new(),
         }
     }
@@ -125,12 +132,26 @@ impl<'a> QueryCore<'a> {
                 hint: "call .jsonld(&query) or .sparql(\"SELECT ...\")",
             });
         }
-        if !matches!(self.graph_sources, GraphSourceMode::None) {
-            errs.push(BuilderError::Invalid {
-                field: "graph_sources",
-                message: "Graph source modes (.with_index_providers(), .with_r2rml()) are not yet supported by query builders; use the direct query methods instead".into(),
-            });
+
+        match self.graph_sources {
+            GraphSourceMode::None => {}
+            GraphSourceMode::IndexProviders => {
+                errs.push(BuilderError::Invalid {
+                    field: "graph_sources",
+                    message: "Index provider mode (.with_index_providers()) is not yet supported by query builders; use fluree.query_connection_with_bm25() or fluree.query_dataset_with_bm25() instead".into(),
+                });
+            }
+            #[cfg(feature = "iceberg")]
+            GraphSourceMode::R2rml => {
+                if self.r2rml.is_none() {
+                    errs.push(BuilderError::Invalid {
+                        field: "graph_sources",
+                        message: "R2RML mode requires an R2RML provider; call .with_r2rml() on a Fluree instance whose nameservice implements GraphSourcePublisher".into(),
+                    });
+                }
+            }
         }
+
         errs
     }
 
@@ -220,6 +241,10 @@ where
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
     pub fn with_r2rml(mut self) -> Self {
+        let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
+        let provider: Arc<dyn R2rmlProvider + 'a> = shared.clone();
+        let table_provider: Arc<dyn R2rmlTableProvider + 'a> = shared;
+        self.core.r2rml = Some((provider, table_provider));
         self.core.set_r2rml();
         self
     }
@@ -245,8 +270,22 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let input = self.core.input.unwrap(); // safe: validated
-        self.fluree.query(self.view, input).await
+        let mut core = self.core;
+        let r2rml = core.r2rml.take();
+        let input = core.input.take().unwrap(); // safe: validated
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_view_with_r2rml(
+                        self.view,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await
+            }
+            None => self.fluree.query(self.view, input).await,
+        }
     }
 
     /// Execute and return formatted JSON output.
@@ -259,13 +298,26 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
-        let result = self.fluree.query(self.view, input).await?;
+        let input = self.core.input.take().unwrap();
+        let result = match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_view_with_r2rml(
+                        self.view,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await?
+            }
+            None => self.fluree.query(self.view, input).await?,
+        };
         match self.view.policy() {
             Some(policy) => Ok(result
                 .format_async_with_policy(self.view.as_graph_db_ref(), &format_config, policy)
@@ -287,13 +339,26 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
-        let result = self.fluree.query(self.view, input).await?;
+        let input = self.core.input.take().unwrap();
+        let result = match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_view_with_r2rml(
+                        self.view,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await?
+            }
+            None => self.fluree.query(self.view, input).await?,
+        };
         crate::format::format_results_string_async(
             &result,
             &result.context,
@@ -323,10 +388,27 @@ where
 
         let format_config = self.core.format.take();
         let tracking = self.core.tracking.take();
-        let input = self.core.input.unwrap();
-        self.fluree
-            .query_tracked(self.view, input, format_config, tracking)
-            .await
+        let r2rml = self.core.r2rml.take();
+        let input = self.core.input.take().unwrap();
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_tracked_with_r2rml(
+                        self.view,
+                        input,
+                        format_config,
+                        tracking,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await
+            }
+            None => {
+                self.fluree
+                    .query_tracked(self.view, input, format_config, tracking)
+                    .await
+            }
+        }
     }
 }
 
@@ -409,6 +491,10 @@ where
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
     pub fn with_r2rml(mut self) -> Self {
+        let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
+        let provider: Arc<dyn R2rmlProvider + 'a> = shared.clone();
+        let table_provider: Arc<dyn R2rmlTableProvider + 'a> = shared;
+        self.core.r2rml = Some((provider, table_provider));
         self.core.set_r2rml();
         self
     }
@@ -432,8 +518,22 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let input = self.core.input.unwrap();
-        self.fluree.query_dataset(self.dataset, input).await
+        let mut core = self.core;
+        let r2rml = core.r2rml.take();
+        let input = core.input.take().unwrap();
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_dataset_with_r2rml(
+                        self.dataset,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await
+            }
+            None => self.fluree.query_dataset(self.dataset, input).await,
+        }
     }
 
     /// Execute and return formatted JSON output.
@@ -445,13 +545,26 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
-        let result = self.fluree.query_dataset(self.dataset, input).await?;
+        let input = self.core.input.take().unwrap();
+        let result = match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_dataset_with_r2rml(
+                        self.dataset,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await?
+            }
+            None => self.fluree.query_dataset(self.dataset, input).await?,
+        };
 
         // Use primary view's db for formatting
         if let Some(primary) = self.dataset.primary() {
@@ -479,13 +592,26 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
-        let result = self.fluree.query_dataset(self.dataset, input).await?;
+        let input = self.core.input.take().unwrap();
+        let result = match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_dataset_with_r2rml(
+                        self.dataset,
+                        input,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await?
+            }
+            None => self.fluree.query_dataset(self.dataset, input).await?,
+        };
 
         if let Some(primary) = self.dataset.primary() {
             crate::format::format_results_string_async(
@@ -519,10 +645,27 @@ where
 
         let format_config = self.core.format.take();
         let tracking = self.core.tracking.take();
-        let input = self.core.input.unwrap();
-        self.fluree
-            .query_dataset_tracked(self.dataset, input, format_config, tracking)
-            .await
+        let r2rml = self.core.r2rml.take();
+        let input = self.core.input.take().unwrap();
+        match r2rml.as_ref() {
+            Some((provider, table_provider)) => {
+                self.fluree
+                    .query_dataset_tracked_with_r2rml(
+                        self.dataset,
+                        input,
+                        format_config,
+                        tracking,
+                        provider.as_ref(),
+                        table_provider.as_ref(),
+                    )
+                    .await
+            }
+            None => {
+                self.fluree
+                    .query_dataset_tracked(self.dataset, input, format_config, tracking)
+                    .await
+            }
+        }
     }
 }
 
@@ -595,6 +738,10 @@ where
     /// Enable R2RML/Iceberg support (feature-gated).
     #[cfg(feature = "iceberg")]
     pub fn with_r2rml(mut self) -> Self {
+        let shared = Arc::new(crate::graph_source::FlureeR2rmlProvider::new(self.fluree));
+        let provider: Arc<dyn R2rmlProvider + 'a> = shared.clone();
+        let table_provider: Arc<dyn R2rmlTableProvider + 'a> = shared;
+        self.core.r2rml = Some((provider, table_provider));
         self.core.set_r2rml();
         self
     }
@@ -632,19 +779,67 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
-        let input = self.core.input.unwrap();
+        let mut core = self.core;
+        let r2rml = core.r2rml.take();
+        let input = core.input.take().unwrap();
         match input {
             QueryInput::JsonLd(json) => match &self.policy {
-                Some(policy) => self.fluree.query_connection_with_policy(json, policy).await,
-                None => self.fluree.query_connection(json).await,
+                Some(policy) => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_with_policy_and_r2rml(
+                                json,
+                                policy,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => self.fluree.query_connection_with_policy(json, policy).await,
+                },
+                None => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_jsonld_with_r2rml(
+                                json,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => self.fluree.query_connection(json).await,
+                },
             },
             QueryInput::Sparql(sparql) => match &self.policy {
-                Some(policy) => {
-                    self.fluree
-                        .query_connection_sparql_with_policy(sparql, policy)
-                        .await
-                }
-                None => self.fluree.query_connection_sparql(sparql).await,
+                Some(policy) => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_sparql_with_policy_and_r2rml(
+                                sparql,
+                                policy,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => {
+                        self.fluree
+                            .query_connection_sparql_with_policy(sparql, policy)
+                            .await
+                    }
+                },
+                None => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_sparql_with_r2rml(
+                                sparql,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => self.fluree.query_connection_sparql(sparql).await,
+                },
             },
         }
     }
@@ -659,21 +854,45 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
+        let input = self.core.input.take().unwrap();
         match input {
             QueryInput::JsonLd(json) => {
                 let result = match &self.policy {
-                    Some(policy) => {
-                        self.fluree
-                            .query_connection_with_policy(json, policy)
-                            .await?
-                    }
-                    None => self.fluree.query_connection(json).await?,
+                    Some(policy) => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_with_policy_and_r2rml(
+                                    json,
+                                    policy,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => {
+                            self.fluree
+                                .query_connection_with_policy(json, policy)
+                                .await?
+                        }
+                    },
+                    None => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_jsonld_with_r2rml(
+                                    json,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => self.fluree.query_connection(json).await?,
+                    },
                 };
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
@@ -687,12 +906,35 @@ where
             }
             QueryInput::Sparql(sparql) => {
                 let result = match &self.policy {
-                    Some(policy) => {
-                        self.fluree
-                            .query_connection_sparql_with_policy(sparql, policy)
-                            .await?
-                    }
-                    None => self.fluree.query_connection_sparql(sparql).await?,
+                    Some(policy) => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_sparql_with_policy_and_r2rml(
+                                    sparql,
+                                    policy,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => {
+                            self.fluree
+                                .query_connection_sparql_with_policy(sparql, policy)
+                                .await?
+                        }
+                    },
+                    None => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_sparql_with_r2rml(
+                                    sparql,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => self.fluree.query_connection_sparql(sparql).await?,
+                    },
                 };
                 let ast = crate::query::helpers::parse_and_validate_sparql(sparql)?;
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
@@ -719,21 +961,45 @@ where
             return Err(ApiError::Builder(BuilderErrors(errs)));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self
             .core
             .format
             .take()
             .unwrap_or_else(|| self.core.default_format());
-        let input = self.core.input.unwrap();
+        let input = self.core.input.take().unwrap();
         match input {
             QueryInput::JsonLd(json) => {
                 let result = match &self.policy {
-                    Some(policy) => {
-                        self.fluree
-                            .query_connection_with_policy(json, policy)
-                            .await?
-                    }
-                    None => self.fluree.query_connection(json).await?,
+                    Some(policy) => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_with_policy_and_r2rml(
+                                    json,
+                                    policy,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => {
+                            self.fluree
+                                .query_connection_with_policy(json, policy)
+                                .await?
+                        }
+                    },
+                    None => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_jsonld_with_r2rml(
+                                    json,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => self.fluree.query_connection(json).await?,
+                    },
                 };
                 let (spec, _) = parse_dataset_spec(json)?;
                 if let Some(alias) = spec.default_graphs.first() {
@@ -753,12 +1019,35 @@ where
             }
             QueryInput::Sparql(sparql) => {
                 let result = match &self.policy {
-                    Some(policy) => {
-                        self.fluree
-                            .query_connection_sparql_with_policy(sparql, policy)
-                            .await?
-                    }
-                    None => self.fluree.query_connection_sparql(sparql).await?,
+                    Some(policy) => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_sparql_with_policy_and_r2rml(
+                                    sparql,
+                                    policy,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => {
+                            self.fluree
+                                .query_connection_sparql_with_policy(sparql, policy)
+                                .await?
+                        }
+                    },
+                    None => match r2rml.as_ref() {
+                        Some((provider, table_provider)) => {
+                            self.fluree
+                                .query_connection_sparql_with_r2rml(
+                                    sparql,
+                                    provider.as_ref(),
+                                    table_provider.as_ref(),
+                                )
+                                .await?
+                        }
+                        None => self.fluree.query_connection_sparql(sparql).await?,
+                    },
                 };
                 let ast = crate::query::helpers::parse_and_validate_sparql(sparql)?;
                 let spec = crate::query::helpers::extract_sparql_dataset_spec(&ast)?;
@@ -793,32 +1082,91 @@ where
             return Err(TrackedErrorResponse::new(400, msg, None));
         }
 
+        let r2rml = self.core.r2rml.take();
         let format_config = self.core.format.take();
-        let input = self.core.input.unwrap();
+        let input = self.core.input.take().unwrap();
         match input {
             QueryInput::JsonLd(json) => match &self.policy {
-                Some(policy) => {
-                    self.fluree
-                        .query_connection_jsonld_tracked_with_policy(json, policy, format_config)
-                        .await
-                }
-                None => {
-                    self.fluree
-                        .query_connection_jsonld_tracked(json, format_config)
-                        .await
-                }
+                Some(policy) => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_jsonld_tracked_with_policy_and_r2rml(
+                                json,
+                                policy,
+                                format_config,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => {
+                        self.fluree
+                            .query_connection_jsonld_tracked_with_policy(
+                                json,
+                                policy,
+                                format_config,
+                            )
+                            .await
+                    }
+                },
+                None => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_jsonld_tracked_with_r2rml(
+                                json,
+                                format_config,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => {
+                        self.fluree
+                            .query_connection_jsonld_tracked(json, format_config)
+                            .await
+                    }
+                },
             },
             QueryInput::Sparql(sparql) => match &self.policy {
-                Some(policy) => {
-                    self.fluree
-                        .query_connection_sparql_tracked_with_policy(sparql, policy, format_config)
-                        .await
-                }
-                None => {
-                    self.fluree
-                        .query_connection_sparql_tracked(sparql, format_config)
-                        .await
-                }
+                Some(policy) => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_sparql_tracked_with_policy_and_r2rml(
+                                sparql,
+                                policy,
+                                format_config,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => {
+                        self.fluree
+                            .query_connection_sparql_tracked_with_policy(
+                                sparql,
+                                policy,
+                                format_config,
+                            )
+                            .await
+                    }
+                },
+                None => match r2rml.as_ref() {
+                    Some((provider, table_provider)) => {
+                        self.fluree
+                            .query_connection_sparql_tracked_with_r2rml(
+                                sparql,
+                                format_config,
+                                provider.as_ref(),
+                                table_provider.as_ref(),
+                            )
+                            .await
+                    }
+                    None => {
+                        self.fluree
+                            .query_connection_sparql_tracked(sparql, format_config)
+                            .await
+                    }
+                },
             },
         }
     }

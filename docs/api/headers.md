@@ -90,6 +90,16 @@ Accept: application/rdf+xml
 RDF/XML graph format (for CONSTRUCT/DESCRIBE queries).
 
 ```http
+Accept: application/vnd.fluree.agent+json
+```
+Agent JSON format — optimized for LLM/agent consumption. Returns a self-describing envelope with schema, compact rows, and pagination support. See [Output Formats](../query/output-formats.md#agent-json-format) for details.
+
+Use the `Fluree-Max-Bytes` header to set a byte budget for response truncation:
+```http
+Fluree-Max-Bytes: 32768
+```
+
+```http
 Accept: application/n-triples
 ```
 N-Triples format (future support).

@@ -6,10 +6,10 @@
 
 use crate::{
     check_cas_expectation, ref_values_match, AdminPublisher, BranchPoint, CasResult,
-    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourcePublisher, GraphSourceRecord,
-    GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication,
-    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
-    StatusPublisher, StatusValue, Subscription,
+    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord,
+    Publication, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
+    StatusPayload, StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::format_ledger_id;
@@ -658,7 +658,10 @@ impl GraphSourcePublisher for MemoryNameService {
         }
         Ok(())
     }
+}
 
+#[async_trait]
+impl GraphSourceLookup for MemoryNameService {
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,
@@ -670,12 +673,10 @@ impl GraphSourcePublisher for MemoryNameService {
     async fn lookup_any(&self, resource_id: &str) -> Result<NsLookupResult> {
         let key = self.normalize_ledger_id(resource_id);
 
-        // Check graph source records first
         if let Some(record) = self.graph_source_records.read().get(&key).cloned() {
             return Ok(NsLookupResult::GraphSource(record));
         }
 
-        // Then check ledger records
         if let Some(record) = self.records.read().get(&key).cloned() {
             return Ok(NsLookupResult::Ledger(record));
         }

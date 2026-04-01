@@ -23,9 +23,9 @@ use fluree_db_core::ledger_id::{
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::{
     AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
-    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue,
+    GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
+    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
+    StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
 };
 use schema::*;
 use std::collections::HashMap;
@@ -1752,7 +1752,10 @@ impl GraphSourcePublisher for DynamoDbNameService {
 
         Ok(())
     }
+}
 
+#[async_trait]
+impl GraphSourceLookup for DynamoDbNameService {
     async fn lookup_graph_source(
         &self,
         graph_source_id: &str,

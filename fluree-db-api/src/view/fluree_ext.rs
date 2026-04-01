@@ -469,6 +469,49 @@ where
 }
 
 // ============================================================================
+// Graph Source Resolution (requires GraphSourcePublisher)
+// ============================================================================
+
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: NameService + fluree_db_nameservice::GraphSourcePublisher + Clone + Send + Sync + 'static,
+{
+    /// Load a graph view, falling back to graph source resolution.
+    ///
+    /// Tries to load a ledger first. If not found, checks if the alias
+    /// matches a graph source (Iceberg/R2RML) and creates a minimal genesis
+    /// snapshot tagged with the graph source ID. The tag causes query
+    /// execution to auto-wrap patterns in `GRAPH <gs_id> { ... }`.
+    pub async fn load_graph_db_or_graph_source(&self, ledger_id: &str) -> Result<GraphDb> {
+        match self.load_graph_db(ledger_id).await {
+            Ok(db) => Ok(db),
+            Err(ref e) if e.is_not_found() => {
+                let gs_id = fluree_db_core::normalize_ledger_id(ledger_id)
+                    .unwrap_or_else(|_| ledger_id.to_string());
+
+                let _record = self
+                    .nameservice()
+                    .lookup_graph_source(&gs_id)
+                    .await
+                    .map_err(|e| ApiError::internal(e.to_string()))?
+                    .ok_or_else(|| ApiError::NotFound(ledger_id.to_string()))?;
+
+                let snapshot = fluree_db_core::LedgerSnapshot::genesis(&gs_id);
+                let state = fluree_db_ledger::LedgerState::new(
+                    snapshot,
+                    fluree_db_novelty::Novelty::new(0),
+                );
+                let mut db = GraphDb::from_ledger_state(&state);
+                db.graph_source_id = Some(gs_id.into());
+                Ok(db)
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
+// ============================================================================
 // Policy Wrapping
 // ============================================================================
 

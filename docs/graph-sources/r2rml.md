@@ -1,6 +1,6 @@
 # R2RML (Relational to RDF Mapping)
 
-R2RML (RDB to RDF Mapping Language) is a W3C standard for mapping relational databases to RDF. Fluree uses R2RML to create graph sources over SQL databases, enabling you to query relational data using SPARQL or JSON-LD Query.
+R2RML (RDB to RDF Mapping Language) is a W3C standard for mapping tabular data into RDF triples. In Fluree, R2RML mappings are used to expose **Iceberg tables** as RDF graph sources, enabling you to query data lake tables using SPARQL or JSON-LD Query.
 
 ## What is R2RML?
 
@@ -14,26 +14,31 @@ This enables querying existing relational databases as if they were RDF graphs.
 
 ## Configuration
 
-### Create R2RML Graph Source
+### Create R2RML Graph Source (Iceberg-backed)
 
-```bash
-curl -X POST http://localhost:8090/graph-source \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "sql-customers",
-    "type": "r2rml",
-    "database": "postgresql://user:pass@localhost/mydb",
-    "mapping_file": "customer-mapping.ttl"
-  }'
+Use `R2rmlCreateConfig` to register a graph source that combines:
+
+- an Iceberg table (REST catalog or Direct S3), and
+- an R2RML mapping (Turtle) that materializes table rows into RDF triples.
+
+If you use **Direct S3** mode, Fluree resolves the current Iceberg metadata by reading `metadata/version-hint.text` under the configured `table_location`, then loading the metadata file referenced by the hint. The Iceberg table layout must already exist at that location.
+
+```rust
+use fluree_db_api::{FlureeBuilder, R2rmlCreateConfig};
+
+let fluree = FlureeBuilder::default().build().await?;
+
+let config = R2rmlCreateConfig::new_direct(
+    "airlines-rdf",
+    "s3://bucket/warehouse/openflights/airlines",
+    "fluree:file://mappings/airlines.ttl",
+)
+.with_s3_region("us-east-1")
+.with_s3_path_style(true)
+.with_mapping_media_type("text/turtle");
+
+fluree.create_r2rml_graph_source(config).await?;
 ```
-
-### Supported Databases
-
-- PostgreSQL
-- MySQL / MariaDB
-- SQLite
-- Microsoft SQL Server
-- Oracle
 
 ## R2RML Mapping
 
@@ -180,6 +185,13 @@ Use SQL views for complex mappings:
 
 ## Querying R2RML Graph Sources
 
+R2RML graph sources are queried using standard SPARQL and JSON-LD query syntax — no special API calls or configuration needed. When the `iceberg` feature is compiled, R2RML support is automatically enabled for all query paths.
+
+Graph sources can be:
+- **Queried directly** as the target: `fluree query my-gs 'SELECT * WHERE { ?s ?p ?o }'`
+- **Referenced in FROM clauses**: `SELECT * FROM <my-gs:main> WHERE { ... }`
+- **Referenced in GRAPH patterns**: `SELECT * WHERE { GRAPH <my-gs:main> { ... } }` (useful for joining with ledger data)
+
 ### Basic Query
 
 ```json
@@ -198,14 +210,7 @@ Use SQL views for complex mappings:
 }
 ```
 
-Fluree generates SQL:
-
-```sql
-SELECT
-  c.name,
-  c.email
-FROM customers c
-```
+The mapping controls how subjects and predicate/object values are produced from the scanned table columns.
 
 ### SPARQL Query
 
@@ -286,33 +291,15 @@ Join SQL database data with Fluree ledgers:
 }
 ```
 
-Combines product data from Fluree with inventory from SQL database.
+Combines product data from Fluree with inventory from an Iceberg-backed R2RML graph source.
 
-## SQL Generation
+## Performance Notes
 
-### Filter Pushdown
+R2RML graph sources execute by scanning the underlying Iceberg table and materializing RDF terms according to the mapping. For performance, prefer:
 
-Fluree pushes filters to SQL:
-
-```text
-SPARQL: FILTER (?price < 100)
-  ↓
-SQL: WHERE price < 100
-```
-
-### Column Pruning
-
-Only requested columns are selected:
-
-```text
-SELECT ?name ?email
-  ↓
-SQL: SELECT name, email  (not SELECT *)
-```
-
-### Join Optimization
-
-Fluree optimizes join order based on query patterns.
+- filtering early,
+- projecting only the columns needed by your query and mapping,
+- and partitioning Iceberg tables by common filters.
 
 ## Performance
 
@@ -437,10 +424,9 @@ Report across multiple databases:
 
 ## Limitations
 
-1. **Read-Only:** R2RML graph sources are read-only (no writes)
-2. **SQL Compatibility:** Advanced SQL features may not map cleanly to RDF
-3. **Performance:** Complex joins across Fluree + SQL may be slow
-4. **Schema Changes:** Requires mapping update when schema changes
+1. **Read-Only:** R2RML graph sources are read-only (no writes via Fluree)
+2. **Performance:** Complex joins across Fluree + Iceberg may be slow
+3. **Schema Changes:** Requires mapping updates when referenced columns change
 
 ## Troubleshooting
 
@@ -448,16 +434,15 @@ Report across multiple databases:
 
 ```json
 {
-  "error": "DatabaseConnectionError",
-  "message": "Cannot connect to database"
+  "error": "IcebergConnectionError",
+  "message": "Cannot load table metadata"
 }
 ```
 
 **Solutions:**
-- Check database URL
-- Verify credentials
-- Check network connectivity
-- Verify database is running
+- Check catalog configuration (REST vs Direct)
+- Verify AWS credentials and S3 access
+- Verify `version-hint.text` is present for Direct mode
 
 ### Mapping Errors
 
@@ -469,10 +454,9 @@ Report across multiple databases:
 ```
 
 **Solutions:**
-- Verify table names
-- Check column names
-- Validate R2RML syntax
-- Test SQL queries independently
+- Verify table name / location
+- Check referenced column names in the mapping
+- Validate R2RML syntax (Turtle)
 
 ### Slow Queries
 
