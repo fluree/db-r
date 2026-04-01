@@ -32,7 +32,6 @@
   - [push](cli/push.md)
   - [publish](cli/publish.md)
   - [clone](cli/clone.md)
-  - [track](cli/track.md)
   - [server](cli/server.md)
   - [memory](cli/memory.md)
   - [mcp](cli/mcp.md)
@@ -55,6 +54,7 @@
   - [Time travel](concepts/time-travel.md)
   - [Policy enforcement](concepts/policy-enforcement.md)
   - [Verifiable data](concepts/verifiable-data.md)
+  - [Reasoning and inference](concepts/reasoning.md)
 
 - [Design](design/README.md)
   - [Query execution and overlay merge](design/query-execution.md)
@@ -82,6 +82,8 @@
   - [Graph crawl](query/graph-crawl.md)
   - [Explain plans](query/explain.md)
   - [Tracking and fuel limits](query/tracking-and-fuel.md)
+  - [Reasoning in queries](query/reasoning.md)
+  - [Datalog rules](query/datalog-rules.md)
 
 - [Transactions](transactions/README.md)
   - [Overview](transactions/overview.md)
@@ -144,6 +146,7 @@
   - [JSON-LD connection configuration](reference/connection-config-jsonld.md)
   - [Standards and feature flags](reference/compatibility.md)
   - [Graph identities and naming](reference/graph-identities.md)
+  - [OWL & RDFS support](reference/owl-rdfs-support.md)
   - [Crate map](reference/crate-map.md)
 
 - [Contributing](contributing/README.md)
@@ -151,4 +154,4 @@
   - [Tests](contributing/tests.md)
   - [W3C SPARQL compliance suite](contributing/sparql-compliance.md)
   - [Adding tracing spans](contributing/tracing-guide.md)
-  - [Design notes (repo docs)](contributing/design-notes.md)
+  - [Graph identities and naming](reference/graph-identities.md)

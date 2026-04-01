@@ -40,4 +40,4 @@ Storage trait architecture: `StorageRead`, `StorageWrite`, `ContentAddressedWrit
 
 - [Crate Map](../reference/crate-map.md) - Workspace architecture
 - [Contributing](../contributing/README.md) - Development guidelines
-- [Design Notes](../contributing/design-notes.md) - Internal naming conventions and architectural principles
+- [Graph Identities and Naming](../reference/graph-identities.md) - Naming conventions (user-facing and internal)

@@ -1528,8 +1528,6 @@ pub struct SortedCommitInfo {
 
 /// Sort, remap, and write a sorted commit file from buffered parse output.
 ///
-/// This implements Plan Phase A steps A.2 and A.3:
-///
 /// 1. Sort subjects by canonical order `(ns_code ASC, suffix ASC)` and write
 ///    a sorted vocab file with sorted-position IDs.
 /// 2. Sort strings by UTF-8 byte-lex order and write a sorted vocab file.

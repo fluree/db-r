@@ -1946,6 +1946,29 @@ GET /version
 curl http://localhost:8090/version
 ```
 
+## Events Endpoint
+
+### GET /events
+
+Server-Sent Events (SSE) stream of nameservice changes for ledgers and graph sources. Available on transaction servers only (not peers).
+
+**Query parameters:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `all=true` | Subscribe to all ledgers and graph sources |
+| `ledger=<id>` | Subscribe to a specific ledger (repeatable) |
+| `graph-source=<id>` | Subscribe to a specific graph source (repeatable) |
+
+**Event types:**
+
+| Event | Description |
+|-------|-------------|
+| `ns-record` | A ledger or graph source was published/updated |
+| `ns-retracted` | A ledger or graph source was deleted |
+
+**Authentication:** Configurable via `--events-auth-mode none|optional|required`. See [Query peers and replication](../operations/query-peers.md) for full details including auth configuration, event payloads, and peer subscription setup.
+
 ## Graph Source Endpoints
 
 > **Note:** HTTP endpoints for BM25 and vector index lifecycle management (create, sync, drop) are not yet implemented in the server. BM25 and vector indexes are currently managed via the Rust API (`Bm25CreateConfig`, `create_full_text_index`, `sync_bm25_index`, `drop_full_text_index`). See [BM25 Full-Text Search](../indexing-and-search/bm25.md) and [Vector Search](../indexing-and-search/vector-search.md) for API usage.

@@ -412,7 +412,7 @@ pub async fn run(
             }
 
             // Benchmark mode should measure query execution only (not view loading or result formatting).
-            // For FQL, we also exclude CLI-side JSON parsing from the timed region.
+            // For JSON-LD queries, we also exclude CLI-side JSON parsing from the timed region.
             let (result, elapsed) = if bench {
                 let timer = Instant::now();
                 let result = match query_format {

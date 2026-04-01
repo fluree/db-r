@@ -54,7 +54,7 @@ make ui
 | Target | What it exercises | Expected Jaeger spans |
 |--------|-------------------|----------------------|
 | `make transact` | Insert, upsert, update, Turtle, SPARQL UPDATE | `transact_execute` > `txn_stage` > `txn_commit` |
-| `make query` | FQL select/filter/sort, SPARQL basic/OPTIONAL/GROUP BY | `query_execute` > `query_prepare` > `query_run` > operators |
+| `make query` | JSON-LD select/filter/sort, SPARQL basic/OPTIONAL/GROUP BY | `query_execute` > `query_prepare` > `query_run` > operators |
 | `make index` | 500-entity burst to trigger background indexing | `index_build` > `build_all_indexes` > `build_index` |
 | `make import` | Bulk import via CLI with OTEL tracing (no server) | `bulk_import` > `import_chunks` > commit spans |
 | `make smoke` | Full cycle: seed + transact + query + index | End-to-end span waterfall |
@@ -162,10 +162,10 @@ Traces are named via `otel.name` for easy identification in Jaeger's trace list:
 
 | Operation | Span name examples |
 |-----------|-------------------|
-| Query | `query:fql`, `query:sparql`, `query:explain` |
-| Update | `update:fql`, `update:sparql-update` |
-| Insert | `insert:fql`, `insert:turtle` |
-| Upsert | `upsert:fql`, `upsert:turtle` |
+| Query | `query:json-ld`, `query:sparql`, `query:explain` |
+| Update | `update:json-ld`, `update:sparql-update` |
+| Insert | `insert:json-ld`, `insert:turtle` |
+| Upsert | `upsert:json-ld`, `upsert:turtle` |
 | Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
 
 The `operation` tag on each span retains the handler-specific name for filtering.
@@ -173,7 +173,7 @@ The `operation` tag on each span retains the handler-specific name for filtering
 ### Transaction traces
 
 ```
-request (info, otel.name = update:fql)
+request (info, otel.name = update:json-ld)
   └─ transact_execute (debug)
        ├─ txn_stage (debug)
        │   ├─ where_exec (debug)
