@@ -35,21 +35,30 @@ use crate::range::{range_bounded_with_overlay, range_with_overlay};
 /// Combines the snapshot, graph id, overlay, and as-of time that are
 /// always passed together through 40+ function signatures.
 ///
-/// `Copy` — all fields are references or primitives (~34 bytes).
+/// `Copy` — all fields are references or primitives.
 #[derive(Clone, Copy)]
 pub struct GraphDbRef<'a> {
     pub snapshot: &'a LedgerSnapshot,
     pub g_id: GraphId,
     pub overlay: &'a dyn OverlayProvider,
     pub t: i64,
+    /// When true, queries built from this ref disable late materialization
+    /// in `BinaryScanOperator`, always returning resolved `Binding::Sid`/`Lit`
+    /// instead of `EncodedSid`/`EncodedLit`.
+    ///
+    /// Use for infrastructure queries (config resolution, policy loading) that
+    /// call `binding.as_sid()` / `binding.as_lit()` directly.
+    pub eager: bool,
 }
 
 impl std::fmt::Debug for GraphDbRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GraphDbRef")
-            .field("g_id", &self.g_id)
-            .field("t", &self.t)
-            .finish_non_exhaustive()
+        let mut s = f.debug_struct("GraphDbRef");
+        s.field("g_id", &self.g_id).field("t", &self.t);
+        if self.eager {
+            s.field("eager", &true);
+        }
+        s.finish_non_exhaustive()
     }
 }
 
@@ -66,7 +75,20 @@ impl<'a> GraphDbRef<'a> {
             g_id,
             overlay,
             t,
+            eager: false,
         }
+    }
+
+    /// Return a copy with eager materialization enabled.
+    ///
+    /// When set, queries built from this `GraphDbRef` will never use
+    /// late-materialized `Binding::EncodedSid`/`EncodedLit` forms, even
+    /// when novelty is empty (epoch=0). Use this for infrastructure queries
+    /// (config resolution, policy loading) that call `binding.as_sid()` /
+    /// `binding.as_lit()` directly.
+    pub fn eager(mut self) -> Self {
+        self.eager = true;
+        self
     }
 
     /// Execute a range query, auto-filling `to_t` from `self.t`.
@@ -159,6 +181,19 @@ mod tests {
         let db2 = db;
         assert_eq!(db.t, db2.t);
         assert_eq!(db.g_id, db2.g_id);
+    }
+
+    #[test]
+    fn test_eager_flag() {
+        let snapshot = LedgerSnapshot::genesis("test:eager");
+        let overlay = NoOverlay;
+        let db = GraphDbRef::new(&snapshot, 0, &overlay, 1);
+        assert!(!db.eager);
+
+        let eager_db = db.eager();
+        assert!(eager_db.eager);
+        assert_eq!(eager_db.t, db.t);
+        assert_eq!(eager_db.g_id, db.g_id);
     }
 
     #[tokio::test]
