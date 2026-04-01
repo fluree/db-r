@@ -1284,44 +1284,17 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
     async move {
         let span = tracing::Span::current();
 
-        // Resolve target: use explicit target or look up source's parent branch.
-        let target_branch = match &req.target {
-            Some(t) => t.clone(),
-            None => {
-                let source_id =
-                    fluree_db_core::ledger_id::format_ledger_id(&req.ledger, &req.source);
-                let source_record = state
-                    .fluree
-                    .nameservice_lookup(&source_id)
-                    .await
-                    .map_err(|e| ServerError::bad_request(e.to_string()))?
-                    .ok_or_else(|| {
-                        ServerError::bad_request(format!("Branch not found: {}", source_id))
-                    })?;
-                source_record
-                    .branch_point
-                    .as_ref()
-                    .map(|bp| bp.source.clone())
-                    .ok_or_else(|| {
-                        ServerError::bad_request(format!(
-                            "Branch {} has no parent; specify an explicit target",
-                            req.source
-                        ))
-                    })?
-            }
-        };
-
         tracing::info!(
             status = "start",
             source = %req.source,
-            target = %target_branch,
+            target = ?req.target,
             "branch merge requested"
         );
 
         let report = match state
             .fluree
             .as_file()
-            .merge_branch(&req.ledger, &req.source, &target_branch)
+            .merge_branch(&req.ledger, &req.source, req.target.as_deref())
             .await
         {
             Ok(report) => report,
@@ -1333,7 +1306,7 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
             }
         };
 
-        let ledger_id = fluree_db_core::ledger_id::format_ledger_id(&req.ledger, &target_branch);
+        let ledger_id = fluree_db_core::ledger_id::format_ledger_id(&req.ledger, &report.target);
         let response = MergeBranchResponse {
             ledger_id,
             target: report.target,

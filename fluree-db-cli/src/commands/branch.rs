@@ -501,37 +501,7 @@ async fn run_merge(
         LedgerMode::Local { fluree, alias } => {
             let (ledger_name, _) = split_ledger_id(&alias)?;
 
-            // Resolve target: use explicit target or look up source's parent.
-            let resolved_target = match target {
-                Some(t) => t.to_string(),
-                None => {
-                    use fluree_db_nameservice::NameService as _;
-                    let source_id =
-                        fluree_db_core::ledger_id::format_ledger_id(&ledger_name, source);
-                    let record = fluree
-                        .nameservice()
-                        .lookup(&source_id)
-                        .await
-                        .map_err(|e| CliError::Api(e.into()))?
-                        .ok_or_else(|| {
-                            CliError::Config(format!("Branch not found: {}", source_id))
-                        })?;
-                    record
-                        .branch_point
-                        .as_ref()
-                        .map(|bp| bp.source.clone())
-                        .ok_or_else(|| {
-                            CliError::Config(format!(
-                                "Branch {} has no parent; specify --target",
-                                source
-                            ))
-                        })?
-                }
-            };
-
-            let report = fluree
-                .merge_branch(&ledger_name, source, &resolved_target)
-                .await?;
+            let report = fluree.merge_branch(&ledger_name, source, target).await?;
 
             println!(
                 "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
