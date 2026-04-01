@@ -1794,7 +1794,7 @@ impl BinaryGraphView {
         }
     }
 
-    fn namespace_prefix(&self, ns_code: u16) -> io::Result<String> {
+    pub fn namespace_prefix(&self, ns_code: u16) -> io::Result<String> {
         match self.store.namespace_prefix(ns_code) {
             Ok(prefix) => Ok(prefix),
             Err(err) => self

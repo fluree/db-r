@@ -225,7 +225,7 @@ impl DictOverlay {
                 if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
                     return Ok(suffix.to_string());
                 }
-                let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
+                let prefix = self.graph_view.namespace_prefix(ns_code)?;
                 return Ok(format!("{}{}", prefix, suffix));
             }
             return Err(io::Error::new(
@@ -245,7 +245,7 @@ impl DictOverlay {
             if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
                 return Ok(suffix.to_string());
             }
-            let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
+            let prefix = self.graph_view.namespace_prefix(ns_code)?;
             return Ok(format!("{}{}", prefix, suffix));
         }
 
@@ -256,7 +256,7 @@ impl DictOverlay {
             if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
                 return Ok(suffix.to_string());
             }
-            let prefix = self.graph_view.store().namespace_prefix(ns_code)?;
+            let prefix = self.graph_view.namespace_prefix(ns_code)?;
             return Ok(format!("{}{}", prefix, suffix));
         }
 

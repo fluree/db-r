@@ -432,10 +432,12 @@ async fn graph_crawl_does_not_drop_overlay_assertions_when_dict_novelty_missing(
     let store = Arc::clone(brp.store());
     let bad_dn = Arc::new(fluree_db_core::dict_novelty::DictNovelty::new_uninitialized());
     let runtime_small_dicts = Arc::clone(brp.runtime_small_dicts());
+    let ns_fallback = Some(Arc::new(ledger.snapshot.namespaces().clone()));
     ledger.snapshot.range_provider = Some(Arc::new(fluree_db_query::BinaryRangeProvider::new(
         store,
         bad_dn,
         runtime_small_dicts,
+        ns_fallback,
     )));
 
     // Graph crawl should still return the updated value (correctness over speed).

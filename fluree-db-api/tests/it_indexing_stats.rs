@@ -58,6 +58,7 @@ async fn apply_index<S: Storage + Clone + 'static>(
         Arc::clone(&arc_store),
         dn,
         Arc::new(arc_store.runtime_small_dicts()),
+        None,
     );
 
     // Extract metadata from FIR6 root

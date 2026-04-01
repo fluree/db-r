@@ -121,10 +121,12 @@ where
 
                 // Attach range provider for policy/SHACL/reasoner/property paths.
                 if state.snapshot.range_provider.is_none() {
+                    let ns_fallback = Some(Arc::new(state.snapshot.namespaces().clone()));
                     let provider = fluree_db_query::BinaryRangeProvider::new(
                         Arc::clone(&arc_store),
                         state.dict_novelty.clone(),
                         state.runtime_small_dicts.clone(),
+                        ns_fallback,
                     );
                     state.snapshot.range_provider = Some(Arc::new(provider));
                 }

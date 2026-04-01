@@ -78,7 +78,11 @@ impl SumExprI64 {
                 if ot.decode_kind() != DecodeKind::I64 {
                     return None;
                 }
-                ObjKey::from_u64(o_key).decode_i64().checked_mul(2)
+                // Use saturating_mul instead of checked_mul to avoid silently
+                // dropping rows (returning None) on overflow. The outer loop
+                // already uses saturating_add, so clamping to i64::MAX/MIN is
+                // consistent with the overall overflow strategy.
+                Some(ObjKey::from_u64(o_key).decode_i64().saturating_mul(2))
             }
             Self::DateComponent(component) => component_from_otype_okey(o_type, o_key, component),
             Self::NumericUnary(func) => {

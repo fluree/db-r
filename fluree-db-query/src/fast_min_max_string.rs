@@ -267,11 +267,22 @@ fn minmax_numeric_post(
     Ok(best.map(|(o_type, o_key)| numeric_binding_from_otype_okey(store, o_type, o_key)))
 }
 
+/// Compute AVG(?o) over a numeric predicate by scanning POST leaflets.
+///
+/// # Precision
+///
+/// Uses Kahan compensated summation to reduce floating-point rounding error when
+/// accumulating many values. Naive `sum += x` can lose low-order bits as the
+/// accumulator grows large; Kahan summation maintains a separate compensation
+/// term `c` that captures the lost low-order bits each iteration, keeping
+/// relative error near machine epsilon rather than growing with row count.
 fn avg_numeric_post(store: &BinaryIndexStore, g_id: GraphId, p_id: u32) -> Result<Option<Binding>> {
     let leaves = leaf_entries_for_predicate(store, g_id, RunSortOrder::Post, p_id);
     let projection = projection_okey_only();
     let mut required_otype: Option<u16> = None;
+    // Kahan compensated summation state
     let mut sum = 0.0f64;
+    let mut compensation = 0.0f64;
     let mut count: u64 = 0;
 
     for leaf_entry in leaves {
@@ -301,7 +312,12 @@ fn avg_numeric_post(store: &BinaryIndexStore, g_id: GraphId, p_id: u32) -> Resul
                 .load_columns(leaflet_idx, &projection, RunSortOrder::Post)
                 .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?;
             for row in 0..batch.row_count {
-                sum += decode_numeric_as_f64(o_type, batch.o_key.get(row))?;
+                let val = decode_numeric_as_f64(o_type, batch.o_key.get(row))?;
+                // Kahan summation: compensate for lost low-order bits
+                let y = val - compensation;
+                let t = sum + y;
+                compensation = (t - sum) - y;
+                sum = t;
             }
             count = count.saturating_add(batch.row_count as u64);
         }

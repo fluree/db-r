@@ -91,7 +91,9 @@ where
             let runtime_small_dicts = view.runtime_small_dicts.clone().unwrap_or_else(|| {
                 crate::runtime_dicts::build_runtime_small_dicts(&store, view.novelty.as_ref())
             });
-            let provider = BinaryRangeProvider::new(store, dict_novelty, runtime_small_dicts);
+            let ns_fallback = Some(Arc::new(view.snapshot.namespaces().clone()));
+            let provider =
+                BinaryRangeProvider::new(store, dict_novelty, runtime_small_dicts, ns_fallback);
             let mut db = (*view.snapshot).clone();
             db.range_provider = Some(Arc::new(provider));
             view.snapshot = Arc::new(db);
@@ -196,10 +198,12 @@ where
                     &arc_store,
                     Some(&snapshot.novelty),
                 );
+                let ns_fallback = Some(Arc::new(snapshot.snapshot.namespaces().clone()));
                 let provider = BinaryRangeProvider::new(
                     Arc::clone(&arc_store),
                     dn,
                     Arc::clone(&runtime_small_dicts),
+                    ns_fallback,
                 );
                 snapshot.snapshot.range_provider = Some(Arc::new(provider));
                 snapshot.binary_store = Some(arc_store);
@@ -355,10 +359,12 @@ where
                                     view.novelty.as_ref(),
                                 )
                             });
+                        let ns_fallback = Some(Arc::new(view.snapshot.namespaces().clone()));
                         let provider = BinaryRangeProvider::new(
                             Arc::clone(&store),
                             dict_novelty,
                             Arc::clone(&runtime_small_dicts),
+                            ns_fallback,
                         );
                         let mut db = (*view.snapshot).clone();
                         db.range_provider = Some(Arc::new(provider));

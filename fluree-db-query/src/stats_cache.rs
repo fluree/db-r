@@ -44,6 +44,10 @@ pub(crate) fn cached_stats_view_for_db(
 ) -> Option<Arc<StatsView>> {
     let build_view = || {
         let indexed = db.snapshot.stats.as_ref().cloned().unwrap_or_default();
+        // Note: downcast_ref::<Novelty>() silently falls through for non-Novelty overlays
+        // (e.g. PolicyOverlay). In those cases we skip novelty merging and return only
+        // the persisted indexed stats, which is correct since policy overlays don't
+        // produce new statistical flakes.
         let stats = if let Some(novelty) = db.overlay.as_any().downcast_ref::<Novelty>() {
             let lookup = BinaryStoreStatsLookup {
                 store: binary_store.map(|store| store.as_ref()),
@@ -66,6 +70,12 @@ pub(crate) fn cached_stats_view_for_db(
         ))
     };
 
+    // Cache key: epoch() is a monotonic counter incremented on each overlay mutation
+    // (e.g. novelty commit). It is sufficient to discriminate cache entries because
+    // the same (ledger_id, snapshot.t, query t) with different overlay contents will
+    // always have different epoch values. Limitation: if an overlay is replaced by a
+    // wholly new instance (e.g. after ledger reload), epoch resets to 0, but in that
+    // case snapshot.t will also differ, so the key remains unique.
     let cache_key = xxh3_128(
         format!(
             "stats-view:{}:{}:{}:{}:{}",

@@ -145,13 +145,13 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
         &HashSet::new(),
     )
     .await
-    .map_err(|e| CliError::Config(format!("failed to walk commit chain: {e}")))?;
+    .map_err(|e| CliError::Input(format!("failed to walk commit chain: {e}")))?;
 
     // Compute index artifacts (if an index exists).
     let index_artifacts = if let Some(ref index_id) = ns_record.index_head_id {
         let artifacts = compute_missing_index_artifacts(&content_store, index_id, None)
             .await
-            .map_err(|e| CliError::Config(format!("failed to enumerate index artifacts: {e}")))?;
+            .map_err(|e| CliError::Input(format!("failed to enumerate index artifacts: {e}")))?;
         Some(artifacts)
     } else {
         None
@@ -181,7 +181,7 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
     encode_header_frame(&header, &mut buf);
     writer
         .write_all(&buf)
-        .map_err(|e| CliError::Config(format!("write error: {e}")))?;
+        .map_err(|e| CliError::Input(format!("write error: {e}")))?;
 
     // Stream commits + txn blobs.
     let mut commits_written = 0usize;
@@ -192,20 +192,19 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
         let raw_bytes = content_store
             .get(commit_cid)
             .await
-            .map_err(|e| CliError::Config(format!("failed to read commit {commit_cid}: {e}")))?;
+            .map_err(|e| CliError::Input(format!("failed to read commit {commit_cid}: {e}")))?;
 
         buf.clear();
         encode_data_frame(commit_cid, &raw_bytes, &mut buf);
         writer
             .write_all(&buf)
-            .map_err(|e| CliError::Config(format!("write error: {e}")))?;
+            .map_err(|e| CliError::Input(format!("write error: {e}")))?;
 
         commits_written += 1;
 
         // Decode envelope to find txn blob CID.
-        let hdr = CommitV2Header::read_from(&raw_bytes).map_err(|e| {
-            CliError::Config(format!("invalid commit header for {commit_cid}: {e}"))
-        })?;
+        let hdr = CommitV2Header::read_from(&raw_bytes)
+            .map_err(|e| CliError::Input(format!("invalid commit header for {commit_cid}: {e}")))?;
         let envelope_start = HEADER_LEN;
         let envelope_end = envelope_start + hdr.envelope_len as usize;
         if envelope_end <= raw_bytes.len() {
@@ -213,13 +212,13 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
                 if let Some(ref txn_cid) = env.txn {
                     if txn_cids_sent.insert(txn_cid.clone()) {
                         let txn_bytes = content_store.get(txn_cid).await.map_err(|e| {
-                            CliError::Config(format!("failed to read txn blob {txn_cid}: {e}"))
+                            CliError::Input(format!("failed to read txn blob {txn_cid}: {e}"))
                         })?;
                         buf.clear();
                         encode_data_frame(txn_cid, &txn_bytes, &mut buf);
                         writer
                             .write_all(&buf)
-                            .map_err(|e| CliError::Config(format!("write error: {e}")))?;
+                            .map_err(|e| CliError::Input(format!("write error: {e}")))?;
 
                         txn_blobs_written += 1;
                     }
@@ -247,17 +246,17 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
         encode_manifest_frame(&manifest, &mut buf);
         writer
             .write_all(&buf)
-            .map_err(|e| CliError::Config(format!("write error: {e}")))?;
+            .map_err(|e| CliError::Input(format!("write error: {e}")))?;
 
         for artifact_cid in artifacts {
             let artifact_bytes = content_store.get(artifact_cid).await.map_err(|e| {
-                CliError::Config(format!("failed to read index artifact {artifact_cid}: {e}"))
+                CliError::Input(format!("failed to read index artifact {artifact_cid}: {e}"))
             })?;
             buf.clear();
             encode_data_frame(artifact_cid, &artifact_bytes, &mut buf);
             writer
                 .write_all(&buf)
-                .map_err(|e| CliError::Config(format!("write error: {e}")))?;
+                .map_err(|e| CliError::Input(format!("write error: {e}")))?;
 
             index_written += 1;
         }
@@ -279,18 +278,18 @@ async fn run_ledger_export(alias: &str, output: Option<&Path>, dirs: &FlureeDir)
     encode_manifest_frame(&ns_manifest, &mut buf);
     writer
         .write_all(&buf)
-        .map_err(|e| CliError::Config(format!("write error: {e}")))?;
+        .map_err(|e| CliError::Input(format!("write error: {e}")))?;
 
     // End frame.
     buf.clear();
     encode_end_frame(&mut buf);
     writer
         .write_all(&buf)
-        .map_err(|e| CliError::Config(format!("write error: {e}")))?;
+        .map_err(|e| CliError::Input(format!("write error: {e}")))?;
 
     writer
         .flush()
-        .map_err(|e| CliError::Config(format!("flush error: {e}")))?;
+        .map_err(|e| CliError::Input(format!("flush error: {e}")))?;
 
     // File size.
     let file_size = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);

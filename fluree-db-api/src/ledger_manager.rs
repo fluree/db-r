@@ -282,9 +282,11 @@ impl LedgerHandle {
 
     /// Keep the out-of-band cached binary store coherent with the current state.
     ///
-    /// Call this while holding the state lock, after replacing or mutating the
-    /// `LedgerState`, so `snapshot()` returns a `binary_store` value that matches
-    /// `snapshot.range_provider`.
+    /// Call this while holding the state lock, **before** `guard.replace()`,
+    /// passing `&new_state`. This ensures the binary_store is updated before
+    /// the new state becomes visible to concurrent readers via `snapshot()`,
+    /// preventing a TOCTOU window where a reader could observe the new state
+    /// paired with the old binary_store.
     pub async fn sync_binary_store_from_state(&self, state: &LedgerState) {
         let binary_store = state.binary_store.as_ref().and_then(|te| {
             std::sync::Arc::clone(&te.0)
@@ -428,10 +430,12 @@ impl LedgerHandle {
             crate::runtime_dicts::reseed_runtime_small_dicts(&mut state, &arc_store);
 
             // Build range_provider with the real dict_novelty (rebuilt by apply_loaded_db)
+            let ns_fallback = Some(Arc::new(state.snapshot.namespaces().clone()));
             let provider = BinaryRangeProvider::new(
                 Arc::clone(&arc_store),
                 Arc::clone(&state.dict_novelty),
                 Arc::clone(&state.runtime_small_dicts),
+                ns_fallback,
             );
             state.snapshot.range_provider = Some(Arc::new(provider));
 
@@ -617,10 +621,12 @@ pub(crate) async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
 
     let arc_store = Arc::new(store);
     crate::runtime_dicts::reseed_runtime_small_dicts(state, &arc_store);
+    let ns_fallback = Some(Arc::new(state.snapshot.namespaces().clone()));
     let provider = BinaryRangeProvider::new(
         Arc::clone(&arc_store),
         Arc::clone(&state.dict_novelty),
         Arc::clone(&state.runtime_small_dicts),
+        ns_fallback,
     );
     state.snapshot.range_provider = Some(Arc::new(provider));
     // Also attach the type-erased store to the state so transaction staging
@@ -1453,9 +1459,15 @@ where
                             let dn = Arc::clone(&write_guard.state().dict_novelty);
                             let runtime_small_dicts =
                                 Arc::clone(&write_guard.state().runtime_small_dicts);
-                            write_guard.state_mut().snapshot.range_provider = Some(Arc::new(
-                                BinaryRangeProvider::new(store, dn, runtime_small_dicts),
-                            ));
+                            let ns_fallback =
+                                Some(Arc::new(write_guard.state().snapshot.namespaces().clone()));
+                            write_guard.state_mut().snapshot.range_provider =
+                                Some(Arc::new(BinaryRangeProvider::new(
+                                    store,
+                                    dn,
+                                    runtime_small_dicts,
+                                    ns_fallback,
+                                )));
                         }
                     }
                 }

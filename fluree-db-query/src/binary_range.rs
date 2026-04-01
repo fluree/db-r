@@ -119,6 +119,7 @@ pub struct BinaryRangeProvider {
     store: Arc<BinaryIndexStore>,
     dict_novelty: Arc<DictNovelty>,
     runtime_small_dicts: Arc<RuntimeSmallDicts>,
+    namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
 }
 
 impl BinaryRangeProvider {
@@ -126,11 +127,13 @@ impl BinaryRangeProvider {
         store: Arc<BinaryIndexStore>,
         dict_novelty: Arc<DictNovelty>,
         runtime_small_dicts: Arc<RuntimeSmallDicts>,
+        namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
     ) -> Self {
         Self {
             store,
             dict_novelty,
             runtime_small_dicts,
+            namespace_codes_fallback,
         }
     }
 
@@ -195,6 +198,7 @@ impl RangeProvider for BinaryRangeProvider {
             &self.store,
             &self.dict_novelty,
             &self.runtime_small_dicts,
+            &self.namespace_codes_fallback,
             g_id,
             index,
             start_bound,
@@ -901,6 +905,7 @@ fn binary_range_bounded_v3(
     store: &Arc<BinaryIndexStore>,
     dict_novelty: &Arc<DictNovelty>,
     runtime_small_dicts: &Arc<RuntimeSmallDicts>,
+    namespace_codes_fallback: &Option<Arc<HashMap<u16, String>>>,
     g_id: GraphId,
     index: IndexType,
     start_bound: &Flake,
@@ -1054,7 +1059,8 @@ fn binary_range_bounded_v3(
     }
 
     let view =
-        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
+        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)))
+            .with_namespace_codes_fallback(namespace_codes_fallback.clone());
     let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
     let offset = opts.offset.unwrap_or(0);
     let mut flakes = Vec::new();

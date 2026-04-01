@@ -844,8 +844,10 @@ where
         };
 
         if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
+            // TODO: Use configured cache directory from Connection config instead of hardcoded temp dir
             let cache_dir = std::env::temp_dir().join("fluree_binary_cache");
-            let _ = crate::ledger_manager::load_and_attach_binary_store(
+            // Result unused: load_and_attach mutates new_state in-place
+            let _store = crate::ledger_manager::load_and_attach_binary_store(
                 fluree.storage(),
                 &mut new_state,
                 &cache_dir,
@@ -854,11 +856,10 @@ where
             .await?;
         }
 
-        // Update cache
+        // Update cache — sync binary_store BEFORE replacing state so that
+        // concurrent readers never see the new state with a stale binary_store.
+        handle.sync_binary_store_from_state(&new_state).await;
         write_guard.replace(new_state);
-        handle
-            .sync_binary_store_from_state(write_guard.state())
-            .await;
 
         // Trigger background indexing if needed (outside cache update is fine here)
         if let IndexingMode::Background(h) = &fluree.indexing_mode {
@@ -1017,8 +1018,10 @@ where
         };
 
         if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
+            // TODO: Use configured cache directory from Connection config instead of hardcoded temp dir
             let cache_dir = std::env::temp_dir().join("fluree_binary_cache");
-            let _ = crate::ledger_manager::load_and_attach_binary_store(
+            // Result unused: load_and_attach mutates new_state in-place
+            let _store = crate::ledger_manager::load_and_attach_binary_store(
                 fluree.storage(),
                 &mut new_state,
                 &cache_dir,
@@ -1027,11 +1030,10 @@ where
             .await?;
         }
 
-        // Update cache
+        // Update cache — sync binary_store BEFORE replacing state so that
+        // concurrent readers never see the new state with a stale binary_store.
+        handle.sync_binary_store_from_state(&new_state).await;
         write_guard.replace(new_state);
-        handle
-            .sync_binary_store_from_state(write_guard.state())
-            .await;
         drop(write_guard);
 
         // Trigger background indexing if needed (after cache update; no need to hold lock)

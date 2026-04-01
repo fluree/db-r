@@ -260,7 +260,9 @@ pub fn build_class_stat_entries(
                                     dt_tags
                                         .get(dt_dict_id as usize)
                                         .map(|t| t.as_u8())
-                                        .unwrap_or(dt_dict_id as u8)
+                                        .unwrap_or(
+                                            fluree_db_core::value_id::ValueTypeTag::UNKNOWN.as_u8(),
+                                        )
                                 };
                                 (tag, count)
                             })
