@@ -1029,6 +1029,7 @@ mem:fact-01km06dhjzpgyvbs1yc5h0h28e a mem:Fact ;
     mem:createdAt "2026-03-18T10:03:48.703812+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
 
+
 mem:fact-01km33dyv5wxhrxt4gnqra4xwb a mem:Fact ;
     mem:content "Ledger cache incremental refresh gotchas:\n- `LedgerState::apply_loaded_db(new_snapshot, ...)` replaces `snapshot` and trims `novelty` via `clear_up_to(new_snapshot.t)` but **does not reapply commit envelope deltas** (namespace_codes + graph_registry) for any remaining novelty commits with `t > new_snapshot.t`. If you keep novelty after an index advance, you must preserve/merge those deltas (or re-trace remaining commits) or queries/commit-apply may fail due to missing namespace prefixes / graph routing.\n- When wiring binary v2 index via `BinaryRangeProvider`, the provider's `DictNovelty` must be the same `state.dict_novelty` that is reset/populated after index application. Using `DictNovelty::new_uninitialized()` (or any detached Arc) can break overlay translation for subject/string IDs introduced in novelty.\n- Likewise, `BinaryIndexStore::augment_namespace_codes(&snapshot.namespace_codes)` is needed when novelty introduces new namespace codes not in the index root (prefix trie + decode correctness)." ;
     mem:tag "binary-index" ;
