@@ -2,6 +2,7 @@ pub mod auth;
 pub mod branch;
 pub mod completions;
 pub mod config_cmd;
+pub mod context_cmd;
 pub mod create;
 pub mod drop;
 pub mod export;
