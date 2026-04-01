@@ -16,6 +16,7 @@
   - [query](cli/query.md)
   - [history](cli/history.md)
   - [export](cli/export.md)
+  - [context](cli/context.md)
   - [log](cli/log.md)
   - [show](cli/show.md)
   - [index](cli/index.md)

@@ -344,6 +344,50 @@ where
     }
 }
 
+/// Resolve a [`TimeSpec`](crate::TimeSpec) to a concrete transaction number.
+///
+/// This is the shared resolution logic used by both dataset queries and export.
+pub(crate) async fn resolve_time_spec(
+    ledger: &fluree_db_ledger::LedgerState,
+    spec: &crate::TimeSpec,
+) -> Result<i64> {
+    let current_t = ledger.t();
+    match spec {
+        crate::TimeSpec::AtT(t) => Ok(*t),
+        crate::TimeSpec::Latest => Ok(current_t),
+        crate::TimeSpec::AtTime(iso) => {
+            let dt = chrono::DateTime::parse_from_rfc3339(iso).map_err(|e| {
+                ApiError::internal(format!(
+                    "Invalid ISO-8601 timestamp for time travel: {} ({})",
+                    iso, e
+                ))
+            })?;
+            // `ledger#time` flakes store epoch milliseconds. Ceiling sub-ms precision
+            // to avoid truncation off-by-one.
+            let mut target_epoch_ms = dt.timestamp_millis();
+            if dt.timestamp_subsec_nanos() % 1_000_000 != 0 {
+                target_epoch_ms += 1;
+            }
+            datetime_to_t(
+                &ledger.snapshot,
+                Some(ledger.novelty.as_ref()),
+                target_epoch_ms,
+                current_t,
+            )
+            .await
+        }
+        crate::TimeSpec::AtCommit(commit_prefix) => {
+            commit_to_t(
+                &ledger.snapshot,
+                Some(ledger.novelty.as_ref()),
+                commit_prefix,
+                current_t,
+            )
+            .await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

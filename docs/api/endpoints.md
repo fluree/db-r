@@ -1352,6 +1352,100 @@ curl -X POST http://localhost:8090/fluree/drop \
   -d '{"ledger": "mydb"}'
 ```
 
+### GET /fluree/context/:ledger
+
+Get the default JSON-LD context for a ledger.
+
+**URL:**
+```
+GET /fluree/context/{ledger-id}
+```
+
+**Path Parameters:**
+- `ledger-id`: Ledger identifier (e.g., `mydb` or `mydb:main`)
+
+**Response:**
+
+```json
+{
+  "@context": {
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "ex": "http://example.org/"
+  }
+}
+```
+
+If no default context has been set, `"@context"` is `null`.
+
+**Status Codes:**
+- `200 OK` - Context returned (may be `null`)
+- `404 Not Found` - Ledger does not exist
+
+**Example:**
+
+```bash
+curl http://localhost:8090/fluree/context/mydb:main
+```
+
+### PUT /fluree/context/:ledger
+
+Replace the default JSON-LD context for a ledger.
+
+**URL:**
+```
+PUT /fluree/context/{ledger-id}
+```
+
+**Path Parameters:**
+- `ledger-id`: Ledger identifier (e.g., `mydb` or `mydb:main`)
+
+**Request Body:**
+
+A JSON object mapping prefixes to IRIs. Either a bare object or wrapped in `{"@context": {...}}`:
+
+```json
+{
+  "ex": "http://example.org/",
+  "foaf": "http://xmlns.com/foaf/0.1/",
+  "schema": "http://schema.org/"
+}
+```
+
+**Response (success):**
+
+```json
+{
+  "status": "updated"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Context replaced successfully
+- `400 Bad Request` - Body is not a valid JSON object; or peer mode (writes not available)
+- `404 Not Found` - Ledger does not exist
+- `409 Conflict` - Concurrent update conflict (retry the request)
+
+**Concurrency:** The update uses compare-and-set semantics internally (up to 3 retries). A 409 means all retries were exhausted — this is rare and indicates heavy concurrent updates.
+
+**Cache invalidation:** After a successful update, the server invalidates the cached ledger state. Subsequent queries will use the new context.
+
+**Examples:**
+
+```bash
+# Set context
+curl -X PUT http://localhost:8090/fluree/context/mydb:main \
+  -H "Content-Type: application/json" \
+  -d '{"ex": "http://example.org/", "foaf": "http://xmlns.com/foaf/0.1/"}'
+
+# Wrapped form also accepted
+curl -X PUT http://localhost:8090/fluree/context/mydb:main \
+  -H "Content-Type: application/json" \
+  -d '{"@context": {"ex": "http://example.org/"}}'
+```
+
 ### POST /fluree/branch
 
 Create a new branch for a ledger.
@@ -2007,6 +2101,8 @@ This section summarizes the contract that third-party server implementations (e.
 | `POST /insert/{ledger}` | `insert` |
 | `POST /upsert/{ledger}` | `upsert` |
 | `GET /exists/{ledger}` | `clone` (pre-create check) |
+| `GET /context/{ledger}` | `context get` |
+| `PUT /context/{ledger}` | `context set` |
 | `GET /ledgers` | `list --remote` |
 
 For sync workflows (`clone`/`push`/`pull`), these additional endpoints are needed:
