@@ -30,6 +30,7 @@ use crate::format::index_root::{IndexRoot, OTypeTableEntry};
 use crate::format::leaf::DecodedLeafDirV3;
 use crate::format::run_record::RunSortOrder;
 
+use super::artifact_cache::{fetch_cached_bytes, fetch_cached_bytes_cid};
 use super::leaflet_cache::LeafletCache;
 
 const HOT_REMOTE_LEAF_PROMOTION_TOUCHES: usize = 2;
@@ -62,14 +63,6 @@ pub(crate) struct DictionarySet {
     pub(crate) prefix_trie: PrefixTrie,
     pub(crate) language_tags: LanguageTagDict,
     pub(crate) dt_sids: Vec<Sid>,
-}
-
-fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
-    let kind = match &e {
-        fluree_db_core::error::Error::NotFound(_) => io::ErrorKind::NotFound,
-        _ => io::ErrorKind::Other,
-    };
-    io::Error::new(kind, e.to_string())
 }
 
 fn cas_sync_timeout() -> Option<Duration> {
@@ -139,80 +132,6 @@ where
     }
 }
 
-pub(crate) fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
-    if target.exists() {
-        return Ok(());
-    }
-    let parent = target
-        .parent()
-        .ok_or_else(|| io::Error::other("cache target has no parent dir"))?;
-    std::fs::create_dir_all(parent)?;
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = parent.join(format!(".cas_{}_{}.tmp", std::process::id(), seq));
-    std::fs::write(&tmp, bytes)?;
-    if let Err(_rename_err) = std::fs::rename(&tmp, target) {
-        let _ = std::fs::remove_file(&tmp);
-        if !target.exists() {
-            return Err(io::Error::other(format!(
-                "failed to cache bytes to {:?}",
-                target
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn cache_bytes_to_file(
-    cache_dir: &Path,
-    hash: &str,
-    ext: &str,
-    bytes: &[u8],
-) -> io::Result<PathBuf> {
-    let target = cache_dir.join(format!("{}.{}", hash, ext));
-    cache_bytes_to_path_atomic(&target, bytes)?;
-    Ok(target)
-}
-
-/// Fetch artifact bytes by CID: reads from local file if available (file storage),
-/// then local cache, otherwise downloads from content store and writes to cache.
-pub(crate) async fn fetch_cached_bytes(
-    cs: &dyn ContentStore,
-    id: &ContentId,
-    cache_dir: &Path,
-    ext: &str,
-) -> io::Result<Vec<u8>> {
-    if let Some(local_path) = cs.resolve_local_path(id) {
-        return std::fs::read(&local_path);
-    }
-    let hash = id.digest_hex();
-    let cached = cache_dir.join(format!("{}.{}", hash, ext));
-    if cached.exists() {
-        return std::fs::read(&cached);
-    }
-    let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
-    cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
-    Ok(bytes)
-}
-
-/// Fetch artifact bytes by CID using CID-string filenames (no extension).
-pub(crate) async fn fetch_cached_bytes_cid(
-    cs: &dyn ContentStore,
-    id: &ContentId,
-    cache_dir: &Path,
-) -> io::Result<Vec<u8>> {
-    if let Some(local_path) = cs.resolve_local_path(id) {
-        return std::fs::read(&local_path);
-    }
-    let cached = cache_dir.join(id.to_string());
-    if cached.exists() {
-        return std::fs::read(&cached);
-    }
-    let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
-    cache_bytes_to_path_atomic(&cached, &bytes)?;
-    Ok(bytes)
-}
-
 // ============================================================================
 // Per-graph V3 index data
 // ============================================================================
@@ -243,6 +162,9 @@ pub struct BinaryIndexStore {
     o_type_index: HashMap<u16, usize>,
     cas: Option<Arc<dyn ContentStore>>,
     cache_dir: PathBuf,
+    /// Shared disk artifact cache — kept alive here so the global `CACHE_REGISTRY`
+    /// weak ref survives across calls, avoiding repeated dir scans on every write.
+    disk_cache: Arc<super::artifact_cache::DiskArtifactCache>,
     leaflet_cache: Option<Arc<LeafletCache>>,
     /// Remote leaf metadata cache keyed by leaf CID.
     ///
@@ -368,6 +290,7 @@ impl BinaryIndexStore {
             .map(|(i, e)| (e.o_type, i))
             .collect();
 
+        let disk_cache = super::artifact_cache::DiskArtifactCache::for_dir(cache_dir);
         Ok(Self {
             dicts,
             graph_indexes,
@@ -375,6 +298,7 @@ impl BinaryIndexStore {
             o_type_index,
             cas: Some(cs),
             cache_dir: cache_dir.to_path_buf(),
+            disk_cache,
             leaflet_cache,
             remote_leaf_metadata: RwLock::new(HashMap::new()),
             remote_leaf_open_counts: RwLock::new(HashMap::new()),
@@ -438,13 +362,25 @@ impl BinaryIndexStore {
 
         // Try local path first.
         if let Some(local_path) = cs.resolve_local_path(leaf_cid) {
-            return std::fs::read(local_path);
+            match std::fs::read(&local_path) {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    tracing::debug!(
+                        path = %local_path.display(),
+                        leaf = %leaf_cid,
+                        "local leaf path disappeared during read; falling back to remote fetch"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         // Check cache.
         let cache_path = self.cache_dir.join(leaf_cid.to_string());
-        if cache_path.exists() {
-            return std::fs::read(&cache_path);
+        match std::fs::read(&cache_path) {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
 
         // Fetch from CAS via sync bridge: capture the Tokio handle on the caller's
@@ -452,6 +388,7 @@ impl BinaryIndexStore {
         let cs = Arc::clone(cs);
         let cid = leaf_cid.clone();
         let cache_path_owned = cache_path.clone();
+        let disk_cache = Arc::clone(&self.disk_cache);
         let timeout = cas_sync_timeout();
         run_sync_on_runtime(async move {
             let fut = cs.get(&cid);
@@ -470,7 +407,7 @@ impl BinaryIndexStore {
                 fut.await
                     .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
             };
-            cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
+            disk_cache.best_effort_write(&cache_path_owned, &data);
             Ok(data)
         })
     }
@@ -512,14 +449,17 @@ impl BinaryIndexStore {
 
         // Fast path 2: locally cached — full read from disk cache.
         let cache_path = self.cache_dir.join(leaf_cid.to_string());
-        if cache_path.exists() {
-            let bytes = std::fs::read(&cache_path)?;
-            let sidecar = if need_replay {
-                self.fetch_sidecar_bytes_sync(sidecar_cid)?
-            } else {
-                None
-            };
-            return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+        match std::fs::read(&cache_path) {
+            Ok(bytes) => {
+                let sidecar = if need_replay {
+                    self.fetch_sidecar_bytes_sync(sidecar_cid)?
+                } else {
+                    None
+                };
+                return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
 
         let touch_count = self.note_remote_leaf_open(leaf_cid);
@@ -2086,9 +2026,15 @@ impl ContentStoreRangeFetcher {
 
 impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
     fn fetch_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> io::Result<Vec<u8>> {
-        // Try local path first — positional read.
-        if let Some(local_path) = self.cs.resolve_local_path(id) {
-            let file = std::fs::File::open(local_path)?;
+        fn read_range_from_file(
+            path: &Path,
+            range: std::ops::Range<u64>,
+        ) -> io::Result<Option<Vec<u8>>> {
+            let file = match std::fs::File::open(path) {
+                Ok(file) => file,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(err),
+            };
             let len = (range.end - range.start) as usize;
             let mut buf = vec![0u8; len];
             #[cfg(unix)]
@@ -2105,29 +2051,26 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
                 let n = file.read(&mut buf)?;
                 buf.truncate(n);
             }
-            return Ok(buf);
+            Ok(Some(buf))
+        }
+
+        // Try local path first — positional read.
+        if let Some(local_path) = self.cs.resolve_local_path(id) {
+            match read_range_from_file(&local_path, range.clone())? {
+                Some(buf) => return Ok(buf),
+                None => {
+                    tracing::debug!(
+                        path = %local_path.display(),
+                        id = %id,
+                        "local artifact path disappeared during range read; falling back to remote fetch"
+                    );
+                }
+            }
         }
 
         // Check cache.
         let cache_path = self.cache_dir.join(id.to_string());
-        if cache_path.exists() {
-            let file = std::fs::File::open(&cache_path)?;
-            let len = (range.end - range.start) as usize;
-            let mut buf = vec![0u8; len];
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileExt;
-                let n = file.read_at(&mut buf, range.start)?;
-                buf.truncate(n);
-            }
-            #[cfg(not(unix))]
-            {
-                use std::io::{Read, Seek, SeekFrom};
-                let mut file = file;
-                file.seek(SeekFrom::Start(range.start))?;
-                let n = file.read(&mut buf)?;
-                buf.truncate(n);
-            }
+        if let Some(buf) = read_range_from_file(&cache_path, range.clone())? {
             return Ok(buf);
         }
 
@@ -2260,6 +2203,7 @@ mod tests {
             o_type_table: Vec::new(),
             o_type_index: HashMap::new(),
             cas: Some(cs),
+            disk_cache: crate::read::artifact_cache::DiskArtifactCache::for_dir(&cache_dir),
             cache_dir,
             leaflet_cache: None,
             remote_leaf_metadata: RwLock::new(HashMap::new()),
@@ -2306,7 +2250,7 @@ mod tests {
                 store
                     .put(ContentKind::IndexLeaf, &leaf_bytes)
                     .await
-                    .map_err(storage_to_io_error)
+                    .map_err(|e| io::Error::other(e.to_string()))
             }
         })
         .expect("store leaf bytes");
