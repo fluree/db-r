@@ -534,7 +534,6 @@ pub async fn info(
         };
         if let Some(enabled) = query.realtime_property_details {
             opts.realtime_property_details = enabled;
-            opts.include_property_datatypes = enabled;
         }
         if let Some(enabled) = query.include_property_datatypes {
             opts.include_property_datatypes = enabled;

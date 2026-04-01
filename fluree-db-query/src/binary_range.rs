@@ -351,7 +351,7 @@ fn binary_range_eq_v3(
 
     // Get branch manifest.
     let branch = match store.branch_for_order(g_id, order) {
-        Some(b) => Arc::new(b.clone()),
+        Some(b) => Arc::clone(b),
         None => {
             // No branch for this order — return overlay-only results if any.
             return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
@@ -676,7 +676,7 @@ fn binary_lookup_subject_predicate_refs_batched_v3(
 
     // Get branch manifest.
     let branch = match store.branch_for_order(g_id, RunSortOrder::Psot) {
-        Some(b) => Arc::new(b.clone()),
+        Some(b) => Arc::clone(b),
         None => {
             // No PSOT branch — try overlay only.
             return batched_refs_overlay_only(
@@ -998,7 +998,7 @@ fn binary_range_bounded_v3(
     }
 
     let branch = match store.branch_for_order(g_id, order) {
-        Some(b) => Arc::new(b.clone()),
+        Some(b) => Arc::clone(b),
         None => {
             // No SPOT branch — return overlay-only results (already translated above).
             return overlay_only_flakes_bounded(

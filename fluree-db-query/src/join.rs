@@ -1921,7 +1921,7 @@ impl NestedLoopJoinOperator {
             self.clear_batched_state();
             return Ok(());
         };
-        let branch = Arc::new(branch.clone());
+        let branch = Arc::clone(branch);
 
         let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); self.batched_accumulator.len()];
         let mut matched_rows: u64 = 0;

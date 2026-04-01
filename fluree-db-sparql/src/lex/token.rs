@@ -467,6 +467,9 @@ impl TokenKind {
                 | TokenKind::KwFalse
                 | TokenKind::KwUndef
                 | TokenKind::KwBy
+                | TokenKind::KwDotProduct
+                | TokenKind::KwCosineSimilarity
+                | TokenKind::KwEuclideanDistance
         )
     }
 
@@ -599,6 +602,9 @@ impl TokenKind {
             TokenKind::KwFalse => Some("false"),
             TokenKind::KwUndef => Some("UNDEF"),
             TokenKind::KwBy => Some("BY"),
+            TokenKind::KwDotProduct => Some("dotProduct"),
+            TokenKind::KwCosineSimilarity => Some("cosineSimilarity"),
+            TokenKind::KwEuclideanDistance => Some("euclideanDistance"),
             _ => None,
         }
     }

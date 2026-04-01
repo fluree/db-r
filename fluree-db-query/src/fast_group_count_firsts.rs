@@ -389,8 +389,10 @@ impl Operator for PredicateObjectCountFirstsOperator {
             return self.open_fallback(ctx).await;
         }
 
-        // Try V6 fast-path first (only when no overlay — overlay delta merge not yet implemented).
-        if ctx.overlay.is_none() {
+        // Try V6 fast-path first (only when no novelty overlay — overlay delta merge not yet implemented).
+        //
+        // `ExecutionContext` always carries an overlay provider; `NoOverlay` has epoch=0.
+        if ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 {
             if let Some(binary_index_store) = ctx.binary_store.as_ref() {
                 match count_bound_object_v6(
                     binary_index_store,
@@ -985,7 +987,7 @@ fn build_psot_cursor_for_predicate_group(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(None);
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     let min_key = RunRecordV2 {
         s_id: SubjectId(0),

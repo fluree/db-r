@@ -156,7 +156,7 @@ fn collect_subjects_for_predicate_object_ref_opst(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Opst) else {
         return Ok(Vec::new());
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     // Cursor range: fixed (o_type, o_key, p_id), all o_i and s_id.
     let min_key = RunRecordV2 {
@@ -270,7 +270,7 @@ fn filter_subjects_by_numeric_gt(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(Vec::new());
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     let mut needed = ColumnSet::EMPTY;
     needed.insert(ColumnId::SId);
@@ -365,7 +365,7 @@ fn collect_label_pairs(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(Vec::new());
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     let mut needed = ColumnSet::EMPTY;
     needed.insert(ColumnId::SId);

@@ -564,8 +564,12 @@ fn count_distinct_lead_groups(
                 continue;
             }
 
-            let lead_first = &entry.first_key[..lead_len];
-            let lead_last = &entry.last_key[..lead_len];
+            let lead_first = entry.first_key.get(..lead_len).ok_or_else(|| {
+                QueryError::execution("leaflet key shorter than expected lead_len")
+            })?;
+            let lead_last = entry.last_key.get(..lead_len).ok_or_else(|| {
+                QueryError::execution("leaflet key shorter than expected lead_len")
+            })?;
 
             total += u64::from(entry.lead_group_count);
             if !prev_lead_last.is_empty() && prev_lead_last == lead_first {
@@ -600,10 +604,19 @@ fn count_distinct_predicates_psot(store: &BinaryIndexStore, g_id: GraphId) -> Re
                 continue;
             }
 
-            let p_id = entry.p_const.unwrap_or_else(|| {
-                let bytes: [u8; 4] = entry.first_key[0..4].try_into().unwrap();
-                u32::from_be_bytes(bytes)
-            });
+            let p_id = match entry.p_const {
+                Some(id) => id,
+                None => {
+                    let bytes: [u8; 4] = entry
+                        .first_key
+                        .get(..4)
+                        .and_then(|s| s.try_into().ok())
+                        .ok_or_else(|| {
+                            QueryError::execution("PSOT leaflet key shorter than 4 bytes")
+                        })?;
+                    u32::from_be_bytes(bytes)
+                }
+            };
 
             if prev_p != Some(p_id) {
                 total += 1;

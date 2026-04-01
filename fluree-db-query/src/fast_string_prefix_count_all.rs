@@ -12,7 +12,9 @@
 
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
-use crate::fast_path_common::{build_count_batch, fast_path_store, ref_to_p_id, FastPathOperator};
+use crate::fast_path_common::{
+    build_count_batch, contiguous_id_range, fast_path_store, ref_to_p_id, FastPathOperator,
+};
 use crate::operator::BoxedOperator;
 use crate::triple::Ref;
 use crate::var_registry::VarId;
@@ -94,27 +96,10 @@ fn prefix_match_count(ctx: &ExecutionContext<'_>, pred: &Ref, prefix: &str) -> R
         return Ok(Some(0));
     }
 
-    let Ok(id_ranges) = contiguous_ranges(&string_ids) else {
+    let Ok(id_ranges) = contiguous_id_range(&string_ids) else {
         return Ok(None);
     };
     count_prefix_rows_opst(store, ctx.binary_g_id, p_id, &id_ranges, ctx.to_t).map(Some)
-}
-
-fn contiguous_ranges(sorted_ids: &[u32]) -> Result<Vec<(u32, u32)>> {
-    if sorted_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut ids = sorted_ids.to_vec();
-    ids.sort_unstable();
-    let start = ids[0];
-    let end = *ids.last().unwrap_or(&start);
-    let span_len = u64::from(end) - u64::from(start) + 1;
-    if span_len != ids.len() as u64 {
-        return Err(QueryError::execution(
-            "prefix string ids are not contiguous; refusing prefix count fast-path",
-        ));
-    }
-    Ok(vec![(start, end)])
 }
 
 fn count_prefix_rows_opst(
@@ -127,7 +112,7 @@ fn count_prefix_rows_opst(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Opst) else {
         return Ok(0);
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
     let projection = ColumnProjection {
         output: ColumnSet::EMPTY,
         internal: ColumnSet::single(ColumnId::OKey),

@@ -531,10 +531,18 @@ where
     use fluree_db_core::ContentKind;
     use fluree_db_nameservice_sync::ingest_pack_frame;
 
-    let data = std::fs::read(path)
-        .map_err(|e| CliError::Input(format!("failed to read {}: {e}", path.display())))?;
+    let file = std::fs::File::open(path)
+        .map_err(|e| CliError::Input(format!("failed to open {}: {e}", path.display())))?;
+    let file_size = file
+        .metadata()
+        .map_err(|e| CliError::Input(format!("failed to stat {}: {e}", path.display())))?
+        .len();
 
-    let file_size = data.len() as u64;
+    // Safety: the file is read-only and not modified during import.
+    let data = unsafe {
+        memmap2::Mmap::map(&file)
+            .map_err(|e| CliError::Input(format!("failed to mmap {}: {e}", path.display())))?
+    };
     eprintln!(
         "Importing ledger '{}' from {} ({})...",
         ledger.cyan(),

@@ -362,6 +362,171 @@ async fn flpack_export_import_round_trip() {
     assert_eq!(arr.len(), 3, "should have 3 user names");
 }
 
+/// Round-trip with binary indexing: transact → index → export (with index artifacts) → import → query.
+#[tokio::test]
+async fn flpack_export_import_round_trip_with_index() {
+    use support::{start_background_indexer_local, trigger_index_and_wait};
+
+    let src_dir = tempfile::TempDir::new().expect("src tempdir");
+    let dst_dir = tempfile::TempDir::new().expect("dst tempdir");
+
+    let src_ledger = "flpack-test/indexed-source:main";
+    let dst_ledger = "flpack-test/indexed-imported:main";
+
+    // ── Source: create, populate, and index ─────────────────────────
+    let mut src_fluree = FlureeBuilder::file(src_dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build source");
+
+    let (local, handle) = start_background_indexer_local(
+        src_fluree.storage().clone(),
+        src_fluree.nameservice().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+    src_fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
+
+    local
+        .run_until(async {
+            let src_db = fluree_db_core::LedgerSnapshot::genesis(src_ledger);
+            let src_state =
+                fluree_db_api::LedgerState::new(src_db, fluree_db_api::Novelty::new(0));
+
+            let insert_data = json!({
+                "@context": {
+                    "ex": "http://example.org/ns/",
+                    "schema": "http://schema.org/"
+                },
+                "@graph": [
+                    {
+                        "@id": "ex:alice",
+                        "@type": "ex:User",
+                        "schema:name": "Alice",
+                        "schema:age": 42
+                    },
+                    {
+                        "@id": "ex:bob",
+                        "@type": "ex:User",
+                        "schema:name": "Bob",
+                        "schema:age": 22
+                    },
+                    {
+                        "@id": "ex:carol",
+                        "@type": "ex:User",
+                        "schema:name": "Carol",
+                        "schema:age": 33
+                    }
+                ]
+            });
+
+            let committed = src_fluree
+                .insert(src_state, &insert_data)
+                .await
+                .expect("insert");
+            assert_eq!(committed.receipt.t, 1);
+
+            // Trigger indexing and wait for completion.
+            trigger_index_and_wait(&handle, src_ledger, committed.receipt.t).await;
+
+            // Verify index head is set.
+            let ns_record = src_fluree
+                .nameservice()
+                .lookup(src_ledger)
+                .await
+                .expect("ns lookup")
+                .expect("ledger should exist");
+            assert!(
+                ns_record.index_head_id.is_some(),
+                "index_head_id should be set after indexing"
+            );
+
+            // Query source for expected results.
+            let query = json!({
+                "select": ["?name"],
+                "where": {
+                    "@id": "?s",
+                    "@type": "ex:User",
+                    "schema:name": "?name"
+                },
+                "orderBy": "?name",
+                "@context": {
+                    "ex": "http://example.org/ns/",
+                    "schema": "http://schema.org/"
+                }
+            });
+
+            let src_db = fluree_db_api::GraphDb::from_ledger_state(&committed.ledger);
+            let src_result = src_fluree.query(&src_db, &query).await.expect("src query");
+            let src_json = src_result
+                .to_jsonld(&committed.ledger.snapshot)
+                .expect("src to_jsonld");
+
+            // ── Export (should include index artifacts) ─────────────
+            let pack_bytes = export_ledger_to_bytes(&src_fluree, src_ledger).await;
+
+            // Verify the pack contains index artifact frames.
+            let mut pos = read_stream_preamble(&pack_bytes).expect("preamble");
+            let mut index_artifact_count = 0usize;
+            let mut has_index_manifest = false;
+            loop {
+                let (frame, consumed) =
+                    decode_frame(&pack_bytes[pos..], DEFAULT_MAX_PAYLOAD).expect("decode");
+                pos += consumed;
+                match frame {
+                    PackFrame::Data { cid, .. } => {
+                        if cid.content_kind() != Some(ContentKind::Commit)
+                            && cid.content_kind() != Some(ContentKind::Txn)
+                        {
+                            index_artifact_count += 1;
+                        }
+                    }
+                    PackFrame::Manifest(ref json) => {
+                        if json.get("phase").and_then(|v| v.as_str()) == Some("indexes") {
+                            has_index_manifest = true;
+                        }
+                    }
+                    PackFrame::End => break,
+                    _ => {}
+                }
+            }
+            assert!(
+                has_index_manifest,
+                "pack should contain an indexes manifest"
+            );
+            assert!(
+                index_artifact_count > 0,
+                "pack should contain index artifact data frames"
+            );
+
+            // ── Destination: import ────────────────────────────────
+            let dst_fluree =
+                FlureeBuilder::file(dst_dir.path().to_string_lossy().to_string())
+                    .build()
+                    .expect("build destination");
+
+            import_ledger_from_bytes(&dst_fluree, dst_ledger, &pack_bytes).await;
+
+            // ── Query the imported ledger ───────────────────────────
+            let dst_handle = dst_fluree
+                .ledger(dst_ledger)
+                .await
+                .expect("load imported ledger");
+
+            let dst_db = fluree_db_api::GraphDb::from_ledger_state(&dst_handle);
+            let dst_result = dst_fluree.query(&dst_db, &query).await.expect("dst query");
+            let dst_json = dst_result
+                .to_jsonld(&dst_handle.snapshot)
+                .expect("dst to_jsonld");
+
+            assert_eq!(
+                src_json, dst_json,
+                "query results should match after indexed flpack round-trip"
+            );
+            let arr = dst_json.as_array().expect("result should be array");
+            assert_eq!(arr.len(), 3, "should have 3 user names");
+        })
+        .await;
+}
+
 /// Verify that the pack stream can be decoded frame-by-frame.
 #[tokio::test]
 async fn flpack_stream_structure_is_valid() {

@@ -1016,9 +1016,11 @@ where
     ///
     /// Enabled by default for `ledger_info()`. Disable this only when you
     /// explicitly want the lighter fast novelty-aware merge.
+    ///
+    /// Note: this does NOT override `include_property_datatypes` — set that
+    /// independently via [`with_property_datatypes`](Self::with_property_datatypes).
     pub fn with_realtime_property_details(mut self, enabled: bool) -> Self {
         self.options.realtime_property_details = enabled;
-        self.options.include_property_datatypes = enabled;
         self
     }
 

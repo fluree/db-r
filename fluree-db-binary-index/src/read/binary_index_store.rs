@@ -141,7 +141,7 @@ where
 // ============================================================================
 
 struct GraphIndex {
-    orders: HashMap<RunSortOrder, BranchManifest>,
+    orders: HashMap<RunSortOrder, Arc<BranchManifest>>,
     numbig: HashMap<u32, crate::arena::numbig::NumBigArena>,
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
@@ -238,7 +238,7 @@ impl BinaryIndexStore {
                 spatial: HashMap::new(),
                 fulltext: HashMap::new(),
             });
-            gi.orders.insert(dgo.order, branch);
+            gi.orders.insert(dgo.order, Arc::new(branch));
         }
 
         // Named graphs: fetch FBR3 branch manifests from CAS.
@@ -254,7 +254,7 @@ impl BinaryIndexStore {
                     spatial: HashMap::new(),
                     fulltext: HashMap::new(),
                 });
-                gi.orders.insert(*order, branch);
+                gi.orders.insert(*order, Arc::new(branch));
             }
         }
 
@@ -335,7 +335,11 @@ impl BinaryIndexStore {
     }
 
     /// Get the branch manifest for a graph + sort order.
-    pub fn branch_for_order(&self, g_id: GraphId, order: RunSortOrder) -> Option<&BranchManifest> {
+    pub fn branch_for_order(
+        &self,
+        g_id: GraphId,
+        order: RunSortOrder,
+    ) -> Option<&Arc<BranchManifest>> {
         self.graph_indexes
             .get(&g_id)
             .and_then(|gi| gi.orders.get(&order))

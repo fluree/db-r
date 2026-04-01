@@ -27,6 +27,32 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
+// 0. Shared string-ID range helpers
+// ---------------------------------------------------------------------------
+
+/// Sort a list of dictionary string IDs and verify they form a single contiguous range.
+///
+/// Returns `[(start, end)]` on success. Errors if the IDs are not contiguous.
+///
+/// Used by both `fast_string_prefix_count_all` and `BinaryScanOperator::build_prefix_id_ranges`.
+pub fn contiguous_id_range(ids: &[u32]) -> Result<Vec<(u32, u32)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sorted = ids.to_vec();
+    sorted.sort_unstable();
+    let start = sorted[0];
+    let end = *sorted.last().unwrap_or(&start);
+    let span_len = u64::from(end) - u64::from(start) + 1;
+    if span_len != sorted.len() as u64 {
+        return Err(QueryError::execution(
+            "prefix string ids are not contiguous; refusing range pushdown",
+        ));
+    }
+    Ok(vec![(start, end)])
+}
+
+// ---------------------------------------------------------------------------
 // 1. Predicate resolution
 // ---------------------------------------------------------------------------
 
@@ -1322,7 +1348,7 @@ pub fn build_psot_cursor_for_predicate(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(None);
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     let (min_key, max_key) = predicate_range_keys(p_id, g_id);
 

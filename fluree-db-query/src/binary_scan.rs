@@ -30,6 +30,7 @@ use fluree_db_core::{
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::fast_path_common::contiguous_id_range;
 use crate::ir::{Expression, Function};
 use crate::object_binding::{late_materialized_object_binding, materialized_object_binding};
 use crate::operator::inline::{apply_inline, extend_schema, InlineOperator};
@@ -496,20 +497,12 @@ fn build_prefix_id_ranges(
     store: &BinaryIndexStore,
     prefix: &str,
 ) -> std::io::Result<Arc<[(u32, u32)]>> {
-    let mut ids = store.find_strings_by_prefix(prefix)?;
+    let ids = store.find_strings_by_prefix(prefix)?;
     if ids.is_empty() {
         return Ok(Arc::from(Vec::<(u32, u32)>::new()));
     }
-    ids.sort_unstable();
-    let start = ids[0];
-    let end = *ids.last().unwrap_or(&start);
-    let span_len = u64::from(end) - u64::from(start) + 1;
-    if span_len != ids.len() as u64 {
-        return Err(std::io::Error::other(format!(
-            "prefix string ids are not contiguous for {prefix:?}; refusing range pushdown"
-        )));
-    }
-    Ok(Arc::from(vec![(start, end)].into_boxed_slice()))
+    let ranges = contiguous_id_range(&ids).map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(Arc::from(ranges.into_boxed_slice()))
 }
 
 fn range_contains(ranges: &[(u32, u32)], value: u32) -> bool {
@@ -1704,7 +1697,7 @@ impl Operator for BinaryScanOperator {
             return self.open_overlay_only_fallback(ctx, &s_sid, &p_sid).await;
         };
         let branch: Arc<fluree_db_binary_index::format::branch::BranchManifest> =
-            Arc::new(branch_ref.clone());
+            Arc::clone(branch_ref);
 
         // If this scan has range bounds on the object variable and we're scanning in POST order,
         // narrow the cursor's leaf range by object-key range.

@@ -167,7 +167,7 @@ impl GeoSearchOperator {
             .ok_or_else(|| {
                 QueryError::Internal(format!("GeoSearch: no POST branch for g_id={}", g_id))
             })?;
-        let branch: Arc<BranchManifest> = Arc::new(branch_ref.clone());
+        let branch: Arc<BranchManifest> = Arc::clone(branch_ref);
 
         let geo_otype = OType::GEO_POINT.as_u16();
 

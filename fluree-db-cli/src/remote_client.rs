@@ -229,6 +229,13 @@ impl RemoteLedgerClient {
             (cfg.exchange_url.clone(), cfg.refresh_token.clone())
         };
 
+        if !exchange_url.starts_with("https://") {
+            tracing::warn!(
+                url = %exchange_url,
+                "token refresh exchange URL is not HTTPS — credentials may be sent in cleartext"
+            );
+        }
+
         let body = serde_json::json!({
             "grant_type": "refresh_token",
             "refresh_token": refresh_token
@@ -421,7 +428,12 @@ impl RemoteLedgerClient {
     }
 
     fn op_url(&self, op: &str, ledger: &str) -> String {
-        format!("{}/{}/{}", self.base_url, op, Self::ledger_tail(ledger))
+        format!(
+            "{}/{}/{}",
+            self.base_url,
+            op,
+            urlencoding::encode(Self::ledger_tail(ledger)),
+        )
     }
 
     fn op_url_root(&self, op: &str) -> String {
