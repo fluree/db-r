@@ -43,6 +43,8 @@ pub mod credential;
 pub mod dataset;
 mod error;
 pub mod explain;
+pub mod export;
+pub mod export_builder;
 pub mod format;
 pub mod graph;
 pub mod graph_commit_builder;
@@ -101,6 +103,7 @@ pub use dataset::{
     TimeSpec,
 };
 pub use error::{ApiError, BuilderError, BuilderErrors, Result};
+pub use fluree_db_core::ContentId;
 pub use format::{AgentJsonContext, FormatError, FormatterConfig, OutputFormat, QueryOutput};
 pub use graph::Graph;
 pub use graph_commit_builder::{CommitBuilder, CommitDetail, ResolvedFlake, ResolvedValue};
@@ -185,7 +188,8 @@ pub use fluree_db_ledger::{
     HistoricalLedgerView, IndexConfig, LedgerState, LedgerView, TypeErasedStore,
 };
 pub use fluree_db_nameservice::{
-    GraphSourceLookup, GraphSourcePublisher, NameService, NsRecord, Publisher,
+    ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, GraphSourceLookup,
+    GraphSourcePublisher, NameService, NsRecord, Publisher,
 };
 pub use fluree_db_novelty::{verify_commit_v2_blob, Novelty};
 pub use fluree_db_query::{
@@ -225,6 +229,7 @@ pub use fluree_db_core::{FuelExceededError, PolicyStats, Tracker, TrackingOption
 
 use async_trait::async_trait;
 use fluree_db_connection::Connection;
+use fluree_db_core::ContentStore as _;
 #[cfg(feature = "native")]
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::memory::MemoryNameService;
@@ -2956,6 +2961,205 @@ where
         self.ledger_manager
             .as_ref()
             .map(|mgr| mgr.spawn_maintenance())
+    }
+}
+
+// ============================================================================
+// Default context management
+// ============================================================================
+
+/// Result of a set_default_context operation.
+#[derive(Debug)]
+pub enum SetContextResult {
+    /// Context was successfully updated.
+    Updated,
+    /// CAS conflict — another writer updated the config concurrently.
+    /// The caller may retry.
+    Conflict,
+}
+
+/// Maximum retries for CAS conflict during context update.
+const CONTEXT_CAS_MAX_RETRIES: usize = 3;
+
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: NameService + ConfigPublisher + Clone + Send + Sync + 'static,
+{
+    /// Create an export builder for streaming RDF data from a ledger.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use fluree_db_api::export::ExportFormat;
+    ///
+    /// let stats = fluree.export("mydb")
+    ///     .format(ExportFormat::Turtle)
+    ///     .write_to(&mut writer)
+    ///     .await?;
+    /// ```
+    pub fn export(&self, ledger_id: &str) -> export_builder::ExportBuilder<'_, S, N> {
+        export_builder::ExportBuilder::new(self, ledger_id.to_string())
+    }
+
+    /// Get the default JSON-LD context for a ledger.
+    ///
+    /// Reads the context CID from nameservice config and fetches the blob
+    /// from CAS. Returns `None` if no default context has been set.
+    pub async fn get_default_context(&self, ledger_id: &str) -> Result<Option<serde_json::Value>> {
+        // Resolve to canonical ledger ID (e.g., "mydb" -> "mydb:main")
+        let record = self
+            .nameservice
+            .lookup(ledger_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(ledger_id.to_string()))?;
+        let canonical_id = &record.ledger_id;
+
+        // Read config to get context CID
+        let config = self.nameservice.get_config(canonical_id).await?;
+        let ctx_cid = config
+            .as_ref()
+            .and_then(|c| c.payload.as_ref())
+            .and_then(|p| p.default_context.as_ref());
+
+        let cid = match ctx_cid {
+            Some(cid) => cid,
+            None => return Ok(None),
+        };
+
+        // Fetch blob from CAS using canonical ID for namespace
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), canonical_id);
+        let bytes = cs.get(cid).await.map_err(|e| {
+            ApiError::internal(format!("failed to read default context from CAS: {e}"))
+        })?;
+
+        let ctx: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+            ApiError::internal(format!("failed to parse default context JSON: {e}"))
+        })?;
+
+        Ok(Some(ctx))
+    }
+
+    /// Set (replace) the default JSON-LD context for a ledger.
+    ///
+    /// Writes the new context blob to CAS, then updates the nameservice config
+    /// using compare-and-set semantics. Retries internally on CAS conflict
+    /// (up to 3 attempts). After success, invalidates the ledger cache so
+    /// subsequent queries pick up the new context.
+    pub async fn set_default_context(
+        &self,
+        ledger_id: &str,
+        context: &serde_json::Value,
+    ) -> Result<SetContextResult> {
+        // Validate: context must be a JSON object (prefix → IRI map)
+        if !context.is_object() {
+            return Err(ApiError::Config(
+                "context must be a JSON object mapping prefixes to IRIs".to_string(),
+            ));
+        }
+
+        // Resolve to canonical ledger ID (e.g., "mydb" -> "mydb:main")
+        let record = self
+            .nameservice
+            .lookup(ledger_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(ledger_id.to_string()))?;
+        let canonical_id = &record.ledger_id;
+
+        // Serialize and write context blob to CAS
+        let context_bytes = serde_json::to_vec(context)
+            .map_err(|e| ApiError::internal(format!("failed to serialize context: {e}")))?;
+
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), canonical_id);
+        let new_cid = cs
+            .put(ContentKind::LedgerConfig, &context_bytes)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to write context to CAS: {e}")))?;
+
+        // CAS loop: read current config, push new config
+        for attempt in 0..CONTEXT_CAS_MAX_RETRIES {
+            let current_config = self.nameservice.get_config(canonical_id).await?;
+
+            let old_cid = current_config
+                .as_ref()
+                .and_then(|c| c.payload.as_ref())
+                .and_then(|p| p.default_context.clone());
+
+            // Preserve existing config_id and extra fields
+            let mut new_payload = current_config
+                .as_ref()
+                .and_then(|c| c.payload.clone())
+                .unwrap_or_default();
+            new_payload.default_context = Some(new_cid.clone());
+
+            let new_v = current_config.as_ref().map_or(1, |c| c.v + 1);
+            let new_config = ConfigValue::new(new_v, Some(new_payload));
+
+            match self
+                .nameservice
+                .push_config(canonical_id, current_config.as_ref(), &new_config)
+                .await?
+            {
+                ConfigCasResult::Updated => {
+                    tracing::info!(
+                        cid = %new_cid,
+                        ledger = canonical_id,
+                        "default context updated"
+                    );
+
+                    // GC old blob if CID changed
+                    if let Some(old) = old_cid {
+                        if old != new_cid {
+                            let kind = old.content_kind().unwrap_or(ContentKind::LedgerConfig);
+                            let addr = fluree_db_core::content_address(
+                                self.storage().storage_method(),
+                                kind,
+                                canonical_id,
+                                &old.digest_hex(),
+                            );
+                            if let Err(e) = self.storage().delete(&addr).await {
+                                tracing::debug!(
+                                    %e,
+                                    old_addr = %addr,
+                                    "could not GC old default context blob"
+                                );
+                            }
+                        }
+                    }
+
+                    // Invalidate cached ledger so next query reloads with new context
+                    self.disconnect_ledger(canonical_id).await;
+
+                    return Ok(SetContextResult::Updated);
+                }
+                ConfigCasResult::Conflict { .. } => {
+                    tracing::debug!(
+                        attempt,
+                        ledger = canonical_id,
+                        "CAS conflict updating default context, retrying"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        // All retries exhausted — best-effort GC the orphan blob we wrote
+        let kind = new_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
+        let addr = fluree_db_core::content_address(
+            self.storage().storage_method(),
+            kind,
+            canonical_id,
+            &new_cid.digest_hex(),
+        );
+        if let Err(e) = self.storage().delete(&addr).await {
+            tracing::debug!(
+                %e,
+                orphan_addr = %addr,
+                "could not GC orphan context blob after conflict"
+            );
+        }
+
+        Ok(SetContextResult::Conflict)
     }
 }
 

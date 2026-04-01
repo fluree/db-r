@@ -889,7 +889,12 @@ impl BinaryScanOperator {
         // for decoding (no novelty overlay with ephemeral IDs).
         //
         // Note: ExecutionContext always carries an overlay provider; `NoOverlay` has epoch=0.
-        let late_materialize = ctx.is_some_and(|c| c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0)
+        // When `eager_materialization` is set (via `GraphDbRef::eager()`), always resolve
+        // bindings eagerly — infrastructure queries (config, policy) need concrete
+        // `Binding::Sid`/`Lit`, not `EncodedSid`/`EncodedLit`.
+        let late_materialize = ctx.is_some_and(|c| {
+            c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 && !c.eager_materialization
+        })
             // If a repeated variable forces two components into the same output slot,
             // late-materialization must produce comparable binding representations.
             // In particular, `?x ?x ?o` would otherwise compare EncodedSid vs EncodedPid.
@@ -1698,15 +1703,20 @@ impl Operator for BinaryScanOperator {
 ///
 /// Uses the V6 store for persisted dictionary lookups and DictNovelty for
 /// ephemeral IDs from uncommitted transactions.
+/// Ephemeral predicate mapping: IRI → ephemeral p_id for predicates that only
+/// exist in novelty. Callers must use this to extend p_id resolution so that
+/// novelty-only predicates can be resolved back to IRIs during decode.
+pub type EphemeralPredicateMap = HashMap<Sid, u32>;
+
 pub fn translate_overlay_flakes(
     overlay: &dyn OverlayProvider,
     store: &BinaryIndexStore,
     dict_novelty: Option<&Arc<fluree_db_core::dict_novelty::DictNovelty>>,
     to_t: i64,
     g_id: GraphId,
-) -> Vec<OverlayOp> {
+) -> (Vec<OverlayOp>, EphemeralPredicateMap) {
     let mut ops = Vec::new();
-    let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
+    let mut ephemeral_preds: EphemeralPredicateMap = HashMap::new();
     let mut next_ephemeral_p_id = store.predicate_count();
 
     overlay.for_each_overlay_flake(
@@ -1730,7 +1740,7 @@ pub fn translate_overlay_flakes(
         },
     );
 
-    ops
+    (ops, ephemeral_preds)
 }
 
 /// Translate overlay flakes to V3 overlay ops, also returning flakes that cannot be translated

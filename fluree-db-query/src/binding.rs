@@ -407,8 +407,16 @@ impl Binding {
         }
     }
 
-    /// Try to get as Sid (only for Binding::Sid, not IriMatch)
+    /// Try to get as Sid (only for Binding::Sid, not IriMatch).
+    ///
+    /// Returns `None` for `EncodedSid` — if your query may use late
+    /// materialization (binary scan with epoch=0), use `GraphDbRef::eager()`
+    /// to force resolved bindings.
     pub fn as_sid(&self) -> Option<&Sid> {
+        debug_assert!(
+            !self.is_encoded_sid(),
+            "as_sid() called on EncodedSid — use GraphDbRef::eager() for infrastructure queries"
+        );
         match self {
             Binding::Sid(sid) => Some(sid),
             _ => None,
@@ -478,8 +486,16 @@ impl Binding {
         }
     }
 
-    /// Try to get literal value
+    /// Try to get literal value.
+    ///
+    /// Returns `None` for `EncodedLit` — if your query may use late
+    /// materialization (binary scan with epoch=0), use `GraphDbRef::eager()`
+    /// to force resolved bindings.
     pub fn as_lit(&self) -> Option<(&FlakeValue, &DatatypeConstraint)> {
+        debug_assert!(
+            !self.is_encoded_lit(),
+            "as_lit() called on EncodedLit — use GraphDbRef::eager() for infrastructure queries"
+        );
         match self {
             Binding::Lit { val, dtc, .. } => Some((val, dtc)),
             _ => None,
