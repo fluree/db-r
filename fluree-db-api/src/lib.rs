@@ -2429,10 +2429,10 @@ pub struct Fluree<S: Storage + 'static, N> {
     ledger_manager: Option<Arc<LedgerManager<S, N>>>,
 }
 
-impl<S, N> Fluree<S, N>
+// Accessors that require `N: 'static` (for `Arc<LedgerManager<S, N>>` derefs).
+impl<S, N: 'static> Fluree<S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + 'static,
 {
     /// Directory for binary index cache files.
     ///
@@ -2444,7 +2444,13 @@ where
             .map(|lm| lm.config().cache_dir.clone())
             .unwrap_or_else(|| LedgerManagerConfig::default().cache_dir)
     }
+}
 
+impl<S, N> Fluree<S, N>
+where
+    S: Storage + Clone + 'static,
+    N: NameService,
+{
     /// Create a new Fluree instance with custom components
     ///
     /// Most users should use `FlureeBuilder` instead.
