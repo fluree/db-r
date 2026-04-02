@@ -336,6 +336,11 @@ pub enum FunctionName {
     If,       // Handled separately as Expression::If but may appear
     Coalesce, // Handled separately as Expression::Coalesce but may appear
 
+    // Vector similarity functions (Fluree extensions)
+    DotProduct,
+    CosineSimilarity,
+    EuclideanDistance,
+
     /// Custom extension function (IRI)
     Extension(Iri),
 }
@@ -397,6 +402,12 @@ impl FunctionName {
             "STRUUID" => Some(FunctionName::StrUuid),
             "IF" => Some(FunctionName::If),
             "COALESCE" => Some(FunctionName::Coalesce),
+            // Vector similarity functions (case-insensitive, with underscore variants)
+            "DOTPRODUCT" | "DOT_PRODUCT" => Some(FunctionName::DotProduct),
+            "COSINESIMILARITY" | "COSINE_SIMILARITY" => Some(FunctionName::CosineSimilarity),
+            "EUCLIDEANDISTANCE" | "EUCLIDEAN_DISTANCE" | "EUCLIDIANDISTANCE" => {
+                Some(FunctionName::EuclideanDistance)
+            }
             _ => None,
         }
     }

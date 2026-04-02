@@ -17,7 +17,9 @@ use fluree_db_core::o_type::{DecodeKind, OType};
 use fluree_db_core::o_type_registry::OTypeRegistry;
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::GraphId;
-use fluree_db_core::{ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, Sid};
+use fluree_db_core::{
+    ContentId, ContentStore, FlakeMeta, FlakeValue, PrefixTrie, RuntimeSmallDicts, Sid,
+};
 use fluree_vocab::{geo_names, jsonld_names, namespaces, rdf_names, xsd_names};
 use parking_lot::RwLock;
 
@@ -30,6 +32,7 @@ use crate::format::index_root::{IndexRoot, OTypeTableEntry};
 use crate::format::leaf::DecodedLeafDirV3;
 use crate::format::run_record::RunSortOrder;
 
+use super::artifact_cache::{fetch_cached_bytes, fetch_cached_bytes_cid};
 use super::leaflet_cache::LeafletCache;
 
 const HOT_REMOTE_LEAF_PROMOTION_TOUCHES: usize = 2;
@@ -62,14 +65,6 @@ pub(crate) struct DictionarySet {
     pub(crate) prefix_trie: PrefixTrie,
     pub(crate) language_tags: LanguageTagDict,
     pub(crate) dt_sids: Vec<Sid>,
-}
-
-fn storage_to_io_error(e: fluree_db_core::error::Error) -> io::Error {
-    let kind = match &e {
-        fluree_db_core::error::Error::NotFound(_) => io::ErrorKind::NotFound,
-        _ => io::ErrorKind::Other,
-    };
-    io::Error::new(kind, e.to_string())
 }
 
 fn cas_sync_timeout() -> Option<Duration> {
@@ -139,86 +134,12 @@ where
     }
 }
 
-pub(crate) fn cache_bytes_to_path_atomic(target: &Path, bytes: &[u8]) -> io::Result<()> {
-    if target.exists() {
-        return Ok(());
-    }
-    let parent = target
-        .parent()
-        .ok_or_else(|| io::Error::other("cache target has no parent dir"))?;
-    std::fs::create_dir_all(parent)?;
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = parent.join(format!(".cas_{}_{}.tmp", std::process::id(), seq));
-    std::fs::write(&tmp, bytes)?;
-    if let Err(_rename_err) = std::fs::rename(&tmp, target) {
-        let _ = std::fs::remove_file(&tmp);
-        if !target.exists() {
-            return Err(io::Error::other(format!(
-                "failed to cache bytes to {:?}",
-                target
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn cache_bytes_to_file(
-    cache_dir: &Path,
-    hash: &str,
-    ext: &str,
-    bytes: &[u8],
-) -> io::Result<PathBuf> {
-    let target = cache_dir.join(format!("{}.{}", hash, ext));
-    cache_bytes_to_path_atomic(&target, bytes)?;
-    Ok(target)
-}
-
-/// Fetch artifact bytes by CID: reads from local file if available (file storage),
-/// then local cache, otherwise downloads from content store and writes to cache.
-pub(crate) async fn fetch_cached_bytes(
-    cs: &dyn ContentStore,
-    id: &ContentId,
-    cache_dir: &Path,
-    ext: &str,
-) -> io::Result<Vec<u8>> {
-    if let Some(local_path) = cs.resolve_local_path(id) {
-        return std::fs::read(&local_path);
-    }
-    let hash = id.digest_hex();
-    let cached = cache_dir.join(format!("{}.{}", hash, ext));
-    if cached.exists() {
-        return std::fs::read(&cached);
-    }
-    let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
-    cache_bytes_to_file(cache_dir, &hash, ext, &bytes)?;
-    Ok(bytes)
-}
-
-/// Fetch artifact bytes by CID using CID-string filenames (no extension).
-pub(crate) async fn fetch_cached_bytes_cid(
-    cs: &dyn ContentStore,
-    id: &ContentId,
-    cache_dir: &Path,
-) -> io::Result<Vec<u8>> {
-    if let Some(local_path) = cs.resolve_local_path(id) {
-        return std::fs::read(&local_path);
-    }
-    let cached = cache_dir.join(id.to_string());
-    if cached.exists() {
-        return std::fs::read(&cached);
-    }
-    let bytes = cs.get(id).await.map_err(storage_to_io_error)?;
-    cache_bytes_to_path_atomic(&cached, &bytes)?;
-    Ok(bytes)
-}
-
 // ============================================================================
 // Per-graph V3 index data
 // ============================================================================
 
 struct GraphIndex {
-    orders: HashMap<RunSortOrder, BranchManifest>,
+    orders: HashMap<RunSortOrder, Arc<BranchManifest>>,
     numbig: HashMap<u32, crate::arena::numbig::NumBigArena>,
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
@@ -243,6 +164,9 @@ pub struct BinaryIndexStore {
     o_type_index: HashMap<u16, usize>,
     cas: Option<Arc<dyn ContentStore>>,
     cache_dir: PathBuf,
+    /// Shared disk artifact cache — kept alive here so the global `CACHE_REGISTRY`
+    /// weak ref survives across calls, avoiding repeated dir scans on every write.
+    disk_cache: Arc<super::artifact_cache::DiskArtifactCache>,
     leaflet_cache: Option<Arc<LeafletCache>>,
     /// Remote leaf metadata cache keyed by leaf CID.
     ///
@@ -315,7 +239,7 @@ impl BinaryIndexStore {
                 spatial: HashMap::new(),
                 fulltext: HashMap::new(),
             });
-            gi.orders.insert(dgo.order, branch);
+            gi.orders.insert(dgo.order, Arc::new(branch));
         }
 
         // Named graphs: fetch FBR3 branch manifests from CAS.
@@ -331,7 +255,7 @@ impl BinaryIndexStore {
                     spatial: HashMap::new(),
                     fulltext: HashMap::new(),
                 });
-                gi.orders.insert(*order, branch);
+                gi.orders.insert(*order, Arc::new(branch));
             }
         }
 
@@ -368,6 +292,7 @@ impl BinaryIndexStore {
             .map(|(i, e)| (e.o_type, i))
             .collect();
 
+        let disk_cache = super::artifact_cache::DiskArtifactCache::for_dir(cache_dir);
         Ok(Self {
             dicts,
             graph_indexes,
@@ -375,6 +300,7 @@ impl BinaryIndexStore {
             o_type_index,
             cas: Some(cs),
             cache_dir: cache_dir.to_path_buf(),
+            disk_cache,
             leaflet_cache,
             remote_leaf_metadata: RwLock::new(HashMap::new()),
             remote_leaf_open_counts: RwLock::new(HashMap::new()),
@@ -412,7 +338,11 @@ impl BinaryIndexStore {
     }
 
     /// Get the branch manifest for a graph + sort order.
-    pub fn branch_for_order(&self, g_id: GraphId, order: RunSortOrder) -> Option<&BranchManifest> {
+    pub fn branch_for_order(
+        &self,
+        g_id: GraphId,
+        order: RunSortOrder,
+    ) -> Option<&Arc<BranchManifest>> {
         self.graph_indexes
             .get(&g_id)
             .and_then(|gi| gi.orders.get(&order))
@@ -438,13 +368,25 @@ impl BinaryIndexStore {
 
         // Try local path first.
         if let Some(local_path) = cs.resolve_local_path(leaf_cid) {
-            return std::fs::read(local_path);
+            match std::fs::read(&local_path) {
+                Ok(bytes) => return Ok(bytes),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    tracing::debug!(
+                        path = %local_path.display(),
+                        leaf = %leaf_cid,
+                        "local leaf path disappeared during read; falling back to remote fetch"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         // Check cache.
         let cache_path = self.cache_dir.join(leaf_cid.to_string());
-        if cache_path.exists() {
-            return std::fs::read(&cache_path);
+        match std::fs::read(&cache_path) {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
 
         // Fetch from CAS via sync bridge: capture the Tokio handle on the caller's
@@ -452,6 +394,7 @@ impl BinaryIndexStore {
         let cs = Arc::clone(cs);
         let cid = leaf_cid.clone();
         let cache_path_owned = cache_path.clone();
+        let disk_cache = Arc::clone(&self.disk_cache);
         let timeout = cas_sync_timeout();
         run_sync_on_runtime(async move {
             let fut = cs.get(&cid);
@@ -470,7 +413,7 @@ impl BinaryIndexStore {
                 fut.await
                     .map_err(|e| io::Error::other(format!("CAS fetch failed: {e}")))?
             };
-            cache_bytes_to_path_atomic(&cache_path_owned, &data)?;
+            disk_cache.best_effort_write(&cache_path_owned, &data);
             Ok(data)
         })
     }
@@ -512,14 +455,17 @@ impl BinaryIndexStore {
 
         // Fast path 2: locally cached — full read from disk cache.
         let cache_path = self.cache_dir.join(leaf_cid.to_string());
-        if cache_path.exists() {
-            let bytes = std::fs::read(&cache_path)?;
-            let sidecar = if need_replay {
-                self.fetch_sidecar_bytes_sync(sidecar_cid)?
-            } else {
-                None
-            };
-            return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+        match std::fs::read(&cache_path) {
+            Ok(bytes) => {
+                let sidecar = if need_replay {
+                    self.fetch_sidecar_bytes_sync(sidecar_cid)?
+                } else {
+                    None
+                };
+                return Ok(Box::new(FullBlobLeafHandle::new(bytes, sidecar, leaf_id)?));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
 
         let touch_count = self.note_remote_leaf_open(leaf_cid);
@@ -815,6 +761,9 @@ impl BinaryIndexStore {
                 format!("subject local_id {} not found in ns {}", local_id, ns_code),
             )
         })?;
+        if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
+            return Ok(suffix);
+        }
         let prefix = self.dicts.namespace_codes.get(&ns_code).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1108,28 +1057,61 @@ impl BinaryIndexStore {
             .map(|prefix| format!("{}{}", prefix, sid.name))
     }
 
-    /// Reverse subject lookup: find the u64 s_id for a given IRI.
-    ///
-    /// Uses canonical encoding to build the reverse-tree key,
-    /// matching the encoding used when the reverse dictionary was built.
-    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+    fn reverse_lookup_subject_key(&self, ns_code: u16, suffix: &[u8]) -> io::Result<Option<u64>> {
         match &self.dicts.subject_reverse_tree {
             Some(tree) => {
-                let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
-                let ns_code = self
-                    .dicts
-                    .namespace_reverse
-                    .get(canonical_prefix)
-                    .copied()
-                    .unwrap_or(0);
-                let key = crate::dict::reverse_leaf::subject_reverse_key(
-                    ns_code,
-                    canonical_suffix.as_bytes(),
-                );
+                let key = crate::dict::reverse_leaf::subject_reverse_key(ns_code, suffix);
                 tree.reverse_lookup(&key)
             }
             None => Ok(None),
         }
+    }
+
+    fn find_full_iri_subject_fallback(&self, iri: &str) -> io::Result<Option<(u16, u64)>> {
+        for ns_code in [namespaces::EMPTY, namespaces::OVERFLOW] {
+            if !self.dicts.subject_forward_packs.contains_key(&ns_code) {
+                continue;
+            }
+            if let Some(s_id) = self.reverse_lookup_subject_key(ns_code, iri.as_bytes())? {
+                return Ok(Some((ns_code, s_id)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reverse subject lookup: find the u64 s_id for a given IRI.
+    ///
+    /// Uses canonical encoding when the IRI's canonical prefix is registered.
+    /// If not, it only consults full-IRI subject namespaces that are actually
+    /// present in the persisted dictionaries.
+    pub fn find_subject_id(&self, iri: &str) -> io::Result<Option<u64>> {
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+        if let Some(&ns_code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            if let Some(s_id) =
+                self.reverse_lookup_subject_key(ns_code, canonical_suffix.as_bytes())?
+            {
+                return Ok(Some(s_id));
+            }
+        }
+        Ok(self
+            .find_full_iri_subject_fallback(iri)?
+            .map(|(_ns_code, s_id)| s_id))
+    }
+
+    /// Resolve the exact persisted subject SID for a full IRI, if present.
+    pub fn find_subject_sid(&self, iri: &str) -> io::Result<Option<Sid>> {
+        let (canonical_prefix, canonical_suffix) = canonical_split(iri, self.ns_split_mode);
+        if let Some(&ns_code) = self.dicts.namespace_reverse.get(canonical_prefix) {
+            if self
+                .reverse_lookup_subject_key(ns_code, canonical_suffix.as_bytes())?
+                .is_some()
+            {
+                return Ok(Some(Sid::new(ns_code, canonical_suffix)));
+            }
+        }
+        Ok(self
+            .find_full_iri_subject_fallback(iri)?
+            .map(|(ns_code, _s_id)| Sid::new(ns_code, iri)))
     }
 
     /// Translate a `Sid` to `p_id` via the predicate reverse map.
@@ -1213,6 +1195,14 @@ impl BinaryIndexStore {
     /// Number of predicates in the persisted dictionary.
     pub fn predicate_count(&self) -> u32 {
         self.dicts.predicates.len()
+    }
+
+    /// Build a runtime predicate/datatype ID layer seeded from the persisted root.
+    pub fn runtime_small_dicts(&self) -> RuntimeSmallDicts {
+        RuntimeSmallDicts::from_seeded_sids(
+            (0..self.predicate_count()).filter_map(|p_id| self.predicate_sid(p_id)),
+            self.dt_sids().iter().cloned(),
+        )
     }
 
     /// Number of strings in the persisted forward dictionary.
@@ -1552,6 +1542,7 @@ pub struct BinaryGraphView {
     store: Arc<BinaryIndexStore>,
     g_id: GraphId,
     dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
+    namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
 }
 
 impl BinaryGraphView {
@@ -1560,6 +1551,7 @@ impl BinaryGraphView {
             store,
             g_id,
             dict_novelty: None,
+            namespace_codes_fallback: None,
         }
     }
 
@@ -1578,7 +1570,22 @@ impl BinaryGraphView {
             store,
             g_id,
             dict_novelty,
+            namespace_codes_fallback: None,
         }
+    }
+
+    /// Provide snapshot-derived namespace codes for novelty subject decoding when
+    /// the attached store predates a namespace-adding commit.
+    pub fn with_namespace_codes_fallback(
+        mut self,
+        namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
+    ) -> Self {
+        self.namespace_codes_fallback = namespace_codes_fallback;
+        self
+    }
+
+    pub fn namespace_codes_fallback(&self) -> Option<Arc<HashMap<u16, String>>> {
+        self.namespace_codes_fallback.clone()
     }
 
     /// Decode a value from `(o_type, o_key)`. Novelty-aware when `dict_novelty`
@@ -1681,7 +1688,17 @@ impl BinaryGraphView {
                 }
             }
         }
-        let result = self.store.resolve_subject_iri(s_id);
+        let result = self.store.resolve_subject_iri(s_id).or_else(|store_err| {
+            let Some(dn) = self.dict_novelty.as_ref() else {
+                return Err(store_err);
+            };
+            match dn.subjects.resolve_subject(s_id) {
+                Some((ns_code, suffix)) => self
+                    .namespace_prefix(ns_code)
+                    .map(|prefix| format!("{}{}", prefix, suffix)),
+                None => Err(store_err),
+            }
+        });
         if let Err(err) = &result {
             tracing::debug!(
                 g_id = self.g_id,
@@ -1708,7 +1725,11 @@ impl BinaryGraphView {
             }
         }
         let iri = self.store.resolve_subject_iri(s_id)?;
-        Ok(self.store.encode_iri(&iri))
+        if let Some(sid) = self.store.find_subject_sid(&iri)? {
+            Ok(sid)
+        } else {
+            Ok(self.store.encode_iri(&iri))
+        }
     }
 
     pub fn store(&self) -> &BinaryIndexStore {
@@ -1771,11 +1792,22 @@ impl BinaryGraphView {
         }
         // Novel — need full IRI string (prefix + suffix).
         match dn.subjects.resolve_subject(s_id) {
-            Some((ns_code, suffix)) => match self.store.namespace_prefix(ns_code) {
+            Some((ns_code, suffix)) => match self.namespace_prefix(ns_code) {
                 Ok(prefix) => Some(Ok(format!("{}{}", prefix, suffix))),
                 Err(e) => Some(Err(e)),
             },
             None => None, // Not in DictNovelty either — fall through to store
+        }
+    }
+
+    pub fn namespace_prefix(&self, ns_code: u16) -> io::Result<String> {
+        match self.store.namespace_prefix(ns_code) {
+            Ok(prefix) => Ok(prefix),
+            Err(err) => self
+                .namespace_codes_fallback
+                .as_ref()
+                .and_then(|codes| codes.get(&ns_code).cloned())
+                .ok_or(err),
         }
     }
 
@@ -2086,9 +2118,15 @@ impl ContentStoreRangeFetcher {
 
 impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
     fn fetch_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> io::Result<Vec<u8>> {
-        // Try local path first — positional read.
-        if let Some(local_path) = self.cs.resolve_local_path(id) {
-            let file = std::fs::File::open(local_path)?;
+        fn read_range_from_file(
+            path: &Path,
+            range: std::ops::Range<u64>,
+        ) -> io::Result<Option<Vec<u8>>> {
+            let file = match std::fs::File::open(path) {
+                Ok(file) => file,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(err) => return Err(err),
+            };
             let len = (range.end - range.start) as usize;
             let mut buf = vec![0u8; len];
             #[cfg(unix)]
@@ -2105,29 +2143,26 @@ impl super::leaf_access::RangeReadFetcher for ContentStoreRangeFetcher {
                 let n = file.read(&mut buf)?;
                 buf.truncate(n);
             }
-            return Ok(buf);
+            Ok(Some(buf))
+        }
+
+        // Try local path first — positional read.
+        if let Some(local_path) = self.cs.resolve_local_path(id) {
+            match read_range_from_file(&local_path, range.clone())? {
+                Some(buf) => return Ok(buf),
+                None => {
+                    tracing::debug!(
+                        path = %local_path.display(),
+                        id = %id,
+                        "local artifact path disappeared during range read; falling back to remote fetch"
+                    );
+                }
+            }
         }
 
         // Check cache.
         let cache_path = self.cache_dir.join(id.to_string());
-        if cache_path.exists() {
-            let file = std::fs::File::open(&cache_path)?;
-            let len = (range.end - range.start) as usize;
-            let mut buf = vec![0u8; len];
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::FileExt;
-                let n = file.read_at(&mut buf, range.start)?;
-                buf.truncate(n);
-            }
-            #[cfg(not(unix))]
-            {
-                use std::io::{Read, Seek, SeekFrom};
-                let mut file = file;
-                file.seek(SeekFrom::Start(range.start))?;
-                let n = file.read(&mut buf)?;
-                buf.truncate(n);
-            }
+        if let Some(buf) = read_range_from_file(&cache_path, range.clone())? {
             return Ok(buf);
         }
 
@@ -2169,6 +2204,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrdering};
 
+    use crate::dict::builder;
+    use crate::dict::forward_pack::{encode_forward_pack, KIND_SUBJECT_FWD};
+    use crate::dict::pack_reader::ForwardPackReader;
+    use crate::dict::reader::DictTreeReader;
+    use crate::dict::reverse_leaf::ReverseEntry;
     use crate::format::leaf::LeafWriter;
     use crate::format::run_record_v2::RunRecordV2;
 
@@ -2260,6 +2300,7 @@ mod tests {
             o_type_table: Vec::new(),
             o_type_index: HashMap::new(),
             cas: Some(cs),
+            disk_cache: crate::read::artifact_cache::DiskArtifactCache::for_dir(&cache_dir),
             cache_dir,
             leaflet_cache: None,
             remote_leaf_metadata: RwLock::new(HashMap::new()),
@@ -2285,6 +2326,22 @@ mod tests {
         }
     }
 
+    fn build_reverse_reader(entries: Vec<ReverseEntry>) -> DictTreeReader {
+        let result =
+            builder::build_reverse_tree(entries, builder::DEFAULT_TARGET_LEAF_BYTES).unwrap();
+
+        let mut leaf_map = HashMap::new();
+        for (leaf_artifact, branch_leaf) in result.leaves.iter().zip(result.branch.leaves.iter()) {
+            leaf_map.insert(branch_leaf.address.clone(), leaf_artifact.bytes.clone());
+        }
+
+        DictTreeReader::from_memory(result.branch, leaf_map)
+    }
+
+    fn make_subject_pack_bytes(entries: &[(u64, &[u8])]) -> Vec<u8> {
+        encode_forward_pack(entries, KIND_SUBJECT_FWD, 0, 256 * 1024).unwrap()
+    }
+
     fn build_test_leaf_bytes() -> Vec<u8> {
         let mut writer = LeafWriter::new(RunSortOrder::Post, 100, 1000, 1);
         writer.set_skip_history(true);
@@ -2306,7 +2363,7 @@ mod tests {
                 store
                     .put(ContentKind::IndexLeaf, &leaf_bytes)
                     .await
-                    .map_err(storage_to_io_error)
+                    .map_err(|e| io::Error::other(e.to_string()))
             }
         })
         .expect("store leaf bytes");
@@ -2360,5 +2417,35 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn find_subject_id_uses_full_iri_fallback_when_store_has_it() {
+        let cache_dir = temp_cache_dir();
+        let mut store = empty_store(Arc::new(MemoryContentStore::new()), cache_dir);
+
+        let full_iri = "https://dblp.org/streams/conf/IEEEpact";
+        let s_id = SubjectId::new(namespaces::OVERFLOW, 7).as_u64();
+
+        store.dicts.subject_reverse_tree = Some(build_reverse_reader(vec![ReverseEntry {
+            key: crate::dict::reverse_leaf::subject_reverse_key(
+                namespaces::OVERFLOW,
+                full_iri.as_bytes(),
+            ),
+            id: s_id,
+        }]));
+        store.dicts.subject_forward_packs.insert(
+            namespaces::OVERFLOW,
+            ForwardPackReader::from_memory(vec![Arc::from(
+                make_subject_pack_bytes(&[(7, full_iri.as_bytes())]).into_boxed_slice(),
+            )])
+            .unwrap(),
+        );
+
+        assert_eq!(store.find_subject_id(full_iri).unwrap(), Some(s_id));
+        assert_eq!(
+            store.find_subject_sid(full_iri).unwrap(),
+            Some(Sid::new(namespaces::OVERFLOW, full_iri))
+        );
     }
 }

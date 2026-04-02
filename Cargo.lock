@@ -2318,6 +2318,7 @@ dependencies = [
  "fluree-db-indexer",
  "fluree-db-ledger",
  "fluree-db-nameservice",
+ "fluree-db-nameservice-sync",
  "fluree-db-novelty",
  "fluree-db-policy",
  "fluree-db-query",
@@ -2366,6 +2367,7 @@ dependencies = [
  "fluree-db-core",
  "fluree-db-spatial",
  "fluree-vocab",
+ "fs2",
  "hex",
  "memmap2",
  "moka",
@@ -2416,6 +2418,7 @@ dependencies = [
  "hex",
  "indicatif",
  "libc",
+ "memmap2",
  "open",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -2586,6 +2589,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sysinfo",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -2680,6 +2684,7 @@ dependencies = [
 name = "fluree-db-novelty"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "fluree-db-core",
  "fluree-db-credential",
@@ -2738,6 +2743,7 @@ dependencies = [
  "fluree-db-binary-index",
  "fluree-db-core",
  "fluree-db-indexer",
+ "fluree-db-novelty",
  "fluree-db-policy",
  "fluree-db-r2rml",
  "fluree-db-reasoner",

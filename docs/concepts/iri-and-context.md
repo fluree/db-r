@@ -203,6 +203,72 @@ Blank nodes are:
 3. **Documentation**: Document custom prefixes and their meanings
 4. **Evolution**: Plan for @context changes over time
 
+## Default Context
+
+Each ledger can store a **default context** — a JSON object mapping prefixes to IRIs that is automatically applied when queries or transactions don't supply their own `@context`.
+
+### How it's populated
+
+- **Bulk import:** When importing Turtle data via `fluree create --from`, all `@prefix` declarations are captured and stored as the ledger's default context, augmented with built-in prefixes (`rdf`, `rdfs`, `xsd`, `owl`, `sh`, `geo`).
+- **Manual update:** Use the CLI (`fluree context set`) or HTTP API (`PUT /fluree/context/:ledger`) to set or replace the context at any time.
+
+### Resolution precedence
+
+1. **Query-level `@context`** (JSON-LD) or **`PREFIX` declarations** (SPARQL) — always win
+2. **Ledger default context** — merged as a fallback for any prefixes not declared in the query
+3. **Built-in prefixes** — `rdf`, `rdfs`, `xsd`, etc. are always available
+
+### Use with SPARQL
+
+The default context provides prefix definitions for SPARQL queries, so you don't need to repeat `PREFIX` declarations in every query. If the ledger's default context includes `{"ex": "http://example.org/"}`, then you can write:
+
+```sparql
+SELECT ?name WHERE {
+  ex:alice ex:name ?name .
+}
+```
+
+without an explicit `PREFIX ex: <http://example.org/>` declaration — the default context supplies it. If you do declare a `PREFIX` in the query, it takes precedence over the default for that prefix.
+
+### Use with JSON-LD queries
+
+Similarly, JSON-LD queries that omit `@context` inherit the default context:
+
+```json
+{
+  "select": ["?name"],
+  "where": [["ex:alice", "ex:name", "?name"]]
+}
+```
+
+### Viewing and updating
+
+```bash
+# View the default context
+fluree context get mydb
+
+# Replace it
+fluree context set mydb -e '{"ex": "http://example.org/", "foaf": "http://xmlns.com/foaf/0.1/"}'
+```
+
+Via the HTTP API:
+
+```bash
+# Read
+curl http://localhost:8090/fluree/context/mydb:main
+
+# Replace
+curl -X PUT http://localhost:8090/fluree/context/mydb:main \
+  -H "Content-Type: application/json" \
+  -d '{"ex": "http://example.org/"}'
+```
+
+See [CLI context command](../cli/context.md) and [API endpoints](../api/endpoints.md#get-flureecontextledger) for full details.
+
+### Storage
+
+The default context is stored as a content-addressed blob in CAS, with a pointer (ContentId) in the nameservice config. Updates use compare-and-set semantics, so concurrent writers are safely handled. After an update, the server invalidates the cached ledger state so subsequent operations use the new context.
+
 ## Integration with Standards
 
 Fluree's IRI system is fully compatible with:

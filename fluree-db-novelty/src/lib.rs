@@ -28,6 +28,7 @@ mod commit;
 mod commit_flakes;
 pub mod delta;
 mod error;
+mod runtime_stats;
 mod stats;
 
 pub use commit::{
@@ -43,6 +44,10 @@ pub use fluree_db_core::commit::codec::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_G
 pub use fluree_db_core::commit::codec::format::{CommitSignature, ALGO_ED25519};
 pub use fluree_db_core::commit::codec::verify_commit_blob;
 pub use fluree_db_credential::SigningKey;
+pub use runtime_stats::{
+    assemble_fast_stats, assemble_full_stats, resolve_runtime_predicate_id, StatsAssemblyError,
+    StatsLookup,
+};
 pub use stats::current_stats;
 
 use fluree_db_core::{Flake, GraphId, IndexType, Sid};
@@ -530,6 +535,10 @@ impl std::fmt::Debug for Novelty {
 use fluree_db_core::OverlayProvider;
 
 impl OverlayProvider for Novelty {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn epoch(&self) -> u64 {
         self.epoch
     }

@@ -951,6 +951,7 @@ fn extract_number(binding: &Binding) -> Option<f64> {
     match binding {
         Binding::Lit { val, .. } => match val {
             FlakeValue::Long(n) => Some(*n as f64),
+            FlakeValue::Boolean(b) => Some(i64::from(*b) as f64),
             FlakeValue::Double(d) if !d.is_nan() => Some(*d),
             _ => None,
         },
@@ -979,7 +980,7 @@ fn extract_number(binding: &Binding) -> Option<f64> {
 /// Check if binding is an integer type
 fn is_int_binding(binding: &Binding) -> bool {
     match binding {
-        Binding::Lit { val, .. } => matches!(val, FlakeValue::Long(_)),
+        Binding::Lit { val, .. } => matches!(val, FlakeValue::Long(_) | FlakeValue::Boolean(_)),
         Binding::EncodedLit { o_kind, .. } => {
             // ObjKind for Long is typically stored as a specific value
             // This needs to match the actual encoding

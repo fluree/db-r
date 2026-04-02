@@ -14,7 +14,7 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{
     flake_matches_range_eq, Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider,
-    RangeMatch, RangeOptions, RangeProvider, RangeTest, Sid,
+    RangeMatch, RangeOptions, RangeProvider, RangeTest, RuntimeSmallDicts, Sid,
 };
 
 use crate::binary_scan::{encode_bound_object_prefilter, index_type_to_sort_order};
@@ -42,11 +42,17 @@ fn translate_overlay_ops_v3_with_raw(
     to_t: i64,
     store: &BinaryIndexStore,
     dict_novelty: &Arc<DictNovelty>,
+    runtime_small_dicts: &Arc<RuntimeSmallDicts>,
     mut include: impl FnMut(&Flake) -> bool,
     warn_ctx: &'static str,
 ) -> OverlayTranslateV3Result {
     let mut ephemeral_preds: HashMap<Sid, u32> = HashMap::new();
-    let mut next_ep = store.predicate_count();
+    // Runtime dicts should normally be seeded from the persisted store, but use the
+    // store count as a floor so novelty-only predicates can never collide with
+    // persisted predicate IDs if a caller hands us an unseeded/runtime-empty dict.
+    let mut next_ep = runtime_small_dicts
+        .predicate_count()
+        .max(store.predicate_count());
     let mut ops: Vec<fluree_db_binary_index::OverlayOp> = Vec::new();
     let mut raw: Vec<Flake> = Vec::new();
     let mut failed = false;
@@ -59,6 +65,7 @@ fn translate_overlay_ops_v3_with_raw(
             flake,
             store,
             Some(dict_novelty),
+            Some(runtime_small_dicts),
             &mut ephemeral_preds,
             &mut next_ep,
         ) {
@@ -111,13 +118,22 @@ fn resolve_or_novelty<T>(
 pub struct BinaryRangeProvider {
     store: Arc<BinaryIndexStore>,
     dict_novelty: Arc<DictNovelty>,
+    runtime_small_dicts: Arc<RuntimeSmallDicts>,
+    namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
 }
 
 impl BinaryRangeProvider {
-    pub fn new(store: Arc<BinaryIndexStore>, dict_novelty: Arc<DictNovelty>) -> Self {
+    pub fn new(
+        store: Arc<BinaryIndexStore>,
+        dict_novelty: Arc<DictNovelty>,
+        runtime_small_dicts: Arc<RuntimeSmallDicts>,
+        namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
+    ) -> Self {
         Self {
             store,
             dict_novelty,
+            runtime_small_dicts,
+            namespace_codes_fallback,
         }
     }
 
@@ -129,6 +145,11 @@ impl BinaryRangeProvider {
     /// Access the `DictNovelty` used for overlay decoding.
     pub fn dict_novelty(&self) -> &Arc<DictNovelty> {
         &self.dict_novelty
+    }
+
+    /// Access the runtime predicate/datatype dictionaries used for overlay translation.
+    pub fn runtime_small_dicts(&self) -> &Arc<RuntimeSmallDicts> {
+        &self.runtime_small_dicts
     }
 }
 
@@ -150,6 +171,7 @@ impl RangeProvider for BinaryRangeProvider {
             RangeTest::Eq => binary_range_eq_v3(
                 &self.store,
                 &self.dict_novelty,
+                &self.runtime_small_dicts,
                 g_id,
                 index,
                 match_val,
@@ -175,6 +197,8 @@ impl RangeProvider for BinaryRangeProvider {
         binary_range_bounded_v3(
             &self.store,
             &self.dict_novelty,
+            &self.runtime_small_dicts,
+            &self.namespace_codes_fallback,
             g_id,
             index,
             start_bound,
@@ -196,6 +220,7 @@ impl RangeProvider for BinaryRangeProvider {
         binary_lookup_subject_predicate_refs_batched_v3(
             &self.store,
             &self.dict_novelty,
+            &self.runtime_small_dicts,
             g_id,
             index,
             predicate,
@@ -208,9 +233,11 @@ impl RangeProvider for BinaryRangeProvider {
 
 /// V3 equality range query: scan the appropriate index order with filters,
 /// decode each row to a `Flake`, apply overlay merge.
+#[allow(clippy::too_many_arguments)]
 fn binary_range_eq_v3(
     store: &Arc<BinaryIndexStore>,
     dict_novelty: &Arc<DictNovelty>,
+    runtime_small_dicts: &Arc<RuntimeSmallDicts>,
     g_id: GraphId,
     index: IndexType,
     match_val: &RangeMatch,
@@ -324,7 +351,7 @@ fn binary_range_eq_v3(
 
     // Get branch manifest.
     let branch = match store.branch_for_order(g_id, order) {
-        Some(b) => Arc::new(b.clone()),
+        Some(b) => Arc::clone(b),
         None => {
             // No branch for this order — return overlay-only results if any.
             return overlay_only_flakes(store, g_id, index, match_val, opts, overlay);
@@ -390,6 +417,7 @@ fn binary_range_eq_v3(
         effective_to_t,
         store,
         dict_novelty,
+        runtime_small_dicts,
         |_| true,
         "V3 range",
     );
@@ -571,6 +599,7 @@ fn same_fact_identity(a: &Flake, b: &Flake) -> bool {
 fn binary_lookup_subject_predicate_refs_batched_v3(
     store: &Arc<BinaryIndexStore>,
     dict_novelty: &Arc<DictNovelty>,
+    runtime_small_dicts: &Arc<RuntimeSmallDicts>,
     g_id: GraphId,
     index: IndexType,
     predicate: &Sid,
@@ -647,7 +676,7 @@ fn binary_lookup_subject_predicate_refs_batched_v3(
 
     // Get branch manifest.
     let branch = match store.branch_for_order(g_id, RunSortOrder::Psot) {
-        Some(b) => Arc::new(b.clone()),
+        Some(b) => Arc::clone(b),
         None => {
             // No PSOT branch — try overlay only.
             return batched_refs_overlay_only(
@@ -695,6 +724,7 @@ fn binary_lookup_subject_predicate_refs_batched_v3(
         effective_to_t,
         store,
         dict_novelty,
+        runtime_small_dicts,
         |flake| flake.p == *predicate && subject_sid_set.contains(&flake.s),
         "V3 batched refs",
     );
@@ -874,6 +904,8 @@ fn batched_refs_overlay_only(
 fn binary_range_bounded_v3(
     store: &Arc<BinaryIndexStore>,
     dict_novelty: &Arc<DictNovelty>,
+    runtime_small_dicts: &Arc<RuntimeSmallDicts>,
+    namespace_codes_fallback: &Option<Arc<HashMap<u16, String>>>,
     g_id: GraphId,
     index: IndexType,
     start_bound: &Flake,
@@ -914,6 +946,7 @@ fn binary_range_bounded_v3(
         effective_to_t,
         store,
         dict_novelty,
+        runtime_small_dicts,
         |flake| {
             if flake.s.namespace_code != ns_code {
                 return false;
@@ -965,7 +998,7 @@ fn binary_range_bounded_v3(
     }
 
     let branch = match store.branch_for_order(g_id, order) {
-        Some(b) => Arc::new(b.clone()),
+        Some(b) => Arc::clone(b),
         None => {
             // No SPOT branch — return overlay-only results (already translated above).
             return overlay_only_flakes_bounded(
@@ -1026,7 +1059,8 @@ fn binary_range_bounded_v3(
     }
 
     let view =
-        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
+        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)))
+            .with_namespace_codes_fallback(namespace_codes_fallback.clone());
     let limit = opts.flake_limit.or(opts.limit).unwrap_or(usize::MAX);
     let offset = opts.offset.unwrap_or(0);
     let mut flakes = Vec::new();

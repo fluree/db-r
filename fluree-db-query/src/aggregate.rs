@@ -396,31 +396,79 @@ fn agg_count_distinct(values: &[Binding]) -> Binding {
 }
 
 /// SUM - numeric sum
+///
+/// Uses separate `i128` and `f64` accumulators to avoid precision loss when all
+/// values are integers. The `i128` accumulator prevents overflow that would occur
+/// with `i64`, and the final `i64::try_from` safely detects if the result exceeds
+/// `i64` range (falling back to `f64` in that case).
 fn agg_sum(values: &[Binding]) -> Binding {
-    let numbers = extract_numbers(values);
-    if numbers.is_empty() {
+    let typed = extract_typed_numbers(values);
+    if typed.is_empty() {
         return Binding::Unbound;
     }
 
-    let sum: f64 = numbers.iter().sum();
+    let mut all_int = true;
+    let mut int_sum: i128 = 0;
+    let mut float_sum: f64 = 0.0;
 
-    // Return as Long if all values were Long and result is whole number
-    if numbers.iter().all(|n| n.fract() == 0.0) && sum.fract() == 0.0 {
-        Binding::lit(FlakeValue::Long(sum as i64), xsd_integer())
+    for num in &typed {
+        match num {
+            TypedNumber::Int(v) => {
+                int_sum += *v as i128;
+                float_sum += *v as f64;
+            }
+            TypedNumber::Float(v) => {
+                all_int = false;
+                float_sum += *v;
+            }
+        }
+    }
+
+    if all_int {
+        // Return as Long if the result fits in i64, otherwise fall back to f64.
+        match i64::try_from(int_sum) {
+            Ok(v) => Binding::lit(FlakeValue::Long(v), xsd_integer()),
+            Err(_) => Binding::lit(FlakeValue::Double(int_sum as f64), xsd_double()),
+        }
     } else {
-        Binding::lit(FlakeValue::Double(sum), xsd_double())
+        Binding::lit(FlakeValue::Double(float_sum), xsd_double())
     }
 }
 
 /// AVG - numeric average
+///
+/// Uses an `i128` accumulator for integer-only groups to preserve precision
+/// when summing large `i64` values. Falls back to `f64` for mixed types.
 fn agg_avg(values: &[Binding]) -> Binding {
-    let numbers = extract_numbers(values);
-    if numbers.is_empty() {
+    let typed = extract_typed_numbers(values);
+    if typed.is_empty() {
         return Binding::Unbound;
     }
 
-    let sum: f64 = numbers.iter().sum();
-    let avg = sum / numbers.len() as f64;
+    let count = typed.len() as f64;
+    let mut all_int = true;
+    let mut int_sum: i128 = 0;
+    let mut float_sum: f64 = 0.0;
+
+    for num in &typed {
+        match num {
+            TypedNumber::Int(v) => {
+                int_sum += *v as i128;
+                float_sum += *v as f64;
+            }
+            TypedNumber::Float(v) => {
+                all_int = false;
+                float_sum += *v;
+            }
+        }
+    }
+
+    let avg = if all_int {
+        // Compute from i128 to avoid f64 precision loss on large integer sums.
+        (int_sum as f64) / count
+    } else {
+        float_sum / count
+    };
     Binding::lit(FlakeValue::Double(avg), xsd_double())
 }
 
@@ -536,6 +584,37 @@ fn agg_sample(values: &[Binding]) -> Binding {
         .unwrap_or(Binding::Unbound)
 }
 
+/// A numeric value preserving its original type (integer vs float).
+enum TypedNumber {
+    Int(i64),
+    Float(f64),
+}
+
+/// Extract numeric values preserving their original type.
+///
+/// This allows callers to use an `i128` accumulator for integer-only groups,
+/// avoiding precision loss that occurs when large `i64` values are cast to `f64`.
+fn extract_typed_numbers(values: &[Binding]) -> Vec<TypedNumber> {
+    values
+        .iter()
+        .filter_map(|b| match b {
+            Binding::Lit { val, .. } => match val {
+                FlakeValue::Long(n) => Some(TypedNumber::Int(*n)),
+                FlakeValue::Boolean(b) => Some(TypedNumber::Int(i64::from(*b))),
+                FlakeValue::Double(n) => {
+                    if n.is_nan() {
+                        None
+                    } else {
+                        Some(TypedNumber::Float(*n))
+                    }
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
 /// Extract numeric values as f64 from bindings
 fn extract_numbers(values: &[Binding]) -> Vec<f64> {
     values
@@ -543,6 +622,7 @@ fn extract_numbers(values: &[Binding]) -> Vec<f64> {
         .filter_map(|b| match b {
             Binding::Lit { val, .. } => match val {
                 FlakeValue::Long(n) => Some(*n as f64),
+                FlakeValue::Boolean(b) => Some(i64::from(*b) as f64),
                 FlakeValue::Double(n) => {
                     if n.is_nan() {
                         None
@@ -645,6 +725,37 @@ mod tests {
         let result = agg_sum(&values);
         let (val, _) = result.as_lit().unwrap();
         assert_eq!(*val, FlakeValue::Double(30.5));
+    }
+
+    #[test]
+    fn test_agg_sum_booleans_as_zero_one() {
+        let values = vec![
+            Binding::lit(
+                FlakeValue::Boolean(true),
+                Sid::new(
+                    fluree_vocab::namespaces::XSD,
+                    fluree_vocab::xsd_names::BOOLEAN,
+                ),
+            ),
+            Binding::lit(
+                FlakeValue::Boolean(false),
+                Sid::new(
+                    fluree_vocab::namespaces::XSD,
+                    fluree_vocab::xsd_names::BOOLEAN,
+                ),
+            ),
+            Binding::lit(
+                FlakeValue::Boolean(true),
+                Sid::new(
+                    fluree_vocab::namespaces::XSD,
+                    fluree_vocab::xsd_names::BOOLEAN,
+                ),
+            ),
+        ];
+
+        let result = agg_sum(&values);
+        let (val, _) = result.as_lit().unwrap();
+        assert_eq!(*val, FlakeValue::Long(2));
     }
 
     #[test]

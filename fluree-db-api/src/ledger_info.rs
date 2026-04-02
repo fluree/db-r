@@ -19,27 +19,26 @@
 //! Use the builder API to select a different graph via name, IRI, or g_id.
 
 use crate::format::iri::IriCompactor;
+use async_trait::async_trait;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
-use fluree_db_core::comparator::IndexType;
 use fluree_db_core::ids::GraphId;
 use fluree_db_core::ledger_id::{format_ledger_id, split_ledger_id};
 use fluree_db_core::load_commit_by_id;
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
-    is_rdf_type, ClassPropertyUsage, ClassRefCount, Flake, FlakeValue, LedgerSnapshot,
-    OverlayProvider, Sid, Storage,
-};
-use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
-    SchemaPredicateInfo,
+    LedgerSnapshot, OverlayProvider, RuntimePredicateId, RuntimeSmallDicts, SchemaPredicateInfo,
+    Sid, Storage,
 };
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourceRecord, NsRecord};
-use fluree_db_novelty::Novelty;
+use fluree_db_novelty::{
+    assemble_fast_stats, assemble_full_stats, StatsAssemblyError, StatsLookup,
+};
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use xxhash_rust::xxh3::xxh3_128;
 
@@ -59,26 +58,42 @@ pub enum GraphSelector {
 
 /// Options controlling `ledger-info` stats detail and freshness.
 ///
-/// Defaults preserve the fast, small "base" payload; callers can opt into
-/// heavier/real-time details when needed.
-#[derive(Debug, Clone, Default)]
+/// Defaults return the full novelty-aware ledger view. Callers can opt into
+/// lighter/index-derived payloads explicitly when they want cheaper planner-style
+/// metadata instead of the full public ledger-info view.
+#[derive(Debug, Clone)]
 pub struct LedgerInfoOptions {
-    /// When true, include heavier novelty-aware details (e.g., class ref-edge
-    /// adjustments) that require additional lookups.
+    /// When true, include full novelty-aware property/class detail assembly
+    /// (including lookup-backed class/ref enrichment).
     ///
-    /// Note: Graph-scoped flake/property/class **counts** are always merged with
-    /// novelty so `ledger-info` reflects the latest commit `t`. HLL-derived NDV
-    /// estimates remain "as of last index" by design.
+    /// When false, `ledger-info` uses the lighter fast novelty-aware merge that
+    /// keeps counts current but skips lookup-backed enrichment.
     pub realtime_property_details: bool,
 
     /// When true, include `datatypes` under `stats.properties[*]`.
-    ///
-    /// By default the API omits datatype breakdowns at the top-level property
-    /// map to keep payloads small.
     pub include_property_datatypes: bool,
+
+    /// When true, include index-derived NDV/selectivity estimates under
+    /// `stats.properties[*]`.
+    ///
+    /// These values are only as current as the last index refresh, so they are
+    /// omitted from the default ledger-info payload to keep the default response
+    /// fully current with respect to novelty-aware stats.
+    pub include_property_estimates: bool,
 
     /// Which graph to scope the stats section to.
     pub graph: GraphSelector,
+}
+
+impl Default for LedgerInfoOptions {
+    fn default() -> Self {
+        Self {
+            realtime_property_details: true,
+            include_property_datatypes: true,
+            include_property_estimates: false,
+            graph: GraphSelector::Default,
+        }
+    }
 }
 
 /// Schema index for fast SID -> hierarchy lookup
@@ -118,6 +133,40 @@ pub enum LedgerInfoError {
 
 /// Result type for ledger info operations
 pub type Result<T> = std::result::Result<T, LedgerInfoError>;
+
+struct LedgerInfoStatsLookup<'a> {
+    store: Option<&'a BinaryIndexStore>,
+    runtime_small_dicts: Option<&'a RuntimeSmallDicts>,
+}
+
+#[async_trait]
+impl StatsLookup for LedgerInfoStatsLookup<'_> {
+    fn runtime_small_dicts(&self) -> Option<&RuntimeSmallDicts> {
+        self.runtime_small_dicts
+    }
+
+    fn persisted_predicate_id_for_sid(&self, sid: &Sid) -> Option<RuntimePredicateId> {
+        self.store
+            .and_then(|store| store.sid_to_p_id(sid).map(RuntimePredicateId::from_u32))
+    }
+
+    async fn lookup_subject_classes(
+        &self,
+        snapshot: &LedgerSnapshot,
+        overlay: &dyn OverlayProvider,
+        to_t: i64,
+        g_id: GraphId,
+        subjects: &[Sid],
+    ) -> std::result::Result<HashMap<Sid, Vec<Sid>>, StatsAssemblyError> {
+        let mut db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
+        if let Some(runtime_small_dicts) = self.runtime_small_dicts {
+            db = db.with_runtime_small_dicts(runtime_small_dicts);
+        }
+        fluree_db_policy::lookup_subject_classes(subjects, db)
+            .await
+            .map_err(|e| StatsAssemblyError::Message(e.to_string()))
+    }
+}
 
 /// Build comprehensive ledger metadata.
 ///
@@ -169,73 +218,32 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     // Determine graph display name
     let graph_name = graph_display_name(g_id, binary_store.as_deref());
 
-    // Start from indexed stats when available.
-    //
-    // We intentionally do NOT use `ledger.current_stats()` here because that merges
-    // novelty into per-property datatype breakdowns, but ledger-info only merges
-    // datatype deltas when `realtime_property_details=true`.
-    let mut stats: IndexStats = ledger
-        .snapshot
-        .stats
-        .as_ref()
-        .cloned()
-        .unwrap_or_else(|| ledger.current_stats());
-
-    // Novelty merge: keep graph-scoped stats current to latest commit `t`.
-    //
-    // We always apply cheap count deltas (flakes + per-predicate counts + class counts).
-    // Heavier class ref-edge adjustments remain gated by `realtime_property_details`.
-    if let Some(graphs) = stats.graphs.as_mut() {
-        if let Some(graph_entry) = graphs.iter_mut().find(|g| g.g_id == g_id) {
-            // Resolve graph IRI for filtering novelty flakes to this graph.
-            let graph_iri: Option<String> = binary_store
-                .as_deref()
-                .and_then(|s| s.graph_iri_for_id(g_id).map(|s| s.to_string()));
-
-            if let Some(store) = binary_store.as_deref() {
-                merge_graph_property_novelty(
-                    graph_entry,
-                    &ledger.novelty,
-                    store,
-                    ledger.snapshot.namespaces(),
-                    graph_iri.as_deref(),
-                    options.realtime_property_details,
-                );
-                merge_graph_class_counts_from_novelty(
-                    graph_entry,
-                    &ledger.novelty,
-                    ledger.snapshot.namespaces(),
-                    graph_iri.as_deref(),
-                    store,
-                );
-            }
-
-            if options.realtime_property_details {
-                if let Some(store) = binary_store.as_deref() {
-                    merge_graph_class_ref_edges_from_novelty(
-                        &ledger.snapshot,
-                        ledger.novelty.as_ref(),
-                        ledger.t(),
-                        g_id,
-                        graph_entry,
-                        ledger.snapshot.namespaces(),
-                        graph_iri.as_deref(),
-                        store,
-                    )
-                    .await?;
-                }
-            }
-        }
-    }
-
-    // Keep ledger-wide totals current (indexed + novelty).
-    //
-    // Graph-scoped details are handled above (and may selectively merge novelty
-    // details depending on options), but the `ledger` block expects up-to-date
-    // `flakes` and `size` totals.
-    let current = ledger.current_stats();
-    stats.flakes = current.flakes;
-    stats.size = current.size;
+    let indexed = ledger.snapshot.stats.as_ref().cloned().unwrap_or_default();
+    let stats_lookup = LedgerInfoStatsLookup {
+        store: binary_store.as_deref(),
+        runtime_small_dicts: Some(&ledger.runtime_small_dicts),
+    };
+    let mut stats: IndexStats = match (options.realtime_property_details, ledger.novelty.is_empty())
+    {
+        (_, true) => indexed.clone(),
+        (true, false) => assemble_full_stats(
+            &indexed,
+            &ledger.snapshot,
+            ledger.novelty.as_ref(),
+            ledger.novelty.as_ref(),
+            ledger.t(),
+            &stats_lookup,
+        )
+        .await
+        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?,
+        _ => assemble_fast_stats(
+            &indexed,
+            &ledger.snapshot,
+            ledger.novelty.as_ref(),
+            ledger.t(),
+            Some(&stats_lookup as &dyn StatsLookup),
+        ),
+    };
 
     // Pre-index fallback: if no graph stats from index, try loading the pre-index manifest
     if stats.graphs.is_none() {
@@ -277,7 +285,9 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
             &compactor,
             &schema_index,
             binary_store.as_deref(),
+            Some(&ledger.runtime_small_dicts),
             options.include_property_datatypes,
+            options.include_property_estimates,
         )?,
     );
 
@@ -462,13 +472,16 @@ fn build_ledger_block(
 ///
 /// All graphs (including default g_id=0) use their `GraphStatsEntry` for
 /// graph-scoped properties and classes.
+#[allow(clippy::too_many_arguments)]
 fn build_graph_scoped_stats(
     g_id: GraphId,
     stats: &IndexStats,
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
     store: Option<&BinaryIndexStore>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     include_property_datatypes: bool,
+    include_property_estimates: bool,
 ) -> Result<JsonValue> {
     // Find the GraphStatsEntry for the requested g_id (works for all graphs including default).
     let graph_entry = stats
@@ -479,13 +492,15 @@ fn build_graph_scoped_stats(
     let (graph_flakes, graph_size) = graph_entry.map(|g| (g.flakes, g.size)).unwrap_or((0, 0));
 
     // Properties: always from graph-scoped GraphStatsEntry.
-    let properties = if let (Some(entry), Some(store)) = (graph_entry, store) {
+    let properties = if let Some(entry) = graph_entry {
         decode_graph_property_stats(
             &entry.properties,
             compactor,
             schema_index,
             store,
+            runtime_small_dicts,
             include_property_datatypes,
+            include_property_estimates,
         )?
     } else {
         JsonValue::Object(Map::new())
@@ -504,447 +519,6 @@ fn build_graph_scoped_stats(
         "properties": properties,
         "classes": classes,
     }))
-}
-
-// ============================================================================
-// Novelty merge helpers
-// ============================================================================
-
-/// Check if a novelty flake belongs to the specified graph.
-///
-/// - `graph_iri == None` → default graph: matches flakes with `g: None`
-/// - `graph_iri == Some(iri)` → named graph: matches flakes whose graph Sid
-///   resolves to the given IRI via namespace_codes
-fn flake_in_graph(
-    flake: &Flake,
-    graph_iri: Option<&str>,
-    namespace_codes: &HashMap<u16, String>,
-    store: &BinaryIndexStore,
-) -> bool {
-    match (graph_iri, &flake.g) {
-        // Default graph: flakes with no graph annotation
-        (None, None) => true,
-        // Some callers may explicitly annotate the default graph. Treat `urn:default`
-        // as equivalent to the implicit default (g: None).
-        (None, Some(g_sid)) => {
-            let ns_prefix_owned = store.namespace_prefix(g_sid.namespace_code).ok();
-            let ns_prefix = ns_prefix_owned.as_deref().or_else(|| {
-                namespace_codes
-                    .get(&g_sid.namespace_code)
-                    .map(|s| s.as_str())
-            });
-            let Some(ns_prefix) = ns_prefix else {
-                return false;
-            };
-            let flake_graph_iri = format!("{}{}", ns_prefix, g_sid.name);
-            flake_graph_iri == "urn:default"
-        }
-        // Named graph: flakes must match the graph IRI
-        (Some(_), None) => false,
-        (Some(expected), Some(g_sid)) => {
-            let ns_prefix_owned = store.namespace_prefix(g_sid.namespace_code).ok();
-            let ns_prefix = ns_prefix_owned.as_deref().or_else(|| {
-                namespace_codes
-                    .get(&g_sid.namespace_code)
-                    .map(|s| s.as_str())
-            });
-            let Some(ns_prefix) = ns_prefix else {
-                return false;
-            };
-            let flake_graph_iri = format!("{}{}", ns_prefix, g_sid.name);
-            flake_graph_iri == expected
-        }
-    }
-}
-
-/// Merge novelty deltas into a graph entry's property stats.
-///
-/// Only considers novelty flakes belonging to the specified graph:
-/// - `graph_iri == None` → default graph (flakes with `g: None`)
-/// - `graph_iri == Some(iri)` → named graph (flakes whose graph Sid resolves to `iri`)
-///
-/// Maps novelty predicate SIDs to p_ids via the binary index store, then
-/// applies property count deltas and per-datatype count deltas to the
-/// matching `GraphPropertyStatEntry`. Also updates the graph entry's
-/// flake count and size.
-///
-/// When `merge_datatypes` is true, datatype breakdowns are also adjusted.
-fn merge_graph_property_novelty(
-    graph_entry: &mut GraphStatsEntry,
-    novelty: &Novelty,
-    store: &BinaryIndexStore,
-    namespace_codes: &HashMap<u16, String>,
-    graph_iri: Option<&str>,
-    merge_datatypes: bool,
-) {
-    if novelty.is_empty() {
-        return;
-    }
-
-    // Property p_id -> (count_delta, datatype_tag -> dt_delta, max_t)
-    let mut deltas: HashMap<u32, (i64, HashMap<u8, i64>, i64)> = HashMap::new();
-    let mut flakes_delta: i64 = 0;
-    let mut size_delta: i64 = 0;
-    for flake_id in novelty.iter_index(IndexType::Post) {
-        let flake = novelty.get_flake(flake_id);
-
-        // Skip commit-metadata namespace flakes (not user data).
-        if flake.s.namespace_code == fluree_vocab::namespaces::FLUREE_COMMIT {
-            continue;
-        }
-
-        // Graph filter: only include flakes belonging to the requested graph.
-        if !flake_in_graph(flake, graph_iri, namespace_codes, store) {
-            continue;
-        }
-
-        let delta = if flake.op { 1i64 } else { -1i64 };
-        flakes_delta += delta;
-        let est = flake.size_estimate_bytes();
-        let est_i64 = i64::try_from(est).unwrap_or(i64::MAX);
-        size_delta = size_delta.saturating_add(delta.saturating_mul(est_i64));
-
-        // Map predicate SID to p_id via namespace prefix + store lookup.
-        //
-        // NOTE: namespace codes in novelty may be in either snapshot-space or
-        // store-space (e.g., after index rebuild / namespace remap). Prefer the
-        // store's namespace table, with snapshot fallback.
-        let ns_prefix_owned = store.namespace_prefix(flake.p.namespace_code).ok();
-        let ns_prefix = ns_prefix_owned.as_deref().or_else(|| {
-            namespace_codes
-                .get(&flake.p.namespace_code)
-                .map(|s| s.as_str())
-        });
-        let Some(ns_prefix) = ns_prefix else {
-            continue;
-        };
-        let full_iri = format!("{}{}", ns_prefix, flake.p.name);
-        let Some(p_id) = store.find_predicate_id(&full_iri) else {
-            continue;
-        };
-
-        let entry = deltas
-            .entry(p_id)
-            .or_insert_with(|| (0, HashMap::new(), i64::MIN));
-        entry.0 += delta;
-        entry.2 = entry.2.max(flake.t);
-
-        if merge_datatypes {
-            let tag = ValueTypeTag::from_ns_name(flake.dt.namespace_code, &flake.dt.name);
-            if tag != ValueTypeTag::UNKNOWN {
-                *entry.1.entry(tag.as_u8()).or_insert(0) += delta;
-            }
-        }
-    }
-
-    // Update graph-level flake count and size (graph-scoped, not total novelty).
-    graph_entry.flakes = (graph_entry.flakes as i64 + flakes_delta).max(0) as u64;
-    if size_delta >= 0 {
-        graph_entry.size = graph_entry.size.saturating_add(size_delta as u64);
-    } else {
-        graph_entry.size = graph_entry.size.saturating_sub(size_delta.unsigned_abs());
-    }
-
-    if deltas.is_empty() {
-        return;
-    }
-
-    // Index existing entries for in-place updates by p_id.
-    let mut by_pid: HashMap<u32, usize> = HashMap::with_capacity(graph_entry.properties.len());
-    for (idx, entry) in graph_entry.properties.iter().enumerate() {
-        by_pid.insert(entry.p_id, idx);
-    }
-
-    let mut added_any = false;
-    for (p_id, (count_delta, dt_map, max_t)) in deltas {
-        if let Some(&idx) = by_pid.get(&p_id) {
-            let entry = &mut graph_entry.properties[idx];
-
-            // Adjust property count.
-            entry.count = (entry.count as i64 + count_delta).max(0) as u64;
-
-            // Any novelty touch updates last_modified_t.
-            if max_t != i64::MIN {
-                entry.last_modified_t = entry.last_modified_t.max(max_t);
-            }
-
-            // Adjust datatype breakdown if requested.
-            if merge_datatypes && !dt_map.is_empty() {
-                let mut merged: HashMap<u8, i64> = entry
-                    .datatypes
-                    .iter()
-                    .map(|(tag, count)| (*tag, *count as i64))
-                    .collect();
-                for (tag, delta) in dt_map {
-                    *merged.entry(tag).or_insert(0) += delta;
-                }
-
-                let mut out: Vec<(u8, u64)> = merged
-                    .into_iter()
-                    .filter_map(|(tag, count)| (count > 0).then_some((tag, count as u64)))
-                    .collect();
-                out.sort_by(|a, b| a.0.cmp(&b.0));
-                entry.datatypes = out;
-            }
-        } else {
-            // Predicate introduced after the last index: add a new entry (NDV stays 0).
-            let new_count = count_delta.max(0) as u64;
-            if new_count == 0 {
-                continue;
-            }
-            let datatypes = if merge_datatypes && !dt_map.is_empty() {
-                let mut out: Vec<(u8, u64)> = dt_map
-                    .into_iter()
-                    .filter_map(|(tag, delta)| (delta > 0).then_some((tag, delta as u64)))
-                    .collect();
-                out.sort_by(|a, b| a.0.cmp(&b.0));
-                out
-            } else {
-                Vec::new()
-            };
-            graph_entry.properties.push(GraphPropertyStatEntry {
-                p_id,
-                count: new_count,
-                ndv_values: 0,
-                ndv_subjects: 0,
-                last_modified_t: if max_t == i64::MIN { 0 } else { max_t },
-                datatypes,
-            });
-            added_any = true;
-        }
-    }
-
-    if added_any {
-        graph_entry.properties.sort_by_key(|e| e.p_id);
-    }
-}
-
-/// Merge novelty deltas into a graph entry's class instance counts (rdf:type).
-///
-/// Only considers novelty flakes belonging to the specified graph, and preserves
-/// all existing class->property detail (types/langs/ref-classes). NDV estimates
-/// remain index-derived elsewhere.
-fn merge_graph_class_counts_from_novelty(
-    graph_entry: &mut GraphStatsEntry,
-    novelty: &Novelty,
-    namespace_codes: &HashMap<u16, String>,
-    graph_iri: Option<&str>,
-    store: &BinaryIndexStore,
-) {
-    if novelty.is_empty() {
-        return;
-    }
-    let Some(classes) = graph_entry.classes.as_mut() else {
-        return;
-    };
-
-    let mut by_sid: HashMap<Sid, usize> = HashMap::with_capacity(classes.len());
-    for (i, c) in classes.iter().enumerate() {
-        by_sid.insert(c.class_sid.clone(), i);
-    }
-
-    let mut added_any = false;
-    for flake_id in novelty.iter_index(IndexType::Post) {
-        let flake = novelty.get_flake(flake_id);
-        // Skip commit-metadata namespace flakes (not user data).
-        if flake.s.namespace_code == fluree_vocab::namespaces::FLUREE_COMMIT {
-            continue;
-        }
-        if !flake_in_graph(flake, graph_iri, namespace_codes, store) {
-            continue;
-        }
-        if !is_rdf_type(&flake.p) {
-            continue;
-        }
-        let FlakeValue::Ref(class_sid) = &flake.o else {
-            continue;
-        };
-        let delta = if flake.op { 1i64 } else { -1i64 };
-        if let Some(&idx) = by_sid.get(class_sid) {
-            let entry = &mut classes[idx];
-            entry.count = (entry.count as i64 + delta).max(0) as u64;
-        } else if delta > 0 {
-            classes.push(ClassStatEntry {
-                class_sid: class_sid.clone(),
-                count: delta as u64,
-                properties: Vec::new(),
-            });
-            by_sid.insert(class_sid.clone(), classes.len() - 1);
-            added_any = true;
-        }
-    }
-
-    if added_any {
-        classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
-    }
-}
-/// Merge novelty ref-edge deltas into a graph entry's class stats.
-///
-/// Only considers novelty flakes belonging to the specified graph
-/// (determined by `graph_iri`). Applies deltas from ref-valued novelty
-/// flakes to the graph entry's `classes[*].properties[*].ref_classes`,
-/// attributed using the *current* (novelty-aware) rdf:type of both the
-/// subject and the referenced object.
-///
-#[allow(clippy::too_many_arguments)]
-async fn merge_graph_class_ref_edges_from_novelty(
-    snapshot: &LedgerSnapshot,
-    novelty: &Novelty,
-    to_t: i64,
-    g_id: GraphId,
-    graph_entry: &mut GraphStatsEntry,
-    namespace_codes: &HashMap<u16, String>,
-    graph_iri: Option<&str>,
-    store: &BinaryIndexStore,
-) -> Result<()> {
-    if novelty.is_empty() {
-        return Ok(());
-    }
-
-    let mut subj_set: HashSet<Sid> = HashSet::new();
-    let mut obj_set: HashSet<Sid> = HashSet::new();
-    let mut events: Vec<(Sid, Sid, Sid, i64)> = Vec::new();
-
-    for flake_id in novelty.iter_index(IndexType::Post) {
-        let flake = novelty.get_flake(flake_id);
-
-        // Graph filter: only include flakes belonging to the requested graph.
-        if !flake_in_graph(flake, graph_iri, namespace_codes, store) {
-            continue;
-        }
-
-        if is_rdf_type(&flake.p) {
-            continue;
-        }
-
-        let FlakeValue::Ref(obj_sid) = &flake.o else {
-            continue;
-        };
-
-        let delta = if flake.op { 1i64 } else { -1i64 };
-        events.push((flake.s.clone(), flake.p.clone(), obj_sid.clone(), delta));
-        subj_set.insert(flake.s.clone());
-        obj_set.insert(obj_sid.clone());
-    }
-
-    if events.is_empty() {
-        return Ok(());
-    }
-
-    let overlay: &dyn OverlayProvider = novelty;
-
-    let mut subjects: Vec<Sid> = subj_set.into_iter().collect();
-    subjects.sort();
-    let mut objects: Vec<Sid> = obj_set.into_iter().collect();
-    objects.sort();
-
-    let db = fluree_db_core::GraphDbRef::new(snapshot, g_id, overlay, to_t);
-    let subj_classes = fluree_db_policy::lookup_subject_classes(&subjects, db)
-        .await
-        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
-
-    let obj_classes = fluree_db_policy::lookup_subject_classes(&objects, db)
-        .await
-        .map_err(|e| LedgerInfoError::ClassLookup(e.to_string()))?;
-
-    // Aggregate deltas: subject_class -> predicate -> object_class -> delta
-    let mut deltas: HashMap<Sid, HashMap<Sid, HashMap<Sid, i64>>> = HashMap::new();
-    for (s, p, o, delta) in events {
-        let Some(s_classes) = subj_classes.get(&s) else {
-            continue;
-        };
-        let Some(o_classes) = obj_classes.get(&o) else {
-            continue;
-        };
-
-        for sc in s_classes {
-            for oc in o_classes {
-                *deltas
-                    .entry(sc.clone())
-                    .or_default()
-                    .entry(p.clone())
-                    .or_default()
-                    .entry(oc.clone())
-                    .or_insert(0) += delta;
-            }
-        }
-    }
-
-    if deltas.is_empty() {
-        return Ok(());
-    }
-
-    let classes = graph_entry.classes.get_or_insert_with(Vec::new);
-
-    let mut class_idx: HashMap<Sid, usize> = HashMap::with_capacity(classes.len());
-    for (i, c) in classes.iter().enumerate() {
-        class_idx.insert(c.class_sid.clone(), i);
-    }
-
-    for (class_sid, prop_map) in deltas {
-        let idx = match class_idx.get(&class_sid).copied() {
-            Some(i) => i,
-            None => {
-                classes.push(ClassStatEntry {
-                    class_sid: class_sid.clone(),
-                    count: 0,
-                    properties: Vec::new(),
-                });
-                let i = classes.len() - 1;
-                class_idx.insert(class_sid.clone(), i);
-                i
-            }
-        };
-
-        let class_entry = &mut classes[idx];
-
-        for (prop_sid, target_map) in prop_map {
-            let pidx = class_entry
-                .properties
-                .iter()
-                .position(|u| u.property_sid == prop_sid)
-                .unwrap_or_else(|| {
-                    class_entry.properties.push(ClassPropertyUsage {
-                        property_sid: prop_sid.clone(),
-                        datatypes: Vec::new(),
-                        langs: Vec::new(),
-                        ref_classes: Vec::new(),
-                    });
-                    class_entry.properties.len() - 1
-                });
-
-            let usage = &mut class_entry.properties[pidx];
-
-            let mut merged: HashMap<Sid, i64> = usage
-                .ref_classes
-                .iter()
-                .map(|rc| (rc.class_sid.clone(), rc.count as i64))
-                .collect();
-
-            for (target_class, delta) in target_map {
-                *merged.entry(target_class).or_insert(0) += delta;
-            }
-
-            let mut out: Vec<ClassRefCount> = merged
-                .into_iter()
-                .filter_map(|(sid, count)| {
-                    (count > 0).then_some(ClassRefCount {
-                        class_sid: sid,
-                        count: count as u64,
-                    })
-                })
-                .collect();
-            out.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
-            usage.ref_classes = out;
-        }
-
-        class_entry
-            .properties
-            .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
-    }
-
-    classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
-    Ok(())
 }
 
 // ============================================================================
@@ -1089,29 +663,37 @@ fn decode_graph_property_stats(
     properties: &[GraphPropertyStatEntry],
     compactor: &IriCompactor,
     schema_index: &SchemaIndex,
-    store: &BinaryIndexStore,
+    store: Option<&BinaryIndexStore>,
+    runtime_small_dicts: Option<&RuntimeSmallDicts>,
     include_datatypes: bool,
+    include_estimates: bool,
 ) -> Result<JsonValue> {
     let mut result = Map::new();
 
     for entry in properties {
         // Resolve p_id to IRI via the binary index store
-        let Some(full_iri) = store.resolve_predicate_iri(entry.p_id) else {
+        let full_iri = store
+            .and_then(|store| store.resolve_predicate_iri(entry.p_id))
+            .map(str::to_string)
+            .or_else(|| {
+                runtime_small_dicts
+                    .and_then(|dicts| dicts.predicate_sid(RuntimePredicateId::from_u32(entry.p_id)))
+                    .and_then(|sid| compactor.decode_sid(sid).ok())
+            });
+        let Some(full_iri) = full_iri else {
             tracing::debug!(
                 p_id = entry.p_id,
                 "skipping unknown predicate in graph stats"
             );
             continue;
         };
-        let compacted = compactor.compact_vocab_iri(full_iri);
+        let compacted = compactor.compact_vocab_iri(&full_iri);
 
         // Try to find the SID for schema lookups
-        let sid_for_schema = compactor.try_encode_iri(full_iri);
+        let sid_for_schema = compactor.try_encode_iri(&full_iri);
 
         let mut prop_obj = Map::new();
         prop_obj.insert("count".to_string(), json!(entry.count));
-        prop_obj.insert("ndv-values".to_string(), json!(entry.ndv_values));
-        prop_obj.insert("ndv-subjects".to_string(), json!(entry.ndv_subjects));
         prop_obj.insert("last-modified-t".to_string(), json!(entry.last_modified_t));
 
         if include_datatypes {
@@ -1123,15 +705,18 @@ fn decode_graph_property_stats(
             prop_obj.insert("datatypes".to_string(), JsonValue::Object(dts));
         }
 
-        // Compute selectivity
-        prop_obj.insert(
-            "selectivity-value".to_string(),
-            json!(compute_selectivity(entry.count, entry.ndv_values)),
-        );
-        prop_obj.insert(
-            "selectivity-subject".to_string(),
-            json!(compute_selectivity(entry.count, entry.ndv_subjects)),
-        );
+        if include_estimates {
+            prop_obj.insert("ndv-values".to_string(), json!(entry.ndv_values));
+            prop_obj.insert("ndv-subjects".to_string(), json!(entry.ndv_subjects));
+            prop_obj.insert(
+                "selectivity-value".to_string(),
+                json!(compute_selectivity(entry.count, entry.ndv_values)),
+            );
+            prop_obj.insert(
+                "selectivity-subject".to_string(),
+                json!(compute_selectivity(entry.count, entry.ndv_subjects)),
+            );
+        }
 
         // Add sub-property-of from schema hierarchy
         if let Some(sid) = &sid_for_schema {
@@ -1426,10 +1011,23 @@ where
         self
     }
 
-    /// When enabled, make property "details" real-time (novelty-aware).
+    /// Include index-derived NDV/selectivity estimates under `stats.properties[*]`.
+    ///
+    /// These estimates are only as current as the last index refresh.
+    pub fn with_property_estimates(mut self, enabled: bool) -> Self {
+        self.options.include_property_estimates = enabled;
+        self
+    }
+
+    /// Toggle the heavier full novelty-aware property/class detail path.
+    ///
+    /// Enabled by default for `ledger_info()`. Disable this only when you
+    /// explicitly want the lighter fast novelty-aware merge.
+    ///
+    /// Note: this does NOT override `include_property_datatypes` — set that
+    /// independently via [`with_property_datatypes`](Self::with_property_datatypes).
     pub fn with_realtime_property_details(mut self, enabled: bool) -> Self {
         self.options.realtime_property_details = enabled;
-        self.options.include_property_datatypes = enabled;
         self
     }
 
@@ -1503,13 +1101,14 @@ where
             };
 
             let key_str = format!(
-                "ledger-info:{}:{}:{}:{}:{}:{}:{}:{}",
+                "ledger-info:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 self.ledger_id,
                 commit_t,
                 index_t,
                 index_id,
                 self.options.realtime_property_details as u8,
                 self.options.include_property_datatypes as u8,
+                self.options.include_property_estimates as u8,
                 graph_key,
                 ctx_hash
             );

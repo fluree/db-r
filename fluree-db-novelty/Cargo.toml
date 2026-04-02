@@ -9,6 +9,7 @@ license = "Apache-2.0"
 fluree-db-core = { path = "../fluree-db-core", features = ["credential"] }
 fluree-db-credential = { path = "../fluree-db-credential" }
 fluree-vocab = { path = "../fluree-vocab" }
+async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }

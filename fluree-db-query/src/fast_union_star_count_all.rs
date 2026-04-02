@@ -29,7 +29,7 @@ use crate::binding::Batch;
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, build_psot_cursor_for_predicate, cursor_projection_sid_only,
+    build_count_batch, build_psot_cursor_for_predicate, count_to_i64, cursor_projection_sid_only,
     cursor_projection_sid_otype_okey, normalize_pred_sid,
 };
 use crate::operator::{BoxedOperator, Operator, OperatorState};
@@ -94,7 +94,10 @@ impl Operator for UnionStarCountAllOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
-        let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
+        let allow_fast = !ctx.is_multi_ledger()
+            && !ctx.history_mode
+            && ctx.from_t.is_none()
+            && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root());
         if allow_fast {
             if let Some(store) = ctx.binary_store.as_ref() {
                 let Some(n) = count_union_star(
@@ -118,7 +121,7 @@ impl Operator for UnionStarCountAllOperator {
                     self.state = OperatorState::Open;
                     return Ok(());
                 };
-                self.result = Some(i64::try_from(n).unwrap_or(i64::MAX));
+                self.result = Some(count_to_i64(n, "COUNT(*) UNION-star")?);
                 self.emitted = false;
                 self.state = OperatorState::Open;
                 self.fallback = None;
@@ -304,6 +307,7 @@ fn count_union_star(
     extra_preds: &[Ref],
     mode: UnionCountMode,
 ) -> Result<Option<u64>> {
+    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
     if union_preds.is_empty() {
         return Ok(Some(0));
     }
@@ -315,7 +319,7 @@ fn count_union_star(
     for p in union_preds {
         let sid = normalize_pred_sid(store, p)?;
         let Some(p_id) = store.sid_to_p_id(&sid) else {
-            if ctx.overlay.is_some() {
+            if overlay_has_rows {
                 return Ok(None);
             }
             continue;
@@ -423,7 +427,7 @@ fn count_union_star(
         let sid = normalize_pred_sid(store, p)?;
         let Some(p_id) = store.sid_to_p_id(&sid) else {
             // Required predicate absent => empty join.
-            return if ctx.overlay.is_some() {
+            return if overlay_has_rows {
                 Ok(None)
             } else {
                 Ok(Some(0))

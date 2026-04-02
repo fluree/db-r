@@ -26,7 +26,7 @@ use tracing::{debug, warn};
 /// **Forward-compat note:** If a future commit format uses `CODEC_FLUREE_COMMIT`
 /// but has different hashing rules, add its magic-byte check here — the
 /// `id.verify(bytes)` fallback assumes full-bytes SHA-256.
-pub(crate) fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
+pub fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
     const COMMIT_V2_MAGIC: &[u8] = b"FCV2";
 
     if id.codec() == CODEC_FLUREE_COMMIT && bytes.starts_with(COMMIT_V2_MAGIC) {

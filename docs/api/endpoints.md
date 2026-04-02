@@ -1352,6 +1352,100 @@ curl -X POST http://localhost:8090/fluree/drop \
   -d '{"ledger": "mydb"}'
 ```
 
+### GET /fluree/context/:ledger
+
+Get the default JSON-LD context for a ledger.
+
+**URL:**
+```
+GET /fluree/context/{ledger-id}
+```
+
+**Path Parameters:**
+- `ledger-id`: Ledger identifier (e.g., `mydb` or `mydb:main`)
+
+**Response:**
+
+```json
+{
+  "@context": {
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "ex": "http://example.org/"
+  }
+}
+```
+
+If no default context has been set, `"@context"` is `null`.
+
+**Status Codes:**
+- `200 OK` - Context returned (may be `null`)
+- `404 Not Found` - Ledger does not exist
+
+**Example:**
+
+```bash
+curl http://localhost:8090/fluree/context/mydb:main
+```
+
+### PUT /fluree/context/:ledger
+
+Replace the default JSON-LD context for a ledger.
+
+**URL:**
+```
+PUT /fluree/context/{ledger-id}
+```
+
+**Path Parameters:**
+- `ledger-id`: Ledger identifier (e.g., `mydb` or `mydb:main`)
+
+**Request Body:**
+
+A JSON object mapping prefixes to IRIs. Either a bare object or wrapped in `{"@context": {...}}`:
+
+```json
+{
+  "ex": "http://example.org/",
+  "foaf": "http://xmlns.com/foaf/0.1/",
+  "schema": "http://schema.org/"
+}
+```
+
+**Response (success):**
+
+```json
+{
+  "status": "updated"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Context replaced successfully
+- `400 Bad Request` - Body is not a valid JSON object; or peer mode (writes not available)
+- `404 Not Found` - Ledger does not exist
+- `409 Conflict` - Concurrent update conflict (retry the request)
+
+**Concurrency:** The update uses compare-and-set semantics internally (up to 3 retries). A 409 means all retries were exhausted — this is rare and indicates heavy concurrent updates.
+
+**Cache invalidation:** After a successful update, the server invalidates the cached ledger state. Subsequent queries will use the new context.
+
+**Examples:**
+
+```bash
+# Set context
+curl -X PUT http://localhost:8090/fluree/context/mydb:main \
+  -H "Content-Type: application/json" \
+  -d '{"ex": "http://example.org/", "foaf": "http://xmlns.com/foaf/0.1/"}'
+
+# Wrapped form also accepted
+curl -X PUT http://localhost:8090/fluree/context/mydb:main \
+  -H "Content-Type: application/json" \
+  -d '{"@context": {"ex": "http://example.org/"}}'
+```
+
 ### POST /fluree/branch
 
 Create a new branch for a ledger.
@@ -1616,6 +1710,77 @@ curl -X POST http://localhost:8090/v1/fluree/rebase \
   -d '{"ledger": "mydb", "branch": "feature-x", "strategy": "abort"}'
 ```
 
+### POST /fluree/merge
+
+Merge a source branch into a target branch (fast-forward only). Admin-protected.
+
+Currently only fast-forward merges are supported: the target branch must not have any new commits since the source branch was created from it. If the target has diverged, rebase the source branch first, then merge.
+
+**URL:**
+```
+POST /fluree/merge
+```
+
+**Request body:**
+
+```json
+{
+  "ledger": "mydb",
+  "source": "feature-x",
+  "target": "dev"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `source` | string | Yes | Source branch to merge from (e.g., "feature-x") |
+| `target` | string | No | Target branch to merge into (defaults to source's parent branch) |
+
+**Response body (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:dev",
+  "target": "dev",
+  "source": "feature-x",
+  "fast_forward": true,
+  "new_head_t": 8,
+  "commits_copied": 3
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ledger_id` | string | Full ledger:branch identifier of the target |
+| `target` | string | Target branch name |
+| `source` | string | Source branch name |
+| `fast_forward` | bool | Always `true` (only fast-forward is supported) |
+| `new_head_t` | number | New commit HEAD transaction time of the target |
+| `commits_copied` | number | Number of commit blobs copied to the target namespace |
+
+**Status codes:**
+
+- `200 OK` - Merge completed successfully
+- `400 Bad Request` - Source has no branch point (e.g., main), self-merge, or target mismatch
+- `404 Not Found` - Ledger or branch does not exist
+- `409 Conflict` - Target has diverged; fast-forward not possible
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Merge feature-x into its parent (inferred from branch point)
+curl -X POST http://localhost:8090/v1/fluree/merge \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "source": "feature-x"}'
+
+# Merge dev into main (explicit target)
+curl -X POST http://localhost:8090/v1/fluree/merge \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "source": "dev", "target": "main"}'
+```
+
 ### GET /fluree/info
 
 Get ledger metadata. Used by the CLI for `info`, `push`, `pull`, and `clone`.
@@ -1672,8 +1837,9 @@ Returns simplified nameservice-only metadata:
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `realtime_property_details` | boolean | false | Compute live property stats (slower) |
-| `include_property_datatypes` | boolean | false | Include datatype info for properties |
+| `realtime_property_details` | boolean | true | When `false`, use the lighter fast novelty-aware stats path instead of the default full lookup-backed path |
+| `include_property_datatypes` | boolean | true | Include datatype info for properties |
+| `include_property_estimates` | boolean | false | Include index-derived NDV/selectivity estimates for properties |
 
 **Status Codes:**
 - `200 OK` - Ledger found
@@ -2007,6 +2173,8 @@ This section summarizes the contract that third-party server implementations (e.
 | `POST /insert/{ledger}` | `insert` |
 | `POST /upsert/{ledger}` | `upsert` |
 | `GET /exists/{ledger}` | `clone` (pre-create check) |
+| `GET /context/{ledger}` | `context get` |
+| `PUT /context/{ledger}` | `context set` |
 | `GET /ledgers` | `list --remote` |
 
 For sync workflows (`clone`/`push`/`pull`), these additional endpoints are needed:

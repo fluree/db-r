@@ -29,7 +29,7 @@ use crate::error::{LedgerError, Result};
 use crate::LedgerState;
 use fluree_db_core::{
     content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
-    IndexType, LedgerSnapshot, OverlayProvider, Sid, Storage, TXN_META_GRAPH_ID,
+    IndexType, LedgerSnapshot, OverlayProvider, RuntimeSmallDicts, Sid, Storage, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::NameService;
 
@@ -58,6 +58,8 @@ pub struct HistoricalLedgerView {
     pub snapshot: LedgerSnapshot,
     /// Optional novelty overlay (commits between index_t and to_t)
     overlay: Option<Arc<Novelty>>,
+    /// Ledger-scoped runtime IDs for predicates and datatypes when a binary store is attached.
+    runtime_small_dicts: Option<Arc<RuntimeSmallDicts>>,
     /// Time bound for all queries
     to_t: i64,
 }
@@ -175,6 +177,7 @@ impl HistoricalLedgerView {
         Ok(Self {
             snapshot,
             overlay,
+            runtime_small_dicts: None,
             to_t: target_t,
         })
     }
@@ -373,10 +376,24 @@ impl HistoricalLedgerView {
     /// Create a historical view directly from components
     ///
     /// This is useful for testing or when you've already loaded the components.
+    /// Runtime predicate/datatype dictionaries default to `None`; callers with an
+    /// attached binary store should prefer [`HistoricalLedgerView::new_with_runtime_small_dicts`]
+    /// or call [`HistoricalLedgerView::set_runtime_small_dicts`] before query planning.
     pub fn new(snapshot: LedgerSnapshot, overlay: Option<Arc<Novelty>>, to_t: i64) -> Self {
+        Self::new_with_runtime_small_dicts(snapshot, overlay, None, to_t)
+    }
+
+    /// Create a historical view directly from components, including runtime dicts.
+    pub fn new_with_runtime_small_dicts(
+        snapshot: LedgerSnapshot,
+        overlay: Option<Arc<Novelty>>,
+        runtime_small_dicts: Option<Arc<RuntimeSmallDicts>>,
+        to_t: i64,
+    ) -> Self {
         Self {
             snapshot,
             overlay,
+            runtime_small_dicts,
             to_t,
         }
     }
@@ -401,6 +418,16 @@ impl HistoricalLedgerView {
         self.overlay.as_ref()
     }
 
+    /// Get the runtime predicate/datatype dictionaries if present.
+    pub fn runtime_small_dicts(&self) -> Option<&Arc<RuntimeSmallDicts>> {
+        self.runtime_small_dicts.as_ref()
+    }
+
+    /// Attach runtime predicate/datatype dictionaries after a binary store is loaded.
+    pub fn set_runtime_small_dicts(&mut self, runtime_small_dicts: Arc<RuntimeSmallDicts>) {
+        self.runtime_small_dicts = Some(runtime_small_dicts);
+    }
+
     /// Get the overlay as an OverlayProvider reference
     ///
     /// Returns the novelty overlay if present, which can be used with
@@ -417,6 +444,7 @@ impl HistoricalLedgerView {
     /// present, no-op otherwise). `t` is set to `to_t` (the historical time bound).
     pub fn as_graph_db_ref(&self, g_id: GraphId) -> GraphDbRef<'_> {
         GraphDbRef::new(&self.snapshot, g_id, self, self.to_t)
+            .with_runtime_small_dicts_opt(self.runtime_small_dicts.as_deref())
     }
 }
 
@@ -425,6 +453,10 @@ impl HistoricalLedgerView {
 /// This allows the view to be used directly as an overlay provider in queries.
 /// The `to_t` filtering is handled automatically.
 impl OverlayProvider for HistoricalLedgerView {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn epoch(&self) -> u64 {
         self.overlay.as_ref().map(|n| n.epoch).unwrap_or(0)
     }

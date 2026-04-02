@@ -82,43 +82,53 @@ pub(crate) async fn upload_indexes_to_cas<S: Storage>(
 
             // Upload leaf blobs + sidecar blobs.
             for leaf_info in &graph.leaf_infos {
-                // Guard: sidecar_cid and sidecar_bytes must agree.
-                match (&leaf_info.sidecar_cid, &leaf_info.sidecar_bytes) {
+                // Guard: sidecar_cid and sidecar_path must agree.
+                match (&leaf_info.sidecar_cid, &leaf_info.sidecar_path) {
                     (Some(_), None) => {
                         return Err(IndexerError::StorageWrite(
-                            "leaf has sidecar_cid but no sidecar_bytes".into(),
+                            "leaf has sidecar_cid but no sidecar_path".into(),
                         ));
                     }
                     (None, Some(_)) => {
                         return Err(IndexerError::StorageWrite(
-                            "leaf has sidecar_bytes but no sidecar_cid".into(),
+                            "leaf has sidecar_path but no sidecar_cid".into(),
                         ));
                     }
                     _ => {}
                 }
 
                 // Sidecar first (CAS ordering: sidecar must exist before leaf references it).
-                if let (Some(sc_cid), Some(sc_bytes)) =
-                    (&leaf_info.sidecar_cid, &leaf_info.sidecar_bytes)
+                if let (Some(sc_cid), Some(sc_path)) =
+                    (&leaf_info.sidecar_cid, &leaf_info.sidecar_path)
                 {
+                    let sc_bytes = tokio::fs::read(sc_path).await.map_err(|e| {
+                        IndexerError::StorageRead(format!("read {}: {}", sc_path.display(), e))
+                    })?;
                     storage
                         .content_write_bytes_with_hash(
                             ContentKind::HistorySidecar,
                             ledger_id,
                             &sc_cid.digest_hex(),
-                            sc_bytes,
+                            &sc_bytes,
                         )
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 }
 
                 // Leaf blob.
+                let leaf_bytes = tokio::fs::read(&leaf_info.leaf_path).await.map_err(|e| {
+                    IndexerError::StorageRead(format!(
+                        "read {}: {}",
+                        leaf_info.leaf_path.display(),
+                        e
+                    ))
+                })?;
                 storage
                     .content_write_bytes_with_hash(
                         ContentKind::IndexLeaf,
                         ledger_id,
                         &leaf_info.leaf_cid.digest_hex(),
-                        &leaf_info.leaf_bytes,
+                        &leaf_bytes,
                     )
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
@@ -126,12 +136,19 @@ pub(crate) async fn upload_indexes_to_cas<S: Storage>(
 
             // Upload branch manifest for named graphs.
             let uploaded_branch_cid = if !is_default_graph {
+                let branch_bytes = tokio::fs::read(&graph.branch_path).await.map_err(|e| {
+                    IndexerError::StorageRead(format!(
+                        "read {}: {}",
+                        graph.branch_path.display(),
+                        e
+                    ))
+                })?;
                 storage
                     .content_write_bytes_with_hash(
                         ContentKind::IndexBranch,
                         ledger_id,
                         &graph.branch_cid.digest_hex(),
-                        &graph.branch_bytes,
+                        &branch_bytes,
                     )
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;

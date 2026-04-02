@@ -435,7 +435,7 @@ pub async fn ingest_pack_stream_with_header<S: ContentAddressedWrite>(
 }
 
 /// Verify and write a single CAS object from a pack data frame.
-async fn ingest_pack_frame<S: ContentAddressedWrite>(
+pub async fn ingest_pack_frame<S: ContentAddressedWrite>(
     cid: &ContentId,
     bytes: &[u8],
     storage: &S,

@@ -504,8 +504,12 @@ where
                 )
                 .await?;
 
-            // Copy the txn blob if present.
-            if let Some(ref txn_cid) = envelope.txn {
+            // Overlap: copy the txn blob concurrently with reading the
+            // next commit blob.  The two operations are independent.
+            let txn_fut = async {
+                let Some(ref txn_cid) = envelope.txn else {
+                    return Ok(());
+                };
                 let txn_bytes = source_store.get(txn_cid).await?;
                 storage
                     .content_write_bytes_with_hash(
@@ -515,7 +519,10 @@ where
                         &txn_bytes,
                     )
                     .await?;
-            }
+                Ok::<_, crate::error::ApiError>(())
+            };
+
+            txn_fut.await?;
 
             copied += 1;
         }
