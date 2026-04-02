@@ -55,6 +55,7 @@ pub mod graph_transact_builder;
 pub mod import;
 mod ledger;
 pub mod ledger_info;
+mod merge;
 pub mod nameservice_query;
 pub(crate) mod ns_helpers;
 mod overlay;
@@ -125,6 +126,7 @@ pub use ledger_manager::{
     LedgerManagerConfig, LedgerWriteGuard, NotifyResult, NsNotify, RefreshOpts, RefreshResult,
     RemoteWatermark, UpdatePlan,
 };
+pub use merge::MergeReport;
 pub use pack::{
     compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
     PackStreamResult,

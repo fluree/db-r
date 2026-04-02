@@ -1220,6 +1220,122 @@ async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl Int
     .await
 }
 
+// ============================================================================
+// Merge
+// ============================================================================
+
+/// Merge branch request body
+#[derive(Deserialize)]
+pub struct MergeBranchRequest {
+    /// Ledger name (e.g., "mydb")
+    pub ledger: String,
+    /// Source branch to merge from (e.g., "feature-x")
+    pub source: String,
+    /// Target branch to merge into (defaults to the source's parent branch)
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+/// Merge branch response
+#[derive(Serialize)]
+pub struct MergeBranchResponse {
+    /// Full ledger:branch identifier of the target
+    pub ledger_id: String,
+    /// Target branch name
+    pub target: String,
+    /// Source branch name
+    pub source: String,
+    /// Whether this was a fast-forward merge
+    pub fast_forward: bool,
+    /// New commit HEAD t of the target
+    pub new_head_t: i64,
+    /// Number of commit blobs copied to the target namespace
+    pub commits_copied: usize,
+}
+
+/// Merge a source branch into a target branch
+///
+/// POST /fluree/merge
+///
+/// Request body:
+/// - `ledger`: Ledger name (e.g., "mydb")
+/// - `source`: Source branch to merge from (e.g., "feature-x")
+/// - `target`: Target branch to merge into (optional, defaults to source's parent)
+pub async fn merge(State(state): State<Arc<AppState>>, request: Request) -> Response {
+    if state.config.server_role == ServerRole::Peer {
+        return forward_write_request(&state, request).await;
+    }
+
+    merge_local(state, request).await.into_response()
+}
+
+async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl IntoResponse> {
+    let (parts, body) = request.into_parts();
+    let headers = FlureeHeaders::from_headers(&parts.headers)?;
+
+    let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
+        .await
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+    let req: MergeBranchRequest = serde_json::from_slice(&body_bytes)
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+
+    let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+    let span = create_request_span(
+        "branch:merge",
+        request_id.as_deref(),
+        trace_id.as_deref(),
+        Some(&req.ledger),
+        None,
+        None,
+    );
+
+    async move {
+        let span = tracing::Span::current();
+
+        tracing::info!(
+            status = "start",
+            source = %req.source,
+            target = ?req.target,
+            "branch merge requested"
+        );
+
+        let report = match state
+            .fluree
+            .as_file()
+            .merge_branch(&req.ledger, &req.source, req.target.as_deref())
+            .await
+        {
+            Ok(report) => report,
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&span, "error:BranchMergeFailed");
+                tracing::error!(error = %server_error, "branch merge failed");
+                return Err(server_error);
+            }
+        };
+
+        let ledger_id = fluree_db_core::ledger_id::format_ledger_id(&req.ledger, &report.target);
+        let response = MergeBranchResponse {
+            ledger_id,
+            target: report.target,
+            source: report.source,
+            fast_forward: report.fast_forward,
+            new_head_t: report.new_head_t,
+            commits_copied: report.commits_copied,
+        };
+
+        tracing::info!(
+            status = "success",
+            fast_forward = report.fast_forward,
+            "branch merged"
+        );
+        Ok((StatusCode::OK, Json(response)))
+    }
+    .instrument(span)
+    .await
+}
+
 /// Forward a transaction request to the transaction server (peer mode)
 pub(super) async fn forward_write_request(state: &AppState, request: Request) -> Response {
     let client = match state.forwarding_client.as_ref() {

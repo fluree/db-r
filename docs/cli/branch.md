@@ -226,6 +226,60 @@ Rebased 'dev': 3 commits replayed, 0 skipped, 1 conflicts, 0 failures.
   New branch point: t=8
 ```
 
+### fluree branch merge
+
+Merge a branch into its parent branch (fast-forward only).
+
+**Usage:**
+
+```bash
+fluree branch merge <SOURCE> [OPTIONS]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<SOURCE>` | Source branch name to merge from (e.g., "dev", "feature-x") |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--ledger <LEDGER>` | Ledger name (defaults to active ledger) |
+| `--target <BRANCH>` | Target branch to merge into (defaults to source's parent branch) |
+| `--remote <REMOTE>` | Execute against a remote server |
+
+**Description:**
+
+Merges a source branch into a target branch using a fast-forward strategy. The target branch must not have any new commits since the source branch was created from it. If the target has diverged, rebase the source branch first, then merge.
+
+When `--target` is omitted, the merge target is inferred from the source branch's parent (the branch it was created from).
+
+After a successful merge, the source branch remains intact and can continue to receive new transactions and be merged again. Only the new commits since the last merge (or branch creation) are copied.
+
+**Examples:**
+
+```bash
+# Merge dev into main (inferred from branch point)
+fluree branch merge dev
+
+# Merge feature-x into dev (explicit target)
+fluree branch merge feature-x --target dev
+
+# Merge for a specific ledger
+fluree branch merge dev --ledger mydb
+
+# Merge on a remote server
+fluree branch merge dev --ledger mydb --remote origin
+```
+
+**Output:**
+
+```
+Merged 'dev' into 'main' (fast-forward to t=8, 3 commits copied).
+```
+
 ## See Also
 
 - [create](create.md) - Create a new ledger

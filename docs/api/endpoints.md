@@ -1710,6 +1710,77 @@ curl -X POST http://localhost:8090/v1/fluree/rebase \
   -d '{"ledger": "mydb", "branch": "feature-x", "strategy": "abort"}'
 ```
 
+### POST /fluree/merge
+
+Merge a source branch into a target branch (fast-forward only). Admin-protected.
+
+Currently only fast-forward merges are supported: the target branch must not have any new commits since the source branch was created from it. If the target has diverged, rebase the source branch first, then merge.
+
+**URL:**
+```
+POST /fluree/merge
+```
+
+**Request body:**
+
+```json
+{
+  "ledger": "mydb",
+  "source": "feature-x",
+  "target": "dev"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `ledger` | string | Yes | Ledger name without branch suffix (e.g., "mydb") |
+| `source` | string | Yes | Source branch to merge from (e.g., "feature-x") |
+| `target` | string | No | Target branch to merge into (defaults to source's parent branch) |
+
+**Response body (200 OK):**
+
+```json
+{
+  "ledger_id": "mydb:dev",
+  "target": "dev",
+  "source": "feature-x",
+  "fast_forward": true,
+  "new_head_t": 8,
+  "commits_copied": 3
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ledger_id` | string | Full ledger:branch identifier of the target |
+| `target` | string | Target branch name |
+| `source` | string | Source branch name |
+| `fast_forward` | bool | Always `true` (only fast-forward is supported) |
+| `new_head_t` | number | New commit HEAD transaction time of the target |
+| `commits_copied` | number | Number of commit blobs copied to the target namespace |
+
+**Status codes:**
+
+- `200 OK` - Merge completed successfully
+- `400 Bad Request` - Source has no branch point (e.g., main), self-merge, or target mismatch
+- `404 Not Found` - Ledger or branch does not exist
+- `409 Conflict` - Target has diverged; fast-forward not possible
+- `500 Internal Server Error` - Server error
+
+**Examples:**
+
+```bash
+# Merge feature-x into its parent (inferred from branch point)
+curl -X POST http://localhost:8090/v1/fluree/merge \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "source": "feature-x"}'
+
+# Merge dev into main (explicit target)
+curl -X POST http://localhost:8090/v1/fluree/merge \
+  -H "Content-Type: application/json" \
+  -d '{"ledger": "mydb", "source": "dev", "target": "main"}'
+```
+
 ### GET /fluree/info
 
 Get ledger metadata. Used by the CLI for `info`, `push`, `pull`, and `clone`.
