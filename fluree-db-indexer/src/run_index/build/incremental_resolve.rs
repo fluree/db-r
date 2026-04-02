@@ -272,6 +272,21 @@ pub async fn resolve_incremental_commits_v6(
         (cids, t0.elapsed().as_millis() as u64)
     };
 
+    tracing::info!(
+        commit_count = commit_cids.len(),
+        root_load_ms = t_root_load_ms,
+        root_decode_ms = t_root_decode_ms,
+        dict_load_ms = t_dict_load_ms,
+        seed_arenas_ms = t_seed_arenas_ms,
+        walk_chain_ms = t_walk_chain_ms,
+        avg_walk_ms_per_commit = if commit_cids.is_empty() {
+            0.0
+        } else {
+            t_walk_chain_ms as f64 / commit_cids.len() as f64
+        },
+        "V6 incremental resolve: setup and commit-chain walk finished"
+    );
+
     // 6. Resolve commits into chunk.
     let (
         chunk,
@@ -351,6 +366,22 @@ pub async fn resolve_incremental_commits_v6(
         records = chunk.records.len(),
         max_t,
         "V6 incremental resolve: commits resolved into chunk"
+    );
+    tracing::info!(
+        commit_count,
+        chunk_records = chunk.records.len(),
+        max_t,
+        delta_commit_size,
+        delta_asserts,
+        delta_retracts,
+        commit_resolve_ms = t_commit_resolve_ms,
+        avg_resolve_ms_per_commit = if commit_count == 0 {
+            0.0
+        } else {
+            t_commit_resolve_ms as f64 / commit_count as f64
+        },
+        elapsed_since_start_ms = t_start.elapsed().as_millis() as u64,
+        "V6 incremental resolve: commit resolution finished"
     );
 
     // Cache watermarks before potential root move.
