@@ -33,9 +33,10 @@ mod runtime_stats;
 mod stats;
 
 pub use commit::{
-    load_commit_by_id, load_commit_envelope_by_id, trace_commit_envelopes_by_id,
-    trace_commits_by_id, Commit, CommitEnvelope, CommitRef, TxnMetaEntry, TxnMetaValue,
-    TxnSignature, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES,
+    find_common_ancestor, load_commit_by_id, load_commit_envelope_by_id,
+    trace_commit_envelopes_by_id, trace_commits_by_id, Commit, CommitEnvelope, CommitRef,
+    CommonAncestor, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_BYTES,
+    MAX_TXN_META_ENTRIES,
 };
 pub use commit_flakes::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 pub use commit_v2::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};

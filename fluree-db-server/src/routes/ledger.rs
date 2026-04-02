@@ -874,12 +874,11 @@ async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<i
             }
         };
 
-        let bp = record.branch_point.as_ref();
         let response = CreateBranchResponse {
-            ledger_id: record.ledger_id,
-            branch: record.branch,
-            source: bp.map(|b| b.source.clone()).unwrap_or_default(),
-            t: bp.map(|b| b.t).unwrap_or(0),
+            ledger_id: record.ledger_id.clone(),
+            branch: record.branch.clone(),
+            source: record.source_branch.unwrap_or_default(),
+            t: record.commit_t,
         };
 
         tracing::info!(status = "success", "branch created");
@@ -939,7 +938,7 @@ pub async fn list_branches(
                 branch: r.branch,
                 ledger_id: r.ledger_id,
                 t: r.commit_t,
-                source: r.branch_point.map(|bp| bp.source),
+                source: r.source_branch,
             })
             .collect();
 
@@ -1121,8 +1120,8 @@ pub struct RebaseBranchResponse {
     pub failures: usize,
     /// Total commits considered
     pub total_commits: usize,
-    /// New branch point t
-    pub new_branch_point_t: i64,
+    /// Source branch HEAD t after rebase
+    pub source_head_t: i64,
 }
 
 /// Rebase a branch onto its source branch's current HEAD
@@ -1205,7 +1204,7 @@ async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl Int
             conflicts: report.conflicts.len(),
             failures: report.failures.len(),
             total_commits: report.total_commits,
-            new_branch_point_t: report.new_branch_point_t,
+            source_head_t: report.source_head_t,
         };
 
         tracing::info!(

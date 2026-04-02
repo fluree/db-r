@@ -157,6 +157,7 @@ impl<S> StorageNameService<S> {
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            source_branch: None,
             branch_point: None,
             branches: 0,
         }
@@ -366,14 +367,9 @@ where
                 .as_deref()
                 .and_then(parse_default_context_value),
             retracted: main.status == "retracted",
-            branch_point: main.branch_point.and_then(|bp| {
-                let commit_id = bp.commit_cid?.parse::<ContentId>().ok()?;
-                Some(crate::BranchPoint {
-                    source: bp.source,
-                    commit_id,
-                    t: bp.t,
-                })
-            }),
+            source_branch: main
+                .source_branch
+                .or_else(|| main.branch_point.map(|bp| bp.source)),
             branches: main.branches,
         };
 
@@ -574,16 +570,21 @@ where
         &self,
         ledger_name: &str,
         new_branch: &str,
-        branch_point: crate::BranchPoint,
+        source_branch: &str,
     ) -> Result<()> {
         let key = self.ns_key(ledger_name, new_branch);
         let normalized_id = format_ledger_id(ledger_name, new_branch);
 
-        let bp_ref = BranchPointRef {
-            source: branch_point.source.clone(),
-            commit_cid: Some(branch_point.commit_id.to_string()),
-            t: branch_point.t,
-        };
+        // Read the source branch to get commit head info
+        let source_record = self
+            .load_record(ledger_name, source_branch)
+            .await?
+            .ok_or_else(|| {
+                NameServiceError::not_found(format!(
+                    "source branch {}:{}",
+                    ledger_name, source_branch
+                ))
+            })?;
 
         let file = NsFileV2 {
             context: ns_context(),
@@ -593,9 +594,9 @@ where
                 id: ledger_name.to_string(),
             },
             branch: new_branch.to_string(),
-            commit_cid: Some(branch_point.commit_id.to_string()),
+            commit_cid: source_record.commit_head_id.as_ref().map(|c| c.to_string()),
             config_cid: None,
-            t: branch_point.t,
+            t: source_record.commit_t,
             index: None,
             status: "ready".to_string(),
             default_context_cid: None,
@@ -603,7 +604,12 @@ where
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
-            branch_point: Some(bp_ref),
+            source_branch: Some(source_branch.to_string()),
+            branch_point: Some(BranchPointRef {
+                source: source_branch.to_string(),
+                commit_cid: None,
+                t: 0,
+            }),
             branches: 0,
         };
         let bytes = serde_json::to_vec_pretty(&file)
@@ -615,25 +621,13 @@ where
         }
 
         // Increment source branch's child count
-        let source_key = self.ns_key(ledger_name, &branch_point.source);
-        let source_branch = branch_point.source.clone();
+        let source_key = self.ns_key(ledger_name, source_branch);
         self.cas_update::<NsFileV2, _>(&source_key, |existing| {
             let mut file = existing?;
             file.branches += 1;
             Some(file)
         })
         .await?;
-
-        // Verify the increment actually happened (cas_update treats abort as Ok)
-        let parent = self.load_record(ledger_name, &source_branch).await?;
-        if parent.is_none() {
-            // Source branch doesn't exist; clean up the record we just created
-            let _ = self.storage.delete(&key).await;
-            return Err(NameServiceError::not_found(format!(
-                "source branch {}:{}",
-                ledger_name, source_branch
-            )));
-        }
 
         Ok(())
     }
@@ -647,7 +641,7 @@ where
             .await?
             .ok_or_else(|| NameServiceError::not_found(ledger_id))?;
 
-        let parent_branch_point = record.branch_point.clone();
+        let parent_source = record.source_branch.clone();
 
         // Remove the NS files
         let main_key = self.ns_key(&ledger_name, &branch);
@@ -656,9 +650,9 @@ where
         let _ = self.storage.delete(&index_key).await;
 
         // Decrement parent's child count if this branch had a parent
-        match parent_branch_point {
-            Some(bp) => {
-                let parent_key = self.ns_key(&ledger_name, &bp.source);
+        match parent_source {
+            Some(source) => {
+                let parent_key = self.ns_key(&ledger_name, &source);
                 self.cas_update::<NsFileV2, _>(&parent_key, move |existing| {
                     let mut file = existing?;
                     file.branches = file.branches.saturating_sub(1);
@@ -666,43 +660,11 @@ where
                 })
                 .await?;
                 // Re-read the parent to get the updated count
-                let parent_record = self.load_record(&ledger_name, &bp.source).await?;
+                let parent_record = self.load_record(&ledger_name, &source).await?;
                 Ok(parent_record.map(|r| r.branches))
             }
             None => Ok(None),
         }
-    }
-
-    async fn update_branch_point(
-        &self,
-        ledger_id: &str,
-        new_branch_point: crate::BranchPoint,
-    ) -> Result<()> {
-        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let key = self.ns_key(&ledger_name, &branch);
-
-        let outcome = self
-            .storage
-            .compare_and_swap(&key, |bytes| {
-                let Some(data) = bytes else {
-                    return Ok(CasAction::Abort(()));
-                };
-                let mut file: NsFileV2 = deserialize_json(data)?;
-                file.branch_point = Some(BranchPointRef {
-                    source: new_branch_point.source.clone(),
-                    commit_cid: Some(new_branch_point.commit_id.to_string()),
-                    t: new_branch_point.t,
-                });
-                let new_bytes = serialize_json(&file)?;
-                Ok(CasAction::Write(new_bytes))
-            })
-            .await?;
-
-        if matches!(outcome, CasOutcome::Aborted(())) {
-            return Err(NameServiceError::not_found(ledger_id));
-        }
-
-        Ok(())
     }
 
     async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
@@ -760,6 +722,7 @@ where
             status_meta: None,
             config_v: Some(0),
             config_meta: None,
+            source_branch: None,
             branch_point: None,
             branches: 0,
         };

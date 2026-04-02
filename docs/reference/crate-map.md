@@ -287,8 +287,7 @@ fluree-db/
 **Key Types:**
 - `NameService` trait (includes `list_branches`, `create_branch`, `drop_branch`)
 - `Publisher` trait (commit/index publishing)
-- `NsRecord` - Nameservice record (includes `branches` child count for reference counting)
-- `BranchPoint` - Branch origin metadata (source, commit_id, t)
+- `NsRecord` - Nameservice record (includes `source_branch` for ancestry and `branches` child count for reference counting)
 - `FileNameService`
 
 **Dependencies:**

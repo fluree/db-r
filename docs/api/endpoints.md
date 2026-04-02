@@ -1662,7 +1662,7 @@ POST /fluree/rebase
   "conflicts": 1,
   "failures": 0,
   "total_commits": 3,
-  "new_branch_point_t": 8
+  "source_head_t": 8
 }
 ```
 
@@ -1676,7 +1676,7 @@ POST /fluree/rebase
 | `conflicts` | number | Number of conflicts detected |
 | `failures` | number | Number of commits that failed validation |
 | `total_commits` | number | Total branch commits considered |
-| `new_branch_point_t` | number | Transaction time of the new branch point |
+| `source_head_t` | number | Transaction time of the source branch HEAD |
 
 **Conflict strategies:**
 

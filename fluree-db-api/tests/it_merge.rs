@@ -148,8 +148,8 @@ async fn merge_main_as_source_refused() {
         .expect_err("merging main as source should fail");
 
     assert!(
-        err.to_string().contains("branch point"),
-        "expected error about branch point, got: {err}"
+        err.to_string().contains("no source branch"),
+        "expected error about missing source branch, got: {err}"
     );
 }
 
@@ -178,9 +178,9 @@ async fn merge_self_refused() {
     );
 }
 
-/// Cannot merge into a target that is not the source's parent branch.
+/// Merging into a non-parent branch is allowed when fast-forwardable.
 #[tokio::test]
-async fn merge_wrong_target_refused() {
+async fn merge_into_non_parent_allowed() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = fluree.create_ledger("mydb").await.unwrap();
 
@@ -193,16 +193,14 @@ async fn merge_wrong_target_refused() {
     fluree.create_branch("mydb", "dev", None).await.unwrap();
     fluree.create_branch("mydb", "feature", None).await.unwrap();
 
-    // Try to merge dev into feature (but dev's parent is main, not feature)
-    let err = fluree
+    // Merge dev into feature — both share the same base from main, so
+    // this is a valid fast-forward even though feature is not dev's parent.
+    let report = fluree
         .merge_branch("mydb", "dev", Some("feature"))
         .await
-        .expect_err("merging into non-parent should fail");
+        .expect("merging into non-parent should succeed when fast-forwardable");
 
-    assert!(
-        err.to_string().contains("created from"),
-        "expected error about branch origin, got: {err}"
-    );
+    assert!(report.fast_forward);
 }
 
 /// Cannot merge when the target has diverged (not fast-forwardable).
@@ -390,18 +388,20 @@ async fn merge_source_branch_point_updated() {
 
     let report = fluree.merge_branch("mydb", "dev", None).await.unwrap();
 
-    // Source's branch_point should now point at the merged HEAD
+    // After merge, the source branch should still track its source_branch
+    // and the merge report should reflect the new target HEAD
     let source_after = fluree
         .nameservice()
         .lookup("mydb:dev")
         .await
         .unwrap()
         .unwrap();
-    let bp = source_after
-        .branch_point
-        .expect("source should still have branch_point");
-    assert_eq!(bp.t, report.new_head_t);
-    assert_eq!(bp.commit_id, report.new_head_id);
+    assert_eq!(
+        source_after.source_branch.as_deref(),
+        Some("main"),
+        "source branch should still reference main"
+    );
+    assert!(report.new_head_t > 0);
 }
 
 /// After merge, the target branch can still be transacted on normally.
@@ -591,7 +591,7 @@ async fn merge_diverged_leaves_nameservice_unchanged() {
     assert_eq!(pre_main.commit_head_id, post_main.commit_head_id);
     assert_eq!(pre_dev.commit_t, post_dev.commit_t);
     assert_eq!(pre_dev.commit_head_id, post_dev.commit_head_id);
-    assert_eq!(pre_dev.branch_point, post_dev.branch_point);
+    assert_eq!(pre_dev.source_branch, post_dev.source_branch);
 }
 
 /// Merge with explicit target branch matching the source's parent works

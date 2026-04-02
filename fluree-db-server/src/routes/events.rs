@@ -148,11 +148,7 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
             "index_head_id": index_head_id,
             "index_t": record.index_t,
             "retracted": record.retracted,
-            "branch_point": record.branch_point.as_ref().map(|bp| serde_json::json!({
-                "source": bp.source,
-                "commit_id": bp.commit_id.to_string(),
-                "t": bp.t,
-            })),
+            "source_branch": record.source_branch,
             "branches": record.branches,
         }),
         emitted_at: now_iso8601(),
@@ -536,7 +532,7 @@ mod tests {
             index_t: 40,
             default_context: None,
             retracted: false,
-            branch_point: None,
+            source_branch: None,
             branches: 0,
         };
         let id = ledger_event_id("test:main", &record);

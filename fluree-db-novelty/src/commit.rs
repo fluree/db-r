@@ -466,6 +466,102 @@ pub fn trace_commits_by_id<C: ContentStore + Clone + 'static>(
     })
 }
 
+// =============================================================================
+// Common Ancestor
+// =============================================================================
+
+/// The most recent common ancestor between two commit chains.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommonAncestor {
+    /// CID of the common commit.
+    pub commit_id: ContentId,
+    /// Transaction time of the common commit.
+    pub t: i64,
+}
+
+/// Walk two commit chains from their HEADs and find the most recent common
+/// ancestor.
+///
+/// Uses [`load_commit_envelope_by_id`] (lightweight — no flake data) to walk
+/// each chain. Advances whichever chain has the higher `t`. When both chains
+/// reach the same CID, that is the common ancestor.
+///
+/// Returns an error if the chains have no common ancestor (should not happen
+/// for branches within the same ledger, since they share a genesis commit).
+pub async fn find_common_ancestor<C: ContentStore>(
+    store: &C,
+    head_a: &ContentId,
+    head_b: &ContentId,
+) -> Result<CommonAncestor> {
+    if head_a == head_b {
+        let envelope = load_commit_envelope_by_id(store, head_a).await?;
+        return Ok(CommonAncestor {
+            commit_id: head_a.clone(),
+            t: envelope.t,
+        });
+    }
+
+    let mut cid_a = head_a.clone();
+    let mut cid_b = head_b.clone();
+    let mut env_a = load_commit_envelope_by_id(store, &cid_a).await?;
+    let mut env_b = load_commit_envelope_by_id(store, &cid_b).await?;
+
+    loop {
+        match env_a.t.cmp(&env_b.t) {
+            std::cmp::Ordering::Greater => {
+                cid_a = env_a.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                if cid_a == cid_b {
+                    return Ok(CommonAncestor {
+                        commit_id: cid_a,
+                        t: env_b.t,
+                    });
+                }
+                env_a = load_commit_envelope_by_id(store, &cid_a).await?;
+            }
+            std::cmp::Ordering::Less => {
+                cid_b = env_b.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                if cid_a == cid_b {
+                    return Ok(CommonAncestor {
+                        commit_id: cid_b,
+                        t: env_a.t,
+                    });
+                }
+                env_b = load_commit_envelope_by_id(store, &cid_b).await?;
+            }
+            std::cmp::Ordering::Equal => {
+                // Same t but different CIDs — advance both
+                cid_a = env_a.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                cid_b = env_b.previous_id().cloned().ok_or_else(|| {
+                    NoveltyError::invalid_commit(
+                        "commit chains have no common ancestor".to_string(),
+                    )
+                })?;
+                if cid_a == cid_b {
+                    let env = load_commit_envelope_by_id(store, &cid_a).await?;
+                    return Ok(CommonAncestor {
+                        commit_id: cid_a,
+                        t: env.t,
+                    });
+                }
+                env_a = load_commit_envelope_by_id(store, &cid_a).await?;
+                env_b = load_commit_envelope_by_id(store, &cid_b).await?;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,5 +774,188 @@ mod tests {
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].t, 3);
         assert_eq!(commits[1].t, 2);
+    }
+
+    // =========================================================================
+    // find_common_ancestor tests
+    // =========================================================================
+
+    /// Helper: build a linear commit chain of length `n`.
+    ///
+    /// Each commit gets a unique flake derived from `branch_tag` so that
+    /// independent chains produce distinct CIDs even at the same `t`.
+    /// Returns the CIDs in order [t=start_t, t=start_t+1, ...].
+    async fn store_chain(
+        store: &MemoryContentStore,
+        start_t: i64,
+        count: usize,
+        parent: Option<ContentId>,
+        branch_tag: i64,
+    ) -> Vec<ContentId> {
+        let mut ids = Vec::with_capacity(count);
+        let mut prev = parent;
+        for i in 0..count {
+            let t = start_t + i as i64;
+            let flake = make_test_flake(branch_tag, 1, t, t);
+            let mut commit = Commit::new(t, vec![flake]);
+            if let Some(ref p) = prev {
+                commit = commit.with_previous_ref(CommitRef::new(p.clone()));
+            }
+            let cid = store_commit(store, &commit).await;
+            prev = Some(cid.clone());
+            ids.push(cid);
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_identical_heads() {
+        let store = MemoryContentStore::new();
+        let chain = store_chain(&store, 1, 3, None, 1).await;
+        let head = chain.last().unwrap();
+
+        let ancestor = find_common_ancestor(&store, head, head).await.unwrap();
+
+        assert_eq!(ancestor.commit_id, *head);
+        assert_eq!(ancestor.t, 3);
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_one_ahead() {
+        // chain: c1 <- c2 <- c3
+        // head_a = c3, head_b = c2 → ancestor = c2
+        let store = MemoryContentStore::new();
+        let chain = store_chain(&store, 1, 3, None, 1).await;
+
+        let ancestor = find_common_ancestor(&store, &chain[2], &chain[1])
+            .await
+            .unwrap();
+
+        assert_eq!(ancestor.commit_id, chain[1]);
+        assert_eq!(ancestor.t, 2);
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_symmetric() {
+        // Result should be the same regardless of argument order.
+        let store = MemoryContentStore::new();
+        let chain = store_chain(&store, 1, 3, None, 1).await;
+
+        let ab = find_common_ancestor(&store, &chain[2], &chain[0])
+            .await
+            .unwrap();
+        let ba = find_common_ancestor(&store, &chain[0], &chain[2])
+            .await
+            .unwrap();
+
+        assert_eq!(ab.commit_id, ba.commit_id);
+        assert_eq!(ab.t, ba.t);
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_diverged_branches() {
+        // shared: c1 <- c2 <- c3
+        // branch_a:            c3 <- a4 <- a5
+        // branch_b:            c3 <- b4
+        let store = MemoryContentStore::new();
+        let shared = store_chain(&store, 1, 3, None, 1).await;
+        let branch_a = store_chain(&store, 4, 2, Some(shared[2].clone()), 100).await;
+        let branch_b = store_chain(&store, 4, 1, Some(shared[2].clone()), 200).await;
+
+        let ancestor =
+            find_common_ancestor(&store, branch_a.last().unwrap(), branch_b.last().unwrap())
+                .await
+                .unwrap();
+
+        assert_eq!(ancestor.commit_id, shared[2]);
+        assert_eq!(ancestor.t, 3);
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_deep_divergence() {
+        // shared: c1
+        // branch_a: c1 <- a2 <- a3 <- a4 <- a5
+        // branch_b: c1 <- b2 <- b3
+        let store = MemoryContentStore::new();
+        let shared = store_chain(&store, 1, 1, None, 1).await;
+        let branch_a = store_chain(&store, 2, 4, Some(shared[0].clone()), 100).await;
+        let branch_b = store_chain(&store, 2, 2, Some(shared[0].clone()), 200).await;
+
+        let ancestor =
+            find_common_ancestor(&store, branch_a.last().unwrap(), branch_b.last().unwrap())
+                .await
+                .unwrap();
+
+        assert_eq!(ancestor.commit_id, shared[0]);
+        assert_eq!(ancestor.t, 1);
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_same_t_different_cids() {
+        // Both branches diverge at c1 and advance to the same t.
+        // shared: c1
+        // branch_a: c1 <- a2
+        // branch_b: c1 <- b2
+        // Both heads are at t=2 but different CIDs.
+        let store = MemoryContentStore::new();
+        let shared = store_chain(&store, 1, 1, None, 1).await;
+        let branch_a = store_chain(&store, 2, 1, Some(shared[0].clone()), 100).await;
+        let branch_b = store_chain(&store, 2, 1, Some(shared[0].clone()), 200).await;
+
+        assert_ne!(branch_a[0], branch_b[0], "CIDs should differ");
+
+        let ancestor = find_common_ancestor(&store, &branch_a[0], &branch_b[0])
+            .await
+            .unwrap();
+
+        assert_eq!(ancestor.commit_id, shared[0]);
+        assert_eq!(ancestor.t, 1);
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_genesis_is_ancestor() {
+        // shared: c1 (genesis)
+        // branch_a: c1 <- a2 <- a3
+        // branch_b: c1 <- b2 <- b3 <- b4
+        let store = MemoryContentStore::new();
+        let genesis = store_chain(&store, 1, 1, None, 1).await;
+        let branch_a = store_chain(&store, 2, 2, Some(genesis[0].clone()), 100).await;
+        let branch_b = store_chain(&store, 2, 3, Some(genesis[0].clone()), 200).await;
+
+        let ancestor =
+            find_common_ancestor(&store, branch_a.last().unwrap(), branch_b.last().unwrap())
+                .await
+                .unwrap();
+
+        assert_eq!(ancestor.commit_id, genesis[0]);
+        assert_eq!(ancestor.t, 1);
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_no_common_ancestor_errors() {
+        // Two independent chains with no shared genesis.
+        let store = MemoryContentStore::new();
+        let chain_a = store_chain(&store, 1, 2, None, 100).await;
+        let chain_b = store_chain(&store, 1, 2, None, 200).await;
+
+        let result =
+            find_common_ancestor(&store, chain_a.last().unwrap(), chain_b.last().unwrap()).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_common_ancestor_one_is_ancestor_of_other() {
+        // chain: c1 <- c2 <- c3 <- c4
+        // head_a = c4, head_b = c1 → ancestor = c1
+        let store = MemoryContentStore::new();
+        let chain = store_chain(&store, 1, 4, None, 1).await;
+
+        let ancestor = find_common_ancestor(&store, &chain[3], &chain[0])
+            .await
+            .unwrap();
+
+        assert_eq!(ancestor.commit_id, chain[0]);
+        assert_eq!(ancestor.t, 1);
     }
 }

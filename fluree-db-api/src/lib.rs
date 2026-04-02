@@ -411,10 +411,10 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         &self,
         ledger_name: &str,
         new_branch: &str,
-        branch_point: fluree_db_nameservice::BranchPoint,
+        source_branch: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.0
-            .create_branch(ledger_name, new_branch, branch_point)
+            .create_branch(ledger_name, new_branch, source_branch)
             .await
     }
 
@@ -423,16 +423,6 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         ledger_id: &str,
     ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
         self.0.drop_branch(ledger_id).await
-    }
-
-    async fn update_branch_point(
-        &self,
-        ledger_id: &str,
-        new_branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
-            .update_branch_point(ledger_id, new_branch_point)
-            .await
     }
 
     async fn reset_head(
@@ -627,10 +617,10 @@ where
         &self,
         ledger_name: &str,
         new_branch: &str,
-        branch_point: fluree_db_nameservice::BranchPoint,
+        source_branch: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.inner
-            .create_branch(ledger_name, new_branch, branch_point)
+            .create_branch(ledger_name, new_branch, source_branch)
             .await
     }
 
@@ -639,16 +629,6 @@ where
         ledger_id: &str,
     ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
         self.inner.drop_branch(ledger_id).await
-    }
-
-    async fn update_branch_point(
-        &self,
-        ledger_id: &str,
-        new_branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner
-            .update_branch_point(ledger_id, new_branch_point)
-            .await
     }
 
     async fn reset_head(

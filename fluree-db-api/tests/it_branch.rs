@@ -49,10 +49,11 @@ async fn create_and_list_branches() {
     let record = fluree.create_branch("mydb", "dev", None).await.unwrap();
     assert_eq!(record.branch, "dev");
     assert_eq!(record.ledger_id, "mydb:dev");
-    let bp = record
-        .branch_point
-        .expect("branch should have a branch_point");
-    assert_eq!(bp.source, "main");
+    assert_eq!(
+        record.source_branch.as_deref(),
+        Some("main"),
+        "branch should record its source"
+    );
 
     // List branches
     let branches = fluree.list_branches("mydb").await.unwrap();

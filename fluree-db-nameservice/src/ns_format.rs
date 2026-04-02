@@ -90,7 +90,16 @@ pub(crate) struct NsFileV2 {
     )]
     pub config_cid: Option<String>,
 
-    /// Branch point metadata recording where this branch was created from
+    /// Source branch name recording where this branch was created from
+    #[serde(
+        rename = "f:sourceBranch",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub source_branch: Option<String>,
+
+    /// Branch point metadata recording where this branch was created from.
+    /// Kept for backward-compatible deserialization of older ns@v2 files.
     #[serde(
         rename = "f:branchPoint",
         skip_serializing_if = "Option::is_none",
@@ -155,19 +164,14 @@ impl NsFileV2 {
         ConfigValue { v, payload }
     }
 
-    /// Overwrite commit head, index head, and branch point from a snapshot.
-    /// Used by `reset_head` implementations to roll back after a failed rebase.
+    /// Overwrite commit head and index head from a snapshot.
+    /// Used by `reset_head` implementations to roll back after a failed operation.
     pub(crate) fn apply_snapshot(&mut self, snapshot: &crate::NsRecordSnapshot) {
         self.commit_cid = snapshot.commit_head_id.as_ref().map(|c| c.to_string());
         self.t = snapshot.commit_t;
         self.index = snapshot.index_head_id.as_ref().map(|id| IndexRef {
             cid: Some(id.to_string()),
             t: snapshot.index_t,
-        });
-        self.branch_point = snapshot.branch_point.as_ref().map(|bp| BranchPointRef {
-            source: bp.source.clone(),
-            commit_cid: Some(bp.commit_id.to_string()),
-            t: bp.t,
         });
     }
 }

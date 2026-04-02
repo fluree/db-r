@@ -1,13 +1,14 @@
 //! Branch merge support.
 //!
 //! Merges a source branch into a target branch. Currently supports
-//! fast-forward merges only: the target must not have advanced since
-//! the source branch was created.
+//! fast-forward merges only: the target's HEAD must be the common
+//! ancestor of both branches.
 
 use crate::error::{ApiError, Result};
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{ContentId, ContentStore, Storage};
+use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{NameService, NsRecordSnapshot, Publisher};
 use fluree_db_novelty::commit_v2::read_commit_envelope;
 use serde::Serialize;
@@ -72,28 +73,19 @@ where
             .ok_or_else(|| ApiError::NotFound(source_id.clone()))?;
 
         // Resolve target: explicit or from source's parent branch.
-        // NOTE: The bp.source constraint will be removed when BranchPoint is
-        // replaced with computed common ancestors, allowing any-to-any merges.
-        let bp = source_record.branch_point.as_ref().ok_or_else(|| {
+        let source_parent = source_record.source_branch.as_deref().ok_or_else(|| {
             ApiError::InvalidBranch(format!(
-                "Branch {source_branch} has no branch point; \
+                "Branch {source_branch} has no source branch; \
                      only branches created from another branch can be merged"
             ))
         })?;
 
-        let resolved_target = target_branch.unwrap_or(&bp.source);
+        let resolved_target = target_branch.unwrap_or(source_parent);
 
         if source_branch == resolved_target {
             return Err(ApiError::InvalidBranch(
                 "Cannot merge a branch into itself".to_string(),
             ));
-        }
-
-        if bp.source != resolved_target {
-            return Err(ApiError::InvalidBranch(format!(
-                "Branch {source_branch} was created from '{}', not '{resolved_target}'",
-                bp.source
-            )));
         }
 
         let target_id = format_ledger_id(ledger_name, resolved_target);
@@ -103,10 +95,42 @@ where
             .await?
             .ok_or_else(|| ApiError::NotFound(target_id.clone()))?;
 
-        // Fast-forward check: target must not have advanced since the branch
-        // was created.
+        let source_head_id = source_record.commit_head_id.clone().ok_or_else(|| {
+            ApiError::InvalidBranch(format!(
+                "Source branch {source_branch} has no commits to merge"
+            ))
+        })?;
+        let source_head_t = source_record.commit_t;
+
+        // Compute common ancestor to determine fast-forward eligibility.
+        // Build a BranchedContentStore for the source so we can walk both
+        // commit chains through parent namespaces.
+        let source_store = LedgerState::build_branched_store(
+            &self.nameservice,
+            &source_record,
+            self.connection.storage(),
+        )
+        .await?;
+
         let target_head = target_record.commit_head_id.as_ref();
-        let is_fast_forward = target_head.is_none_or(|id| *id == bp.commit_id);
+        let ancestor = match target_head {
+            Some(target_head_id) => Some(
+                fluree_db_novelty::find_common_ancestor(
+                    &source_store,
+                    &source_head_id,
+                    target_head_id,
+                )
+                .await?,
+            ),
+            None => None,
+        };
+
+        // Fast-forward check: target HEAD must be the common ancestor.
+        let is_fast_forward = match (&ancestor, target_head) {
+            (Some(a), Some(tid)) => a.commit_id == *tid,
+            (None, None) => true,
+            _ => false,
+        };
 
         if !is_fast_forward {
             return Err(ApiError::BranchConflict(format!(
@@ -115,30 +139,24 @@ where
             )));
         }
 
-        let source_head_id = source_record.commit_head_id.clone().ok_or_else(|| {
-            ApiError::InvalidBranch(format!(
-                "Source branch {source_branch} has no commits to merge"
-            ))
-        })?;
-        let source_head_t = source_record.commit_t;
-
-        // Snapshot nameservice state for both branches before mutations.
+        // Snapshot target nameservice state before mutations.
         // If any step fails after publish_commit, we roll back.
         let target_snapshot = NsRecordSnapshot::from_record(&target_record);
-        let source_snapshot = NsRecordSnapshot::from_record(&source_record);
 
         // Disconnect target from ledger manager to prevent stale reads.
         if let Some(ref lm) = self.ledger_manager {
             lm.disconnect(&target_id).await;
         }
 
+        let stop_at_t = ancestor.map(|a| a.t).unwrap_or(0);
+
         let result: Result<MergeReport> = async {
             // Copy commit and txn blobs from the source namespace into the target
             // namespace so the target is self-contained (no fallback reads needed).
-            let source_store =
+            let copy_store =
                 fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
             let commits_copied = self
-                .copy_commit_chain(&source_store, &source_head_id, bp.t, &target_id)
+                .copy_commit_chain(&copy_store, &source_head_id, stop_at_t, &target_id)
                 .await?;
 
             // Advance target's HEAD to source's HEAD.
@@ -164,17 +182,6 @@ where
                     tracing::warn!(%e, "failed to publish index for merged target");
                 }
             }
-
-            // Advance the source branch's branch_point so subsequent merges
-            // from the same branch see the correct divergence point.
-            let new_bp = fluree_db_nameservice::BranchPoint {
-                source: resolved_target.to_string(),
-                commit_id: source_head_id.clone(),
-                t: source_head_t,
-            };
-            self.nameservice
-                .update_branch_point(&source_id, new_bp)
-                .await?;
 
             Ok(MergeReport {
                 target: resolved_target.to_string(),
@@ -205,17 +212,6 @@ where
                         target = %target_id,
                         error = %rollback_err,
                         "failed to roll back target nameservice state after merge failure"
-                    );
-                }
-                if let Err(rollback_err) = self
-                    .nameservice
-                    .reset_head(&source_id, source_snapshot)
-                    .await
-                {
-                    tracing::error!(
-                        source = %source_id,
-                        error = %rollback_err,
-                        "failed to roll back source nameservice state after merge failure"
                     );
                 }
                 Err(e)

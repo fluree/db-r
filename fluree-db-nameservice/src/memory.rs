@@ -5,11 +5,11 @@
 //! async runtimes.
 
 use crate::{
-    check_cas_expectation, ref_values_match, AdminPublisher, BranchPoint, CasResult,
-    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher,
-    GraphSourceRecord, GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord,
-    Publication, Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult,
-    StatusPayload, StatusPublisher, StatusValue, Subscription,
+    check_cas_expectation, ref_values_match, AdminPublisher, CasResult, ConfigCasResult,
+    ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord,
+    GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication,
+    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
+    StatusPublisher, StatusValue, Subscription,
 };
 use async_trait::async_trait;
 use fluree_db_core::format_ledger_id;
@@ -132,13 +132,12 @@ impl NameService for MemoryNameService {
         &self,
         ledger_name: &str,
         new_branch: &str,
-        branch_point: BranchPoint,
+        source_branch: &str,
     ) -> Result<()> {
         let new_id = format_ledger_id(ledger_name, new_branch);
         let key = self.normalize_ledger_id(&new_id);
 
-        let source_key =
-            self.normalize_ledger_id(&format_ledger_id(ledger_name, &branch_point.source));
+        let source_key = self.normalize_ledger_id(&format_ledger_id(ledger_name, source_branch));
 
         let mut records = self.records.write();
 
@@ -146,19 +145,21 @@ impl NameService for MemoryNameService {
             return Err(crate::NameServiceError::ledger_already_exists(&key));
         }
 
-        // Increment source branch's child count
+        // Increment source branch's child count and copy commit head
         let source = records.get_mut(&source_key).ok_or_else(|| {
             crate::NameServiceError::not_found(format!(
                 "source branch {}:{}",
-                ledger_name, branch_point.source
+                ledger_name, source_branch
             ))
         })?;
         source.branches += 1;
+        let source_commit_head_id = source.commit_head_id.clone();
+        let source_commit_t = source.commit_t;
 
         let mut record = NsRecord::new(ledger_name, new_branch);
-        record.commit_head_id = Some(branch_point.commit_id.clone());
-        record.commit_t = branch_point.t;
-        record.branch_point = Some(branch_point);
+        record.commit_head_id = source_commit_head_id;
+        record.commit_t = source_commit_t;
+        record.source_branch = Some(source_branch.to_string());
         records.insert(key, record);
 
         Ok(())
@@ -173,8 +174,8 @@ impl NameService for MemoryNameService {
             .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
 
         // Decrement parent's child count if this branch had a parent
-        let parent_new_count = record.branch_point.as_ref().and_then(|bp| {
-            let parent_id = format_ledger_id(&record.name, &bp.source);
+        let parent_new_count = record.source_branch.as_ref().and_then(|source| {
+            let parent_id = format_ledger_id(&record.name, source);
             let parent_key = self.normalize_ledger_id(&parent_id);
             let parent = records.get_mut(&parent_key)?;
             parent.branches = parent.branches.saturating_sub(1);
@@ -182,22 +183,6 @@ impl NameService for MemoryNameService {
         });
 
         Ok(parent_new_count)
-    }
-
-    async fn update_branch_point(
-        &self,
-        ledger_id: &str,
-        new_branch_point: BranchPoint,
-    ) -> Result<()> {
-        let key = self.normalize_ledger_id(ledger_id);
-        let mut records = self.records.write();
-
-        let record = records
-            .get_mut(&key)
-            .ok_or_else(|| crate::NameServiceError::not_found(&key))?;
-
-        record.branch_point = Some(new_branch_point);
-        Ok(())
     }
 
     async fn reset_head(&self, ledger_id: &str, snapshot: crate::NsRecordSnapshot) -> Result<()> {
@@ -212,7 +197,6 @@ impl NameService for MemoryNameService {
         record.commit_t = snapshot.commit_t;
         record.index_head_id = snapshot.index_head_id;
         record.index_t = snapshot.index_t;
-        record.branch_point = snapshot.branch_point;
         Ok(())
     }
 }
@@ -1736,22 +1720,14 @@ mod tests {
         let cid = test_commit_id("commit-5");
         ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
 
-        let bp = BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid.clone(),
-            t: 5,
-        };
-        ns.create_branch("mydb", "feature-x", bp).await.unwrap();
+        ns.create_branch("mydb", "feature-x", "main").await.unwrap();
 
         let record = ns.lookup("mydb:feature-x").await.unwrap().unwrap();
         assert_eq!(record.name, "mydb");
         assert_eq!(record.branch, "feature-x");
         assert_eq!(record.commit_head_id, Some(cid.clone()));
         assert_eq!(record.commit_t, 5);
-        let bp = record.branch_point.unwrap();
-        assert_eq!(bp.source, "main");
-        assert_eq!(bp.commit_id, cid);
-        assert_eq!(bp.t, 5);
+        assert_eq!(record.source_branch.as_deref(), Some("main"));
     }
 
     #[tokio::test]
@@ -1761,14 +1737,9 @@ mod tests {
         let cid = test_commit_id("commit-1");
         ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
-        let bp = BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid,
-            t: 1,
-        };
-        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
+        ns.create_branch("mydb", "dev", "main").await.unwrap();
 
-        let result = ns.create_branch("mydb", "dev", bp).await;
+        let result = ns.create_branch("mydb", "dev", "main").await;
         assert!(result.is_err());
     }
 
@@ -1779,13 +1750,8 @@ mod tests {
         let cid = test_commit_id("commit-3");
         ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
 
-        let bp = BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid.clone(),
-            t: 3,
-        };
-        ns.create_branch("mydb", "dev", bp.clone()).await.unwrap();
-        ns.create_branch("mydb", "staging", bp).await.unwrap();
+        ns.create_branch("mydb", "dev", "main").await.unwrap();
+        ns.create_branch("mydb", "staging", "main").await.unwrap();
 
         // Also create a different ledger to ensure filtering works
         ns.publish_ledger_init("other:main").await.unwrap();
@@ -1811,12 +1777,7 @@ mod tests {
         let cid = test_commit_id("commit-1");
         ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
-        let bp = BranchPoint {
-            source: "main".to_string(),
-            commit_id: cid,
-            t: 1,
-        };
-        ns.create_branch("mydb", "dead", bp).await.unwrap();
+        ns.create_branch("mydb", "dead", "main").await.unwrap();
         ns.retract("mydb:dead").await.unwrap();
 
         let branches = ns.list_branches("mydb").await.unwrap();

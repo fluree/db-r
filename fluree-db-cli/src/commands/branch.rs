@@ -117,12 +117,8 @@ async fn run_create(
             let (ledger_name, _) = split_ledger_id(&alias)?;
             let record = fluree.create_branch(&ledger_name, name, from).await?;
 
-            let source = record
-                .branch_point
-                .as_ref()
-                .map(|bp| bp.source.as_str())
-                .unwrap_or("main");
-            let t = record.branch_point.as_ref().map(|bp| bp.t).unwrap_or(0);
+            let source = record.source_branch.as_deref().unwrap_or("main");
+            let t = record.commit_t;
 
             println!("Created branch '{}' from '{}' at t={}", name, source, t);
             println!("Ledger ID: {}", record.ledger_id);
@@ -210,11 +206,7 @@ async fn run_list(
             table.set_header(vec!["BRANCH", "T", "SOURCE"]);
 
             for record in &records {
-                let source = record
-                    .branch_point
-                    .as_ref()
-                    .map(|bp| bp.source.as_str())
-                    .unwrap_or("-");
+                let source = record.source_branch.as_deref().unwrap_or("-");
                 table.add_row(vec![
                     record.branch.clone(),
                     record.commit_t.to_string(),
@@ -402,7 +394,7 @@ async fn run_rebase(
             if report.fast_forward {
                 println!(
                     "Fast-forward rebase of '{}' to t={}.",
-                    name, report.new_branch_point_t
+                    name, report.source_head_t
                 );
             } else {
                 println!(
@@ -413,7 +405,7 @@ async fn run_rebase(
                     report.conflicts.len(),
                     report.failures.len(),
                 );
-                println!("  New branch point: t={}", report.new_branch_point_t);
+                println!("  Source head: t={}", report.source_head_t);
             }
         }
     }
@@ -431,7 +423,7 @@ fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("(unknown)");
     let new_t = result
-        .get("new_branch_point_t")
+        .get("source_head_t")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
 
@@ -450,7 +442,7 @@ fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
             "Rebased '{}': {} commits replayed, {} skipped, {} conflicts, {} failures.",
             branch, replayed, skipped, conflicts, failures,
         );
-        println!("  New branch point: t={}", new_t);
+        println!("  Source head: t={}", new_t);
     }
     Ok(())
 }

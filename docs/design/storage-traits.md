@@ -430,7 +430,7 @@ The `@shared` prefix uses the `@` character, which is forbidden in branch names 
 
 ### Building the Store Tree
 
-`LedgerState::build_branched_store()` recursively walks the branch ancestry via nameservice `BranchPoint` metadata, constructing the `BranchedContentStore` tree. This uses `Box::pin` for the recursive async calls.
+`LedgerState::build_branched_store()` recursively walks the branch ancestry via nameservice `source_branch` metadata, constructing the `BranchedContentStore` tree. This uses `Box::pin` for the recursive async calls.
 
 ## Type Erasure with AnyStorage
 

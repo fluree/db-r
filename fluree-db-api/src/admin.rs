@@ -377,8 +377,8 @@ where
             .await?;
 
         // Cascade upward if parent is retracted with zero children
-        if let (Some(0), Some(bp)) = (parent_new_count, &record.branch_point) {
-            let parent_id = format_ledger_id(ledger_name, &bp.source);
+        if let (Some(0), Some(source)) = (parent_new_count, &record.source_branch) {
+            let parent_id = format_ledger_id(ledger_name, source);
             self.try_cascade_drop(ledger_name, &parent_id, &mut report)
                 .await;
         }
@@ -450,8 +450,8 @@ where
 
         report.cascaded.push(ancestor_id.to_string());
 
-        if let (Some(0), Some(bp)) = (parent_new_count, &ancestor.branch_point) {
-            let next_ancestor = format_ledger_id(ledger_name, &bp.source);
+        if let (Some(0), Some(source)) = (parent_new_count, &ancestor.source_branch) {
+            let next_ancestor = format_ledger_id(ledger_name, source);
             Box::pin(self.try_cascade_drop(ledger_name, &next_ancestor, report)).await;
         }
     }
