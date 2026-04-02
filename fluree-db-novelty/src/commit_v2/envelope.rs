@@ -45,6 +45,10 @@ pub const MAX_GRAPH_IRI_LENGTH: usize = 8192;
 /// for future hash algorithms while guarding against corrupt lengths.
 const MAX_CID_BYTES: usize = 128;
 
+/// Maximum number of parent commit references (merge parents).
+/// 16 is generous; real merges will almost always have 2.
+const MAX_PREVIOUS_REFS: usize = 16;
+
 /// Commit envelope fields — the non-flake metadata in a v2 commit blob.
 ///
 /// Used for both encoding (by the streaming and batch writers) and decoding.
@@ -98,8 +102,19 @@ pub fn encode_envelope_fields(
     envelope: &CommitV2Envelope,
     buf: &mut Vec<u8>,
 ) -> Result<(), CommitV2Error> {
+    let num_parents = envelope.previous_refs.len();
+    if num_parents > MAX_PREVIOUS_REFS {
+        return Err(CommitV2Error::EnvelopeEncode(format!(
+            "previous_refs has {} entries, max is {}",
+            num_parents, MAX_PREVIOUS_REFS
+        )));
+    }
+
+    // Choose version: v2 for 0-1 parents, v3 for multi-parent.
+    let version: i32 = if num_parents <= 1 { 2 } else { 3 };
+
     // v (always present) — envelope format version
-    encode_varint(zigzag_encode(2), buf);
+    encode_varint(zigzag_encode(version as i64), buf);
 
     // Build presence flags
     let mut flags: u8 = 0;
@@ -107,12 +122,6 @@ pub fn encode_envelope_fields(
         flags |= FLAG_TXN_META;
     }
     if !envelope.previous_refs.is_empty() {
-        if envelope.previous_refs.len() > 1 {
-            return Err(CommitV2Error::EnvelopeDecode(
-                "v2 encoding only supports 0 or 1 parent refs; multi-parent requires v3"
-                    .to_string(),
-            ));
-        }
         flags |= FLAG_PREVIOUS_REF;
     }
     if !envelope.namespace_delta.is_empty() {
@@ -133,8 +142,17 @@ pub fn encode_envelope_fields(
     if !envelope.txn_meta.is_empty() {
         encode_txn_meta(&envelope.txn_meta, buf)?;
     }
-    if let Some(prev_ref) = envelope.previous_refs.first() {
-        encode_commit_ref(prev_ref, buf)?;
+    if !envelope.previous_refs.is_empty() {
+        if version == 3 {
+            // v3: encode count followed by each commit ref.
+            encode_varint(num_parents as u64, buf);
+            for prev_ref in &envelope.previous_refs {
+                encode_commit_ref(prev_ref, buf)?;
+            }
+        } else {
+            // v2: single commit ref (no count prefix).
+            encode_commit_ref(&envelope.previous_refs[0], buf)?;
+        }
     }
     if !envelope.namespace_delta.is_empty() {
         encode_ns_delta(&envelope.namespace_delta, buf);
@@ -214,9 +232,9 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
 
     // v (always present) — envelope format version
     let v = zigzag_decode(decode_varint(data, &mut pos)?) as i32;
-    if v != 2 {
+    if v != 2 && v != 3 {
         return Err(CommitV2Error::EnvelopeDecode(format!(
-            "unsupported envelope version: {v} (expected 2)"
+            "unsupported envelope version: {v} (expected 2 or 3)"
         )));
     }
 
@@ -244,7 +262,24 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     };
 
     let previous_refs = if flags & FLAG_PREVIOUS_REF != 0 {
-        vec![decode_commit_ref(data, &mut pos)?]
+        if v == 3 {
+            // v3: varint(count) followed by count commit refs.
+            let count = decode_varint(data, &mut pos)? as usize;
+            if count > MAX_PREVIOUS_REFS {
+                return Err(CommitV2Error::EnvelopeDecode(format!(
+                    "previous_refs count {} exceeds maximum {}",
+                    count, MAX_PREVIOUS_REFS
+                )));
+            }
+            let mut refs = Vec::with_capacity(count);
+            for _ in 0..count {
+                refs.push(decode_commit_ref(data, &mut pos)?);
+            }
+            refs
+        } else {
+            // v2: single commit ref (no count prefix).
+            vec![decode_commit_ref(data, &mut pos)?]
+        }
     } else {
         Vec::new()
     };
@@ -808,9 +843,9 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        // Version 3 (hypothetical future)
+        // Version 4 (hypothetical future)
         let mut buf = Vec::new();
-        encode_varint(zigzag_encode(3), &mut buf);
+        encode_varint(zigzag_encode(4), &mut buf);
         buf.push(0x00);
         buf.push(0);
         let err = decode_envelope(&buf).unwrap_err();
@@ -818,6 +853,30 @@ mod tests {
             err.to_string().contains("unsupported envelope version"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_round_trip_multi_parent() {
+        let parent1 = make_test_cid(ContentKind::Commit, "parent-one");
+        let parent2 = make_test_cid(ContentKind::Commit, "parent-two");
+        let mut commit = make_minimal_commit();
+        commit.previous_refs = vec![
+            CommitRef::new(parent1.clone()),
+            CommitRef::new(parent2.clone()),
+        ];
+
+        let mut buf = Vec::new();
+        encode_envelope(&commit, &mut buf).unwrap();
+
+        // Should encode as v3
+        let mut check_pos = 0;
+        let v = zigzag_decode(decode_varint(&buf, &mut check_pos).unwrap()) as i32;
+        assert_eq!(v, 3, "multi-parent should use v3 encoding");
+
+        let decoded = decode_envelope(&buf).unwrap();
+        assert_eq!(decoded.previous_refs.len(), 2);
+        assert_eq!(decoded.previous_refs[0].id, parent1);
+        assert_eq!(decoded.previous_refs[1].id, parent2);
     }
 
     #[test]

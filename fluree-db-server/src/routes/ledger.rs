@@ -1224,6 +1224,9 @@ pub struct MergeBranchRequest {
     /// Target branch to merge into (defaults to the source's parent branch)
     #[serde(default)]
     pub target: Option<String>,
+    /// Conflict resolution strategy (optional, defaults to "take-both")
+    #[serde(default)]
+    pub strategy: Option<String>,
 }
 
 /// Merge branch response
@@ -1241,6 +1244,11 @@ pub struct MergeBranchResponse {
     pub new_head_t: i64,
     /// Number of commit blobs copied to the target namespace
     pub commits_copied: usize,
+    /// Number of conflicts detected
+    pub conflict_count: usize,
+    /// Conflict strategy used (None for fast-forward)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
 }
 
 /// Merge a source branch into a target branch
@@ -1283,17 +1291,25 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
     async move {
         let span = tracing::Span::current();
 
+        let strategy = match req.strategy.as_deref() {
+            Some(s) => fluree_db_api::ConflictStrategy::from_str_name(s).ok_or_else(|| {
+                ServerError::bad_request(format!("Unknown conflict strategy: {}", s))
+            })?,
+            None => fluree_db_api::ConflictStrategy::default(),
+        };
+
         tracing::info!(
             status = "start",
             source = %req.source,
             target = ?req.target,
+            strategy = strategy.as_str(),
             "branch merge requested"
         );
 
         let report = match state
             .fluree
             .as_file()
-            .merge_branch(&req.ledger, &req.source, req.target.as_deref())
+            .merge_branch(&req.ledger, &req.source, req.target.as_deref(), strategy)
             .await
         {
             Ok(report) => report,
@@ -1313,6 +1329,8 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
             fast_forward: report.fast_forward,
             new_head_t: report.new_head_t,
             commits_copied: report.commits_copied,
+            conflict_count: report.conflict_count,
+            strategy: report.strategy,
         };
 
         tracing::info!(

@@ -482,7 +482,7 @@ where
 
     /// Look up the source state's current flakes for the given conflict keys
     /// and generate retraction flakes (`op: false`) for each.
-    async fn build_source_retractions(
+    pub(crate) async fn build_source_retractions(
         &self,
         conflicting_keys: &[ConflictKey],
         source_state: &LedgerState,
