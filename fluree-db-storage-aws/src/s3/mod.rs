@@ -40,7 +40,7 @@ use fluree_db_core::{
     StorageExtResult, StorageList, StorageRead, StorageWrite,
 };
 use std::fmt::Debug;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// S3 storage configuration
 #[derive(Debug, Clone, Default)]
@@ -227,8 +227,21 @@ impl S3Storage {
 #[async_trait]
 impl StorageRead for S3Storage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, CoreError> {
-        let key = self.to_key(address)?;
+        const SLOW_S3_SEND_WARN_MS: u64 = 1_000;
+        const SLOW_S3_BODY_WARN_MS: u64 = 5_000;
 
+        let key = self.to_key(address)?;
+        let total_started = Instant::now();
+
+        tracing::info!(
+            bucket = self.bucket.as_str(),
+            key = key.as_str(),
+            address,
+            is_express = Self::is_express_bucket(&self.bucket),
+            "s3 read_bytes: get_object send starting"
+        );
+
+        let send_started = Instant::now();
         let response = self
             .client
             .get_object()
@@ -237,7 +250,36 @@ impl StorageRead for S3Storage {
             .send()
             .await
             .map_err(|e| map_s3_error_core(e, &key))?;
+        let send_elapsed_ms = send_started.elapsed().as_millis() as u64;
 
+        tracing::info!(
+            bucket = self.bucket.as_str(),
+            key = key.as_str(),
+            address,
+            send_elapsed_ms,
+            content_length = response.content_length(),
+            etag = response.e_tag(),
+            "s3 read_bytes: get_object send complete"
+        );
+
+        if send_elapsed_ms >= SLOW_S3_SEND_WARN_MS {
+            tracing::warn!(
+                bucket = self.bucket.as_str(),
+                key = key.as_str(),
+                address,
+                send_elapsed_ms,
+                is_express = Self::is_express_bucket(&self.bucket),
+                "s3 read_bytes: slow get_object send"
+            );
+        }
+
+        tracing::info!(
+            bucket = self.bucket.as_str(),
+            key = key.as_str(),
+            address,
+            "s3 read_bytes: body collect starting"
+        );
+        let body_collect_started = Instant::now();
         let bytes = response
             .body
             .collect()
@@ -245,6 +287,31 @@ impl StorageRead for S3Storage {
             .map_err(|e| CoreError::io(format!("Failed to read S3 body: {}", e)))?
             .into_bytes()
             .to_vec();
+        let body_collect_elapsed_ms = body_collect_started.elapsed().as_millis() as u64;
+        let total_elapsed_ms = total_started.elapsed().as_millis() as u64;
+
+        tracing::info!(
+            bucket = self.bucket.as_str(),
+            key = key.as_str(),
+            address,
+            body_bytes = bytes.len(),
+            body_collect_elapsed_ms,
+            total_elapsed_ms,
+            "s3 read_bytes: body collect complete"
+        );
+
+        if body_collect_elapsed_ms >= SLOW_S3_BODY_WARN_MS {
+            tracing::warn!(
+                bucket = self.bucket.as_str(),
+                key = key.as_str(),
+                address,
+                body_bytes = bytes.len(),
+                body_collect_elapsed_ms,
+                total_elapsed_ms,
+                is_express = Self::is_express_bucket(&self.bucket),
+                "s3 read_bytes: slow body collect"
+            );
+        }
 
         Ok(bytes)
     }

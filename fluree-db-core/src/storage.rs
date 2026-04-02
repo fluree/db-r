@@ -56,6 +56,7 @@ use sha2::Digest;
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use thiserror::Error;
 
 // ============================================================================
@@ -510,20 +511,158 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
     }
 
     async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        let started = Instant::now();
         let address = self.cid_to_address(id)?;
+        tracing::info!(
+            cid = %id,
+            ledger_id = self.ledger_id.as_str(),
+            method = self.method.as_str(),
+            address = address.as_str(),
+            "content store get: primary read starting"
+        );
         match self.storage.read_bytes(&address).await {
-            Ok(bytes) => return Ok(bytes),
-            Err(crate::error::Error::NotFound(_)) => {}
-            Err(e) => return Err(e),
+            Ok(bytes) => {
+                tracing::info!(
+                    cid = %id,
+                    ledger_id = self.ledger_id.as_str(),
+                    method = self.method.as_str(),
+                    address = address.as_str(),
+                    source = "primary",
+                    bytes = bytes.len(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "content store get: read complete"
+                );
+                return Ok(bytes);
+            }
+            Err(crate::error::Error::NotFound(_)) => {
+                tracing::info!(
+                    cid = %id,
+                    ledger_id = self.ledger_id.as_str(),
+                    method = self.method.as_str(),
+                    address = address.as_str(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "content store get: primary read not found"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    cid = %id,
+                    ledger_id = self.ledger_id.as_str(),
+                    method = self.method.as_str(),
+                    address = address.as_str(),
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    error = %e,
+                    "content store get: primary read failed"
+                );
+                return Err(e);
+            }
         }
         // Fallback: dicts moved from per-branch to @shared namespace
         if let Some(legacy) = self.legacy_dict_address(id) {
-            return self.storage.read_bytes(&legacy).await;
+            tracing::info!(
+                cid = %id,
+                ledger_id = self.ledger_id.as_str(),
+                method = self.method.as_str(),
+                primary_address = address.as_str(),
+                fallback_address = legacy.as_str(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "content store get: trying legacy dict fallback"
+            );
+            match self.storage.read_bytes(&legacy).await {
+                Ok(bytes) => {
+                    tracing::info!(
+                        cid = %id,
+                        ledger_id = self.ledger_id.as_str(),
+                        method = self.method.as_str(),
+                        address = legacy.as_str(),
+                        source = "legacy_dict",
+                        bytes = bytes.len(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "content store get: read complete"
+                    );
+                    return Ok(bytes);
+                }
+                Err(crate::error::Error::NotFound(_)) => {
+                    tracing::info!(
+                        cid = %id,
+                        ledger_id = self.ledger_id.as_str(),
+                        method = self.method.as_str(),
+                        address = legacy.as_str(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "content store get: legacy dict fallback not found"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        cid = %id,
+                        ledger_id = self.ledger_id.as_str(),
+                        method = self.method.as_str(),
+                        address = legacy.as_str(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        error = %e,
+                        "content store get: legacy dict fallback failed"
+                    );
+                    return Err(e);
+                }
+            }
         }
         // Fallback: index roots stored with .json before .fir6 rename
         if let Some(legacy) = self.legacy_index_root_address(id) {
-            return self.storage.read_bytes(&legacy).await;
+            tracing::info!(
+                cid = %id,
+                ledger_id = self.ledger_id.as_str(),
+                method = self.method.as_str(),
+                primary_address = address.as_str(),
+                fallback_address = legacy.as_str(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "content store get: trying legacy index-root fallback"
+            );
+            match self.storage.read_bytes(&legacy).await {
+                Ok(bytes) => {
+                    tracing::info!(
+                        cid = %id,
+                        ledger_id = self.ledger_id.as_str(),
+                        method = self.method.as_str(),
+                        address = legacy.as_str(),
+                        source = "legacy_index_root",
+                        bytes = bytes.len(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "content store get: read complete"
+                    );
+                    return Ok(bytes);
+                }
+                Err(crate::error::Error::NotFound(_)) => {
+                    tracing::info!(
+                        cid = %id,
+                        ledger_id = self.ledger_id.as_str(),
+                        method = self.method.as_str(),
+                        address = legacy.as_str(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "content store get: legacy index-root fallback not found"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        cid = %id,
+                        ledger_id = self.ledger_id.as_str(),
+                        method = self.method.as_str(),
+                        address = legacy.as_str(),
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        error = %e,
+                        "content store get: legacy index-root fallback failed"
+                    );
+                    return Err(e);
+                }
+            }
         }
+        tracing::warn!(
+            cid = %id,
+            ledger_id = self.ledger_id.as_str(),
+            method = self.method.as_str(),
+            address = address.as_str(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "content store get: all read paths not found"
+        );
         Err(crate::error::Error::not_found(address))
     }
 
