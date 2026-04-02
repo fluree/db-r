@@ -13,6 +13,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use super::branch::DictBranch;
 use super::reverse_leaf::ReverseLeaf;
@@ -55,7 +56,10 @@ pub struct DictTreeReader {
     global_cache: Option<Arc<LeafletCache>>,
     /// Performance counters (atomic for shared access).
     disk_reads: AtomicU64,
+    local_file_reads: AtomicU64,
+    remote_fetches: AtomicU64,
     cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
 }
 
 impl DictTreeReader {
@@ -66,7 +70,10 @@ impl DictTreeReader {
             leaf_source,
             global_cache: None,
             disk_reads: AtomicU64::new(0),
+            local_file_reads: AtomicU64::new(0),
+            remote_fetches: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
         }
     }
 
@@ -85,7 +92,10 @@ impl DictTreeReader {
             leaf_source,
             global_cache: Some(cache),
             disk_reads: AtomicU64::new(0),
+            local_file_reads: AtomicU64::new(0),
+            remote_fetches: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
         }
     }
 
@@ -100,7 +110,10 @@ impl DictTreeReader {
             leaf_source: LeafSource::InMemory(arc_leaves),
             global_cache: None,
             disk_reads: AtomicU64::new(0),
+            local_file_reads: AtomicU64::new(0),
+            remote_fetches: AtomicU64::new(0),
             cache_hits: AtomicU64::new(0),
+            cache_misses: AtomicU64::new(0),
         }
     }
 
@@ -156,18 +169,88 @@ impl DictTreeReader {
     pub fn branch(&self) -> &DictBranch {
         &self.branch
     }
+
+    /// A short label for the configured leaf source.
+    pub fn source_kind(&self) -> &'static str {
+        match &self.leaf_source {
+            LeafSource::LocalFiles(_) => "local_files",
+            LeafSource::CasOnDemand { .. } => "cas_on_demand",
+            LeafSource::InMemory(_) => "in_memory",
+        }
+    }
+
+    /// Number of leaves in the decoded branch manifest.
+    pub fn leaf_count(&self) -> usize {
+        self.branch.leaves.len()
+    }
+
+    /// Number of locally resolvable leaves for this reader.
+    pub fn local_file_count(&self) -> usize {
+        match &self.leaf_source {
+            LeafSource::LocalFiles(map) => map.len(),
+            LeafSource::CasOnDemand { local_files, .. } => local_files.len(),
+            LeafSource::InMemory(map) => map.len(),
+        }
+    }
+
+    /// Number of remotely fetched leaves available to this reader.
+    pub fn remote_cid_count(&self) -> usize {
+        match &self.leaf_source {
+            LeafSource::CasOnDemand { remote_cids, .. } => remote_cids.len(),
+            _ => 0,
+        }
+    }
+
+    /// Whether a shared global cache is configured.
+    pub fn has_global_cache(&self) -> bool {
+        self.global_cache.is_some()
+    }
+
     /// Reverse lookup: find ID by key bytes.
     pub fn reverse_lookup(&self, key: &[u8]) -> io::Result<Option<u64>> {
+        const SLOW_LOOKUP_WARN_MS: u64 = 250;
+
+        let lookup_started = Instant::now();
+        let find_leaf_started = Instant::now();
         let leaf_idx = match self.branch.find_leaf(key) {
             Some(idx) => idx,
             None => return Ok(None),
         };
+        let find_leaf_ms = find_leaf_started.elapsed().as_millis() as u64;
 
         let address = &self.branch.leaves[leaf_idx].address;
+        let load_leaf_started = Instant::now();
         let leaf_data = self.load_leaf(address)?;
+        let load_leaf_ms = load_leaf_started.elapsed().as_millis() as u64;
+        let decode_started = Instant::now();
         let leaf = ReverseLeaf::from_bytes(&leaf_data)?;
+        let decode_leaf_ms = decode_started.elapsed().as_millis() as u64;
+        let leaf_lookup_started = Instant::now();
+        let result = leaf.lookup(key);
+        let lookup_leaf_ms = leaf_lookup_started.elapsed().as_millis() as u64;
+        let total_ms = lookup_started.elapsed().as_millis() as u64;
 
-        Ok(leaf.lookup(key))
+        if total_ms >= SLOW_LOOKUP_WARN_MS || load_leaf_ms >= SLOW_LOOKUP_WARN_MS {
+            tracing::warn!(
+                key_len = key.len(),
+                leaf_idx,
+                address,
+                source = self.source_kind(),
+                total_ms,
+                find_leaf_ms,
+                load_leaf_ms,
+                decode_leaf_ms,
+                lookup_leaf_ms,
+                disk_reads = self.disk_reads(),
+                local_file_reads = self.local_file_reads(),
+                remote_fetches = self.remote_fetches(),
+                cache_hits = self.cache_hits(),
+                cache_misses = self.cache_misses(),
+                "dict tree: slow reverse lookup"
+            );
+        }
+
+        Ok(result)
     }
 
     /// Range scan: find all entries whose key is in `[start_key, end_key)`.
@@ -251,7 +334,8 @@ impl DictTreeReader {
             res.map_err(io::Error::other)
         }
 
-        match &self.leaf_source {
+        let load_started = Instant::now();
+        let result = match &self.leaf_source {
             LeafSource::LocalFiles(map) => {
                 let path = map.get(address).ok_or_else(|| {
                     io::Error::new(
@@ -266,15 +350,19 @@ impl DictTreeReader {
                         self.cache_hits.fetch_add(1, Ordering::Relaxed);
                         return Ok(bytes);
                     }
+                    self.cache_misses.fetch_add(1, Ordering::Relaxed);
                     let path = path.clone();
                     let disk_reads = &self.disk_reads;
+                    let local_file_reads = &self.local_file_reads;
                     cache.try_get_or_load_dict_leaf(cache_key, || {
                         disk_reads.fetch_add(1, Ordering::Relaxed);
+                        local_file_reads.fetch_add(1, Ordering::Relaxed);
                         let bytes = std::fs::read(&path)?;
                         Ok(Arc::from(bytes.into_boxed_slice()))
                     })
                 } else {
                     self.disk_reads.fetch_add(1, Ordering::Relaxed);
+                    self.local_file_reads.fetch_add(1, Ordering::Relaxed);
                     let bytes = std::fs::read(path)?;
                     Ok(Arc::from(bytes.into_boxed_slice()))
                 }
@@ -292,15 +380,19 @@ impl DictTreeReader {
                             self.cache_hits.fetch_add(1, Ordering::Relaxed);
                             return Ok(bytes);
                         }
+                        self.cache_misses.fetch_add(1, Ordering::Relaxed);
                         let path = path.clone();
                         let disk_reads = &self.disk_reads;
+                        let local_file_reads = &self.local_file_reads;
                         return cache.try_get_or_load_dict_leaf(cache_key, || {
                             disk_reads.fetch_add(1, Ordering::Relaxed);
+                            local_file_reads.fetch_add(1, Ordering::Relaxed);
                             let bytes = std::fs::read(&path)?;
                             Ok(Arc::from(bytes.into_boxed_slice()))
                         });
                     }
                     self.disk_reads.fetch_add(1, Ordering::Relaxed);
+                    self.local_file_reads.fetch_add(1, Ordering::Relaxed);
                     let bytes = std::fs::read(path)?;
                     return Ok(Arc::from(bytes.into_boxed_slice()));
                 }
@@ -319,17 +411,46 @@ impl DictTreeReader {
                         self.cache_hits.fetch_add(1, Ordering::Relaxed);
                         return Ok(bytes);
                     }
+                    self.cache_misses.fetch_add(1, Ordering::Relaxed);
                     let cs = Arc::clone(cs);
                     let cid = cid.clone();
                     let disk_reads = &self.disk_reads;
+                    let remote_fetches = &self.remote_fetches;
+                    let address = address.to_owned();
                     cache.try_get_or_load_dict_leaf(cache_key, || {
+                        tracing::info!(
+                            address,
+                            %cid,
+                            "dict tree: remote leaf fetch starting"
+                        );
                         disk_reads.fetch_add(1, Ordering::Relaxed);
+                        remote_fetches.fetch_add(1, Ordering::Relaxed);
+                        let fetch_started = Instant::now();
                         let bytes = fetch_remote_leaf_bytes(cs, cid)?;
+                        tracing::info!(
+                            address,
+                            bytes = bytes.len(),
+                            elapsed_ms = fetch_started.elapsed().as_millis() as u64,
+                            "dict tree: remote leaf fetch complete"
+                        );
                         Ok(Arc::from(bytes.into_boxed_slice()))
                     })
                 } else {
                     self.disk_reads.fetch_add(1, Ordering::Relaxed);
+                    self.remote_fetches.fetch_add(1, Ordering::Relaxed);
+                    tracing::info!(
+                        address,
+                        %cid,
+                        "dict tree: remote leaf fetch starting"
+                    );
+                    let fetch_started = Instant::now();
                     let bytes = fetch_remote_leaf_bytes(Arc::clone(cs), cid.clone())?;
+                    tracing::info!(
+                        address,
+                        bytes = bytes.len(),
+                        elapsed_ms = fetch_started.elapsed().as_millis() as u64,
+                        "dict tree: remote leaf fetch complete"
+                    );
                     Ok(Arc::from(bytes.into_boxed_slice()))
                 }
             }
@@ -342,7 +463,27 @@ impl DictTreeReader {
                     )
                 })
             }
+        };
+
+        if let Ok(bytes) = &result {
+            let elapsed_ms = load_started.elapsed().as_millis() as u64;
+            if elapsed_ms >= 250 {
+                tracing::warn!(
+                    address,
+                    source = self.source_kind(),
+                    bytes = bytes.len(),
+                    elapsed_ms,
+                    disk_reads = self.disk_reads(),
+                    local_file_reads = self.local_file_reads(),
+                    remote_fetches = self.remote_fetches(),
+                    cache_hits = self.cache_hits(),
+                    cache_misses = self.cache_misses(),
+                    "dict tree: slow leaf load"
+                );
+            }
         }
+
+        result
     }
 
     /// Total entries across all leaves.
@@ -355,9 +496,24 @@ impl DictTreeReader {
         self.disk_reads.load(Ordering::Relaxed)
     }
 
+    /// Number of local file reads performed since creation.
+    pub fn local_file_reads(&self) -> u64 {
+        self.local_file_reads.load(Ordering::Relaxed)
+    }
+
+    /// Number of remote fetches performed since creation.
+    pub fn remote_fetches(&self) -> u64 {
+        self.remote_fetches.load(Ordering::Relaxed)
+    }
+
     /// Number of cache hits since creation (InMemory always counts as hit).
     pub fn cache_hits(&self) -> u64 {
         self.cache_hits.load(Ordering::Relaxed)
+    }
+
+    /// Number of cache misses since creation.
+    pub fn cache_misses(&self) -> u64 {
+        self.cache_misses.load(Ordering::Relaxed)
     }
 
     /// Preload all leaves into the global cache (or just read them into OS page cache).
@@ -380,8 +536,12 @@ impl std::fmt::Debug for DictTreeReader {
             .field("leaf_count", &self.branch.leaves.len())
             .field("total_entries", &self.total_entries())
             .field("has_global_cache", &self.global_cache.is_some())
+            .field("source_kind", &self.source_kind())
             .field("disk_reads", &self.disk_reads())
+            .field("local_file_reads", &self.local_file_reads())
+            .field("remote_fetches", &self.remote_fetches())
             .field("cache_hits", &self.cache_hits())
+            .field("cache_misses", &self.cache_misses())
             .finish()
     }
 }
