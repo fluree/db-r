@@ -1021,17 +1021,15 @@ All items share:
 | `created_at` | Number | Creation timestamp (epoch seconds, optional) |
 | `updated_at_ms` | Number | Last update time (epoch millis, optional) |
 
-### `meta` item: Branch Point Attributes
+### `meta` item: Branch Attributes
 
-For branches created via `create_branch`, the `meta` item carries additional attributes recording the branch origin:
+For branches created via `create_branch`, the `meta` item carries an additional attribute recording the source branch:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
 | `bp_source` | String \| null | Source branch name (e.g., `"main"`) |
-| `bp_commit_id` | String \| null | Source commit ContentId (CIDv1) at branch point |
-| `bp_t` | Number \| null | Source transaction time at branch point |
 
-These attributes are `null`/absent for the original `main` branch. The JSON-LD format uses `f:branchPoint` with nested `f:source`, `f:commitCid`, and `f:t` fields.
+This attribute is `null`/absent for the original `main` branch. The JSON-LD format uses `f:sourceBranch`. The divergence point between a branch and its source is computed on demand by walking the commit chains rather than being stored.
 
 ### `head` item (ledgers only)
 
