@@ -703,7 +703,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
                     fluree_db_novelty::load_commit_envelope_by_id(&content_store, oldest_cid)
                         .await
                         .map_err(|e| CliError::Config(e.to_string()))?;
-                if oldest_env.previous_id() != Some(remote_cid) {
+                if !oldest_env.parent_ids().any(|id| id == remote_cid) {
                     return Err(CliError::Config(format!(
                         "cannot push: histories diverged at t={remote_t} \
                          (remote head != local history). Pull first."
@@ -1287,9 +1287,13 @@ pub async fn run_clone_origin(
         // If a commit already exists locally (e.g., from a previously interrupted
         // clone), we skip fetching but still read the local bytes to continue
         // chain traversal — this ensures all ancestors and txn blobs are present.
-        let mut current_cid = Some(head_cid.clone());
+        let mut frontier = vec![head_cid.clone()];
+        let mut visited_commits = std::collections::HashSet::new();
 
-        while let Some(cid) = current_cid.take() {
+        while let Some(cid) = frontier.pop() {
+            if !visited_commits.insert(cid.clone()) {
+                continue;
+            }
             let commit_bytes = if content_store.has(&cid).await.unwrap_or(false) {
                 // Already have this commit — read local bytes for chain traversal.
                 content_store.get(&cid).await.map_err(|e| {
@@ -1350,8 +1354,10 @@ pub async fn run_clone_origin(
                 }
             }
 
-            // Follow the chain backwards.
-            current_cid = envelope.previous_id().cloned();
+            // Follow all parents backwards.
+            for parent_id in envelope.parent_ids() {
+                frontier.push(parent_id.clone());
+            }
         }
     }
 
@@ -1681,12 +1687,16 @@ async fn run_pull_via_origins(
         txn: Option<fluree_db_core::ContentId>,
     }
     let mut fetched: Vec<FetchedCommit> = Vec::new();
-    let mut current_cid = Some(remote_head_cid.clone());
+    let mut frontier = vec![remote_head_cid.clone()];
+    let mut visited_pull = std::collections::HashSet::new();
 
-    while let Some(cid) = current_cid.take() {
+    while let Some(cid) = frontier.pop() {
+        if !visited_pull.insert(cid.clone()) {
+            continue;
+        }
         // Primary stop: hit local head CID — its ancestry is complete.
         if local_ref.id.as_ref() == Some(&cid) {
-            break;
+            continue;
         }
 
         // If commit already exists locally (e.g., from an interrupted pull),
@@ -1699,9 +1709,11 @@ async fn run_pull_via_origins(
             let envelope = read_commit_envelope(&local_bytes)
                 .map_err(|e| CliError::Config(format!("pull failed (read envelope): {e}")))?;
             if envelope.t <= local_ref.t {
-                break;
+                continue;
             }
-            current_cid = envelope.previous_id().cloned();
+            for parent_id in envelope.parent_ids() {
+                frontier.push(parent_id.clone());
+            }
             continue;
         }
 
@@ -1724,10 +1736,12 @@ async fn run_pull_via_origins(
 
         // Secondary stop: t-based early exit (reached or passed local history).
         if envelope.t <= local_ref.t {
-            break;
+            continue;
         }
 
-        current_cid = envelope.previous_id().cloned();
+        for parent_id in envelope.parent_ids() {
+            frontier.push(parent_id.clone());
+        }
         fetched.push(FetchedCommit {
             cid,
             bytes: commit_bytes,

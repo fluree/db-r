@@ -498,9 +498,13 @@ async fn walk_commit_chain_since(
     from_t: i64,
 ) -> Result<Vec<ContentId>, IncrementalResolveError> {
     let mut cids = Vec::new();
-    let mut current = Some(head_id.clone());
+    let mut frontier = vec![head_id.clone()];
+    let mut visited = std::collections::HashSet::new();
 
-    while let Some(cid) = current {
+    while let Some(cid) = frontier.pop() {
+        if !visited.insert(cid.clone()) {
+            continue;
+        }
         let bytes = cs.get(&cid).await.map_err(|e| {
             IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
         })?;
@@ -512,10 +516,12 @@ async fn walk_commit_chain_since(
         })?;
 
         if envelope.t <= from_t {
-            break;
+            continue;
         }
 
-        current = envelope.previous_ref.map(|r| r.id);
+        for parent in envelope.previous_refs {
+            frontier.push(parent.id);
+        }
         cids.push(cid);
     }
 

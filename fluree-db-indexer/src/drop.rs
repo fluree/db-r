@@ -67,12 +67,14 @@ async fn collect_commit_chain_cids<S: Storage>(
     cids: &mut HashSet<ContentId>,
 ) -> Result<()> {
     let storage_method = storage.storage_method();
-    let mut current = Some(head.clone());
+    let mut frontier = vec![head.clone()];
 
-    while let Some(commit_id) = current {
-        cids.insert(commit_id.clone());
+    while let Some(commit_id) = frontier.pop() {
+        if !cids.insert(commit_id.clone()) {
+            continue; // already visited
+        }
 
-        // Read commit envelope to get previous_id and txn CID
+        // Read commit envelope to get parent CIDs and txn CID
         let addr = derive_address(&commit_id, ContentKind::Commit, storage_method, ledger_id);
         let bytes = match storage.read_bytes(&addr).await {
             Ok(b) => b,
@@ -82,7 +84,7 @@ async fn collect_commit_chain_cids<S: Storage>(
                     error = %e,
                     "failed to read commit during drop CID collection, stopping chain walk"
                 );
-                break;
+                continue;
             }
         };
 
@@ -94,7 +96,7 @@ async fn collect_commit_chain_cids<S: Storage>(
                     error = %e,
                     "failed to parse commit envelope during drop, stopping chain walk"
                 );
-                break;
+                continue;
             }
         };
 
@@ -102,7 +104,9 @@ async fn collect_commit_chain_cids<S: Storage>(
             cids.insert(txn_id.clone());
         }
 
-        current = envelope.previous_id().cloned();
+        for parent_id in envelope.parent_ids() {
+            frontier.push(parent_id.clone());
+        }
     }
 
     Ok(())
@@ -315,7 +319,10 @@ mod tests {
             t,
             time: None,
             flakes: Vec::new(),
-            previous_ref: previous.map(|id| CommitRef::new(id.clone())),
+            previous_refs: previous
+                .map(|id| CommitRef::new(id.clone()))
+                .into_iter()
+                .collect(),
             txn: txn_cid,
             namespace_delta: std::collections::HashMap::new(),
             txn_signature: None,

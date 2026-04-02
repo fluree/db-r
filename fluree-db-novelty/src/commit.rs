@@ -195,8 +195,9 @@ pub struct Commit {
     /// Flakes in this commit (assertions and retractions)
     pub flakes: Vec<Flake>,
 
-    /// Previous commit reference (CID-based)
-    pub previous_ref: Option<CommitRef>,
+    /// Parent commit references (CID-based).
+    /// Empty for genesis, one element for normal commits, two+ for merge commits.
+    pub previous_refs: Vec<CommitRef>,
 
     /// Transaction blob CID (content-addressed reference to original txn JSON).
     /// When present, the raw transaction JSON can be loaded from this CID.
@@ -251,7 +252,7 @@ impl Commit {
             t,
             time: None,
             flakes,
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::new(),
             txn_signature: None,
@@ -274,9 +275,18 @@ impl Commit {
         self
     }
 
-    /// Set the previous commit reference
+    /// Add a parent commit reference.
+    ///
+    /// For normal commits, call once. For merge commits, call multiple times
+    /// or use [`with_merge_parents`](Self::with_merge_parents).
     pub fn with_previous_ref(mut self, prev_ref: CommitRef) -> Self {
-        self.previous_ref = Some(prev_ref);
+        self.previous_refs.push(prev_ref);
+        self
+    }
+
+    /// Set all parent commit references at once (for merge commits).
+    pub fn with_merge_parents(mut self, refs: Vec<CommitRef>) -> Self {
+        self.previous_refs = refs;
         self
     }
 
@@ -304,9 +314,9 @@ impl Commit {
         self
     }
 
-    /// Get the previous commit CID (if any)
-    pub fn previous_id(&self) -> Option<&ContentId> {
-        self.previous_ref.as_ref().map(|r| &r.id)
+    /// Iterate over all parent commit CIDs.
+    pub fn parent_ids(&self) -> impl Iterator<Item = &ContentId> {
+        self.previous_refs.iter().map(|r| &r.id)
     }
 }
 
@@ -341,14 +351,15 @@ pub async fn load_commit_by_id<C: ContentStore>(store: &C, id: &ContentId) -> Re
 /// This enables memory-bounded batched reindex by allowing a metadata-only
 /// backwards scan before forward flake processing.
 ///
-/// Decoded from the binary envelope section of a v2 commit blob.
+/// Decoded from the binary envelope section of a v2/v3 commit blob.
 #[derive(Clone, Debug)]
 pub struct CommitEnvelope {
     /// Transaction time (monotonically increasing)
     pub t: i64,
 
-    /// Previous commit reference (CID-based)
-    pub previous_ref: Option<CommitRef>,
+    /// Parent commit references (CID-based).
+    /// Empty for genesis, one element for normal commits, two+ for merge commits.
+    pub previous_refs: Vec<CommitRef>,
 
     /// Transaction blob CID (content-addressed reference to original txn JSON)
     pub txn: Option<ContentId>,
@@ -365,9 +376,9 @@ pub struct CommitEnvelope {
 }
 
 impl CommitEnvelope {
-    /// Get the previous commit CID (if any)
-    pub fn previous_id(&self) -> Option<&ContentId> {
-        self.previous_ref.as_ref().map(|r| &r.id)
+    /// Iterate over all parent commit CIDs.
+    pub fn parent_ids(&self) -> impl Iterator<Item = &ContentId> {
+        self.previous_refs.iter().map(|r| &r.id)
     }
 }
 
@@ -396,7 +407,7 @@ pub async fn load_commit_envelope_by_id<C: ContentStore>(
 /// Stream commit envelopes from head backwards using CID-based chain walking.
 ///
 /// Returns `(ContentId, envelope)` pairs. Uses a [`ContentStore`] to load
-/// commits by CID, following `envelope.previous_id()` CID links.
+/// commits by CID, following `envelope.parent_ids()` CID links.
 ///
 /// # Arguments
 ///
@@ -421,7 +432,7 @@ pub fn trace_commit_envelopes_by_id<C: ContentStore + Clone + 'static>(
                 return None;
             }
 
-            let next = envelope.previous_id().cloned();
+            let next = envelope.parent_ids().next().cloned();
             Some((Ok((cid, envelope)), next))
         }
     })
@@ -430,7 +441,7 @@ pub fn trace_commit_envelopes_by_id<C: ContentStore + Clone + 'static>(
 /// Stream commits from head backwards using CID-based chain walking.
 ///
 /// Loads commits by their content identifier via a [`ContentStore`],
-/// following `commit.previous_id()` CID links.
+/// following `commit.parent_ids()` CID links.
 ///
 /// # Linear History Required
 ///
@@ -460,7 +471,7 @@ pub fn trace_commits_by_id<C: ContentStore + Clone + 'static>(
                 return None;
             }
 
-            let next = commit.previous_id().cloned();
+            let next = commit.parent_ids().next().cloned();
             Some((Ok(commit), next))
         }
     })
@@ -509,7 +520,7 @@ pub async fn find_common_ancestor<C: ContentStore>(
     loop {
         match env_a.t.cmp(&env_b.t) {
             std::cmp::Ordering::Greater => {
-                cid_a = env_a.previous_id().cloned().ok_or_else(|| {
+                cid_a = env_a.parent_ids().next().cloned().ok_or_else(|| {
                     NoveltyError::invalid_commit(
                         "commit chains have no common ancestor".to_string(),
                     )
@@ -523,7 +534,7 @@ pub async fn find_common_ancestor<C: ContentStore>(
                 env_a = load_commit_envelope_by_id(store, &cid_a).await?;
             }
             std::cmp::Ordering::Less => {
-                cid_b = env_b.previous_id().cloned().ok_or_else(|| {
+                cid_b = env_b.parent_ids().next().cloned().ok_or_else(|| {
                     NoveltyError::invalid_commit(
                         "commit chains have no common ancestor".to_string(),
                     )
@@ -538,12 +549,12 @@ pub async fn find_common_ancestor<C: ContentStore>(
             }
             std::cmp::Ordering::Equal => {
                 // Same t but different CIDs — advance both
-                cid_a = env_a.previous_id().cloned().ok_or_else(|| {
+                cid_a = env_a.parent_ids().next().cloned().ok_or_else(|| {
                     NoveltyError::invalid_commit(
                         "commit chains have no common ancestor".to_string(),
                     )
                 })?;
-                cid_b = env_b.previous_id().cloned().ok_or_else(|| {
+                cid_b = env_b.parent_ids().next().cloned().ok_or_else(|| {
                     NoveltyError::invalid_commit(
                         "commit chains have no common ancestor".to_string(),
                     )
@@ -590,7 +601,7 @@ mod tests {
 
         assert_eq!(commit.t, 1);
         assert_eq!(commit.flakes.len(), 1);
-        assert!(commit.previous_ref.is_none());
+        assert!(commit.previous_refs.is_empty());
         assert!(commit.id.is_none());
     }
 
@@ -603,9 +614,9 @@ mod tests {
         let commit2 = Commit::new(2, vec![]).with_previous_ref(CommitRef::new(id1.clone()));
         let commit3 = Commit::new(3, vec![]).with_previous_ref(CommitRef::new(id2.clone()));
 
-        assert!(commit1.previous_id().is_none());
-        assert_eq!(commit2.previous_id(), Some(&id1));
-        assert_eq!(commit3.previous_id(), Some(&id2));
+        assert_eq!(commit1.parent_ids().next(), None);
+        assert_eq!(commit2.parent_ids().next(), Some(&id1));
+        assert_eq!(commit3.parent_ids().next(), Some(&id2));
     }
 
     // =========================================================================
@@ -617,7 +628,7 @@ mod tests {
         let prev_id = make_test_content_id(ContentKind::Commit, "commit-0");
         let envelope = CommitEnvelope {
             t: 5,
-            previous_ref: Some(CommitRef::new(prev_id.clone())),
+            previous_refs: vec![CommitRef::new(prev_id.clone())],
             txn: None,
             namespace_delta: HashMap::from([(100, "ex:".to_string())]),
             txn_meta: Vec::new(),
@@ -625,7 +636,7 @@ mod tests {
         };
 
         assert_eq!(envelope.t, 5);
-        assert_eq!(envelope.previous_id(), Some(&prev_id));
+        assert_eq!(envelope.parent_ids().next(), Some(&prev_id));
         assert_eq!(envelope.namespace_delta.get(&100), Some(&"ex:".to_string()));
     }
 

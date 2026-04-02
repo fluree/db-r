@@ -112,10 +112,14 @@ where
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
             let (commit_cids, ledger_split_mode) = {
                 let mut cids = Vec::new();
-                let mut current = Some(head_commit_id.clone());
+                let mut frontier = vec![head_commit_id.clone()];
+                let mut visited = std::collections::HashSet::new();
                 let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
 
-                while let Some(cid) = current {
+                while let Some(cid) = frontier.pop() {
+                    if !visited.insert(cid.clone()) {
+                        continue;
+                    }
                     let bytes = content_store
                         .get(&cid)
                         .await
@@ -126,7 +130,9 @@ where
                     if let Some(mode) = envelope.ns_split_mode {
                         split_mode = mode;
                     }
-                    current = envelope.previous_id().cloned();
+                    for parent_id in envelope.parent_ids() {
+                        frontier.push(parent_id.clone());
+                    }
                     cids.push(cid);
                 }
 

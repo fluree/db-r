@@ -260,7 +260,7 @@ mod tests {
     fn make_envelope(t: i64) -> CommitV2Envelope {
         CommitV2Envelope {
             t,
-            previous_ref: None,
+            previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
@@ -493,7 +493,7 @@ mod tests {
         let prev_cid = ContentId::new(ContentKind::Commit, b"prev-commit-bytes");
         let envelope = CommitV2Envelope {
             t: 5,
-            previous_ref: Some(CommitRef::new(prev_cid.clone())),
+            previous_refs: vec![CommitRef::new(prev_cid.clone())],
             namespace_delta: HashMap::from([(200, "ex:".to_string())]),
             txn: None,
             time: Some("2024-01-01T00:00:00Z".into()),
@@ -507,7 +507,7 @@ mod tests {
         let decoded = read_commit(&result.bytes).unwrap();
 
         assert_eq!(decoded.t, 5);
-        assert_eq!(decoded.previous_ref.as_ref().unwrap().id, prev_cid);
+        assert_eq!(decoded.previous_refs.first().unwrap().id, prev_cid);
         assert_eq!(decoded.namespace_delta.get(&200), Some(&"ex:".to_string()));
         assert_eq!(decoded.time.as_deref(), Some("2024-01-01T00:00:00Z"));
     }

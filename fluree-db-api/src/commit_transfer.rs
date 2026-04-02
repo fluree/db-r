@@ -531,13 +531,14 @@ fn decode_and_validate_commit_chain(
             }
         }
 
-        // Chain validation: previous reference must match prior commit (by id if present).
+        // Chain validation: at least one parent reference must match the prior
+        // commit's hash. For normal commits this is the single parent; for merge
+        // commits one parent is the prior commit and others are pre-existing.
         if let Some(prev_hash_hex) = &prev_hash {
             let ok = commit
-                .previous_ref
-                .as_ref()
-                .map(|r| r.id.digest_hex() == *prev_hash_hex)
-                .unwrap_or(false);
+                .previous_refs
+                .iter()
+                .any(|r| r.id.digest_hex() == *prev_hash_hex);
             if !ok {
                 return Err(PushError::Invalid(format!(
                     "commit chain previous mismatch at commit[{}]: expected previous digest '{}'",
@@ -573,16 +574,23 @@ fn preflight_strict_next_t_and_prev(
         )));
     }
 
-    // Validate previous reference matches current head via CID.
-    let expected_prev_id: Option<ContentId> = current.id.clone();
-
-    let actual_prev_id = first.commit.previous_ref.as_ref().map(|r| r.id.clone());
-
-    if expected_prev_id != actual_prev_id {
-        return Err(PushError::Conflict(format!(
-            "first commit previous mismatch: expected {:?}, got {:?}",
-            expected_prev_id, actual_prev_id
-        )));
+    // Validate that at least one parent reference matches the current head CID.
+    if let Some(expected_id) = &current.id {
+        let ok = first
+            .commit
+            .previous_refs
+            .iter()
+            .any(|r| r.id == *expected_id);
+        if !ok {
+            return Err(PushError::Conflict(format!(
+                "first commit previous mismatch: no parent matches expected head {:?}",
+                expected_id
+            )));
+        }
+    } else if !first.commit.previous_refs.is_empty() {
+        return Err(PushError::Conflict(
+            "first commit has parent refs but current head has no id".to_string(),
+        ));
     }
 
     Ok(())
@@ -1089,10 +1097,18 @@ where
         let mut blobs: HashMap<String, Base64Bytes> = HashMap::new();
         let mut newest_t: Option<i64> = None;
         let mut oldest_t: Option<i64> = None;
-        let mut next_cursor_id: Option<ContentId> = None;
-        let mut current_cid = start_cid;
+        let mut frontier = vec![start_cid];
+        let mut visited = std::collections::HashSet::new();
 
         for _ in 0..effective_limit {
+            let current_cid = match frontier.pop() {
+                Some(cid) => cid,
+                None => break,
+            };
+            if !visited.insert(current_cid.clone()) {
+                continue;
+            }
+
             // Read raw commit bytes from ContentStore by CID.
             let raw_bytes = content_store.get(&current_cid).await.map_err(|e| {
                 ApiError::internal(format!("failed to read commit {}: {}", current_cid, e))
@@ -1138,18 +1154,14 @@ where
                 }
             }
 
-            // Follow chain backward via CID.
-            match env.previous_ref {
-                Some(prev) => {
-                    next_cursor_id = Some(prev.id.clone());
-                    current_cid = prev.id;
-                }
-                None => {
-                    next_cursor_id = None;
-                    break;
-                }
+            // Enqueue all parents for traversal.
+            for parent in env.previous_refs {
+                frontier.push(parent.id);
             }
         }
+
+        // The next cursor is the next unvisited frontier entry (if any).
+        let next_cursor_id = frontier.into_iter().find(|id| !visited.contains(id));
 
         let count = commits.len();
 

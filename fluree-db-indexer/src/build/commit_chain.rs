@@ -19,16 +19,22 @@ pub(crate) async fn walk_commit_chain_full(
     head_commit_id: &ContentId,
 ) -> Result<Vec<ContentId>> {
     let mut cids = Vec::new();
-    let mut current = Some(head_commit_id.clone());
+    let mut frontier = vec![head_commit_id.clone()];
+    let mut visited = std::collections::HashSet::new();
 
-    while let Some(cid) = current {
+    while let Some(cid) = frontier.pop() {
+        if !visited.insert(cid.clone()) {
+            continue;
+        }
         let bytes = content_store
             .get(&cid)
             .await
             .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
         let envelope =
             read_commit_envelope(&bytes).map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-        current = envelope.previous_id().cloned();
+        for parent_id in envelope.parent_ids() {
+            frontier.push(parent_id.clone());
+        }
         cids.push(cid);
     }
 

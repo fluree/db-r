@@ -235,10 +235,15 @@ where
         target_ledger_id: &str,
     ) -> Result<usize> {
         let storage = self.connection.storage();
-        let mut current_cid = Some(head_id.clone());
+        let mut frontier = vec![head_id.clone()];
+        let mut visited = std::collections::HashSet::new();
         let mut copied = 0;
 
-        while let Some(cid) = current_cid.take() {
+        while let Some(cid) = frontier.pop() {
+            if !visited.insert(cid.clone()) {
+                continue;
+            }
+
             let bytes = source_store.get(&cid).await?;
 
             let envelope = read_commit_envelope(&bytes).map_err(|e| {
@@ -246,7 +251,7 @@ where
             })?;
 
             if envelope.t <= stop_at_t {
-                break;
+                continue;
             }
 
             // Write commit blob to target namespace.
@@ -272,7 +277,9 @@ where
                     .await?;
             }
 
-            current_cid = envelope.previous_id().cloned();
+            for parent_id in envelope.parent_ids() {
+                frontier.push(parent_id.clone());
+            }
             copied += 1;
         }
 
