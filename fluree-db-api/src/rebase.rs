@@ -10,9 +10,10 @@ use fluree_db_core::{
     range_with_overlay, ConflictKey, ContentId, Flake, IndexType, RangeMatch, RangeOptions,
     RangeTest, Storage,
 };
+use fluree_db_core::{trace_commits_by_id, Commit};
 use fluree_db_ledger::{LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, NsRecordSnapshot, Publisher};
-use fluree_db_novelty::{compute_delta_keys, trace_commits_by_id, Commit};
+use fluree_db_novelty::compute_delta_keys;
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use futures::TryStreamExt;
 use rustc_hash::FxHashSet;
@@ -180,12 +181,9 @@ where
             .commit_head_id
             .clone()
             .ok_or_else(|| ApiError::internal(format!("Branch {branch_id} has no commit head")))?;
-        let ancestor = fluree_db_novelty::find_common_ancestor(
-            &branch_store,
-            &branch_head_id,
-            &source_head_id,
-        )
-        .await?;
+        let ancestor =
+            fluree_db_core::find_common_ancestor(&branch_store, &branch_head_id, &source_head_id)
+                .await?;
 
         // Fast-forward: branch has no unique commits beyond the ancestor.
         let is_fast_forward = branch_head_id == ancestor.commit_id;
@@ -335,7 +333,7 @@ where
             }
 
             let commit =
-                fluree_db_novelty::load_commit_by_id(ctx.branch_store, &summary.commit_id).await?;
+                fluree_db_core::load_commit_by_id(ctx.branch_store, &summary.commit_id).await?;
 
             let flakes = self
                 .resolve_flakes(

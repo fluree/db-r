@@ -26,10 +26,13 @@
 
 mod commit;
 mod commit_flakes;
-pub mod commit_v2;
 pub mod delta;
 mod error;
 mod stats;
+
+// Re-export commit_v2 from core so downstream crates that still use
+// `fluree_db_novelty::commit_v2::*` continue to compile.
+pub use fluree_db_core::commit_v2;
 
 pub use commit::{
     collect_dag_cids, find_common_ancestor, load_commit_by_id, load_commit_envelope_by_id,

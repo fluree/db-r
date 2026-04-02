@@ -7,7 +7,7 @@ repository.workspace = true
 description = "Transaction support for Fluree DB"
 
 [dependencies]
-fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-core = { path = "../fluree-db-core", features = ["credential"] }
 fluree-db-binary-index = { path = "../fluree-db-binary-index" }
 fluree-db-indexer = { path = "../fluree-db-indexer" }
 fluree-db-policy = { path = "../fluree-db-policy" }

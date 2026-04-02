@@ -13,6 +13,9 @@ use crate::run_index::runs::run_writer::RecordSink;
 use bigdecimal::BigDecimal;
 use chrono;
 use fluree_db_binary_index::format::run_record::{RunRecord, LIST_INDEX_NONE};
+use fluree_db_core::commit_v2::envelope::CommitV2Envelope;
+use fluree_db_core::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
+use fluree_db_core::commit_v2::{load_commit_ops, CommitV2Error};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration as XsdDuration, GDay, GMonth, GMonthDay, GYear,
@@ -21,9 +24,6 @@ use fluree_db_core::temporal::{
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::DatatypeDictId;
 use fluree_db_core::GraphId;
-use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
-use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
-use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
 use fluree_vocab::{db, fluree};
 use num_bigint::BigInt;
 use rustc_hash::FxHashMap;
@@ -1943,13 +1943,13 @@ mod tests {
     use super::*;
     use crate::run_index::runs::run_writer::RecordSink;
     use fluree_db_binary_index::format::run_record::RunRecord;
-    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
-    use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
-    use fluree_db_novelty::commit_v2::format::{
+    use fluree_db_core::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
+    use fluree_db_core::commit_v2::format::{
         self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
     };
-    use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
-    use fluree_db_novelty::commit_v2::raw_reader::load_commit_ops;
+    use fluree_db_core::commit_v2::op_codec::{encode_op, CommitDicts};
+    use fluree_db_core::commit_v2::raw_reader::load_commit_ops;
+    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
     use sha2::{Digest, Sha256};
 
     /// In-memory V1 record collector for tests.
@@ -2305,8 +2305,8 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta() {
+        use fluree_db_core::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_core::{ContentId, ContentKind};
-        use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_novelty::CommitRef;
 
         let mut dicts = GlobalDicts::new_memory("test:main");
@@ -2417,7 +2417,7 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta_minimal() {
-        use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
+        use fluree_db_core::commit_v2::envelope::CommitV2Envelope;
 
         let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
@@ -2448,7 +2448,7 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta_user_entries() {
-        use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
+        use fluree_db_core::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue};
 
         let mut dicts = GlobalDicts::new_memory("test:main");

@@ -32,7 +32,7 @@ pub(crate) fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
     const COMMIT_V2_MAGIC: &[u8] = b"FCV2";
 
     if id.codec() == CODEC_FLUREE_COMMIT && bytes.starts_with(COMMIT_V2_MAGIC) {
-        match fluree_db_novelty::verify_commit_v2_blob(bytes) {
+        match fluree_db_core::commit_v2::verify_commit_v2_blob(bytes) {
             Ok(derived_id) => derived_id == *id,
             Err(_) => false,
         }

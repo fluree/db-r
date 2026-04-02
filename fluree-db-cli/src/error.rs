@@ -121,6 +121,12 @@ impl From<crate::remote_client::RemoteLedgerError> for CliError {
     }
 }
 
+impl From<fluree_db_core::Error> for CliError {
+    fn from(e: fluree_db_core::Error) -> Self {
+        CliError::Input(format!("core error: {e}"))
+    }
+}
+
 impl From<fluree_db_core::ledger_id::LedgerIdParseError> for CliError {
     fn from(e: fluree_db_core::ledger_id::LedgerIdParseError) -> Self {
         CliError::Input(e.to_string())

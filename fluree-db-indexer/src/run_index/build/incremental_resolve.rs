@@ -292,7 +292,7 @@ pub async fn resolve_incremental_commits_v6(
                 ))
             })?;
             let envelope =
-                fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
+                fluree_db_core::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
                     IncrementalResolveError::CommitChain(format!(
                         "failed to decode envelope for {}: {}",
                         cid, e
@@ -497,7 +497,7 @@ async fn walk_commit_chain_since(
     head_id: &ContentId,
     from_t: i64,
 ) -> Result<Vec<ContentId>, IncrementalResolveError> {
-    let dag = fluree_db_novelty::collect_dag_cids(cs, head_id, from_t)
+    let dag = fluree_db_core::collect_dag_cids(cs, head_id, from_t)
         .await
         .map_err(|e| IncrementalResolveError::CommitChain(e.to_string()))?;
     // collect_dag_cids returns (t, cid) sorted by t descending; reverse for chronological order.

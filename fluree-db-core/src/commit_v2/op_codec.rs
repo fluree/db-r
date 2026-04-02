@@ -18,11 +18,11 @@ use super::error::CommitV2Error;
 use super::format::{OTag, OP_FLAG_ASSERT, OP_FLAG_HAS_I, OP_FLAG_HAS_LANG};
 use super::string_dict::{StringDict, StringDictBuilder};
 use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
-use fluree_db_core::temporal::{
+use crate::temporal::{
     Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
     YearMonthDuration,
 };
-use fluree_db_core::{Flake, FlakeMeta, FlakeValue, GeoPointBits, Sid};
+use crate::{Flake, FlakeMeta, FlakeValue, GeoPointBits, Sid};
 
 // =============================================================================
 // CommitDicts — dictionary set for writing

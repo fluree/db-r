@@ -1064,11 +1064,11 @@ mod tests {
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> ContentId {
-        use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
-        use fluree_db_novelty::commit_v2::format::{
+        use fluree_db_core::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
+        use fluree_db_core::commit_v2::format::{
             self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
         };
-        use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
+        use fluree_db_core::commit_v2::op_codec::{encode_op, CommitDicts};
         use sha2::{Digest, Sha256};
         use std::collections::HashMap;
 
@@ -1685,11 +1685,11 @@ mod embedded_tests {
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> ContentId {
-        use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
-        use fluree_db_novelty::commit_v2::format::{
+        use fluree_db_core::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
+        use fluree_db_core::commit_v2::format::{
             self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
         };
-        use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
+        use fluree_db_core::commit_v2::op_codec::{encode_op, CommitDicts};
         use sha2::{Digest, Sha256};
 
         let mut dicts = CommitDicts::new();

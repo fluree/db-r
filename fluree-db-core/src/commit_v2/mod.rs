@@ -20,6 +20,7 @@ pub mod raw_reader;
 mod reader;
 pub mod string_dict;
 pub mod varint;
+#[cfg(feature = "credential")]
 mod writer;
 
 pub use envelope::CommitV2Envelope;
@@ -27,4 +28,5 @@ pub use error::CommitV2Error;
 pub use format::{CommitSignature, ALGO_ED25519, MAGIC};
 pub use raw_reader::{load_commit_ops, CommitOps, RawObject, RawOp};
 pub use reader::{read_commit, read_commit_envelope, verify_commit_v2_blob};
+#[cfg(feature = "credential")]
 pub use writer::{write_commit, CommitWriteResult};

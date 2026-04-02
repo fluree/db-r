@@ -478,7 +478,7 @@ mod tests {
         CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
     };
     use crate::commit_v2::op_codec::{encode_op, CommitDicts};
-    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
+    use crate::{Flake, FlakeMeta, FlakeValue, Sid};
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;
 
@@ -682,7 +682,7 @@ mod tests {
                 Sid::new(101, "x"),
                 Sid::new(101, "dt_val"),
                 FlakeValue::DateTime(Box::new(
-                    fluree_db_core::DateTime::parse("2024-01-15T10:30:00Z").unwrap(),
+                    crate::DateTime::parse("2024-01-15T10:30:00Z").unwrap(),
                 )),
                 Sid::new(2, "dateTime"),
                 1,
@@ -693,7 +693,7 @@ mod tests {
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "date_val"),
-                FlakeValue::Date(Box::new(fluree_db_core::Date::parse("2024-01-15").unwrap())),
+                FlakeValue::Date(Box::new(crate::Date::parse("2024-01-15").unwrap())),
                 Sid::new(2, "date"),
                 1,
                 true,
@@ -703,7 +703,7 @@ mod tests {
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "time_val"),
-                FlakeValue::Time(Box::new(fluree_db_core::Time::parse("10:30:00").unwrap())),
+                FlakeValue::Time(Box::new(crate::Time::parse("10:30:00").unwrap())),
                 Sid::new(2, "time"),
                 1,
                 true,

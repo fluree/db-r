@@ -25,12 +25,12 @@ use fluree_db_core::pack::{
 
 // Re-export types that appear in our public API signatures so consumers
 // don't need fluree-db-core as a direct dependency.
+use fluree_db_core::commit_v2::envelope::decode_envelope;
+use fluree_db_core::commit_v2::format::{CommitV2Header, HEADER_LEN};
 pub use fluree_db_core::pack::PackRequest;
 use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore, Storage};
 use fluree_db_nameservice::{NameService, RefPublisher};
-use fluree_db_novelty::commit_v2::envelope::decode_envelope;
-use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};

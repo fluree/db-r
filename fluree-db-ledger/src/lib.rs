@@ -858,7 +858,7 @@ mod tests {
         commit: &fluree_db_novelty::Commit,
     ) -> ContentId {
         let store = content_store_for(storage.clone(), ledger_id);
-        let blob = fluree_db_novelty::commit_v2::write_commit(commit, false, None).unwrap();
+        let blob = fluree_db_core::commit_v2::write_commit(commit, false, None).unwrap();
         store.put(ContentKind::Commit, &blob.bytes).await.unwrap()
     }
 

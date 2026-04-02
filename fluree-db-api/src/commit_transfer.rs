@@ -502,7 +502,7 @@ fn decode_and_validate_commit_chain(
 
     for (idx, b64) in request.commits.iter().enumerate() {
         let bytes = b64.0.clone();
-        let commit = fluree_db_novelty::commit_v2::read_commit(&bytes)
+        let commit = fluree_db_core::commit_v2::read_commit(&bytes)
             .map_err(|e| PushError::Invalid(format!("invalid commit[{}]: {}", idx, e)))?;
 
         // Reject empty commits (no flakes) - keep semantics clear.
@@ -931,7 +931,7 @@ fn apply_pushed_commits_to_state(
 /// This prevents a malicious client from altering payload bytes and the embedded
 /// hash in tandem — the server independently verifies the hash.
 pub(crate) fn commit_hash_hex_from_bytes(bytes: &[u8]) -> std::result::Result<String, String> {
-    use fluree_db_novelty::commit_v2::format::{
+    use fluree_db_core::commit_v2::format::{
         CommitV2Header, FLAG_HAS_COMMIT_SIG, HASH_LEN, HEADER_LEN,
     };
 
@@ -1051,10 +1051,10 @@ where
         handle: &LedgerHandle,
         request: &ExportCommitsRequest,
     ) -> Result<ExportCommitsResponse> {
+        use fluree_db_core::commit_v2::envelope::decode_envelope;
+        use fluree_db_core::commit_v2::format::{CommitV2Header, HEADER_LEN};
         use fluree_db_core::storage::content_store_for;
         use fluree_db_core::ContentStore;
-        use fluree_db_novelty::commit_v2::envelope::decode_envelope;
-        use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
 
         let effective_limit = request
             .limit

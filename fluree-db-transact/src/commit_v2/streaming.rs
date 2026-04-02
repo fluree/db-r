@@ -16,14 +16,14 @@
 //! // result.bytes is the complete v2 blob, result.content_hash_hex is the SHA-256
 //! ```
 
-use fluree_db_core::Flake;
-use fluree_db_novelty::commit_v2::envelope::encode_envelope_fields;
-use fluree_db_novelty::commit_v2::format::{
+use fluree_db_core::commit_v2::envelope::encode_envelope_fields;
+use fluree_db_core::commit_v2::format::{
     CommitV2Footer, CommitV2Header, DictLocation, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN,
     VERSION,
 };
-use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
-use fluree_db_novelty::commit_v2::{CommitV2Envelope, CommitV2Error};
+use fluree_db_core::commit_v2::op_codec::{encode_op, CommitDicts};
+use fluree_db_core::commit_v2::{CommitV2Envelope, CommitV2Error};
+use fluree_db_core::Flake;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -253,8 +253,8 @@ impl StreamingCommitWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::commit_v2::read_commit;
     use fluree_db_core::{FlakeMeta, FlakeValue, Sid};
-    use fluree_db_novelty::commit_v2::read_commit;
     use std::collections::HashMap;
 
     fn make_envelope(t: i64) -> CommitV2Envelope {

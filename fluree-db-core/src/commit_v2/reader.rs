@@ -14,8 +14,7 @@ use super::format::{
 };
 use super::op_codec::{decode_op, ReadDicts};
 use super::string_dict::StringDict;
-use crate::{Commit, CommitEnvelope};
-use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
+use crate::{Commit, CommitEnvelope, ContentId, CODEC_FLUREE_COMMIT};
 use sha2::{Digest, Sha256};
 
 /// Verify a commit-v2 blob's embedded hash and return its `ContentId`.

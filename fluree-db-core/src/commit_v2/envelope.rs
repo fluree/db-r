@@ -12,9 +12,9 @@
 
 use super::error::CommitV2Error;
 use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
+use crate::ns_encoding::NsSplitMode;
+use crate::ContentId;
 use crate::{CommitRef, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_ENTRIES};
-use fluree_db_core::ns_encoding::NsSplitMode;
-use fluree_db_core::ContentId;
 use std::collections::HashMap;
 
 // --- Presence flag bits ---
@@ -681,7 +681,7 @@ fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::ContentKind;
+    use crate::ContentKind;
 
     fn make_test_cid(kind: ContentKind, label: &str) -> ContentId {
         ContentId::new(kind, label.as_bytes())

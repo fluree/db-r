@@ -483,7 +483,7 @@ async fn ingest_pack_frame<S: ContentAddressedWrite>(
 /// This must match the hash derivation in `verify_commit_v2_blob`. The digest
 /// covers `bytes[0..hash_offset]` — the payload before the trailing hash+sig.
 fn derive_commit_digest_hex(bytes: &[u8]) -> Result<String> {
-    match fluree_db_novelty::verify_commit_v2_blob(bytes) {
+    match fluree_db_core::commit_v2::verify_commit_v2_blob(bytes) {
         Ok(derived_id) => Ok(derived_id.digest_hex()),
         Err(e) => Err(SyncError::PackProtocol(format!(
             "failed to derive commit digest: {}",

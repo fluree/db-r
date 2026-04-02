@@ -13,11 +13,11 @@ use std::collections::HashSet;
 
 use fluree_db_binary_index::format::branch::read_branch_from_bytes;
 use fluree_db_binary_index::IndexRoot;
+use fluree_db_core::commit_v2::read_commit_envelope;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::storage::ContentStore;
 use fluree_db_core::Storage;
-use fluree_db_novelty::commit_v2::read_commit_envelope;
 
 use crate::error::Result;
 use crate::gc::collector::{derive_address, walk_prev_index_chain};
@@ -70,7 +70,7 @@ async fn collect_commit_chain_cids<S: Storage + Clone>(
     let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
 
     // Collect all commit CIDs via DAG walk (stop_at_t=0 means collect all).
-    let dag = fluree_db_novelty::collect_dag_cids(&content_store, head, 0)
+    let dag = fluree_db_core::collect_dag_cids(&content_store, head, 0)
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -244,9 +244,9 @@ mod tests {
     use fluree_db_binary_index::{
         BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
+    use fluree_db_core::commit_v2::write_commit;
     use fluree_db_core::content_kind::CODEC_FLUREE_COMMIT;
     use fluree_db_core::prelude::*;
-    use fluree_db_novelty::commit_v2::write_commit;
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::BTreeMap;
 
