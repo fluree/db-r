@@ -21,8 +21,8 @@ use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentKind, ContentStore};
 use fluree_db_nameservice::NameService;
 use fluree_db_nameservice_sync::ingest_pack_frame;
-use fluree_db_novelty::commit_v2::envelope::decode_envelope;
-use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
+use fluree_db_core::commit::codec::envelope::decode_envelope;
+use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
 use serde_json::json;
 use std::collections::HashSet;
 
@@ -94,7 +94,7 @@ where
         out.extend_from_slice(&buf);
 
         // Decode envelope to find txn blob CID.
-        let hdr = CommitV2Header::read_from(&raw_bytes).expect("commit header");
+        let hdr = CommitHeader::read_from(&raw_bytes).expect("commit header");
         let envelope_start = HEADER_LEN;
         let envelope_end = envelope_start + hdr.envelope_len as usize;
         if envelope_end <= raw_bytes.len() {

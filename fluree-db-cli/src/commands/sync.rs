@@ -910,7 +910,7 @@ pub async fn run_publish(
             .get(cid)
             .await
             .map_err(|e| CliError::Config(format!("failed to read local commit {cid}: {e}")))?;
-        let commit = fluree_db_novelty::commit_v2::read_commit(&bytes)
+        let commit = fluree_db_core::commit::codec::read_commit(&bytes)
             .map_err(|e| CliError::Config(format!("failed to decode local commit {cid}: {e}")))?;
         commits.push(fluree_db_api::Base64Bytes(bytes));
 
