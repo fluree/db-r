@@ -346,7 +346,7 @@ pub async fn load_commit_by_id<C: ContentStore>(store: &C, id: &ContentId) -> Re
 /// This enables memory-bounded batched reindex by allowing a metadata-only
 /// backwards scan before forward flake processing.
 ///
-/// Decoded from the binary envelope section of a v2/v3 commit blob.
+/// Decoded from the binary envelope section of a commit blob (v2 or v3).
 #[derive(Clone, Debug)]
 pub struct CommitEnvelope {
     /// Transaction time (monotonically increasing)
@@ -437,6 +437,11 @@ pub async fn collect_dag_cids<C: ContentStore + ?Sized>(
 /// Walks the commit DAG, yielding `(ContentId, CommitEnvelope)` pairs ordered
 /// by descending `t`. Each commit is yielded exactly once. Handles merge
 /// commits with multiple parents.
+///
+/// Note: each envelope is loaded twice — once during `collect_dag_cids` to
+/// discover parents and `t` for ordering, and once when yielded. This is a
+/// tradeoff of the collect-then-stream approach over a more complex
+/// incremental BFS stream.
 pub fn trace_commit_envelopes_by_id<C: ContentStore + Clone + 'static>(
     store: C,
     head_id: ContentId,

@@ -334,14 +334,13 @@ where
         )
         .await?;
 
-        // Collect source flakes: walk source commits from HEAD to ancestor,
-        // load each commit, and gather all flakes.
-        let source_flakes =
-            collect_flakes_from_commits(source_store, source_head_id, ancestor.t).await?;
+        // Collect source flakes and metadata: walk source commits from HEAD
+        // to ancestor, gathering flakes, namespace deltas, and graph deltas.
+        let source_data = collect_commit_data(source_store, source_head_id, ancestor.t).await?;
 
         // Resolve conflicts.
         let resolved_flakes = self
-            .resolve_merge_flakes(&source_flakes, &conflicts, strategy, &target_state)
+            .resolve_merge_flakes(&source_data.flakes, &conflicts, strategy, &target_state)
             .await?;
 
         if resolved_flakes.is_empty() {
@@ -359,9 +358,17 @@ where
         let view = LedgerView::stage(target_state, resolved_flakes, &reverse_graph)
             .map_err(|e| ApiError::internal(format!("Failed to stage flakes during merge: {e}")))?;
 
-        // Create merge commit with the source head as an additional parent.
+        // Create merge commit with the source head as an additional parent,
+        // propagating namespace and graph deltas from the source branch.
         let ns_registry = NamespaceRegistry::from_db(view.db());
-        let commit_opts = CommitOpts::default().with_merge_parents(vec![source_head_id.clone()]);
+        let mut commit_opts =
+            CommitOpts::default().with_merge_parents(vec![source_head_id.clone()]);
+        if !source_data.namespace_delta.is_empty() {
+            commit_opts = commit_opts.with_namespace_delta(source_data.namespace_delta);
+        }
+        if !source_data.graph_delta.is_empty() {
+            commit_opts = commit_opts.with_graph_delta(source_data.graph_delta);
+        }
 
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
@@ -477,6 +484,9 @@ where
         for (_, cid) in &dag {
             let bytes = source_store.get(cid).await?;
 
+            // Parse envelope to extract txn CID reference. The bytes were already
+            // loaded by collect_dag_cids for parent discovery; this is a re-parse
+            // of the same data, not a second storage read.
             let envelope = read_commit_envelope(&bytes).map_err(|e| {
                 ApiError::internal(format!("failed to read commit envelope {cid}: {e}"))
             })?;
@@ -512,20 +522,41 @@ where
     }
 }
 
-/// Collect all flakes from commits between `head_id` and `stop_at_t` (exclusive).
-async fn collect_flakes_from_commits(
+/// Collected flakes and metadata from a range of commits.
+struct CollectedCommitData {
+    flakes: Vec<Flake>,
+    namespace_delta: std::collections::HashMap<u16, String>,
+    graph_delta: std::collections::HashMap<u16, String>,
+}
+
+/// Collect all flakes, namespace deltas, and graph deltas from commits
+/// between `head_id` and `stop_at_t` (exclusive).
+async fn collect_commit_data(
     store: &impl ContentStore,
     head_id: &ContentId,
     stop_at_t: i64,
-) -> Result<Vec<Flake>> {
+) -> Result<CollectedCommitData> {
     let dag = collect_dag_cids(store, head_id, stop_at_t).await?;
     let mut all_flakes = Vec::new();
+    let mut namespace_delta = std::collections::HashMap::new();
+    let mut graph_delta = std::collections::HashMap::new();
 
     // dag is in newest-first order; we want oldest-first for correct ordering.
     for (_, cid) in dag.iter().rev() {
         let commit = load_commit_by_id(store, cid).await?;
         all_flakes.extend(commit.flakes);
+        // Accumulate deltas: earlier commits take precedence (oldest-first).
+        for (code, prefix) in commit.namespace_delta {
+            namespace_delta.entry(code).or_insert(prefix);
+        }
+        for (g_id, iri) in commit.graph_delta {
+            graph_delta.entry(g_id).or_insert(iri);
+        }
     }
 
-    Ok(all_flakes)
+    Ok(CollectedCommitData {
+        flakes: all_flakes,
+        namespace_delta,
+        graph_delta,
+    })
 }
