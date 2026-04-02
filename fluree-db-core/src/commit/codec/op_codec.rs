@@ -168,23 +168,23 @@ fn encode_object(
         }
         FlakeValue::DateTime(dt) => {
             buf.push(OTag::DateTime as u8);
-            encode_len_prefixed_str(&dt.to_string(), buf);
+            encode_len_prefixed_display(dt.as_ref(), buf);
         }
         FlakeValue::Date(d) => {
             buf.push(OTag::Date as u8);
-            encode_len_prefixed_str(&d.to_string(), buf);
+            encode_len_prefixed_display(d.as_ref(), buf);
         }
         FlakeValue::Time(t) => {
             buf.push(OTag::Time as u8);
-            encode_len_prefixed_str(&t.to_string(), buf);
+            encode_len_prefixed_display(t.as_ref(), buf);
         }
         FlakeValue::BigInt(n) => {
             buf.push(OTag::BigInt as u8);
-            encode_len_prefixed_str(&n.to_string(), buf);
+            encode_len_prefixed_display(n.as_ref(), buf);
         }
         FlakeValue::Decimal(d) => {
             buf.push(OTag::Decimal as u8);
-            encode_len_prefixed_str(&d.to_string(), buf);
+            encode_len_prefixed_display(d.as_ref(), buf);
         }
         FlakeValue::Json(s) => {
             buf.push(OTag::Json as u8);
@@ -195,35 +195,35 @@ fn encode_object(
         }
         FlakeValue::GYear(v) => {
             buf.push(OTag::GYear as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GYearMonth(v) => {
             buf.push(OTag::GYearMonth as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GMonth(v) => {
             buf.push(OTag::GMonth as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GDay(v) => {
             buf.push(OTag::GDay as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GMonthDay(v) => {
             buf.push(OTag::GMonthDay as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::YearMonthDuration(v) => {
             buf.push(OTag::YearMonthDuration as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::DayTimeDuration(v) => {
             buf.push(OTag::DayTimeDuration as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::Duration(v) => {
             buf.push(OTag::Duration as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GeoPoint(bits) => {
             buf.push(OTag::GeoPoint as u8);
@@ -248,6 +248,47 @@ fn encode_len_prefixed_str(s: &str, buf: &mut Vec<u8>) {
     let bytes = s.as_bytes();
     encode_varint(bytes.len() as u64, buf);
     buf.extend_from_slice(bytes);
+}
+
+/// Encode a `Display` value as a length-prefixed UTF-8 string without heap
+/// allocation. Formats into the output buffer directly by reserving space for
+/// the length prefix, writing the value, then backfilling the length.
+fn encode_len_prefixed_display(value: &impl std::fmt::Display, buf: &mut Vec<u8>) {
+    use std::fmt::Write;
+
+    // Reserve a placeholder for the varint length (we'll overwrite it).
+    // Most temporal/numeric strings are <128 bytes, so 1 byte suffices for the varint.
+    // Strategy: format into the buf starting after a 1-byte gap, then check if the
+    // length fits in 1 varint byte. If not, shift and use multi-byte varint.
+    let len_pos = buf.len();
+    buf.push(0); // placeholder for 1-byte varint
+    let data_start = buf.len();
+
+    // Write the display value directly into the Vec<u8> via a UTF-8 adapter.
+    struct VecWriter<'a>(&'a mut Vec<u8>);
+    impl std::fmt::Write for VecWriter<'_> {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.extend_from_slice(s.as_bytes());
+            Ok(())
+        }
+    }
+    // Display::fmt is infallible for our temporal/numeric types.
+    write!(VecWriter(buf), "{}", value).expect("Display::fmt failed");
+
+    let data_len = buf.len() - data_start;
+    if data_len < 128 {
+        // Fits in 1-byte varint — just fill in the placeholder.
+        buf[len_pos] = data_len as u8;
+    } else {
+        // Need multi-byte varint. Encode the length, then shift the data.
+        let mut varint_buf = Vec::new();
+        encode_varint(data_len as u64, &mut varint_buf);
+        let extra = varint_buf.len() - 1; // how many extra bytes beyond our 1-byte placeholder
+                                          // Make room by inserting `extra` bytes at data_start.
+        buf.splice(len_pos..len_pos + 1, varint_buf);
+        // Data was shifted by `extra` bytes, which splice handles automatically.
+        let _ = extra; // splice already handled the shift
+    }
 }
 
 // =============================================================================
