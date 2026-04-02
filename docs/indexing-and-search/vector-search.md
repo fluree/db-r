@@ -319,7 +319,81 @@ Querying with `dotProduct` on `?data` will return a numeric score for `ex:a` and
 
 ### SPARQL support
 
-Inline vector similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistance`) are currently available in JSON-LD Query only. SPARQL support for these functions is planned for a future release.
+Inline vector similarity functions (`dotProduct`, `cosineSimilarity`, `euclideanDistance`) are available in both JSON-LD Query and SPARQL. In SPARQL, use them as built-in function calls within `BIND` expressions:
+
+#### dotProduct (SPARQL)
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+PREFIX f: <https://ns.flur.ee/db#>
+
+SELECT ?doc ?score
+WHERE {
+  VALUES ?queryVec { "[0.7, 0.6]"^^f:embeddingVector }
+  ?doc ex:embedding ?vec ;
+       ex:title ?title .
+  BIND(dotProduct(?vec, ?queryVec) AS ?score)
+}
+ORDER BY DESC(?score)
+LIMIT 10
+```
+
+#### cosineSimilarity (SPARQL)
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+PREFIX f: <https://ns.flur.ee/db#>
+
+SELECT ?doc ?score
+WHERE {
+  VALUES ?queryVec { "[0.88, 0.12, 0.08]"^^f:embeddingVector }
+  ?doc a ex:Article ;
+       ex:embedding ?vec ;
+       ex:title ?title .
+  BIND(cosineSimilarity(?vec, ?queryVec) AS ?score)
+  FILTER(?score > 0.5)
+}
+ORDER BY DESC(?score)
+LIMIT 5
+```
+
+#### euclideanDistance (SPARQL)
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+PREFIX f: <https://ns.flur.ee/db#>
+
+SELECT ?doc ?distance
+WHERE {
+  VALUES ?queryVec { "[0.7, 0.6]"^^f:embeddingVector }
+  ?doc ex:embedding ?vec .
+  BIND(euclideanDistance(?vec, ?queryVec) AS ?distance)
+}
+ORDER BY ?distance
+LIMIT 10
+```
+
+#### Vector literals in SPARQL
+
+In SPARQL, vectors are passed as JSON array strings with the `^^f:embeddingVector` typed literal syntax:
+
+```sparql
+VALUES ?queryVec { "[0.1, 0.2, 0.3]"^^f:embeddingVector }
+```
+
+Or with the full IRI:
+
+```sparql
+VALUES ?queryVec { "[0.1, 0.2, 0.3]"^^<https://ns.flur.ee/db#embeddingVector> }
+```
+
+#### Function name variants
+
+Function names are case-insensitive in SPARQL. All of these are equivalent:
+
+- `dotProduct`, `DOTPRODUCT`, `dot_product`
+- `cosineSimilarity`, `COSINESIMILARITY`, `cosine_similarity`
+- `euclideanDistance`, `EUCLIDEANDISTANCE`, `euclidean_distance`
 
 ## HNSW Vector Indexes
 

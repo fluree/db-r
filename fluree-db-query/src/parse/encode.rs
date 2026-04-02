@@ -17,6 +17,13 @@ pub trait IriEncoder {
     ///
     /// Returns `None` if the IRI's namespace is not registered.
     fn encode_iri(&self, iri: &str) -> Option<Sid>;
+
+    /// Encode an IRI only when its canonical prefix is registered.
+    ///
+    /// Unlike `encode_iri`, this does not fall back to a full-IRI SID.
+    fn encode_iri_strict(&self, iri: &str) -> Option<Sid> {
+        self.encode_iri(iri)
+    }
 }
 
 // Native: LedgerSnapshot implements IriEncoder
@@ -24,6 +31,10 @@ impl IriEncoder for LedgerSnapshot {
     fn encode_iri(&self, iri: &str) -> Option<Sid> {
         // Delegates to the existing LedgerSnapshot::encode_iri method
         LedgerSnapshot::encode_iri(self, iri)
+    }
+
+    fn encode_iri_strict(&self, iri: &str) -> Option<Sid> {
+        LedgerSnapshot::encode_iri_strict(self, iri)
     }
 }
 
@@ -35,6 +46,10 @@ pub struct NoEncoder;
 
 impl IriEncoder for NoEncoder {
     fn encode_iri(&self, _iri: &str) -> Option<Sid> {
+        None
+    }
+
+    fn encode_iri_strict(&self, _iri: &str) -> Option<Sid> {
         None
     }
 }
@@ -86,6 +101,14 @@ impl IriEncoder for MemoryEncoder {
         } else {
             Some(Sid::new(fluree_vocab::namespaces::EMPTY, iri))
         }
+    }
+
+    fn encode_iri_strict(&self, iri: &str) -> Option<Sid> {
+        let (prefix, suffix) = canonical_split(iri, self.split_mode);
+        self.namespaces
+            .get(prefix)
+            .copied()
+            .map(|code| Sid::new(code, suffix))
     }
 }
 

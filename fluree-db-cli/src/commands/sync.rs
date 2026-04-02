@@ -777,6 +777,197 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
     Ok(())
 }
 
+/// Publish a local ledger to a remote server.
+///
+/// Creates the ledger on the remote if it doesn't exist, pushes all local
+/// commits, and configures upstream tracking for subsequent push/pull.
+///
+/// Usage: `fluree publish <remote> [ledger] [--remote-name <name>]`
+pub async fn run_publish(
+    remote_name: &str,
+    explicit_ledger: Option<&str>,
+    remote_ledger_name: Option<&str>,
+    dirs: &FlureeDir,
+) -> CliResult<()> {
+    let ledger_id = context::resolve_ledger(explicit_ledger, dirs)?;
+    let ledger_id = context::to_ledger_id(&ledger_id);
+    let remote_ledger_id = remote_ledger_name
+        .map(context::to_ledger_id)
+        .unwrap_or_else(|| ledger_id.clone());
+
+    // Resolve remote config.
+    let config_store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
+    let remote_cfg = config_store
+        .get_remote(&RemoteName::new(remote_name))
+        .await
+        .map_err(|e| CliError::Config(e.to_string()))?
+        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote_name)))?;
+
+    let base_url = match &remote_cfg.endpoint {
+        RemoteEndpoint::Http { base_url } => base_url.clone(),
+        _ => {
+            return Err(CliError::Config(format!(
+                "remote '{}' is not an HTTP remote",
+                remote_name
+            )));
+        }
+    };
+
+    let client = context::build_client_from_auth(&base_url, &remote_cfg.auth);
+
+    println!(
+        "Publishing '{}' to '{}' (remote ledger: '{}')...",
+        ledger_id.cyan(),
+        remote_name.cyan(),
+        remote_ledger_id.cyan(),
+    );
+
+    // Check if remote ledger already exists.
+    let remote_exists = client
+        .ledger_exists(&remote_ledger_id)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to check remote ledger existence: {e}")))?;
+
+    if remote_exists {
+        // If it exists, check remote head — if remote has commits we can't
+        // blindly push everything, fall back to normal push behavior.
+        let info = client
+            .ledger_info(&remote_ledger_id)
+            .await
+            .map_err(|e| CliError::Config(format!("failed to get remote ledger info: {e}")))?;
+        let remote_t = info.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+
+        if remote_t > 0 {
+            return Err(CliError::Config(format!(
+                "remote ledger '{}' already has data (t={remote_t}). \
+                 Use `fluree push` instead, or choose a different remote ledger name with --remote-name.",
+                remote_ledger_id
+            )));
+        }
+        eprintln!("  Remote ledger exists (empty, t=0) — pushing commits...");
+    } else {
+        // Create the ledger on the remote.
+        client
+            .create_ledger(&remote_ledger_id)
+            .await
+            .map_err(|e| CliError::Config(format!("failed to create remote ledger: {e}")))?;
+        eprintln!(
+            "  {} Created remote ledger '{}'",
+            "✓".green(),
+            remote_ledger_id
+        );
+    }
+
+    // Resolve local head.
+    let fluree = context::build_fluree(dirs)?;
+    let local_ref = fluree
+        .nameservice()
+        .get_ref(&ledger_id, RefKind::CommitHead)
+        .await
+        .map_err(|e| CliError::Config(e.to_string()))?
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+
+    let local_head_cid = local_ref.id.clone().ok_or_else(|| {
+        CliError::Config(format!(
+            "local ledger '{}' has no commits; nothing to publish",
+            ledger_id
+        ))
+    })?;
+
+    // Walk the full commit chain (oldest → newest).
+    let content_store =
+        fluree_db_core::storage::content_store_for(fluree.storage().clone(), &ledger_id);
+
+    let mut to_push_cids: Vec<fluree_db_core::ContentId> = Vec::new();
+    {
+        let stream = fluree_db_novelty::trace_commit_envelopes_by_id(
+            content_store.clone(),
+            local_head_cid.clone(),
+            0, // walk all the way to genesis
+        );
+        futures::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            let (cid, _env) = item.map_err(|e| CliError::Config(e.to_string()))?;
+            to_push_cids.push(cid);
+        }
+    }
+
+    if to_push_cids.is_empty() {
+        println!("{} '{}' has no commits to publish", "✓".green(), ledger_id);
+        return Ok(());
+    }
+
+    to_push_cids.reverse(); // oldest → newest
+
+    // Build push request: commit bytes + txn blobs.
+    let mut commits = Vec::with_capacity(to_push_cids.len());
+    let mut blobs: std::collections::HashMap<String, fluree_db_api::Base64Bytes> =
+        std::collections::HashMap::new();
+
+    for cid in &to_push_cids {
+        use fluree_db_core::ContentStore;
+        let bytes = content_store
+            .get(cid)
+            .await
+            .map_err(|e| CliError::Config(format!("failed to read local commit {cid}: {e}")))?;
+        let commit = fluree_db_novelty::commit_v2::read_commit(&bytes)
+            .map_err(|e| CliError::Config(format!("failed to decode local commit {cid}: {e}")))?;
+        commits.push(fluree_db_api::Base64Bytes(bytes));
+
+        if let Some(txn_cid) = &commit.txn {
+            let txn_key = txn_cid.to_string();
+            if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone()) {
+                let txn_bytes = content_store.get(txn_cid).await.map_err(|e| {
+                    CliError::Config(format!(
+                        "commit references txn blob '{}' but it is not readable locally: {}",
+                        txn_key, e
+                    ))
+                })?;
+                e.insert(fluree_db_api::Base64Bytes(txn_bytes));
+            }
+        }
+    }
+
+    eprint!("  Pushing {} commit(s)...\r", commits.len());
+
+    let req = fluree_db_api::PushCommitsRequest { commits, blobs };
+    let resp = client
+        .push_commits(&remote_ledger_id, &req)
+        .await
+        .map_err(|e| CliError::Config(format!("push failed: {e}")))?;
+
+    // Configure upstream tracking.
+    use fluree_db_nameservice_sync::UpstreamConfig;
+    config_store
+        .set_upstream(&UpstreamConfig {
+            local_alias: ledger_id.clone(),
+            remote: RemoteName::new(remote_name),
+            remote_alias: remote_ledger_id.clone(),
+            auto_pull: false,
+        })
+        .await
+        .map_err(|e| CliError::Config(format!("failed to set upstream: {e}")))?;
+
+    println!(
+        "{} Published '{}' to '{}' ({} commit(s), remote head t={})",
+        "✓".green(),
+        ledger_id,
+        remote_name,
+        resp.accepted,
+        resp.head.t,
+    );
+    println!(
+        "  {} upstream set to '{}/{}'",
+        "→".cyan(),
+        remote_name,
+        remote_ledger_id,
+    );
+
+    // Persist refreshed token if auto-refresh happened.
+    context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+    Ok(())
+}
+
 /// Clone a ledger from a remote server.
 ///
 /// Downloads all commits via paginated export (bulk import), sets the commit

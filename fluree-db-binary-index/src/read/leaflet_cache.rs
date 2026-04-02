@@ -18,7 +18,7 @@
 //!   immutable — no epoch/time dimension needed.
 
 use fluree_db_core::subject_id::SubjectIdColumn;
-use fluree_db_core::ListIndex;
+use fluree_db_core::{ListIndex, StatsView};
 use moka::sync::Cache;
 use std::io;
 use std::sync::Arc;
@@ -180,6 +180,10 @@ enum CacheKey {
     ///
     /// Key = xxh3_128 of a canonical ledger-info cache key string.
     LedgerInfo(u128),
+    /// Cached query `StatsView`.
+    ///
+    /// Key = xxh3_128 of a canonical stats-view cache key string.
+    StatsView(u128),
     /// V3 (FLI3) decoded column batch. Content-addressed via `leaf_id`
     /// (derived from leaf CID) — immutable, self-invalidating on rewrite.
     /// `leaflet_idx` selects which leaflet within the leaf.
@@ -284,6 +288,7 @@ enum CachedEntry {
     Bm25Leaflet(Arc<[u8]>),
     VectorShard(Arc<crate::arena::vector::VectorShard>),
     LedgerInfo(Arc<[u8]>),
+    StatsView(Arc<StatsView>),
     /// V3 decoded column batch (base columns, no overlay/replay applied).
     V3Batch(super::column_types::ColumnBatch),
 }
@@ -303,6 +308,7 @@ impl CachedEntry {
                     + shard.values.capacity() * std::mem::size_of::<f32>()
             }
             CachedEntry::LedgerInfo(bytes) => bytes.len(),
+            CachedEntry::StatsView(view) => view.byte_size(),
             CachedEntry::V3Batch(batch) => batch.byte_size(),
         }
     }
@@ -522,6 +528,32 @@ impl LeafletCache {
     pub fn insert_ledger_info(&self, key: u128, bytes: Arc<[u8]>) {
         self.inner
             .insert(CacheKey::LedgerInfo(key), CachedEntry::LedgerInfo(bytes));
+    }
+
+    // ========================================================================
+    // Query StatsView cache
+    // ========================================================================
+
+    /// Get a cached query `StatsView` (read-only, no insertion).
+    pub fn get_stats_view(&self, key: u128) -> Option<Arc<StatsView>> {
+        match self.inner.get(&CacheKey::StatsView(key)) {
+            Some(CachedEntry::StatsView(view)) => Some(view),
+            _ => None,
+        }
+    }
+
+    /// Get or build a query `StatsView` in the unified cache.
+    pub fn get_or_build_stats_view<F>(&self, key: u128, build_fn: F) -> Arc<StatsView>
+    where
+        F: FnOnce() -> Arc<StatsView>,
+    {
+        let entry = self.inner.get_with(CacheKey::StatsView(key), || {
+            CachedEntry::StatsView(build_fn())
+        });
+        match entry {
+            CachedEntry::StatsView(view) => view,
+            _ => unreachable!("StatsView key always maps to StatsView entry"),
+        }
     }
 
     // ========================================================================
@@ -910,5 +942,17 @@ mod tests {
         let got = cache.try_get_or_load_dict_leaf(42, || Ok(data)).unwrap();
         assert_eq!(got.len(), 64);
         assert!(cache.get_dict_leaf(42).is_some());
+    }
+
+    #[test]
+    fn test_stats_view_cache_reuses_arc() {
+        let cache = LeafletCache::with_max_bytes(10 * 1024 * 1024);
+        let key = 123_u128;
+
+        let first = cache.get_or_build_stats_view(key, || Arc::new(StatsView::default()));
+        let second = cache.get_or_build_stats_view(key, || unreachable!("should hit cache"));
+
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(cache.get_stats_view(key).is_some());
     }
 }

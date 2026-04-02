@@ -25,6 +25,7 @@ rustc-hash = "2"
 
 # Cache
 moka.workspace = true
+fs2 = "0.4"
 
 # Concurrency
 once_cell.workspace = true

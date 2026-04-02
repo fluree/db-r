@@ -1020,3 +1020,170 @@ async fn vector_search_with_date_filter_property_join() {
         results[1].1
     );
 }
+
+// ---------------------------------------------------------------------------
+// SPARQL vector similarity function tests
+// ---------------------------------------------------------------------------
+
+/// Helper: insert vector test data and return the ledger state.
+async fn seed_vector_data(fluree: &support::MemoryFluree) -> support::MemoryLedger {
+    let ledger_id = "test/sparql-vector:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+
+    let ctx = json!([
+        support::default_context(),
+        {"ex": "http://example.org/ns/", "f": "https://ns.flur.ee/db#"}
+    ]);
+
+    let insert_txn = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:homer",
+                "ex:name": "Homer",
+                "ex:xVec": {"@value": [0.6, 0.5], "@type": "@vector"}
+            },
+            {
+                "@id": "ex:bart",
+                "ex:name": "Bart",
+                "ex:xVec": {"@value": [0.1, 0.9], "@type": "@vector"}
+            }
+        ]
+    });
+
+    fluree.insert(ledger0, &insert_txn).await.unwrap().ledger
+}
+
+/// SPARQL dotProduct via BIND
+#[tokio::test]
+async fn sparql_vector_dot_product() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_vector_data(&fluree).await;
+
+    let sparql = r#"
+        PREFIX ex: <http://example.org/ns/>
+        PREFIX f: <https://ns.flur.ee/db#>
+        SELECT ?name ?score
+        WHERE {
+            VALUES ?targetVec { "[0.7, 0.6]"^^f:embeddingVector }
+            ?x ex:xVec ?vec ;
+               ex:name ?name .
+            BIND(dotProduct(?vec, ?targetVec) AS ?score)
+        }
+        ORDER BY DESC(?score)
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, sparql)
+        .await
+        .expect("SPARQL dotProduct query");
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
+    let arr = rows.as_array().unwrap();
+
+    assert_eq!(arr.len(), 2);
+    // Homer: 0.6*0.7 + 0.5*0.6 = 0.72
+    assert_eq!(arr[0][0], "Homer");
+    assert!((arr[0][1].as_f64().unwrap() - 0.72).abs() < 0.01);
+    // Bart: 0.1*0.7 + 0.9*0.6 = 0.61
+    assert_eq!(arr[1][0], "Bart");
+    assert!((arr[1][1].as_f64().unwrap() - 0.61).abs() < 0.01);
+}
+
+/// SPARQL cosineSimilarity via BIND
+#[tokio::test]
+async fn sparql_vector_cosine_similarity() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_vector_data(&fluree).await;
+
+    let sparql = r#"
+        PREFIX ex: <http://example.org/ns/>
+        PREFIX f: <https://ns.flur.ee/db#>
+        SELECT ?name ?score
+        WHERE {
+            VALUES ?targetVec { "[0.7, 0.6]"^^f:embeddingVector }
+            ?x ex:xVec ?vec ;
+               ex:name ?name .
+            BIND(cosineSimilarity(?vec, ?targetVec) AS ?score)
+        }
+        ORDER BY DESC(?score)
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, sparql)
+        .await
+        .expect("SPARQL cosineSimilarity query");
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
+    let arr = rows.as_array().unwrap();
+
+    assert_eq!(arr.len(), 2);
+    // Homer's vector is more aligned with target direction
+    let homer_score = arr[0][1].as_f64().unwrap();
+    let bart_score = arr[1][1].as_f64().unwrap();
+    assert!(homer_score > bart_score, "Homer should rank higher");
+    // Cosine similarity should be in [-1, 1]
+    assert!((-1.0..=1.0).contains(&homer_score));
+    assert!((-1.0..=1.0).contains(&bart_score));
+}
+
+/// SPARQL euclideanDistance via BIND
+#[tokio::test]
+async fn sparql_vector_euclidean_distance() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_vector_data(&fluree).await;
+
+    let sparql = r#"
+        PREFIX ex: <http://example.org/ns/>
+        PREFIX f: <https://ns.flur.ee/db#>
+        SELECT ?name ?dist
+        WHERE {
+            VALUES ?targetVec { "[0.7, 0.6]"^^f:embeddingVector }
+            ?x ex:xVec ?vec ;
+               ex:name ?name .
+            BIND(euclideanDistance(?vec, ?targetVec) AS ?dist)
+        }
+        ORDER BY ?dist
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, sparql)
+        .await
+        .expect("SPARQL euclideanDistance query");
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
+    let arr = rows.as_array().unwrap();
+
+    assert_eq!(arr.len(), 2);
+    // Homer is closer to target (lower distance first due to ASC order)
+    assert_eq!(arr[0][0], "Homer");
+    assert_eq!(arr[1][0], "Bart");
+    let homer_dist = arr[0][1].as_f64().unwrap();
+    let bart_dist = arr[1][1].as_f64().unwrap();
+    assert!(homer_dist < bart_dist, "Homer should be closer");
+    assert!(homer_dist >= 0.0, "distance must be non-negative");
+}
+
+/// SPARQL vector similarity with FILTER on score
+#[tokio::test]
+async fn sparql_vector_with_score_filter() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_vector_data(&fluree).await;
+
+    let sparql = r#"
+        PREFIX ex: <http://example.org/ns/>
+        PREFIX f: <https://ns.flur.ee/db#>
+        SELECT ?name ?score
+        WHERE {
+            VALUES ?targetVec { "[0.7, 0.6]"^^f:embeddingVector }
+            ?x ex:xVec ?vec ;
+               ex:name ?name .
+            BIND(dotProduct(?vec, ?targetVec) AS ?score)
+            FILTER(?score > 0.65)
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, sparql)
+        .await
+        .expect("SPARQL dotProduct with FILTER");
+    let rows = result.to_jsonld(&ledger.snapshot).unwrap();
+    let arr = rows.as_array().unwrap();
+
+    // Only Homer (0.72) passes the threshold; Bart (0.61) does not
+    assert_eq!(arr.len(), 1);
+    assert_eq!(arr[0][0], "Homer");
+}

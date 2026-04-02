@@ -133,6 +133,10 @@ impl DerivedFactsOverlay {
 }
 
 impl OverlayProvider for DerivedFactsOverlay {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn epoch(&self) -> u64 {
         self.epoch
     }

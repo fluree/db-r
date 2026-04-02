@@ -5,7 +5,7 @@
 //!
 //! For example:
 //!   `fluree:ipfs://mydb/main/commit/abcdef0123456789...64hex.fcv2`
-//!   `fluree:ipfs://mydb/main/index/roots/abcdef0123456789...64hex.json`
+//!   `fluree:ipfs://mydb/main/index/roots/abcdef0123456789...64hex.fir6`
 //!
 //! To retrieve from IPFS, we extract the SHA-256 hash hex from the filename
 //! stem and construct a CID for `block_get`. Since Kubo resolves by multihash
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn test_extract_hash_from_index_address() {
         let hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-        let address = format!("fluree:ipfs://mydb/main/index/roots/{hash}.json");
+        let address = format!("fluree:ipfs://mydb/main/index/roots/{hash}.fir6");
         assert_eq!(extract_hash_hex(&address).unwrap(), hash);
     }
 

@@ -1,7 +1,7 @@
 use crate::binding::Binding;
 use crate::context::{ExecutionContext, WellKnownDatatypes};
 use crate::error::{QueryError, Result};
-use crate::fast_path_common::normalize_pred_sid;
+use crate::fast_path_common::{fast_path_store, normalize_pred_sid};
 use crate::operator::BoxedOperator;
 use crate::operator::{Operator, OperatorState};
 use crate::triple::Term;
@@ -23,7 +23,7 @@ use fluree_db_binary_index::{
 };
 use fluree_db_core::o_type::OType;
 use fluree_db_core::subject_id::SubjectId;
-use fluree_db_core::{FlakeValue, GraphId, Sid, StatsView};
+use fluree_db_core::{FlakeValue, GraphId, Sid};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -35,8 +35,15 @@ use std::sync::Arc;
 
 #[inline]
 fn should_fallback(ctx: &ExecutionContext<'_>) -> bool {
-    let has_store = ctx.graph_view().is_some() || ctx.binary_store.is_some();
-    !has_store || ctx.history_mode || ctx.policy_enforcer.is_some()
+    fast_path_store(ctx).is_none()
+}
+
+#[inline]
+fn allow_cursor_fast_path(ctx: &ExecutionContext<'_>) -> bool {
+    !ctx.is_multi_ledger()
+        && !ctx.history_mode
+        && ctx.from_t.is_none()
+        && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +88,6 @@ impl PredicateGroupCountFirstsOperator {
         count_var: VarId,
         predicate: crate::triple::Ref,
         limit: usize,
-        _stats: Option<Arc<StatsView>>,
     ) -> Self {
         Self {
             schema: Arc::from(vec![object_var, count_var].into_boxed_slice()),
@@ -224,7 +230,8 @@ impl Operator for PredicateGroupCountFirstsOperator {
             Arc::clone(binary_index_store),
             g_id,
             ctx.dict_novelty.clone(),
-        );
+        )
+        .with_namespace_codes_fallback(ctx.namespace_codes_fallback.clone());
 
         let batch_size = ctx.batch_size;
         let mut col_o: Vec<Binding> = Vec::with_capacity(batch_size);
@@ -318,7 +325,6 @@ impl PredicateObjectCountFirstsOperator {
         subject_var: VarId,
         object: Term,
         count_var: VarId,
-        _stats: Option<Arc<StatsView>>,
     ) -> Self {
         Self {
             schema: Arc::from(vec![count_var].into_boxed_slice()),
@@ -388,8 +394,10 @@ impl Operator for PredicateObjectCountFirstsOperator {
             return self.open_fallback(ctx).await;
         }
 
-        // Try V6 fast-path first (only when no overlay — overlay delta merge not yet implemented).
-        if ctx.overlay.is_none() {
+        // Try V6 fast-path first (only when no novelty overlay — overlay delta merge not yet implemented).
+        //
+        // `ExecutionContext` always carries an overlay provider; `NoOverlay` has epoch=0.
+        if ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 {
             if let Some(binary_index_store) = ctx.binary_store.as_ref() {
                 match count_bound_object_v6(
                     binary_index_store,
@@ -777,7 +785,7 @@ fn translate_term_to_v6(
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct ObjKey {
+struct ObjGroupKey {
     o_type: u16,
     o_key: u64,
 }
@@ -883,8 +891,7 @@ impl Operator for GroupByObjectStarTopKOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
-        let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
-        if allow_fast {
+        if allow_cursor_fast_path(ctx) {
             if let Some(store) = ctx.binary_store.as_ref() {
                 let Some(batch) = compute_group_by_object_star_topk(
                     store,
@@ -984,7 +991,7 @@ fn build_psot_cursor_for_predicate_group(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(None);
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     let min_key = RunRecordV2 {
         s_id: SubjectId(0),
@@ -1048,6 +1055,7 @@ fn build_psot_cursor_for_predicate_group(
                     flake,
                     store,
                     Some(&dn),
+                    ctx.runtime_small_dicts,
                     &mut ephemeral_preds,
                     &mut next_ep,
                 ) {
@@ -1095,9 +1103,10 @@ fn collect_subject_set_for_predicate_group(
     pred: &crate::triple::Ref,
     restrict_to: Option<&FxHashSet<u64>>,
 ) -> Result<Option<FxHashSet<u64>>> {
+    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
     let sid = ref_to_sid_group(store, pred)?;
     let Some(p_id) = store.sid_to_p_id(&sid) else {
-        return if ctx.overlay.is_some() {
+        return if overlay_has_rows {
             Ok(None)
         } else {
             Ok(Some(FxHashSet::default()))
@@ -1153,10 +1162,11 @@ fn compute_group_by_object_star_topk(
     sample_var: Option<VarId>,
     limit: usize,
 ) -> Result<Option<crate::binding::Batch>> {
+    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
     // Scan group predicate PSOT for (s_id, o_type, o_key).
     let sid = ref_to_sid_group(store, group_pred)?;
     let Some(p_id) = store.sid_to_p_id(&sid) else {
-        return if ctx.overlay.is_some() {
+        return if overlay_has_rows {
             Ok(None)
         } else {
             Ok(Some(crate::binding::Batch::empty(schema)?))
@@ -1180,14 +1190,14 @@ fn compute_group_by_object_star_topk(
     let want_max = max_var.is_some();
     let want_sample = sample_var.is_some();
 
-    let mut aggs: FxHashMap<ObjKey, AggStateStar> = FxHashMap::default();
+    let mut aggs: FxHashMap<ObjGroupKey, AggStateStar> = FxHashMap::default();
 
     // Preferred path (fast + low-memory): merge-join on subject IDs when there is exactly one filter predicate.
     if filter_preds.len() == 1 {
         let fp = &filter_preds[0];
         let fp_sid = ref_to_sid_group(store, fp)?;
         let Some(fp_id) = store.sid_to_p_id(&fp_sid) else {
-            return if ctx.overlay.is_some() {
+            return if overlay_has_rows {
                 Ok(None)
             } else {
                 Ok(Some(crate::binding::Batch::empty(schema)?))
@@ -1287,7 +1297,7 @@ fn compute_group_by_object_star_topk(
                             break;
                         }
                         let b = g_batch.as_ref().unwrap();
-                        let k = ObjKey {
+                        let k = ObjGroupKey {
                             o_type: b.o_type.get(g_i),
                             o_key: b.o_key.get(g_i),
                         };
@@ -1336,7 +1346,7 @@ fn compute_group_by_object_star_topk(
                 if !s_set.contains(&s) {
                     continue;
                 }
-                let k = ObjKey {
+                let k = ObjGroupKey {
                     o_type: batch.o_type.get(i),
                     o_key: batch.o_key.get(i),
                 };
@@ -1355,7 +1365,7 @@ fn compute_group_by_object_star_topk(
     }
 
     // Select top-k by count desc.
-    let mut rows: Vec<(ObjKey, AggStateStar)> = aggs.into_iter().collect();
+    let mut rows: Vec<(ObjGroupKey, AggStateStar)> = aggs.into_iter().collect();
     rows.sort_unstable_by(|a, b| {
         b.1.count.cmp(&a.1.count).then_with(|| {
             a.0.o_type
@@ -1368,7 +1378,8 @@ fn compute_group_by_object_star_topk(
     }
 
     // Build output columns.
-    let view = BinaryGraphView::with_novelty(Arc::clone(store), g_id, ctx.dict_novelty.clone());
+    let view = BinaryGraphView::with_novelty(Arc::clone(store), g_id, ctx.dict_novelty.clone())
+        .with_namespace_codes_fallback(ctx.namespace_codes_fallback.clone());
     let dt_count = WellKnownDatatypes::new().xsd_long;
 
     let mut col_o1: Vec<Binding> = Vec::with_capacity(rows.len());

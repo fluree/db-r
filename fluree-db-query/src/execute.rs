@@ -64,7 +64,6 @@ use crate::error::Result;
 use crate::var_registry::VarRegistry;
 use fluree_db_core::{GraphDbRef, Tracker};
 
-pub use runner::prepare_execution;
 use runner::{
     execute_prepared_with_dataset, execute_prepared_with_dataset_and_bm25,
     execute_prepared_with_dataset_and_policy, execute_prepared_with_dataset_and_policy_and_bm25,
@@ -73,6 +72,7 @@ use runner::{
     execute_prepared_with_overlay, execute_prepared_with_overlay_tracked,
     execute_prepared_with_policy, execute_prepared_with_r2rml,
 };
+pub use runner::{prepare_execution, prepare_execution_with_binary_store};
 
 /// Execute a query with an overlay
 ///

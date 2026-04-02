@@ -32,6 +32,37 @@ impl fmt::Display for PredicateId {
 }
 
 // ---------------------------------------------------------------------------
+// RuntimePredicateId
+// ---------------------------------------------------------------------------
+
+/// Ledger-scoped runtime predicate ID (u32).
+///
+/// Persisted predicate IDs retain their original values; novelty-only
+/// predicates are appended above the persisted count for the lifetime of a
+/// ledger state.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[repr(transparent)]
+pub struct RuntimePredicateId(pub u32);
+
+impl RuntimePredicateId {
+    #[inline]
+    pub fn as_u32(self) -> u32 {
+        self.0
+    }
+
+    #[inline]
+    pub fn from_u32(v: u32) -> Self {
+        Self(v)
+    }
+}
+
+impl fmt::Display for RuntimePredicateId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RuntimePredicateId({})", self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GraphId
 // ---------------------------------------------------------------------------
 
@@ -273,5 +304,36 @@ impl DatatypeDictId {
 impl fmt::Display for DatatypeDictId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DatatypeDictId({})", self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RuntimeDatatypeId
+// ---------------------------------------------------------------------------
+
+/// Ledger-scoped runtime datatype ID (u16).
+///
+/// Persisted datatype dictionary IDs retain their original values; novelty-only
+/// datatypes are appended above the persisted count for the lifetime of a
+/// ledger state.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+#[repr(transparent)]
+pub struct RuntimeDatatypeId(pub u16);
+
+impl RuntimeDatatypeId {
+    #[inline]
+    pub fn as_u16(self) -> u16 {
+        self.0
+    }
+
+    #[inline]
+    pub fn from_u16(v: u16) -> Self {
+        Self(v)
+    }
+}
+
+impl fmt::Display for RuntimeDatatypeId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RuntimeDatatypeId({})", self.0)
     }
 }

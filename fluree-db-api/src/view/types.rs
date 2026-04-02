@@ -8,7 +8,7 @@ use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::ids::GraphId;
 use fluree_db_core::ledger_config::{LedgerConfig, ResolvedConfig};
-use fluree_db_core::{GraphDbRef, LedgerSnapshot, NoOverlay, OverlayProvider};
+use fluree_db_core::{GraphDbRef, LedgerSnapshot, NoOverlay, OverlayProvider, RuntimeSmallDicts};
 use fluree_db_ledger::{HistoricalLedgerView, LedgerState};
 use fluree_db_novelty::Novelty;
 use fluree_db_policy::PolicyContext;
@@ -137,6 +137,9 @@ pub struct GraphDb {
     /// Dictionary novelty layer for binary scan subject/string lookups.
     pub(crate) dict_novelty: Option<Arc<DictNovelty>>,
 
+    /// Ledger-scoped runtime IDs for predicates and datatypes.
+    pub(crate) runtime_small_dicts: Option<Arc<RuntimeSmallDicts>>,
+
     /// Default JSON-LD context for queries that don't provide their own.
     ///
     /// Populated from turtle `@prefix` declarations captured during import.
@@ -227,6 +230,7 @@ impl GraphDb {
             reasoning_precedence: ReasoningModePrecedence::default(),
             binary_store: None,
             dict_novelty: None,
+            runtime_small_dicts: None,
             default_context: None,
             ledger_config: None,
             resolved_config: None,
@@ -257,6 +261,7 @@ impl GraphDb {
             ledger.ledger_id(),
         );
         gdb.dict_novelty = Some(ledger.dict_novelty.clone());
+        gdb.runtime_small_dicts = Some(ledger.runtime_small_dicts.clone());
         // Extract binary_store from LedgerState's TypeErasedStore
         gdb.binary_store = ledger
             .binary_store
@@ -285,13 +290,15 @@ impl GraphDb {
                 None => (Arc::new(NoOverlay) as Arc<dyn OverlayProvider>, None),
             };
 
-        Self::new(
+        let mut gdb = Self::new(
             Arc::new(view.snapshot.clone()),
             overlay,
             novelty,
             view.to_t(),
             view.snapshot.ledger_id.as_str(),
-        )
+        );
+        gdb.runtime_small_dicts = view.runtime_small_dicts().cloned();
+        gdb
     }
 }
 
@@ -319,7 +326,9 @@ impl GraphDb {
         // both committed and staged data.
         let mut combined = (*base.novelty).clone();
         let staged_flakes = staged.view.staged_flakes().to_vec();
+        let mut runtime_small_dicts = (*base.runtime_small_dicts).clone();
         if !staged_flakes.is_empty() {
+            runtime_small_dicts.populate_from_flakes(&staged_flakes);
             let reverse_graph = base
                 .snapshot
                 .build_reverse_graph()
@@ -343,6 +352,7 @@ impl GraphDb {
             base.ledger_id(),
         );
         gdb.dict_novelty = Some(base.dict_novelty.clone());
+        gdb.runtime_small_dicts = Some(Arc::new(runtime_small_dicts));
         // Carry binary store from the base ledger state
         gdb.binary_store = base
             .binary_store
@@ -374,6 +384,7 @@ impl GraphDb {
             base.t(),
             base.ledger_id(),
         );
+        gdb.runtime_small_dicts = Some(base.runtime_small_dicts.clone());
         // Carry binary store from the base ledger state
         gdb.binary_store = base
             .binary_store
@@ -430,7 +441,12 @@ impl GraphDb {
 impl GraphDb {
     /// Create a `GraphDbRef` bundling snapshot, graph id, overlay, and time.
     pub fn as_graph_db_ref(&self) -> GraphDbRef<'_> {
-        GraphDbRef::new(&self.snapshot, self.graph_id, &*self.overlay, self.t)
+        let db = GraphDbRef::new(&self.snapshot, self.graph_id, &*self.overlay, self.t);
+        if let Some(runtime_small_dicts) = self.runtime_small_dicts.as_deref() {
+            db.with_runtime_small_dicts(runtime_small_dicts)
+        } else {
+            db
+        }
     }
 }
 
@@ -454,9 +470,10 @@ impl GraphDb {
     ///
     /// Returns `None` if no binary store is attached.
     pub fn binary_graph(&self) -> Option<BinaryGraphView> {
-        self.binary_store
-            .as_ref()
-            .map(|store| BinaryGraphView::new(store.clone(), self.graph_id))
+        self.binary_store.as_ref().map(|store| {
+            BinaryGraphView::new(store.clone(), self.graph_id)
+                .with_namespace_codes_fallback(Some(Arc::new(self.snapshot.namespaces().clone())))
+        })
     }
 }
 
@@ -749,6 +766,7 @@ impl std::fmt::Debug for DerivedFactsHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::{RuntimeSmallDicts, Sid};
 
     fn make_test_snapshot() -> LedgerSnapshot {
         LedgerSnapshot::genesis("test:main")
@@ -893,5 +911,28 @@ mod tests {
         assert_eq!(view1.t, view2.t);
         assert_eq!(&*view1.ledger_id, &*view2.ledger_id);
         assert!(view2.reasoning().is_some());
+    }
+
+    #[test]
+    fn test_from_historical_carries_runtime_small_dicts() {
+        let snapshot = make_test_snapshot();
+        let mut historical = HistoricalLedgerView::new(snapshot, None, 7);
+        let runtime_small_dicts = Arc::new(RuntimeSmallDicts::from_seeded_sids(
+            [Sid::new(10, "name")],
+            [Sid::new(
+                fluree_vocab::namespaces::XSD,
+                fluree_vocab::xsd_names::STRING,
+            )],
+        ));
+        historical.set_runtime_small_dicts(Arc::clone(&runtime_small_dicts));
+
+        let view = GraphDb::from_historical(&historical);
+
+        assert_eq!(
+            view.runtime_small_dicts
+                .as_ref()
+                .and_then(|dicts| dicts.predicate_id(&Sid::new(10, "name"))),
+            Some(fluree_db_core::RuntimePredicateId::from_u32(0))
+        );
     }
 }

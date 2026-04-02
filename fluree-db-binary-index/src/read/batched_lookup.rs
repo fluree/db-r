@@ -58,7 +58,7 @@ pub fn batched_lookup_predicate_refs(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(out);
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     let iri_ref = OType::IRI_REF.as_u16();
 

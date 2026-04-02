@@ -967,6 +967,69 @@ mem:fact-01kkvp4tyedrqvbxqfnyhabav7 a mem:Fact ;
     mem:artifactRef "fluree-db-api/tests/it_ledger_info_reindex_size.rs" ;
     mem:createdAt "2026-03-16T16:02:28.430817+00:00"^^xsd:dateTime .
 
+mem:fact-01km05a22f35014yhvmk8m2ztk a mem:Fact ;
+    mem:content "Default-context (and other CAS namespaced blobs) must be stored/fetched under the *canonical* ledger ID (`NsRecord.ledger_id`, e.g. `mydb:main`) because `content_store_for(storage, namespace_id)` and `disconnect_ledger()` use that canonical key. If API methods accept user-provided aliases (`mydb`), do a `nameservice.lookup()` once and use `record.ledger_id` for: content store namespace, config get/push, and cache invalidation; otherwise blobs can be written under `mydb/...` but later looked up under `mydb/main/...` and appear missing, and cache invalidation may fail.\n\nAlso: if writing a new blob *before* a CAS push loop, delete the new blob on final CAS conflict to avoid orphan/leaked objects (best-effort GC)." ;
+    mem:tag "cache" ;
+    mem:tag "cas" ;
+    mem:tag "config" ;
+    mem:tag "content-store" ;
+    mem:tag "default-context" ;
+    mem:tag "gc" ;
+    mem:tag "ledger-id" ;
+    mem:tag "nameservice" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-core/src/storage.rs" ;
+    mem:artifactRef "fluree-db-ledger/src/lib.rs" ;
+    mem:createdAt "2026-03-18T09:44:25.935126+00:00"^^xsd:dateTime .
+
+mem:fact-01km06cy17rja09n90v3a50fve a mem:Fact ;
+    mem:content "Default-context (and other CAS namespaced blobs) must be stored/fetched under the *canonical* ledger ID (`NsRecord.ledger_id`, e.g. `mydb:main`) because `content_store_for(storage, namespace_id)` and `disconnect_ledger()` use that canonical key. If API methods accept user-provided aliases (`mydb`), do a `nameservice.lookup()` once and use `record.ledger_id` for: content store namespace, config get/push, and cache invalidation; otherwise blobs can be written under `mydb/...` but later looked up under `mydb/main/...` and appear missing, and cache invalidation may fail.\n\nAlso: if writing a new blob *before* a CAS push loop, delete the new blob on final CAS conflict to avoid orphan/leaked objects (best-effort GC)." ;
+    mem:tag "cache" ;
+    mem:tag "cas" ;
+    mem:tag "config" ;
+    mem:tag "content-store" ;
+    mem:tag "default-context" ;
+    mem:tag "gc" ;
+    mem:tag "ledger-id" ;
+    mem:tag "nameservice" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-core/src/storage.rs" ;
+    mem:artifactRef "fluree-db-ledger/src/lib.rs" ;
+    mem:artifactRef "fluree-db-nameservice/src/lib.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/context.rs" ;
+    mem:supersedes mem:fact-01km05a22f35014yhvmk8m2ztk ;
+    mem:createdAt "2026-03-18T10:03:28.680101+00:00"^^xsd:dateTime .
+
+mem:fact-01km06dhjzpgyvbs1yc5h0h28e a mem:Fact ;
+    mem:content "Default context feature -- end-to-end architecture:\n\nWhat: Per-ledger JSON object mapping prefixes to IRIs (e.g. {\"ex\": \"http://example.org/\"}). Applied automatically to queries/transactions that omit their own @context.\n\nStorage: Context JSON blob lives in CAS (content-addressed storage) keyed by ContentId. The ContentId pointer is stored in ConfigPayload.default_context within the nameservice config (ConfigPublisher trait).\n\nPopulation paths:\n1. Bulk import (fluree create --from) -- store_default_context() in import.rs captures Turtle @prefix declarations + built-in prefixes and writes to CAS/nameservice\n2. API -- Fluree::set_default_context() in lib.rs (requires N: ConfigPublisher)\n3. HTTP -- PUT /v1/fluree/context/*ledger in routes/context.rs\n4. CLI -- fluree context set in commands/context_cmd.rs\n\nRead paths:\n1. Ledger loading -- ledger_manager.rs reads NsRecord.default_context CID, fetches blob from CAS, stores in LedgerState.default_context\n2. SPARQL query -- SparqlProcessor merges default context prefixes as fallback when query has no explicit PREFIX\n3. JSON-LD query -- default context merged when query omits @context\n4. API -- Fluree::get_default_context() reads config + CAS directly\n5. HTTP -- GET /v1/fluree/context/*ledger\n\nPrecedence: Query-level @context/PREFIX > ledger default context > built-in prefixes (rdf, rdfs, xsd, owl, sh, geo).\n\nConcurrency: Updates use CAS (compare-and-set) via ConfigPublisher::push_config() with retry loop (3 attempts). Backend-specific: S3 uses ETags, DynamoDB conditional expressions, File uses flock(), Memory uses parking_lot::RwLock.\n\nCache invalidation: After update, disconnect_ledger() evicts cached LedgerState so next query reloads with new context.\n\nProxy mode: ProxyNameService does NOT implement ConfigPublisher, so context writes are only available on the tx server. Proxy GET reads from cached LedgerState.default_context." ;
+    mem:tag "api" ;
+    mem:tag "cas" ;
+    mem:tag "cli" ;
+    mem:tag "default-context" ;
+    mem:tag "http-endpoint" ;
+    mem:tag "nameservice" ;
+    mem:tag "prefix" ;
+    mem:tag "sparql" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/api/endpoints.md" ;
+    mem:artifactRef "docs/cli/context.md" ;
+    mem:artifactRef "docs/concepts/iri-and-context.md" ;
+    mem:artifactRef "fluree-db-api/src/import.rs" ;
+    mem:artifactRef "fluree-db-api/src/ledger_manager.rs" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/context_cmd.rs" ;
+    mem:artifactRef "fluree-db-nameservice/src/lib.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/context.rs" ;
+    mem:branch "feature/default-context" ;
+    mem:createdAt "2026-03-18T10:03:48.703812+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+
 mem:fact-01km33dyv5wxhrxt4gnqra4xwb a mem:Fact ;
     mem:content "Ledger cache incremental refresh gotchas:\n- `LedgerState::apply_loaded_db(new_snapshot, ...)` replaces `snapshot` and trims `novelty` via `clear_up_to(new_snapshot.t)` but **does not reapply commit envelope deltas** (namespace_codes + graph_registry) for any remaining novelty commits with `t > new_snapshot.t`. If you keep novelty after an index advance, you must preserve/merge those deltas (or re-trace remaining commits) or queries/commit-apply may fail due to missing namespace prefixes / graph routing.\n- When wiring binary v2 index via `BinaryRangeProvider`, the provider's `DictNovelty` must be the same `state.dict_novelty` that is reset/populated after index application. Using `DictNovelty::new_uninitialized()` (or any detached Arc) can break overlay translation for subject/string IDs introduced in novelty.\n- Likewise, `BinaryIndexStore::augment_namespace_codes(&snapshot.namespace_codes)` is needed when novelty introduces new namespace codes not in the index root (prefix trie + decode correctness)." ;
     mem:tag "binary-index" ;

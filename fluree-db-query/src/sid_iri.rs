@@ -11,7 +11,13 @@ use std::io;
 /// (common for novelty-only subjects or post-index namespace allocations).
 #[inline]
 pub(crate) fn sid_to_store_s_id(store: &BinaryIndexStore, sid: &Sid) -> io::Result<Option<u64>> {
-    store.find_subject_id_by_parts(sid.namespace_code, &sid.name)
+    if let Some(s_id) = store.find_subject_id_by_parts(sid.namespace_code, &sid.name)? {
+        return Ok(Some(s_id));
+    }
+    match store.sid_to_iri(sid) {
+        Some(iri) => store.find_subject_id(&iri),
+        None => Ok(None),
+    }
 }
 
 /// Translate a query-space `Sid` into a persisted predicate ID filter (`p_id`) for the binary store.

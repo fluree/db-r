@@ -38,18 +38,27 @@ impl StatsCountByPredicateOperator {
 
     fn build_rows(&self, ctx: &ExecutionContext<'_>) -> Result<Vec<(Binding, Binding)>> {
         let dt = WellKnownDatatypes::new().xsd_long;
+        let store = ctx.binary_store.as_deref();
 
         // Prefer graph-scoped stats if present (and we can resolve p_id → Sid).
-        if let (Some(store), Some(props)) = (
-            ctx.binary_store.as_deref(),
-            self.stats.get_graph_properties(ctx.binary_g_id),
-        ) {
+        if let Some(props) = self.stats.get_graph_properties(ctx.binary_g_id) {
             let mut out = Vec::with_capacity(props.len());
             for (&p_id, data) in props.iter() {
-                let Some(iri) = store.resolve_predicate_iri(p_id) else {
+                let pred_sid = ctx
+                    .runtime_small_dicts
+                    .and_then(|dicts| dicts.predicate_sid(p_id))
+                    .cloned()
+                    .or_else(|| {
+                        // Safe only for persisted-range IDs: runtime-only predicate IDs are
+                        // resolved above through `runtime_small_dicts`, so reaching this
+                        // fallback implies `p_id` can be interpreted in persisted store space.
+                        store
+                            .and_then(|store| store.resolve_predicate_iri(p_id.as_u32()))
+                            .map(|iri| store.expect("store already used above").encode_iri(iri))
+                    });
+                let Some(pred_sid) = pred_sid else {
                     continue;
                 };
-                let pred_sid = store.encode_iri(iri);
                 let pred = Binding::Sid(pred_sid);
                 let count = Binding::lit(FlakeValue::Long(data.count as i64), dt.clone());
                 out.push((pred, count));

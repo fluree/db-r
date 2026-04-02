@@ -534,6 +534,61 @@ async fn main() -> Result<()> {
 
 **Note:** `StagedGraph` currently supports querying only. Staging on top of a staged transaction and committing from a `StagedGraph` are not yet supported.
 
+### Export Data
+
+Stream ledger data as Turtle, N-Triples, N-Quads, TriG, or JSON-LD using the builder API:
+
+```rust
+use fluree_db_api::{FlureeBuilder, Result};
+use fluree_db_api::export::ExportFormat;
+use std::io::BufWriter;
+use std::fs::File;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data").build()?;
+
+    // Export as Turtle to a file
+    let file = File::create("backup.ttl").unwrap();
+    let mut writer = BufWriter::new(file);
+    let stats = fluree.export("mydb")
+        .format(ExportFormat::Turtle)
+        .write_to(&mut writer)
+        .await?;
+    println!("Exported {} triples", stats.triples_written);
+
+    // Export as JSON-LD with custom prefixes
+    let mut buf = Vec::new();
+    let stats = fluree.export("mydb")
+        .format(ExportFormat::JsonLd)
+        .context(&serde_json::json!({"ex": "http://example.org/"}))
+        .write_to(&mut buf)
+        .await?;
+
+    // Export all graphs as N-Quads (dataset export)
+    let stats = fluree.export("mydb")
+        .format(ExportFormat::NQuads)
+        .all_graphs()
+        .to_stdout()
+        .await?;
+
+    Ok(())
+}
+```
+
+All formats stream directly from the binary SPOT index. Memory usage is O(leaflet size) for line-oriented formats and O(largest subject) for JSON-LD, regardless of dataset size.
+
+**Builder methods:**
+- `.format(ExportFormat)` — output format (default: Turtle)
+- `.all_graphs()` — include all named graphs including system graphs (requires TriG or NQuads)
+- `.graph("iri")` — export a specific named graph by IRI
+- `.as_of(TimeSpec)` — time-travel export (transaction number, ISO-8601 datetime, or commit CID prefix)
+- `.context(&json)` — override prefix map (default: ledger's context from nameservice)
+- `.write_to(&mut writer)` — stream to any `Write` sink
+- `.to_stdout()` — convenience for stdout output
+
+See also: [CLI export](../cli/export.md) for command-line usage.
+
 ### Materialize for Reuse
 
 When you need to run multiple queries against the same snapshot, materialize a `GraphSnapshot` once:
@@ -1713,22 +1768,27 @@ The response includes:
 
 #### Stats freshness (real-time vs indexed)
 
-The `stats` section mixes **real-time** values (indexed + novelty deltas) with values that are only available **as-of the last index**.
+The `stats` section now uses layered runtime stats assembly:
+
+- Default `ledger_info()` uses the full novelty-aware path, including lookup-backed class/ref enrichment.
+- `with_realtime_property_details(false)` downgrades to the lighter fast novelty-aware merge (`Indexed` + novelty deltas, no extra lookups).
+- HLL / NDV fields remain index-derived, so they are omitted by default and only included via `with_property_estimates(true)`.
+
+That means the payload still mixes **real-time** values (indexed + novelty deltas) with values that are only available **as-of the last index**.
 
 - **Real-time (includes novelty)**:
   - `stats.flakes`, `stats.size`
   - `stats.properties[*].count` (but not NDV)
-  - `stats.properties[*].datatypes` is real-time **only when** `with_realtime_property_details(true)` is used
+  - `stats.properties[*].datatypes` by default
   - `stats.classes[*].count`
   - `stats.classes[*].property-list` and `stats.classes[*].properties` (property presence)
-  - `stats.classes[*].properties[*].refs` is real-time **only when** `with_realtime_property_details(true)` is used
+  - `stats.classes[*].properties[*].refs` by default
 
 - **As-of last index**:
   - `stats.indexed` (the index \(t\))
-  - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects`
-  - `stats.properties[*].datatypes` (when included via `with_property_datatypes(true)`) is as-of last index unless `with_realtime_property_details(true)` is used
+  - `stats.properties[*].ndv-values`, `stats.properties[*].ndv-subjects` when explicitly included via `with_property_estimates(true)`
   - Any selectivity derived from NDV values
-  - `stats.classes[*].properties[*].refs` (ref target class counts), which are computed during indexing unless `with_realtime_property_details(true)` is used
+  - `stats.classes[*].properties[*].refs` only when callers explicitly disable full detail with `with_realtime_property_details(false)`
 
 ## Nameservice Query API
 

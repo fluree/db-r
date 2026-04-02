@@ -9,6 +9,7 @@
 
 use fluree_db_core::Sid;
 use fluree_graph_json_ld::{ContextCompactor, ParsedContext};
+use fluree_vocab::namespaces;
 use std::collections::{HashMap, HashSet};
 
 use super::{FormatError, Result};
@@ -89,6 +90,9 @@ impl IriCompactor {
     /// Returns an error if the namespace code is not registered (this indicates
     /// a serious invariant violation: we should never have Sids we cannot decode).
     pub fn decode_sid(&self, sid: &Sid) -> Result<String> {
+        if sid.namespace_code == namespaces::EMPTY || sid.namespace_code == namespaces::OVERFLOW {
+            return Ok(sid.name.to_string());
+        }
         let prefix = self
             .namespace_codes
             .get(&sid.namespace_code)

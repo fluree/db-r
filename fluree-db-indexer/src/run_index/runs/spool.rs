@@ -645,6 +645,338 @@ impl Iterator for SpoolReader {
 }
 
 // ============================================================================
+// Import sorted-commit V2 files
+// ============================================================================
+
+/// Magic bytes for a V2-native sorted-commit artifact.
+pub const SORTED_COMMIT_V2_MAGIC: [u8; 4] = *b"FSV2";
+
+/// Fixed header length in bytes for versioned V2 sorted-commit files.
+pub const SORTED_COMMIT_V2_HEADER_LEN: usize = 32;
+
+#[derive(Debug, Clone, Copy)]
+struct SortedCommitV2Header {
+    version: u8,
+    flags: u8,
+    chunk_idx: u32,
+    record_count: u64,
+}
+
+impl SortedCommitV2Header {
+    fn write_to(&self, buf: &mut [u8]) {
+        debug_assert!(buf.len() >= SORTED_COMMIT_V2_HEADER_LEN);
+        buf[0..4].copy_from_slice(&SORTED_COMMIT_V2_MAGIC);
+        buf[4] = self.version;
+        buf[5] = self.flags;
+        buf[6..8].fill(0);
+        buf[8..12].copy_from_slice(&self.chunk_idx.to_le_bytes());
+        buf[12..20].copy_from_slice(&self.record_count.to_le_bytes());
+        buf[20..32].fill(0);
+    }
+
+    fn read_from(buf: &[u8]) -> io::Result<Self> {
+        if buf.len() < SORTED_COMMIT_V2_HEADER_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "sorted commit v2 header too small: {} < {}",
+                    buf.len(),
+                    SORTED_COMMIT_V2_HEADER_LEN
+                ),
+            ));
+        }
+        if buf[0..4] != SORTED_COMMIT_V2_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sorted commit v2: invalid magic bytes",
+            ));
+        }
+        let version = buf[4];
+        if version != 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("sorted commit v2: unsupported version {}", version),
+            ));
+        }
+        Ok(Self {
+            version,
+            flags: buf[5],
+            chunk_idx: u32::from_le_bytes(buf[8..12].try_into().unwrap()),
+            record_count: u64::from_le_bytes(buf[12..20].try_into().unwrap()),
+        })
+    }
+}
+
+/// Buffered writer for V2-native import sorted commits.
+pub struct SortedCommitWriterV2 {
+    inner: SpoolWriterInner,
+    path: PathBuf,
+    record_count: u64,
+    chunk_idx: usize,
+    flags: u8,
+}
+
+impl SortedCommitWriterV2 {
+    pub fn new(path: impl Into<PathBuf>, chunk_idx: usize) -> io::Result<Self> {
+        Self::new_with_options(path, chunk_idx, SpoolWriteOptions::default())
+    }
+
+    fn new_with_options(
+        path: impl Into<PathBuf>,
+        chunk_idx: usize,
+        options: SpoolWriteOptions,
+    ) -> io::Result<Self> {
+        let path = path.into();
+        let mut file = std::fs::File::create(&path)?;
+
+        let flags = if options.compress_zstd {
+            SPOOL_FLAG_ZSTD
+        } else {
+            0
+        };
+
+        let header = SortedCommitV2Header {
+            version: 2,
+            flags,
+            chunk_idx: chunk_idx as u32,
+            record_count: 0,
+        };
+        let mut header_buf = [0u8; SORTED_COMMIT_V2_HEADER_LEN];
+        header.write_to(&mut header_buf);
+        file.write_all(&header_buf)?;
+
+        let inner = if options.compress_zstd {
+            let mut enc = zstd::stream::write::Encoder::new(file, options.zstd_level)?;
+            enc.include_checksum(true)?;
+            SpoolWriterInner::Zstd(enc)
+        } else {
+            SpoolWriterInner::Raw(BufWriter::with_capacity(256 * 1024, file))
+        };
+
+        Ok(Self {
+            inner,
+            path,
+            record_count: 0,
+            chunk_idx,
+            flags,
+        })
+    }
+
+    #[inline]
+    pub fn push(&mut self, record: &RunRecordV2) -> io::Result<()> {
+        let mut buf = [0u8; fluree_db_binary_index::format::run_record_v2::SPOOL_V2_WIRE_SIZE];
+        record.write_spool_le(&mut buf);
+        match &mut self.inner {
+            SpoolWriterInner::Raw(w) => w.write_all(&buf)?,
+            SpoolWriterInner::Zstd(w) => w.write_all(&buf)?,
+        }
+        self.record_count += 1;
+        Ok(())
+    }
+
+    pub fn finish(self) -> io::Result<SpoolFileInfo> {
+        let mut file = match self.inner {
+            SpoolWriterInner::Raw(mut w) => {
+                w.flush()?;
+                w.into_inner().map_err(|e| e.into_error())?
+            }
+            SpoolWriterInner::Zstd(w) => w.finish()?,
+        };
+
+        file.seek(SeekFrom::Start(0))?;
+        let header = SortedCommitV2Header {
+            version: 2,
+            flags: self.flags,
+            chunk_idx: self.chunk_idx as u32,
+            record_count: self.record_count,
+        };
+        let mut header_buf = [0u8; SORTED_COMMIT_V2_HEADER_LEN];
+        header.write_to(&mut header_buf);
+        file.write_all(&header_buf)?;
+        file.flush()?;
+
+        let byte_len = file.metadata()?.len();
+        Ok(SpoolFileInfo {
+            path: self.path,
+            record_count: self.record_count,
+            byte_len,
+            chunk_idx: self.chunk_idx,
+        })
+    }
+}
+
+/// Sequential reader for V2-native import sorted commits.
+pub struct SortedCommitReaderV2 {
+    inner: SpoolReaderInner,
+    remaining: u64,
+}
+
+impl SortedCommitReaderV2 {
+    pub fn open(path: impl AsRef<Path>, record_count: u64) -> io::Result<Self> {
+        let mut file = std::fs::File::open(path.as_ref())?;
+        let mut magic = [0u8; 4];
+        file.read_exact(&mut magic)?;
+        file.seek(SeekFrom::Start(0))?;
+
+        if magic != SORTED_COMMIT_V2_MAGIC {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "sorted commit v2: expected magic {:?}, got {:?}",
+                    SORTED_COMMIT_V2_MAGIC, magic
+                ),
+            ));
+        }
+
+        let mut header_buf = [0u8; SORTED_COMMIT_V2_HEADER_LEN];
+        file.read_exact(&mut header_buf)?;
+        let header = SortedCommitV2Header::read_from(&header_buf)?;
+
+        if header.record_count != record_count {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "sorted commit v2 header record_count mismatch: header={}, expected={}",
+                    header.record_count, record_count
+                ),
+            ));
+        }
+
+        if (header.flags & SPOOL_FLAG_ZSTD) != 0 {
+            let dec = zstd::stream::read::Decoder::new(file)?;
+            Ok(Self {
+                inner: SpoolReaderInner::Zstd(io::BufReader::with_capacity(256 * 1024, dec)),
+                remaining: record_count,
+            })
+        } else {
+            let expected_size = (SORTED_COMMIT_V2_HEADER_LEN as u64)
+                + record_count
+                    * fluree_db_binary_index::format::run_record_v2::SPOOL_V2_WIRE_SIZE as u64;
+            let actual_size = std::fs::metadata(path.as_ref())?.len();
+            if actual_size < expected_size {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "sorted commit v2 file truncated: expected {} bytes (header {} + {} records × {}), got {}",
+                        expected_size,
+                        SORTED_COMMIT_V2_HEADER_LEN,
+                        record_count,
+                        fluree_db_binary_index::format::run_record_v2::SPOOL_V2_WIRE_SIZE,
+                        actual_size
+                    ),
+                ));
+            }
+            Ok(Self {
+                inner: SpoolReaderInner::Raw(io::BufReader::with_capacity(256 * 1024, file)),
+                remaining: record_count,
+            })
+        }
+    }
+
+    pub fn next_record(&mut self) -> io::Result<Option<RunRecordV2>> {
+        if self.remaining == 0 {
+            return Ok(None);
+        }
+        let mut buf = [0u8; fluree_db_binary_index::format::run_record_v2::SPOOL_V2_WIRE_SIZE];
+        match &mut self.inner {
+            SpoolReaderInner::Raw(r) => r.read_exact(&mut buf)?,
+            SpoolReaderInner::Zstd(r) => r.read_exact(&mut buf)?,
+        }
+        self.remaining -= 1;
+        Ok(Some(RunRecordV2::read_spool_le(&buf)))
+    }
+}
+
+impl Iterator for SortedCommitReaderV2 {
+    type Item = io::Result<RunRecordV2>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.next_record() {
+            Ok(Some(rec)) => Some(Ok(rec)),
+            Ok(None) => None,
+            Err(e) => Some(Err(e)),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let r = self.remaining as usize;
+        (r, Some(r))
+    }
+}
+
+/// Merge source that streams V2 sorted-commit records, applies global remaps,
+/// and exposes the result through the standard V2 merge interface.
+pub struct SortedCommitMergeReaderV2<S: SubjectRemap, R: StringRemap> {
+    reader: SortedCommitReaderV2,
+    subject_remap: S,
+    string_remap: R,
+    lang_remap: Vec<u16>,
+    target_g_id: u16,
+    current: Option<RunRecordV2>,
+}
+
+impl<S: SubjectRemap, R: StringRemap> SortedCommitMergeReaderV2<S, R> {
+    pub fn open(
+        path: impl AsRef<Path>,
+        record_count: u64,
+        subject_remap: S,
+        string_remap: R,
+        lang_remap: Vec<u16>,
+        target_g_id: u16,
+    ) -> io::Result<Self> {
+        let mut reader = Self {
+            reader: SortedCommitReaderV2::open(path, record_count)?,
+            subject_remap,
+            string_remap,
+            lang_remap,
+            target_g_id,
+            current: None,
+        };
+        reader.advance_to_next()?;
+        Ok(reader)
+    }
+
+    fn advance_to_next(&mut self) -> io::Result<()> {
+        self.current = None;
+        while let Some(mut record) = self.reader.next_record()? {
+            if record.g_id != self.target_g_id {
+                continue;
+            }
+            let lang_remap = if self.lang_remap.is_empty() {
+                None
+            } else {
+                Some(self.lang_remap.as_slice())
+            };
+            remap_v2_record(
+                &mut record,
+                &self.subject_remap,
+                &self.string_remap,
+                lang_remap,
+            )?;
+            self.current = Some(record);
+            return Ok(());
+        }
+        Ok(())
+    }
+}
+
+impl<S: SubjectRemap, R: StringRemap> crate::run_index::runs::streaming_reader::MergeSource
+    for SortedCommitMergeReaderV2<S, R>
+{
+    fn peek(&self) -> Option<&RunRecordV2> {
+        self.current.as_ref()
+    }
+
+    fn advance(&mut self) -> io::Result<()> {
+        self.advance_to_next()
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.current.is_none()
+    }
+}
+
+// ============================================================================
 // Helpers for multi-chunk run file collection
 // ============================================================================
 
@@ -807,6 +1139,70 @@ pub fn remap_record<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
 }
 
 #[inline]
+fn o_type_for_record(record: &RunRecord, registry: &OTypeRegistry) -> u16 {
+    registry
+        .resolve(
+            fluree_db_core::value_id::ObjKind::from_u8(record.o_kind),
+            fluree_db_core::DatatypeDictId::from_u16(record.dt),
+            record.lang_id,
+        )
+        .as_u16()
+}
+
+#[inline]
+fn cmp_run_record_as_v2_g_spot(
+    a: &RunRecord,
+    b: &RunRecord,
+    registry: &OTypeRegistry,
+) -> std::cmp::Ordering {
+    a.g_id
+        .cmp(&b.g_id)
+        .then(a.s_id.cmp(&b.s_id))
+        .then(a.p_id.cmp(&b.p_id))
+        .then(o_type_for_record(a, registry).cmp(&o_type_for_record(b, registry)))
+        .then(a.o_key.cmp(&b.o_key))
+        .then(a.i.cmp(&b.i))
+}
+
+#[inline]
+pub fn remap_v2_record<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
+    record: &mut RunRecordV2,
+    subject_remap: &S,
+    string_remap: &R,
+    lang_remap: Option<&[u16]>,
+) -> io::Result<()> {
+    use fluree_db_core::o_type::{DecodeKind, OType};
+    use fluree_db_core::subject_id::SubjectId;
+
+    let global_s = subject_remap.get(record.s_id.as_u64() as usize)?;
+    record.s_id = SubjectId::from_u64(global_s);
+
+    let mut o_type = OType::from_u16(record.o_type);
+    match o_type.decode_kind() {
+        DecodeKind::IriRef => {
+            record.o_key = subject_remap.get(record.o_key as usize)?;
+        }
+        DecodeKind::StringDict => {
+            record.o_key = string_remap.get(record.o_key as usize)? as u64;
+        }
+        _ => {}
+    }
+
+    if let Some(lang_remap) = lang_remap {
+        if let Some(local_lang_id) = o_type.lang_id() {
+            if !lang_remap.is_empty() && local_lang_id != 0 {
+                if let Some(&global_lang_id) = lang_remap.get(local_lang_id as usize) {
+                    o_type = OType::lang_string(global_lang_id);
+                    record.o_type = o_type.as_u16();
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[inline]
 pub(crate) fn stats_record_for_remapped_run_record(
     record: &RunRecord,
     dt_tags: Option<&[fluree_db_core::value_id::ValueTypeTag]>,
@@ -933,19 +1329,19 @@ pub fn remap_spool_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
 }
 
 // ============================================================================
-// Remap sorted commit → secondary run files (Phase D)
+// Remap V2 sorted commits → per-order run files
 // ============================================================================
 
-/// Read a sorted commit file (`.fsc`), apply subject+string+language remap,
+/// Read a V2-native sorted commit file, apply subject+string+language remap,
 /// collect HLL stats, and feed remapped records to a [`MultiOrderRunWriter`]
-/// for secondary index orders (PSOT/POST/OPST).
+/// for all final index orders.
 ///
-/// This is the Phase D function — it reads the same sorted commit files
-/// written in Phase A, applies the global remaps from Phase B, and
-/// produces run files for the secondary indexes built in Phase E.
+/// This is the bulk-import run-generation step: it reads the same sorted-commit
+/// artifacts written after chunk-local vocab alignment, applies the global
+/// remaps from dictionary merge, and produces V2 run files for final index build.
 ///
 /// Unlike [`remap_spool_to_runs`], which reads unsorted spool files:
-/// - Source is a sorted commit file (SPOT-sorted, 36-byte spool wire format)
+/// - Source is a sorted commit file (SPOT-sorted, 32-byte V2 wire format)
 /// - Records have sorted-position chunk-local IDs (not insertion-order)
 /// - HLL stats are collected here (with global IDs for accuracy)
 /// - Language tag IDs are remapped from chunk-local to global
@@ -979,6 +1375,57 @@ pub fn remap_commit_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
         stats_hook,
         dt_tags,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn remap_sorted_commit_v2_to_runs<S: SubjectRemap + ?Sized, R: StringRemap + ?Sized>(
+    commit_path: &std::path::Path,
+    record_count: u64,
+    subject_remap: &S,
+    string_remap: &R,
+    lang_remap: &[u16],
+    target_g_id: u16,
+    writer: &mut super::run_writer::MultiOrderRunWriter,
+    mut stats_hook: Option<&mut crate::stats::IdStatsHook>,
+    progress: Option<&std::sync::atomic::AtomicU64>,
+) -> io::Result<u64> {
+    const PROGRESS_BATCH_SIZE: u64 = 4096;
+
+    let reader = SortedCommitReaderV2::open(commit_path, record_count)?;
+    let lang_remap_opt = if lang_remap.is_empty() {
+        None
+    } else {
+        Some(lang_remap)
+    };
+
+    let mut count = 0u64;
+    let mut progress_batch = 0u64;
+    for result in reader {
+        let mut record = result?;
+        if record.g_id != target_g_id {
+            continue;
+        }
+        remap_v2_record(&mut record, subject_remap, string_remap, lang_remap_opt)?;
+        if let Some(ref mut hook) = stats_hook {
+            let stats_record = crate::stats::stats_record_from_v2(&record, 1);
+            hook.on_record(&stats_record);
+        }
+        writer.push(record)?;
+        count += 1;
+        progress_batch += 1;
+        if progress_batch >= PROGRESS_BATCH_SIZE {
+            if let Some(counter) = progress {
+                counter.fetch_add(progress_batch, std::sync::atomic::Ordering::Relaxed);
+            }
+            progress_batch = 0;
+        }
+    }
+    if progress_batch > 0 {
+        if let Some(counter) = progress {
+            counter.fetch_add(progress_batch, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    Ok(count)
 }
 
 /// Remap a V1 `RunRecord` to `RunRecordV2` with global ID remapping.
@@ -1059,7 +1506,7 @@ pub(crate) fn remap_commit_to_runs_with_op<S: SubjectRemap, R: StringRemap>(
 /// Result of sorting, remapping, and writing a sorted commit file.
 #[derive(Debug, Clone)]
 pub struct SortedCommitInfo {
-    /// Path to the sorted commit file (.fsc).
+    /// Path to the sorted commit file.
     pub path: PathBuf,
     /// Number of records in the file.
     pub record_count: u64,
@@ -1088,11 +1535,11 @@ pub struct SortedCommitInfo {
 /// 2. Sort strings by UTF-8 byte-lex order and write a sorted vocab file.
 /// 3. Remap all buffered records from insertion-order local IDs to sorted-order
 ///    IDs using [`remap_record()`].
-/// 4. Sort records by `(g_id, SPOT)` using [`cmp_g_spot`].
-/// 5. Write the sorted records to a spool-wire-format file (`.fsc`).
+/// 4. Sort records by the V2-native `(g_id, s, p, o_type, o_key, o_i)` key.
+/// 5. Write the sorted records to a V2-native sorted-commit file.
 ///
-/// The resulting file is an intermediate artifact for the SPOT index merge
-/// (Phase C). It is NOT the permanent commit — that is the commit-v2 blob
+/// The resulting file is an intermediate artifact for the import index build.
+/// It is NOT the permanent commit — that is the commit-v2 blob
 /// written during parse via `StreamingCommitWriter`.
 ///
 /// The sorted vocab files use sorted-position IDs as `local_id`, so the
@@ -1122,6 +1569,7 @@ pub fn sort_remap_and_write_sorted_commit(
     chunk_idx: usize,
     languages: Option<(&rustc_hash::FxHashMap<String, u16>, &Path)>,
     types_map: Option<TypesMapConfig<'_>>,
+    otype_registry: &OTypeRegistry,
 ) -> io::Result<SortedCommitInfo> {
     // A.2 steps 1+2: Sort subjects and strings in parallel, writing vocab
     // files and building insertion→sorted remap tables for each.
@@ -1188,13 +1636,14 @@ pub fn sort_remap_and_write_sorted_commit(
         }
     }
 
-    // A.2 step 4: Sort records by (g_id, SPOT).
-    records.sort_unstable_by(fluree_db_binary_index::format::run_record::cmp_g_spot);
+    // A.2 step 4: Sort records by the V2-native graph-prefixed SPOT key without
+    // materializing a second full-size record buffer.
+    records.sort_unstable_by(|a, b| cmp_run_record_as_v2_g_spot(a, b, otype_registry));
 
-    // A.3: Write sorted commit file (.fsc) via SpoolWriter (spool wire format).
-    let mut writer = SpoolWriter::new(commit_path, chunk_idx)?;
+    // A.3: Stream the V2-native sorted commit artifact to disk.
+    let mut writer = SortedCommitWriterV2::new(commit_path, chunk_idx)?;
     for record in &records {
-        writer.push(record)?;
+        writer.push(&RunRecordV2::from_v1(record, otype_registry))?;
     }
     let spool_info = writer.finish()?;
 
@@ -1242,6 +1691,7 @@ pub fn sort_remap_and_write_sorted_commit(
 mod tests {
     use super::*;
     use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
+    use fluree_db_core::o_type_registry::OTypeRegistry;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeDictId;
@@ -1793,10 +2243,11 @@ mod tests {
             make_record(1, 20, ObjKind::REF_ID, 2, 1),
             make_record(2, 10, ObjKind::NUM_INT, ObjKey::encode_i64(42).as_u64(), 1),
         ];
+        let registry = OTypeRegistry::builtin_only();
 
         let subj_vocab = dir.join("subjects.voc");
         let str_vocab = dir.join("strings.voc");
-        let commit_path = dir.join("commit_0.fsc");
+        let commit_path = dir.join("commit_0.fsv2");
 
         let info = sort_remap_and_write_sorted_commit(
             records,
@@ -1808,6 +2259,7 @@ mod tests {
             0,
             None,
             None,
+            &registry,
         )
         .unwrap();
 
@@ -1817,8 +2269,8 @@ mod tests {
         assert_eq!(info.chunk_idx, 0);
 
         // Read back the sorted commit file.
-        let reader = SpoolReader::open(&commit_path, 3).unwrap();
-        let read: Vec<RunRecord> = reader.map(|r| r.unwrap()).collect();
+        let reader = SortedCommitReaderV2::open(&commit_path, 3).unwrap();
+        let read: Vec<RunRecordV2> = reader.map(|r| r.unwrap()).collect();
         assert_eq!(read.len(), 3);
 
         // After remap:
@@ -1829,18 +2281,15 @@ mod tests {
         // SPOT sort by s_id: rec1(s=0) < rec2(s=1) < rec0(s=2)
         assert_eq!(read[0].s_id, SubjectId::from_u64(0)); // Alice@ns5
         assert_eq!(read[0].p_id, 20);
-        assert_eq!(read[0].o_kind, ObjKind::REF_ID.as_u8());
         assert_eq!(read[0].o_key, 1); // ref to Alice@ns10 (sorted pos 1)
 
         assert_eq!(read[1].s_id, SubjectId::from_u64(1)); // Alice@ns10
         assert_eq!(read[1].p_id, 10);
-        assert_eq!(read[1].o_kind, ObjKind::NUM_INT.as_u8());
         assert_eq!(read[1].o_key, ObjKey::encode_i64(42).as_u64());
 
         assert_eq!(read[2].s_id, SubjectId::from_u64(2)); // Bob@ns10
         assert_eq!(read[2].p_id, 10);
-        assert_eq!(read[2].o_kind, ObjKind::LEX_ID.as_u8());
-        assert_eq!(ObjKey::from_u64(read[2].o_key).decode_u32_id(), 1); // "zebra" → sorted 1
+        assert_eq!(read[2].o_key, 1); // "zebra" → sorted 1
 
         // Verify SPOT order: records must be sorted by s_id ascending
         assert!(read[0].s_id.as_u64() <= read[1].s_id.as_u64());
@@ -1871,10 +2320,11 @@ mod tests {
         let mut rec2 = make_record(1, 20, ObjKind::NUM_INT, 3, 1);
         rec2.g_id = 0;
         let records = vec![rec0, rec1, rec2];
+        let registry = OTypeRegistry::builtin_only();
 
         let subj_vocab = dir.join("subjects.voc");
         let str_vocab = dir.join("strings.voc");
-        let commit_path = dir.join("commit_0.fsc");
+        let commit_path = dir.join("commit_0.fsv2");
 
         let info = sort_remap_and_write_sorted_commit(
             records,
@@ -1886,13 +2336,14 @@ mod tests {
             0,
             None,
             None,
+            &registry,
         )
         .unwrap();
         assert_eq!(info.record_count, 3);
 
         // Read back.
-        let reader = SpoolReader::open(&commit_path, 3).unwrap();
-        let read: Vec<RunRecord> = reader.map(|r| r.unwrap()).collect();
+        let reader = SortedCommitReaderV2::open(&commit_path, 3).unwrap();
+        let read: Vec<RunRecordV2> = reader.map(|r| r.unwrap()).collect();
 
         // cmp_g_spot sorts by g_id first: g_id=0 records before g_id=1.
         // Subject remap: A(0)→0, B(1)→1 (already canonical order for ns10).
@@ -1929,6 +2380,7 @@ mod tests {
             make_record(0, 10, ObjKind::LEX_ID, ObjKey::encode_u32_id(0).as_u64(), 1),
             make_record(1, 20, ObjKind::REF_ID, 0, 1),
         ];
+        let registry = OTypeRegistry::builtin_only();
 
         let info = sort_remap_and_write_sorted_commit(
             records,
@@ -1936,10 +2388,11 @@ mod tests {
             str_dict,
             &dir.join("subj.voc"),
             &dir.join("str.voc"),
-            &dir.join("commit_0.fsc"),
+            &dir.join("commit_0.fsv2"),
             0,
             None,
             None,
+            &registry,
         )
         .unwrap();
 
@@ -1957,17 +2410,15 @@ mod tests {
             base_run_dir: run_dir.clone(),
         };
         let mut writer = MultiOrderRunWriter::new(mo_config).unwrap();
-        let registry = OTypeRegistry::builtin_only();
         let mut stats_hook = crate::stats::IdStatsHook::new();
 
-        let written = remap_commit_to_runs(
-            &dir.join("commit_0.fsc"),
+        let written = remap_sorted_commit_v2_to_runs(
+            &dir.join("commit_0.fsv2"),
             info.record_count,
             &subject_remap,
             &string_remap,
             &[], // no lang remap
             0,   // target g_id (default graph)
-            &registry,
             &mut writer,
             Some(&mut stats_hook),
             None,
