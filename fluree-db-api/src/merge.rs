@@ -243,7 +243,15 @@ where
         let mut copied = 0;
 
         while let Some(cid) = current_cid.take() {
-            let bytes = source_store.get(&cid).await?;
+            // The source branch's own commits live in its namespace. When we
+            // follow previous_id past the branch's first unique commit, we
+            // reach the parent namespace where the commit doesn't exist in
+            // the source store.  Treat NotFound as the natural boundary.
+            let bytes = match source_store.get(&cid).await {
+                Ok(b) => b,
+                Err(fluree_db_core::error::Error::NotFound(_)) => break,
+                Err(e) => return Err(e.into()),
+            };
 
             let envelope = read_commit_envelope(&bytes).map_err(|e| {
                 ApiError::internal(format!("failed to read commit envelope {cid}: {e}"))
