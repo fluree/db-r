@@ -56,6 +56,7 @@ pub mod prefix_trie;
 pub mod query_bounds;
 pub mod range;
 pub mod range_provider;
+pub mod runtime_small_dicts;
 pub mod schema_hierarchy;
 pub mod serde;
 pub mod sid;
@@ -95,7 +96,10 @@ pub use graph_registry::{
     config_graph_iri, txn_meta_graph_iri, GraphRegistry, CONFIG_GRAPH_ID, DEFAULT_GRAPH_ID,
     FIRST_USER_GRAPH_ID, TXN_META_GRAPH_ID,
 };
-pub use ids::{DatatypeDictId, GraphId, LangId, ListIndex, PredicateId, StringId, TxnT};
+pub use ids::{
+    DatatypeDictId, GraphId, LangId, ListIndex, PredicateId, RuntimeDatatypeId, RuntimePredicateId,
+    StringId, TxnT,
+};
 pub use index_schema::{IndexSchema, SchemaPredicateInfo, SchemaPredicates};
 pub use index_stats::{
     ClassPropertyUsage, ClassRefCount, ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry,
@@ -125,6 +129,7 @@ pub use range::{
     RangeMatch, RangeOptions, RangeTest, BATCHED_JOIN_SIZE,
 };
 pub use range_provider::RangeProvider;
+pub use runtime_small_dicts::RuntimeSmallDicts;
 pub use schema_hierarchy::SchemaHierarchy;
 pub use sid::{Sid, SidInterner};
 pub use stats_view::{PropertyStatData, StatsView};

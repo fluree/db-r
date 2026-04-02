@@ -29,6 +29,7 @@ use crate::ids::GraphId;
 use crate::overlay::OverlayProvider;
 use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
 use crate::range::{range_bounded_with_overlay, range_with_overlay};
+use crate::runtime_small_dicts::RuntimeSmallDicts;
 
 /// Bundled database reference for range queries.
 ///
@@ -42,6 +43,7 @@ pub struct GraphDbRef<'a> {
     pub g_id: GraphId,
     pub overlay: &'a dyn OverlayProvider,
     pub t: i64,
+    pub runtime_small_dicts: Option<&'a RuntimeSmallDicts>,
     /// When true, queries built from this ref disable late materialization
     /// in `BinaryScanOperator`, always returning resolved `Binding::Sid`/`Lit`
     /// instead of `EncodedSid`/`EncodedLit`.
@@ -75,8 +77,30 @@ impl<'a> GraphDbRef<'a> {
             g_id,
             overlay,
             t,
+            runtime_small_dicts: None,
             eager: false,
         }
+    }
+
+    pub fn with_runtime_small_dicts(mut self, runtime_small_dicts: &'a RuntimeSmallDicts) -> Self {
+        self.runtime_small_dicts = Some(runtime_small_dicts);
+        self
+    }
+
+    pub fn with_runtime_small_dicts_opt(
+        self,
+        runtime_small_dicts: Option<&'a RuntimeSmallDicts>,
+    ) -> Self {
+        match runtime_small_dicts {
+            Some(runtime_small_dicts) => self.with_runtime_small_dicts(runtime_small_dicts),
+            None => self,
+        }
+    }
+
+    /// Return a copy with a different as-of time.
+    pub fn with_t(mut self, t: i64) -> Self {
+        self.t = t;
+        self
     }
 
     /// Return a copy with eager materialization enabled.
@@ -194,6 +218,21 @@ mod tests {
         assert!(eager_db.eager);
         assert_eq!(eager_db.t, db.t);
         assert_eq!(eager_db.g_id, db.g_id);
+    }
+
+    #[test]
+    fn test_with_t_preserves_flags() {
+        let snapshot = LedgerSnapshot::genesis("test:with-t");
+        let overlay = NoOverlay;
+        let dicts = RuntimeSmallDicts::default();
+        let db = GraphDbRef::new(&snapshot, 0, &overlay, 1)
+            .with_runtime_small_dicts(&dicts)
+            .eager();
+
+        let shifted = db.with_t(42);
+        assert_eq!(shifted.t, 42);
+        assert!(shifted.eager);
+        assert!(shifted.runtime_small_dicts.is_some());
     }
 
     #[tokio::test]

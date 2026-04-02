@@ -34,6 +34,7 @@ hex.workspace = true
 
 # Observability
 tracing.workspace = true
+sysinfo.workspace = true
 
 # Run-index dependencies
 rustc-hash = "2"

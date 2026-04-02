@@ -95,7 +95,7 @@ pub fn label_regex_type_operator(
             let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
                 return Ok(Some(empty_batch(schema.clone())?));
             };
-            let branch = Arc::new(branch.clone());
+            let branch = Arc::clone(branch);
 
             // Full predicate range in PSOT.
             let min_key = RunRecordV2 {

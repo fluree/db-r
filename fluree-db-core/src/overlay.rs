@@ -37,6 +37,7 @@
 use crate::comparator::IndexType;
 use crate::flake::Flake;
 use crate::ids::GraphId;
+use std::any::Any;
 
 /// Overlay provider trait for external flake sources
 ///
@@ -45,6 +46,8 @@ use crate::ids::GraphId;
 ///
 /// Uses a push-based API to avoid `Box<dyn Iterator>` allocations in hot path.
 pub trait OverlayProvider: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+
     /// Current epoch for cache key differentiation
     ///
     /// MUST be incorporated into leaf materialization cache keys.
@@ -97,6 +100,10 @@ pub trait OverlayProvider: Send + Sync {
 pub struct NoOverlay;
 
 impl OverlayProvider for NoOverlay {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
     fn epoch(&self) -> u64 {
         0
     }
@@ -128,6 +135,10 @@ mod tests {
     }
 
     impl OverlayProvider for TestOverlay {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
         fn epoch(&self) -> u64 {
             self.epoch
         }

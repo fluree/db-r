@@ -1163,12 +1163,28 @@ fn try_place_source(
     };
 
     let best_idx = pool.into_iter().min_by(|&i, &j| {
+        let seed_priority = |pattern: &Pattern| match pattern {
+            // Search sources should seed the pipeline before plain triples so
+            // they can emit result IDs/IriMatch bindings that later joins consume.
+            Pattern::IndexSearch(_)
+            | Pattern::VectorSearch(_)
+            | Pattern::GeoSearch(_)
+            | Pattern::S2Search(_) => 0_u8,
+            _ => 1_u8,
+        };
         let ci = estimate_pattern(&remaining[i].pattern, bound_vars, stats);
         let cj = estimate_pattern(&remaining[j].pattern, bound_vars, stats);
-        ci.row_count()
-            .partial_cmp(&cj.row_count())
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| remaining[i].orig_index.cmp(&remaining[j].orig_index))
+        if !has_bound {
+            seed_priority(&remaining[i].pattern).cmp(&seed_priority(&remaining[j].pattern))
+        } else {
+            std::cmp::Ordering::Equal
+        }
+        .then_with(|| {
+            ci.row_count()
+                .partial_cmp(&cj.row_count())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| remaining[i].orig_index.cmp(&remaining[j].orig_index))
     });
 
     if let Some(idx) = best_idx {

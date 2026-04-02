@@ -278,6 +278,11 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             FunctionName::If => Function::If,
             FunctionName::Coalesce => Function::Coalesce,
 
+            // Vector similarity functions
+            FunctionName::DotProduct => Function::DotProduct,
+            FunctionName::CosineSimilarity => Function::CosineSimilarity,
+            FunctionName::EuclideanDistance => Function::EuclideanDistance,
+
             // Extension functions
             FunctionName::Extension(iri) => {
                 let full_iri = self.expand_iri(iri)?;

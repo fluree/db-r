@@ -337,14 +337,45 @@ pub enum Commands {
         format: String,
     },
 
-    /// Export ledger data as Turtle or JSON-LD
+    /// Manage the default JSON-LD context for a ledger
+    Context {
+        #[command(subcommand)]
+        action: ContextAction,
+    },
+
+    /// Export ledger data as Turtle, N-Triples, N-Quads, TriG, or JSON-LD
     Export {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
 
-        /// Output format: turtle or jsonld (default: turtle)
+        /// Output format: turtle (ttl), ntriples (nt), jsonld, trig, or nquads (default: turtle)
+        ///
+        /// Note: exporting all graphs requires a dataset-capable format
+        /// (`trig` or `nquads`).
         #[arg(long, default_value = "turtle")]
         format: String,
+
+        /// Export all named graphs (dataset export), including system graphs.
+        ///
+        /// Use `--format trig` or `--format nquads` when this flag is set.
+        #[arg(long)]
+        all_graphs: bool,
+
+        /// Export a specific named graph by IRI.
+        ///
+        /// Mutually exclusive with `--all-graphs`.
+        #[arg(long)]
+        graph: Option<String>,
+
+        /// JSON-LD context for prefix declarations (overrides ledger default).
+        ///
+        /// Pass as inline JSON: `--context '{"ex": "http://example.org/"}'`
+        #[arg(long)]
+        context: Option<String>,
+
+        /// Read context from a JSON file (overrides ledger default).
+        #[arg(long, value_name = "FILE")]
+        context_file: Option<std::path::PathBuf>,
 
         /// Query at a specific point in time
         #[arg(long)]
@@ -441,6 +472,25 @@ pub enum Commands {
     Push {
         /// Ledger name (defaults to active ledger)
         ledger: Option<String>,
+    },
+
+    /// Publish a local ledger to a remote server (create + push all commits)
+    ///
+    /// Creates the ledger on the remote if it doesn't exist, pushes all local
+    /// commits, and configures upstream tracking for subsequent push/pull.
+    ///
+    /// Usage:
+    ///   fluree publish <remote> [ledger]
+    Publish {
+        /// Remote name (e.g., "origin")
+        remote: String,
+
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// Remote ledger name (defaults to local ledger name)
+        #[arg(long)]
+        remote_name: Option<String>,
     },
 
     /// Clone a ledger from a remote server (downloads all commits and indexes)
@@ -920,6 +970,34 @@ pub enum ConfigAction {
         /// Path to origins config JSON file
         #[arg(long)]
         file: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ContextAction {
+    /// Show the default JSON-LD context for a ledger
+    Get {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+    },
+
+    /// Set (replace) the default JSON-LD context for a ledger
+    ///
+    /// Accepts a JSON object mapping prefixes to IRIs, either inline or from a file.
+    /// Examples:
+    ///   fluree context set mydb '{"ex": "http://example.org/"}'
+    ///   fluree context set mydb -f context.json
+    Set {
+        /// Ledger name (defaults to active ledger)
+        ledger: Option<String>,
+
+        /// Inline JSON context (prefix → IRI mappings)
+        #[arg(long, short = 'e')]
+        expr: Option<String>,
+
+        /// Read context from a JSON file
+        #[arg(long, short = 'f')]
+        file: Option<std::path::PathBuf>,
     },
 }
 

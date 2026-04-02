@@ -8,6 +8,7 @@ description = "Query execution engine for Fluree DB"
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }
+fluree-db-novelty = { path = "../fluree-db-novelty" }
 fluree-db-tabular = { path = "../fluree-db-tabular" }
 fluree-db-policy = { path = "../fluree-db-policy" }
 fluree-db-r2rml = { path = "../fluree-db-r2rml" }

@@ -13,23 +13,29 @@ use crate::expression::PreparedBoolExpression;
 use crate::fast_count::{
     count_blank_node_subjects_operator, count_distinct_object_operator,
     count_distinct_objects_operator, count_distinct_predicates_operator,
-    count_distinct_subjects_operator, count_literal_objects_operator, count_rows_operator,
-    count_triples_operator,
+    count_distinct_subjects_operator, count_literal_objects_operator,
+    count_rows_lang_filter_operator, count_rows_numeric_compare_operator, count_rows_operator,
+    count_triples_operator, NumericCompareOp,
 };
 use crate::fast_exists_join_count_distinct_object::exists_join_count_distinct_object_operator;
 use crate::fast_fused_scan_sum::{
-    fused_scan_sum_i64_operator, DateComponentFn, NumericUnaryFn, ScalarI64Fn,
+    fused_scan_sum_i64_operator, DateComponentFn, NumericUnaryFn, SumExprI64,
 };
 use crate::fast_group_count_firsts::{
     GroupByObjectStarTopKOperator, PredicateGroupCountFirstsOperator,
     PredicateObjectCountFirstsOperator,
 };
 use crate::fast_label_regex_type::label_regex_type_operator;
-use crate::fast_min_max_string::{predicate_min_max_string_operator, MinMaxMode};
+use crate::fast_min_max_string::{
+    predicate_avg_numeric_operator, predicate_min_max_string_operator, MinMaxMode,
+};
 use crate::fast_multicolumn_join_count_all::multicolumn_join_count_all_operator;
 use crate::fast_optional_chain_head_count_all::predicate_optional_chain_head_count_all;
 use crate::fast_property_path_plus_count_all::property_path_plus_count_all_operator;
 use crate::fast_star_const_order_topk::star_const_ordered_limit_operator;
+use crate::fast_string_prefix_count_all::{
+    string_prefix_count_all_operator, string_prefix_sum_strstarts_operator,
+};
 use crate::fast_sum_strlen_group_concat::sum_strlen_group_concat_operator;
 use crate::fast_transitive_path_plus_count_all::transitive_path_plus_count_all_operator;
 use crate::fast_union_star_count_all::{UnionCountMode, UnionStarCountAllOperator};
@@ -252,22 +258,47 @@ fn detect_star_const_numeric_label_order_limit(
 fn extract_simple_gt_threshold(
     expr: &crate::ir::Expression,
 ) -> Option<(VarId, fluree_db_core::FlakeValue)> {
+    let (var, op, threshold) = extract_simple_numeric_compare_threshold(expr)?;
+    if op != NumericCompareOp::Gt {
+        return None;
+    }
+    Some((var, threshold))
+}
+
+fn extract_simple_numeric_compare_threshold(
+    expr: &crate::ir::Expression,
+) -> Option<(VarId, NumericCompareOp, fluree_db_core::FlakeValue)> {
     use crate::ir::{Expression, FilterValue, Function};
     let Expression::Call { func, args } = expr else {
         return None;
     };
-    if *func != Function::Gt || args.len() != 2 {
+    if args.len() != 2 {
         return None;
     }
-    let (Expression::Var(v), Expression::Const(c)) = (&args[0], &args[1]) else {
-        return None;
+    let const_to_flake = |c: &FilterValue| match c {
+        FilterValue::Long(n) => Some(fluree_db_core::FlakeValue::Long(*n)),
+        FilterValue::Double(d) => Some(fluree_db_core::FlakeValue::Double(*d)),
+        _ => None,
     };
-    let thr = match c {
-        FilterValue::Long(n) => fluree_db_core::FlakeValue::Long(*n),
-        FilterValue::Double(d) => fluree_db_core::FlakeValue::Double(*d),
+    let direct_op = match *func {
+        Function::Gt => NumericCompareOp::Gt,
+        Function::Ge => NumericCompareOp::Ge,
+        Function::Lt => NumericCompareOp::Lt,
+        Function::Le => NumericCompareOp::Le,
         _ => return None,
     };
-    Some((*v, thr))
+    let reverse_op = match direct_op {
+        NumericCompareOp::Gt => NumericCompareOp::Lt,
+        NumericCompareOp::Ge => NumericCompareOp::Le,
+        NumericCompareOp::Lt => NumericCompareOp::Gt,
+        NumericCompareOp::Le => NumericCompareOp::Ge,
+    };
+
+    match (&args[0], &args[1]) {
+        (Expression::Var(v), Expression::Const(c)) => Some((*v, direct_op, const_to_flake(c)?)),
+        (Expression::Const(c), Expression::Var(v)) => Some((*v, reverse_op, const_to_flake(c)?)),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -969,6 +1000,57 @@ fn detect_predicate_count_rows(
     Some((pred, out_var))
 }
 
+fn detect_predicate_count_rows_lang_filter(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, String, VarId)> {
+    let (input_var, out_var) = detect_count_aggregate(query, options)?;
+
+    if query.patterns.len() != 2 {
+        return None;
+    }
+    let (tp, filter) = match (&query.patterns[0], &query.patterns[1]) {
+        (Pattern::Triple(tp), Pattern::Filter(expr)) => (tp, expr),
+        _ => return None,
+    };
+    let (s_var, pred, o_var) = validate_simple_triple(tp)?;
+
+    // COUNT(?var) must reference ?s or ?o (both always bound in a single triple).
+    if let Some(v) = input_var {
+        if v != s_var && v != o_var {
+            return None;
+        }
+    }
+
+    let is_lang_o = |e: &crate::ir::Expression| match e {
+        crate::ir::Expression::Call { func, args } => {
+            *func == crate::ir::Function::Lang
+                && args.len() == 1
+                && matches!(&args[0], crate::ir::Expression::Var(v) if *v == o_var)
+        }
+        _ => false,
+    };
+    let crate::ir::Expression::Call { func, args } = filter else {
+        return None;
+    };
+    if *func != crate::ir::Function::Eq || args.len() != 2 {
+        return None;
+    }
+
+    if is_lang_o(&args[0]) {
+        if let crate::ir::Expression::Const(crate::ir::FilterValue::String(tag)) = &args[1] {
+            return Some((pred, tag.clone(), out_var));
+        }
+    }
+    if is_lang_o(&args[1]) {
+        if let crate::ir::Expression::Const(crate::ir::FilterValue::String(tag)) = &args[0] {
+            return Some((pred, tag.clone(), out_var));
+        }
+    }
+
+    None
+}
+
 fn detect_predicate_count_distinct_object(
     query: &ParsedQuery,
     options: &QueryOptions,
@@ -1045,6 +1127,44 @@ fn detect_predicate_minmax_string(
     }
 
     Some((pred, mode, agg.output_var))
+}
+
+fn detect_predicate_avg_numeric(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+        || options.distinct
+    {
+        return None;
+    }
+    if options.limit == Some(0) || query.patterns.len() != 1 {
+        return None;
+    }
+    let Pattern::Triple(tp) = &query.patterns[0] else {
+        return None;
+    };
+    let (_s_var, pred, o_var) = validate_simple_triple(tp)?;
+    let agg = &options.aggregates[0];
+    if agg.distinct || !matches!(agg.function, AggregateFn::Avg) || agg.input_var? != o_var {
+        return None;
+    }
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+    Some((pred, agg.output_var))
 }
 
 fn detect_count_rows_with_encoded_filters(
@@ -1180,6 +1300,232 @@ fn detect_count_rows_with_encoded_filters(
     ))
 }
 
+fn detect_predicate_count_rows_numeric_compare(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, NumericCompareOp, fluree_db_core::FlakeValue, VarId)> {
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+        || options.distinct
+    {
+        return None;
+    }
+    if options.limit == Some(0) || query.patterns.len() != 2 {
+        return None;
+    }
+
+    let agg = &options.aggregates[0];
+    if agg.distinct || !matches!(agg.function, AggregateFn::Count | AggregateFn::CountAll) {
+        return None;
+    }
+
+    let (tp, filter) = match (&query.patterns[0], &query.patterns[1]) {
+        (Pattern::Triple(tp), Pattern::Filter(expr)) => (tp, expr),
+        (Pattern::Filter(expr), Pattern::Triple(tp)) => (tp, expr),
+        _ => return None,
+    };
+
+    let (s_var, pred, o_var) = validate_simple_triple(tp)?;
+    if matches!(agg.function, AggregateFn::Count) && agg.input_var != Some(s_var) {
+        return None;
+    }
+
+    let (filter_var, compare, threshold) = extract_simple_numeric_compare_threshold(filter)?;
+    if filter_var != o_var {
+        return None;
+    }
+
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    Some((pred, compare, threshold, agg.output_var))
+}
+
+fn detect_string_prefix_count_all(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Arc<str>, VarId)> {
+    let out_var = detect_count_all_aggregate(query, options)?;
+    if query.patterns.len() != 2 {
+        return None;
+    }
+
+    let (tp, filter) = match (&query.patterns[0], &query.patterns[1]) {
+        (Pattern::Triple(tp), Pattern::Filter(expr)) => (tp, expr),
+        (Pattern::Filter(expr), Pattern::Triple(tp)) => (tp, expr),
+        _ => return None,
+    };
+
+    let (_s_var, pred, o_var) = validate_simple_triple(tp)?;
+    let prefix = extract_string_prefix_filter(filter, o_var)?;
+    Some((pred, prefix, out_var))
+}
+
+fn detect_string_prefix_sum_strstarts(
+    query: &ParsedQuery,
+    options: &QueryOptions,
+) -> Option<(Ref, Arc<str>, VarId)> {
+    use crate::ir::{Expression, FilterValue, Function};
+
+    if matches!(
+        query.output,
+        QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
+    ) {
+        return None;
+    }
+    if !options.group_by.is_empty()
+        || options.aggregates.len() != 1
+        || options.having.is_some()
+        || !options.post_binds.is_empty()
+        || !options.order_by.is_empty()
+        || options.offset.is_some()
+        || options.distinct
+    {
+        return None;
+    }
+    if options.limit == Some(0) {
+        return None;
+    }
+
+    let agg = &options.aggregates[0];
+    if agg.distinct || !matches!(agg.function, AggregateFn::Sum) {
+        return None;
+    }
+    let select_vars = query.output.select_vars()?;
+    if select_vars.len() != 1 || select_vars[0] != agg.output_var {
+        return None;
+    }
+
+    if query.patterns.len() != 2 {
+        return None;
+    }
+    let (tp, bind_var, bind_expr) = match (&query.patterns[0], &query.patterns[1]) {
+        (Pattern::Triple(tp), Pattern::Bind { var, expr }) => (tp, *var, expr),
+        _ => return None,
+    };
+    let (_s_var, pred, o_var) = validate_simple_triple(tp)?;
+    if agg.input_var != Some(bind_var) {
+        return None;
+    }
+
+    let Expression::Call {
+        func: Function::XsdInteger,
+        args,
+    } = bind_expr
+    else {
+        return None;
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    let Expression::Call {
+        func: Function::StrStarts,
+        args,
+    } = &args[0]
+    else {
+        return None;
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    if !matches!(&args[0], Expression::Var(v) if *v == o_var) {
+        return None;
+    }
+    let Expression::Const(FilterValue::String(prefix)) = &args[1] else {
+        return None;
+    };
+    if prefix.is_empty() {
+        return None;
+    }
+
+    Some((pred, Arc::from(prefix.as_str()), agg.output_var))
+}
+
+fn extract_string_prefix_filter(
+    expr: &crate::ir::Expression,
+    object_var: VarId,
+) -> Option<Arc<str>> {
+    use crate::ir::{Expression, FilterValue, Function};
+
+    let is_object_var = |expr: &Expression| matches!(expr, Expression::Var(v) if *v == object_var);
+
+    match expr {
+        Expression::Call { func, args } if *func == Function::Regex => {
+            if args.len() != 2 && args.len() != 3 {
+                return None;
+            }
+            if !is_object_var(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(pattern)) = &args[1] else {
+                return None;
+            };
+            if args.len() == 3 {
+                let Expression::Const(FilterValue::String(flags)) = &args[2] else {
+                    return None;
+                };
+                if !flags.is_empty() {
+                    return None;
+                }
+            }
+            anchored_literal_regex_prefix(pattern)
+        }
+        Expression::Call { func, args } if *func == Function::StrStarts && args.len() == 2 => {
+            if !is_object_var(&args[0]) {
+                return None;
+            }
+            let Expression::Const(FilterValue::String(prefix)) = &args[1] else {
+                return None;
+            };
+            if prefix.is_empty() {
+                return None;
+            }
+            Some(Arc::from(prefix.as_str()))
+        }
+        _ => None,
+    }
+}
+
+fn anchored_literal_regex_prefix(pattern: &str) -> Option<Arc<str>> {
+    let prefix = pattern.strip_prefix('^')?;
+    if prefix.is_empty() {
+        return None;
+    }
+    if prefix.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'+'
+                | b'*'
+                | b'?'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'\\'
+                | b'^'
+                | b'$'
+        )
+    }) {
+        return None;
+    }
+    Some(Arc::from(prefix))
+}
+
 /// Detect if this is a stats fast-path query: `SELECT ?p (COUNT(?x) as ?c) WHERE { ?s ?p ?o } GROUP BY ?p`
 ///
 /// Returns `Some((predicate_var, count_output_var))` if the query matches the pattern.
@@ -1249,7 +1595,7 @@ fn detect_stats_count_by_predicate(
 fn detect_fused_scan_sum_i64(
     query: &ParsedQuery,
     options: &QueryOptions,
-) -> Option<(Ref, ScalarI64Fn, VarId)> {
+) -> Option<(Ref, SumExprI64, VarId)> {
     if matches!(
         query.output,
         QueryOutput::Construct(_) | QueryOutput::Boolean | QueryOutput::Wildcard
@@ -1283,50 +1629,67 @@ fn detect_fused_scan_sum_i64(
         return None;
     }
 
-    // Pattern shape: one Triple + one Bind (desugared aggregate expr input).
-    if query.patterns.len() != 2 {
-        return None;
+    match query.patterns.as_slice() {
+        [Pattern::Triple(tp)] => {
+            let pred = extract_bound_predicate(&tp.p)?;
+            let Term::Var(o_var) = &tp.o else {
+                return None;
+            };
+            if agg.input_var != Some(*o_var) {
+                return None;
+            }
+            Some((pred, SumExprI64::Identity, agg.output_var))
+        }
+        [Pattern::Triple(tp), Pattern::Bind { var, expr }] => {
+            let pred = extract_bound_predicate(&tp.p)?;
+            let Term::Var(o_var) = &tp.o else {
+                return None;
+            };
+
+            // Bind must define the aggregate input var, and SUM must use it.
+            if agg.input_var != Some(*var) {
+                return None;
+            }
+
+            let scalar = match expr {
+                crate::ir::Expression::Call { func, args }
+                    if args.len() == 1
+                        && matches!(&args[0], crate::ir::Expression::Var(v) if v == o_var) =>
+                {
+                    match func {
+                        crate::ir::Function::Year => {
+                            SumExprI64::DateComponent(DateComponentFn::Year)
+                        }
+                        crate::ir::Function::Month => {
+                            SumExprI64::DateComponent(DateComponentFn::Month)
+                        }
+                        crate::ir::Function::Day => SumExprI64::DateComponent(DateComponentFn::Day),
+                        crate::ir::Function::Abs => SumExprI64::NumericUnary(NumericUnaryFn::Abs),
+                        crate::ir::Function::Ceil => SumExprI64::NumericUnary(NumericUnaryFn::Ceil),
+                        crate::ir::Function::Floor => {
+                            SumExprI64::NumericUnary(NumericUnaryFn::Floor)
+                        }
+                        crate::ir::Function::Round => {
+                            SumExprI64::NumericUnary(NumericUnaryFn::Round)
+                        }
+                        _ => return None,
+                    }
+                }
+                crate::ir::Expression::Call { func, args }
+                    if *func == crate::ir::Function::Add
+                        && args.len() == 2
+                        && matches!(&args[0], crate::ir::Expression::Var(v) if v == o_var)
+                        && matches!(&args[1], crate::ir::Expression::Var(v) if v == o_var) =>
+                {
+                    SumExprI64::AddSelf
+                }
+                _ => return None,
+            };
+
+            Some((pred, scalar, agg.output_var))
+        }
+        _ => None,
     }
-    let (tp, bind_var, bind_expr) = match (&query.patterns[0], &query.patterns[1]) {
-        (Pattern::Triple(tp), Pattern::Bind { var, expr }) => (tp, *var, expr),
-        // Be conservative: only accept the canonical lowering order.
-        _ => return None,
-    };
-
-    // Triple must be ?s <p> ?o with bound predicate and var object.
-    let pred = extract_bound_predicate(&tp.p)?;
-    let Term::Var(o_var) = &tp.o else {
-        return None;
-    };
-
-    // Bind must define the aggregate input var, and SUM must use it.
-    if agg.input_var != Some(bind_var) {
-        return None;
-    }
-
-    // Bind expression must be scalar(?o).
-    let crate::ir::Expression::Call { func, args } = bind_expr else {
-        return None;
-    };
-    if args.len() != 1 {
-        return None;
-    }
-    if !matches!(&args[0], crate::ir::Expression::Var(v) if v == o_var) {
-        return None;
-    }
-
-    let scalar = match func {
-        crate::ir::Function::Year => ScalarI64Fn::DateComponent(DateComponentFn::Year),
-        crate::ir::Function::Month => ScalarI64Fn::DateComponent(DateComponentFn::Month),
-        crate::ir::Function::Day => ScalarI64Fn::DateComponent(DateComponentFn::Day),
-        crate::ir::Function::Abs => ScalarI64Fn::NumericUnary(NumericUnaryFn::Abs),
-        crate::ir::Function::Ceil => ScalarI64Fn::NumericUnary(NumericUnaryFn::Ceil),
-        crate::ir::Function::Floor => ScalarI64Fn::NumericUnary(NumericUnaryFn::Floor),
-        crate::ir::Function::Round => ScalarI64Fn::NumericUnary(NumericUnaryFn::Round),
-        _ => return None,
-    };
-
-    Some((pred, scalar, agg.output_var))
 }
 
 fn detect_exists_join_count_distinct_object(
@@ -1821,6 +2184,19 @@ fn build_operator_tree_inner(
         }
     }
 
+    // Fast-path: `SELECT (AVG(?o) AS ?avg) WHERE { ?s <p> ?o }`
+    // for homogeneous numeric predicates, scanning only POST `o_key` values.
+    if enable_fused_fast_paths {
+        if let Some((pred, out_var)) = detect_predicate_avg_numeric(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(predicate_avg_numeric_operator(
+                pred,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
     // Fast-path: `SELECT (COUNT(DISTINCT ?o) AS ?c) WHERE { ?s <p> ?o }`
     // by scanning POST and counting distinct encoded object IDs.
     if enable_fused_fast_paths {
@@ -1848,6 +2224,32 @@ fn build_operator_tree_inner(
         }
     }
 
+    // Fast-path: `COUNT(*)` over one triple with an anchored string-prefix filter.
+    if enable_fused_fast_paths {
+        if let Some((pred, prefix, out_var)) = detect_string_prefix_count_all(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(string_prefix_count_all_operator(
+                pred,
+                prefix,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    // Fast-path: `SUM(xsd:integer(STRSTARTS(?o, "...")))` over one triple.
+    if enable_fused_fast_paths {
+        if let Some((pred, prefix, out_var)) = detect_string_prefix_sum_strstarts(query, options) {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(string_prefix_sum_strstarts_operator(
+                pred,
+                prefix,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
     // Fast-path: `COUNT(?s)` / `COUNT(*)` on a single predicate with FILTERs that
     // can be pushed down to encoded pre-filters in `BinaryScanOperator`:
     // - FILTER(?s = ?o)
@@ -1855,6 +2257,35 @@ fn build_operator_tree_inner(
     // - FILTER(LANG(?o) = "en")
     //
     // We build a scan that emits no bindings (empty schema) and counts rows.
+    if enable_fused_fast_paths {
+        if let Some((pred, lang_tag, out_var)) =
+            detect_predicate_count_rows_lang_filter(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(count_rows_lang_filter_operator(
+                pred,
+                lang_tag,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
+    if enable_fused_fast_paths {
+        if let Some((pred, compare, threshold, out_var)) =
+            detect_predicate_count_rows_numeric_compare(query, options)
+        {
+            let fallback = build_operator_tree_inner(query, options, stats.clone(), false)?;
+            return Ok(Box::new(count_rows_numeric_compare_operator(
+                pred,
+                compare,
+                threshold,
+                out_var,
+                Some(fallback),
+            )));
+        }
+    }
+
     if enable_fused_fast_paths {
         if let Some((tp, filters, out_var)) = detect_count_rows_with_encoded_filters(query, options)
         {
@@ -2142,12 +2573,7 @@ fn build_operator_tree_inner(
         detect_predicate_group_by_object_count_topk(query, options)
     {
         return Ok(Box::new(PredicateGroupCountFirstsOperator::new(
-            s_var,
-            o_var,
-            count_var,
-            pred,
-            limit,
-            stats.clone(),
+            s_var, o_var, count_var, pred, limit,
         )));
     }
 
@@ -2168,11 +2594,7 @@ fn build_operator_tree_inner(
     // Fast-path: `SELECT (COUNT(?s) AS ?c) WHERE { ?s <p> <o> }` using leaflet FIRST headers.
     if let Some((pred, s_var, obj, count_var)) = detect_predicate_object_count(query, options) {
         let mut operator: BoxedOperator = Box::new(PredicateObjectCountFirstsOperator::new(
-            pred,
-            s_var,
-            obj,
-            count_var,
-            stats.clone(),
+            pred, s_var, obj, count_var,
         ));
 
         // ORDER BY

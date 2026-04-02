@@ -302,6 +302,10 @@ impl IdStatsHook {
         self.rdf_type_p_id = Some(p_id);
     }
 
+    pub fn rdf_type_p_id(&self) -> Option<u32> {
+        self.rdf_type_p_id
+    }
+
     /// Enable/disable tracking of reference target-class edges.
     pub fn set_track_ref_targets(&mut self, enabled: bool) {
         self.track_ref_targets = enabled;

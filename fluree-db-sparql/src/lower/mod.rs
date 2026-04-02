@@ -616,8 +616,8 @@ mod tests {
 
     #[test]
     fn test_unknown_namespace_produces_fallback_sid() {
-        // An unregistered namespace is benign: the IRI encodes to a fallback
-        // SID (EMPTY namespace, code 0) that won't match data in the indexes.
+        // An unregistered namespace is benign: lowering keeps it as a raw IRI
+        // so execution can still handle cross-ledger / non-local references.
         let query = lower_query(
             "PREFIX other: <http://other.example.org/>
              SELECT ?s ?name WHERE { ?s other:name ?name }",
@@ -626,11 +626,10 @@ mod tests {
 
         assert_eq!(query.patterns.len(), 1);
         if let Pattern::Triple(tp) = &query.patterns[0] {
-            if let Ref::Sid(sid) = &tp.p {
-                assert_eq!(sid.namespace_code, fluree_vocab::namespaces::EMPTY);
-                assert_eq!(sid.name.as_ref(), "http://other.example.org/name");
+            if let Ref::Iri(iri) = &tp.p {
+                assert_eq!(iri.as_ref(), "http://other.example.org/name");
             } else {
-                panic!("Expected Sid for predicate");
+                panic!("Expected raw IRI for predicate");
             }
         } else {
             panic!("Expected Triple pattern");
@@ -757,7 +756,7 @@ mod tests {
     #[test]
     fn test_filter_not_exists_unknown_predicate_does_not_error() {
         // Regression guard: unknown predicate IRIs must not fail lowering.
-        // They should encode to the EMPTY namespace and naturally produce no matches at runtime.
+        // They should remain as raw IRIs and naturally produce no matches at runtime.
         let query = lower_query(
             "PREFIX ex: <http://example.org/>
              SELECT ?s WHERE {
@@ -778,13 +777,8 @@ mod tests {
 
                 for ip in inner {
                     if let Pattern::Triple(tp) = ip {
-                        if let Ref::Sid(sid) = &tp.p {
-                            if sid.name.as_ref() == "http://unknown.example/ns/does-not-exist" {
-                                assert_eq!(
-                                    sid.namespace_code,
-                                    fluree_vocab::namespaces::EMPTY,
-                                    "Unknown IRI should encode to EMPTY namespace"
-                                );
+                        if let Ref::Iri(iri) = &tp.p {
+                            if iri.as_ref() == "http://unknown.example/ns/does-not-exist" {
                                 return;
                             }
                         }
@@ -794,7 +788,7 @@ mod tests {
         }
 
         assert!(saw_not_exists, "Expected NotExists pattern");
-        panic!("Expected NOT EXISTS predicate to encode as EMPTY-namespace Sid");
+        panic!("Expected NOT EXISTS predicate to remain as raw IRI");
     }
 
     // =========================================================================

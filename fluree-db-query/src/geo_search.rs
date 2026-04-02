@@ -167,7 +167,7 @@ impl GeoSearchOperator {
             .ok_or_else(|| {
                 QueryError::Internal(format!("GeoSearch: no POST branch for g_id={}", g_id))
             })?;
-        let branch: Arc<BranchManifest> = Arc::new(branch_ref.clone());
+        let branch: Arc<BranchManifest> = Arc::clone(branch_ref);
 
         let geo_otype = OType::GEO_POINT.as_u16();
 
@@ -374,6 +374,7 @@ impl Operator for GeoSearchOperator {
                     flake,
                     store,
                     ctx.dict_novelty.as_ref(),
+                    ctx.runtime_small_dicts,
                     &mut ephemeral_preds,
                     &mut next_ep,
                 ) {
@@ -406,7 +407,8 @@ impl Operator for GeoSearchOperator {
             }
             // Build DictOverlay for ephemeral ID translation.
             if let Some(dict_nov) = ctx.dict_novelty.as_ref() {
-                let gv = BinaryGraphView::with_novelty(store.clone(), g_id, Some(dict_nov.clone()));
+                let gv = BinaryGraphView::with_novelty(store.clone(), g_id, Some(dict_nov.clone()))
+                    .with_namespace_codes_fallback(ctx.namespace_codes_fallback.clone());
                 let dict_ov = crate::dict_overlay::DictOverlay::new(gv, dict_nov.clone());
                 self.dict_overlay = Some(dict_ov);
             }

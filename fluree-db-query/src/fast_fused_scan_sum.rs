@@ -1,4 +1,4 @@
-//! Fast-path fused scan + SUM(scalar(?o)) for a single predicate.
+//! Fast-path fused scan + SUM(expr(?o)) for a single predicate.
 //!
 //! Targets benchmark-style queries like:
 //!
@@ -7,7 +7,8 @@
 //! WHERE { ?s <p> ?o }
 //! ```
 //!
-//! SPARQL lowering desugars `SUM(DAY(?o))` to a pre-aggregation `BIND` of the
+//! SPARQL lowering desugars expressions like `SUM(DAY(?o))` or `SUM(?o + ?o)`
+//! to a pre-aggregation `BIND` of the
 //! expression into a synthetic var, then `SUM(?synthetic)`. This operator bypasses
 //! that pipeline by scanning the predicate's POST index range and aggregating
 //! directly from encoded `(o_type/o_kind, o_key)` without materializing per-row
@@ -15,7 +16,7 @@
 
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
+    build_i64_singleton_batch, fast_path_store, leaf_entries_for_predicate, normalize_pred_sid,
     FastPathOperator,
 };
 use crate::operator::BoxedOperator;
@@ -47,14 +48,17 @@ pub enum NumericUnaryFn {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ScalarI64Fn {
+pub enum SumExprI64 {
+    Identity,
+    AddSelf,
     DateComponent(DateComponentFn),
     NumericUnary(NumericUnaryFn),
 }
 
-impl ScalarI64Fn {
+impl SumExprI64 {
     fn constant_for_otype(self, o_type: u16) -> Option<i64> {
         match self {
+            Self::Identity | Self::AddSelf => None,
             Self::DateComponent(component) => constant_component_for_otype(o_type, component),
             Self::NumericUnary(_) => None,
         }
@@ -62,6 +66,24 @@ impl ScalarI64Fn {
 
     fn eval_i64(self, o_type: u16, o_key: u64) -> Option<i64> {
         match self {
+            Self::Identity => {
+                let ot = OType::from_u16(o_type);
+                if ot.decode_kind() != DecodeKind::I64 {
+                    return None;
+                }
+                Some(ObjKey::from_u64(o_key).decode_i64())
+            }
+            Self::AddSelf => {
+                let ot = OType::from_u16(o_type);
+                if ot.decode_kind() != DecodeKind::I64 {
+                    return None;
+                }
+                // Use saturating_mul instead of checked_mul to avoid silently
+                // dropping rows (returning None) on overflow. The outer loop
+                // already uses saturating_add, so clamping to i64::MAX/MIN is
+                // consistent with the overall overflow strategy.
+                Some(ObjKey::from_u64(o_key).decode_i64().saturating_mul(2))
+            }
             Self::DateComponent(component) => component_from_otype_okey(o_type, o_key, component),
             Self::NumericUnary(func) => {
                 let ot = OType::from_u16(o_type);
@@ -81,17 +103,19 @@ impl ScalarI64Fn {
 /// Create a fused operator that outputs a single-row batch with the SUM result.
 pub fn fused_scan_sum_i64_operator(
     predicate: Ref,
-    scalar: ScalarI64Fn,
+    scalar: SumExprI64,
     out_var: VarId,
     fallback: Option<BoxedOperator>,
 ) -> FastPathOperator {
     let label = match scalar {
-        ScalarI64Fn::DateComponent(c) => match c {
+        SumExprI64::Identity => "SUM(?o)",
+        SumExprI64::AddSelf => "SUM(?o+?o)",
+        SumExprI64::DateComponent(c) => match c {
             DateComponentFn::Year => "SUM(YEAR)",
             DateComponentFn::Month => "SUM(MONTH)",
             DateComponentFn::Day => "SUM(DAY)",
         },
-        ScalarI64Fn::NumericUnary(n) => match n {
+        SumExprI64::NumericUnary(n) => match n {
             NumericUnaryFn::Abs => "SUM(ABS)",
             NumericUnaryFn::Ceil => "SUM(CEIL)",
             NumericUnaryFn::Floor => "SUM(FLOOR)",
@@ -105,7 +129,7 @@ pub fn fused_scan_sum_i64_operator(
                 return Ok(None);
             };
             match sum_scalar_i64(store, ctx.binary_g_id, &predicate, scalar)? {
-                Some(sum) => Ok(Some(build_count_batch(out_var, sum)?)),
+                Some(sum) => Ok(Some(build_i64_singleton_batch(out_var, sum, "sum")?)),
                 None => Ok(None),
             }
         },
@@ -118,7 +142,7 @@ fn sum_scalar_i64(
     store: &BinaryIndexStore,
     g_id: GraphId,
     predicate: &Ref,
-    scalar: ScalarI64Fn,
+    scalar: SumExprI64,
 ) -> Result<Option<i64>> {
     let pred_sid = normalize_pred_sid(store, predicate)?;
     let Some(p_id) = store.sid_to_p_id(&pred_sid) else {

@@ -35,7 +35,12 @@ fn find_root_file(test_db_path: &Path) -> Option<ContentId> {
     let entry = std::fs::read_dir(&root_dir)
         .ok()?
         .filter_map(|e| e.ok())
-        .find(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))?;
+        .find(|e| {
+            e.path()
+                .extension()
+                .map(|x| x == "fir6" || x == "json")
+                .unwrap_or(false)
+        })?;
 
     let bytes = std::fs::read(entry.path()).ok()?;
     Some(ContentId::new(ContentKind::IndexRoot, &bytes))

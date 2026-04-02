@@ -9,6 +9,7 @@
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::fast_path_common::fast_path_store;
 use crate::operator::{BoxedOperator, Operator, OperatorState};
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -64,13 +65,7 @@ impl Operator for CountRowsOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
-        let allow_fast = !ctx.history_mode
-            && ctx.from_t.is_none()
-            && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
-            && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0
-            && ctx.binary_store.is_some();
-
-        if allow_fast {
+        if fast_path_store(ctx).is_some() {
             self.use_fallback = false;
             self.fast_child.open(ctx).await?;
         } else if let Some(fallback) = self.fallback.as_mut() {

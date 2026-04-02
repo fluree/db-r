@@ -348,10 +348,11 @@ impl IndexerHandle {
     pub async fn trigger(&self, ledger_id: impl Into<String>, min_t: i64) -> IndexCompletion {
         let ledger_id = ledger_id.into();
         let (tx, rx) = oneshot::channel();
+        let (phase, pending_min_t, waiter_count);
 
         {
             let mut states = self.states.lock().await;
-            let state = states.entry(ledger_id).or_default();
+            let state = states.entry(ledger_id.clone()).or_default();
 
             // Clear cancelled flag on new trigger
             state.cancelled = false;
@@ -375,10 +376,23 @@ impl IndexerHandle {
             if state.phase == IndexPhase::Idle {
                 state.phase = IndexPhase::Pending;
             }
+
+            phase = state.phase;
+            pending_min_t = state.pending_min_t;
+            waiter_count = state.waiters.len();
         }
 
         // Signal the worker
         self.tick.send_modify(|t| *t = t.wrapping_add(1));
+
+        info!(
+            ledger_id = %ledger_id,
+            requested_min_t = min_t,
+            phase = ?phase,
+            pending_min_t = ?pending_min_t,
+            waiter_count,
+            "Queued indexing request"
+        );
 
         IndexCompletion { receiver: rx }
     }
@@ -618,6 +632,15 @@ where
 
     /// Process a single ledger
     async fn process_ledger(&self, ledger_id: &str) {
+        let (pending_min_t, waiter_count, retry_count) = {
+            let states = self.states.lock().await;
+            if let Some(state) = states.get(ledger_id) {
+                (state.pending_min_t, state.waiters.len(), state.retry_count)
+            } else {
+                return;
+            }
+        };
+
         // Mark as in-progress
         {
             let mut states = self.states.lock().await;
@@ -630,6 +653,14 @@ where
                 return;
             }
         }
+
+        info!(
+            ledger_id = %ledger_id,
+            pending_min_t = ?pending_min_t,
+            waiter_count,
+            retry_count,
+            "Starting queued indexing work"
+        );
 
         // Re-check nameservice for current state
         let record = match self.nameservice.lookup(ledger_id).await {
@@ -659,6 +690,16 @@ where
         };
 
         let current_index_t = record.index_t;
+        let commit_gap = record.commit_t - current_index_t;
+        info!(
+            ledger_id = %ledger_id,
+            current_index_t,
+            commit_t = record.commit_t,
+            commit_gap,
+            pending_min_t = ?pending_min_t,
+            has_index = record.index_head_id.is_some(),
+            "Loaded ledger state for queued indexing work"
+        );
 
         // Check if index already satisfies all waiters
         {
@@ -724,6 +765,12 @@ where
 
         // Skip if already indexed to current commit
         if record.commit_t <= current_index_t {
+            info!(
+                ledger_id = %ledger_id,
+                current_index_t,
+                commit_t = record.commit_t,
+                "Queued indexing request already satisfied"
+            );
             let mut states = self.states.lock().await;
             if let Some(state) = states.get_mut(ledger_id) {
                 // Resolve waiters that can be satisfied
@@ -758,6 +805,14 @@ where
         }
 
         // Execute refresh-first indexing to CURRENT commit_t
+        info!(
+            ledger_id = %ledger_id,
+            current_index_t,
+            commit_t = record.commit_t,
+            commit_gap,
+            pending_min_t = ?pending_min_t,
+            "Starting index build for queued work"
+        );
         let result = crate::build_index_for_ledger(
             &self.storage,
             self.nameservice.as_ref(),
@@ -865,6 +920,14 @@ where
 
             state.retry_count = state.retry_count.saturating_add(1);
             state.phase = IndexPhase::Pending;
+            info!(
+                ledger_id = %ledger_id,
+                retry_count = state.retry_count,
+                backoff_ms,
+                error = %error,
+                pending_min_t = ?state.pending_min_t,
+                "Scheduled indexing retry"
+            );
         }
     }
 }
