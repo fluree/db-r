@@ -1148,6 +1148,10 @@ pub async fn execute_datalog_rules_with_query_rules(
 struct OverlayRef<'a>(&'a dyn OverlayProvider);
 
 impl<'a> OverlayProvider for OverlayRef<'a> {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.0.as_any()
+    }
+
     fn epoch(&self) -> u64 {
         self.0.epoch()
     }

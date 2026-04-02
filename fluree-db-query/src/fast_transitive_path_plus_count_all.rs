@@ -34,8 +34,12 @@ pub fn transitive_path_plus_count_all_operator(
     FastPathOperator::new(
         out_var,
         move |ctx| {
-            // Only safe in the same execution mode as other binary-index fast paths.
-            let allow_fast = !ctx.history_mode && ctx.from_t.is_none() && !ctx.has_policy();
+            // Cursor-based path is overlay-aware, but still requires single-ledger,
+            // non-history, root-policy execution.
+            let allow_fast = !ctx.is_multi_ledger()
+                && !ctx.history_mode
+                && ctx.from_t.is_none()
+                && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root());
             if !allow_fast {
                 return Ok(None);
             }
@@ -62,17 +66,18 @@ fn count_p1_then_p2_plus(
     p1: &Ref,
     p2: &Ref,
 ) -> Result<Option<u64>> {
+    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
     let p1_sid = normalize_pred_sid(store, p1)?;
     let p2_sid = normalize_pred_sid(store, p2)?;
     let Some(p1_id) = store.sid_to_p_id(&p1_sid) else {
-        return if ctx.overlay.is_some() {
+        return if overlay_has_rows {
             Ok(None)
         } else {
             Ok(Some(0))
         };
     };
     let Some(p2_id) = store.sid_to_p_id(&p2_sid) else {
-        return if ctx.overlay.is_some() {
+        return if overlay_has_rows {
             Ok(None)
         } else {
             Ok(Some(0))

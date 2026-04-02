@@ -13,7 +13,9 @@ use crate::{
     ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
     TrackingOptions,
 };
-use fluree_db_query::execute::{execute_prepared, prepare_execution, ContextConfig};
+use fluree_db_query::execute::{
+    execute_prepared, prepare_execution_with_binary_store, ContextConfig,
+};
 use fluree_db_query::ir::{GraphName, Pattern};
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use serde_json::Value as JsonValue;
@@ -541,9 +543,10 @@ where
         r2rml_table_provider: &'b dyn fluree_db_query::r2rml::R2rmlTableProvider,
     ) -> Result<Vec<crate::Batch>> {
         let db_ref = db.as_graph_db_ref();
-        let prepared = prepare_execution(db_ref, executable)
-            .await
-            .map_err(query_error_to_api_error)?;
+        let prepared =
+            prepare_execution_with_binary_store(db_ref, executable, db.binary_store.as_ref())
+                .await
+                .map_err(query_error_to_api_error)?;
 
         let spatial_map = db.binary_store.as_ref().map(|s| s.spatial_provider_map());
         let fulltext_map = db.binary_store.as_ref().map(|s| s.fulltext_provider_map());
@@ -591,7 +594,9 @@ where
         r2rml_table_provider: &dyn R2rmlTableProvider,
     ) -> std::result::Result<Vec<crate::Batch>, fluree_db_query::QueryError> {
         let db_ref = db.as_graph_db_ref();
-        let prepared = prepare_execution(db_ref, executable).await?;
+        let prepared =
+            prepare_execution_with_binary_store(db_ref, executable, db.binary_store.as_ref())
+                .await?;
 
         let spatial_map = db.binary_store.as_ref().map(|s| s.spatial_provider_map());
         let fulltext_map = db.binary_store.as_ref().map(|s| s.fulltext_provider_map());

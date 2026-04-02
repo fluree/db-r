@@ -145,6 +145,12 @@ pub async fn resolve_incremental_commits_v6(
     config: IncrementalResolveConfig,
 ) -> Result<IncrementalNovelty, IncrementalResolveError> {
     let t_start = Instant::now();
+    tracing::info!(
+        base_root = %config.base_root_id,
+        head = %config.head_commit_id,
+        from_t = config.from_t,
+        "V6 incremental resolve: starting"
+    );
 
     // 1. Load and decode IndexRoot.
     let (root_bytes, t_root_load_ms) = {
@@ -307,6 +313,26 @@ pub async fn resolve_incremental_commits_v6(
             delta_asserts += resolved.asserts as u64;
             delta_retracts += resolved.retracts as u64;
             commit_count += 1;
+
+            if commit_count.is_multiple_of(500) {
+                tracing::info!(
+                    commit_count,
+                    total_commits = commit_cids.len(),
+                    current_t = envelope.t,
+                    chunk_records = chunk.records.len(),
+                    elapsed_ms = t0.elapsed().as_millis() as u64,
+                    "V6 incremental resolve: commit resolution progress"
+                );
+            } else if commit_count.is_multiple_of(100) {
+                tracing::debug!(
+                    commit_count,
+                    total_commits = commit_cids.len(),
+                    current_t = envelope.t,
+                    chunk_records = chunk.records.len(),
+                    elapsed_ms = t0.elapsed().as_millis() as u64,
+                    "V6 incremental resolve: commit resolution progress"
+                );
+            }
         }
 
         (
@@ -499,6 +525,7 @@ async fn walk_commit_chain_since(
 ) -> Result<Vec<ContentId>, IncrementalResolveError> {
     let mut cids = Vec::new();
     let mut current = Some(head_id.clone());
+    let walk_started = Instant::now();
 
     while let Some(cid) = current {
         let bytes = cs.get(&cid).await.map_err(|e| {
@@ -517,9 +544,35 @@ async fn walk_commit_chain_since(
 
         current = envelope.previous_ref.map(|r| r.id);
         cids.push(cid);
+
+        let walked = cids.len();
+        if walked % 500 == 0 {
+            tracing::info!(
+                commits_walked = walked,
+                current_t = envelope.t,
+                from_t,
+                elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                "V6 incremental resolve: commit-chain walk progress"
+            );
+        } else if walked % 100 == 0 {
+            tracing::debug!(
+                commits_walked = walked,
+                current_t = envelope.t,
+                from_t,
+                elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                "V6 incremental resolve: commit-chain walk progress"
+            );
+        }
     }
 
     cids.reverse();
+    tracing::info!(
+        commits = cids.len(),
+        from_t,
+        head = %head_id,
+        elapsed_ms = walk_started.elapsed().as_millis() as u64,
+        "V6 incremental resolve: commit-chain walk complete"
+    );
     Ok(cids)
 }
 
@@ -545,12 +598,28 @@ fn reconcile_chunk_to_global(
     subject_watermarks: &[u64],
     string_watermark: u32,
 ) -> Result<ReconcileResult, IncrementalResolveError> {
+    const INFO_PROGRESS_EVERY: usize = 5_000;
+    const DEBUG_PROGRESS_EVERY: usize = 1_000;
+
     // Subject reconciliation.
     let subject_entries = chunk.subjects.forward_entries();
+    let subject_started = Instant::now();
+    let subject_reads_before = subject_tree.disk_reads();
+    let subject_hits_before = subject_tree.cache_hits();
     let mut subject_remap = vec![0u64; subject_entries.len()];
     let mut new_subjects = Vec::new();
     let mut ns_next_local: HashMap<u16, u64> = HashMap::new();
     let mut updated_watermarks = subject_watermarks.to_vec();
+    let mut subject_existing = 0usize;
+    let mut subject_new = 0usize;
+
+    tracing::info!(
+        subject_entries = subject_entries.len(),
+        subject_tree_entries = subject_tree.total_entries(),
+        subject_tree_disk_reads = subject_reads_before,
+        subject_tree_cache_hits = subject_hits_before,
+        "V6 incremental resolve: subject reconciliation starting"
+    );
 
     for (chunk_local_id, (ns_code, name_bytes)) in subject_entries.iter().enumerate() {
         let reverse_key = subject_reverse_key(*ns_code, name_bytes);
@@ -559,8 +628,12 @@ fn reconcile_chunk_to_global(
             .map_err(IncrementalResolveError::Io)?;
 
         let global_sid64 = match existing_id {
-            Some(sid64) => sid64,
+            Some(sid64) => {
+                subject_existing += 1;
+                sid64
+            }
             None => {
+                subject_new += 1;
                 let wm = if (*ns_code as usize) < updated_watermarks.len() {
                     updated_watermarks[*ns_code as usize]
                 } else {
@@ -577,13 +650,73 @@ fn reconcile_chunk_to_global(
             }
         };
         subject_remap[chunk_local_id] = global_sid64;
+
+        let processed = chunk_local_id + 1;
+        if processed % INFO_PROGRESS_EVERY == 0 {
+            tracing::info!(
+                processed,
+                total = subject_entries.len(),
+                existing = subject_existing,
+                new = subject_new,
+                disk_reads = subject_tree
+                    .disk_reads()
+                    .saturating_sub(subject_reads_before),
+                cache_hits = subject_tree
+                    .cache_hits()
+                    .saturating_sub(subject_hits_before),
+                elapsed_ms = subject_started.elapsed().as_millis() as u64,
+                "V6 incremental resolve: subject reconciliation progress"
+            );
+        } else if processed % DEBUG_PROGRESS_EVERY == 0 {
+            tracing::debug!(
+                processed,
+                total = subject_entries.len(),
+                existing = subject_existing,
+                new = subject_new,
+                disk_reads = subject_tree
+                    .disk_reads()
+                    .saturating_sub(subject_reads_before),
+                cache_hits = subject_tree
+                    .cache_hits()
+                    .saturating_sub(subject_hits_before),
+                elapsed_ms = subject_started.elapsed().as_millis() as u64,
+                "V6 incremental resolve: subject reconciliation progress"
+            );
+        }
     }
+
+    tracing::info!(
+        subject_entries = subject_entries.len(),
+        existing = subject_existing,
+        new = subject_new,
+        disk_reads = subject_tree
+            .disk_reads()
+            .saturating_sub(subject_reads_before),
+        cache_hits = subject_tree
+            .cache_hits()
+            .saturating_sub(subject_hits_before),
+        elapsed_ms = subject_started.elapsed().as_millis() as u64,
+        "V6 incremental resolve: subject reconciliation complete"
+    );
 
     // String reconciliation.
     let string_entries = chunk.strings.forward_entries();
+    let string_started = Instant::now();
+    let string_reads_before = string_tree.disk_reads();
+    let string_hits_before = string_tree.cache_hits();
     let mut string_remap = vec![0u32; string_entries.len()];
     let mut new_strings = Vec::new();
     let mut next_string_id = string_watermark + 1;
+    let mut string_existing = 0usize;
+    let mut string_new = 0usize;
+
+    tracing::info!(
+        string_entries = string_entries.len(),
+        string_tree_entries = string_tree.total_entries(),
+        string_tree_disk_reads = string_reads_before,
+        string_tree_cache_hits = string_hits_before,
+        "V6 incremental resolve: string reconciliation starting"
+    );
 
     for (chunk_local_id, value_bytes) in string_entries.iter().enumerate() {
         let existing_id = string_tree
@@ -591,8 +724,12 @@ fn reconcile_chunk_to_global(
             .map_err(IncrementalResolveError::Io)?;
 
         let global_str_id = match existing_id {
-            Some(id) => id as u32,
+            Some(id) => {
+                string_existing += 1;
+                id as u32
+            }
             None => {
+                string_new += 1;
                 let id = next_string_id;
                 next_string_id += 1;
                 new_strings.push((id, value_bytes.clone()));
@@ -600,7 +737,42 @@ fn reconcile_chunk_to_global(
             }
         };
         string_remap[chunk_local_id] = global_str_id;
+
+        let processed = chunk_local_id + 1;
+        if processed % INFO_PROGRESS_EVERY == 0 {
+            tracing::info!(
+                processed,
+                total = string_entries.len(),
+                existing = string_existing,
+                new = string_new,
+                disk_reads = string_tree.disk_reads().saturating_sub(string_reads_before),
+                cache_hits = string_tree.cache_hits().saturating_sub(string_hits_before),
+                elapsed_ms = string_started.elapsed().as_millis() as u64,
+                "V6 incremental resolve: string reconciliation progress"
+            );
+        } else if processed % DEBUG_PROGRESS_EVERY == 0 {
+            tracing::debug!(
+                processed,
+                total = string_entries.len(),
+                existing = string_existing,
+                new = string_new,
+                disk_reads = string_tree.disk_reads().saturating_sub(string_reads_before),
+                cache_hits = string_tree.cache_hits().saturating_sub(string_hits_before),
+                elapsed_ms = string_started.elapsed().as_millis() as u64,
+                "V6 incremental resolve: string reconciliation progress"
+            );
+        }
     }
+
+    tracing::info!(
+        string_entries = string_entries.len(),
+        existing = string_existing,
+        new = string_new,
+        disk_reads = string_tree.disk_reads().saturating_sub(string_reads_before),
+        cache_hits = string_tree.cache_hits().saturating_sub(string_hits_before),
+        elapsed_ms = string_started.elapsed().as_millis() as u64,
+        "V6 incremental resolve: string reconciliation complete"
+    );
 
     let updated_string_watermark = if next_string_id > string_watermark + 1 {
         next_string_id - 1

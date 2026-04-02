@@ -51,6 +51,24 @@ where
     Some((buf, fk, lk))
 }
 
+fn build_forward_pack_artifact(
+    entries: &[(u64, &[u8])],
+    kind: u8,
+    ns_code: u16,
+    target_page_bytes: usize,
+) -> std::io::Result<(Vec<u8>, u64, u64)> {
+    if entries.is_empty() {
+        return Err(std::io::Error::other("cannot build empty forward pack"));
+    }
+    let bytes = fluree_db_binary_index::dict::forward_pack::encode_forward_pack(
+        entries,
+        kind,
+        ns_code,
+        target_page_bytes,
+    )?;
+    Ok((bytes, entries[0].0, entries.last().expect("non-empty").0))
+}
+
 ///
 /// Reads flat files written by `GlobalDicts::persist()` and builds CoW trees
 /// for subject/string dicts. Does NOT require `GlobalDicts` in memory.
@@ -73,6 +91,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     ledger_id: &str,
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
+    trust_sorted_order_invariants: bool,
 ) -> Result<UploadedDicts> {
     use fluree_db_binary_index::dict::branch::{BranchLeafEntry, DictBranch};
     use fluree_db_binary_index::dict::builder;
@@ -122,6 +141,11 @@ pub async fn upload_dicts_from_disk<S: Storage>(
     tracing::info!(
         "uploading subject trees, string trees, numbig arenas, and vector arenas in parallel"
     );
+    if trust_sorted_order_invariants {
+        tracing::info!(
+            "trusting bulk-import sorted-order invariants for subject/string dict reverse trees"
+        );
+    }
 
     let (subject_trees, string_result, numbig, vectors) = tokio::try_join!(
         // Task A: Subject forward + reverse trees
@@ -170,7 +194,11 @@ pub async fn upload_dicts_from_disk<S: Storage>(
 
             // Pass 1: forward packs (FPK1 format, one stream per namespace)
             tracing::info!("building subject forward packs");
-            let sids_sorted = sids.windows(2).all(|w| w[0] <= w[1]);
+            let sids_sorted = if trust_sorted_order_invariants {
+                true
+            } else {
+                sids.windows(2).all(|w| w[0] <= w[1])
+            };
 
             let id_order: Option<Vec<usize>> = if sids_sorted {
                 None
@@ -180,80 +208,205 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 Some(v)
             };
             let subject_fwd_pack_refs = {
-                use fluree_db_binary_index::dict::pack_builder;
+                use fluree_db_binary_index::dict::forward_pack::KIND_SUBJECT_FWD;
+                use fluree_db_binary_index::dict::pack_builder::{
+                    DEFAULT_TARGET_PACK_BYTES, DEFAULT_TARGET_PAGE_BYTES,
+                };
 
-                // Group entries by ns_code, collect (local_id, suffix) per namespace.
-                let mut ns_entries: BTreeMap<u16, Vec<(u64, &[u8])>> = BTreeMap::new();
+                let kind = ContentKind::DictBlob {
+                    dict: DictKind::SubjectForward,
+                };
                 let iter_fn = |i: usize| {
                     let sid = sids[i];
                     let off = suf_offs[i] as usize;
                     let len = suf_lens[i] as usize;
-                    let ns_code = SubjectId::from_u64(sid).ns_code();
-                    let local_id = SubjectId::from_u64(sid).local_id();
+                    let sid = SubjectId::from_u64(sid);
+                    let ns_code = sid.ns_code();
+                    let local_id = sid.local_id();
                     let suffix = &subj_fwd_data[off..off + len];
                     (ns_code, local_id, suffix)
                 };
+
+                let mut subject_fwd_ns_packs: Vec<(u16, Vec<PackBranchEntry>)> = Vec::new();
+                let mut current_ns: Option<u16> = None;
+                let mut current_pack_refs: Vec<PackBranchEntry> = Vec::new();
+                let mut current_entries: Vec<(u64, &[u8])> = Vec::new();
+                let mut current_pack_est = 0usize;
 
                 match &id_order {
                     None => {
                         for i in 0..sids.len() {
                             let (ns_code, local_id, suffix) = iter_fn(i);
-                            ns_entries
-                                .entry(ns_code)
-                                .or_default()
-                                .push((local_id, suffix));
+
+                            if current_ns != Some(ns_code) {
+                                if let Some(prev_ns) = current_ns {
+                                    if !current_entries.is_empty() {
+                                        let (bytes, first_id, last_id) =
+                                            build_forward_pack_artifact(
+                                                &current_entries,
+                                                KIND_SUBJECT_FWD,
+                                                prev_ns,
+                                                DEFAULT_TARGET_PAGE_BYTES,
+                                            )
+                                            .map_err(
+                                                |e| {
+                                                    IndexerError::StorageWrite(format!(
+                                                        "subject pack build: {}",
+                                                        e
+                                                    ))
+                                                },
+                                            )?;
+                                        let cas_result = storage
+                                            .content_write_bytes(kind, ledger_id, &bytes)
+                                            .await
+                                            .map_err(|e| {
+                                                IndexerError::StorageWrite(e.to_string())
+                                            })?;
+                                        current_pack_refs.push(PackBranchEntry {
+                                            first_id,
+                                            last_id,
+                                            pack_cid: cid_from_write(kind, &cas_result),
+                                        });
+                                        current_entries.clear();
+                                        current_pack_est = 0;
+                                    }
+                                    subject_fwd_ns_packs
+                                        .push((prev_ns, std::mem::take(&mut current_pack_refs)));
+                                }
+                                current_ns = Some(ns_code);
+                            }
+
+                            current_pack_est += suffix.len() + 4;
+                            current_entries.push((local_id, suffix));
+
+                            if current_pack_est >= DEFAULT_TARGET_PACK_BYTES {
+                                let (bytes, first_id, last_id) = build_forward_pack_artifact(
+                                    &current_entries,
+                                    KIND_SUBJECT_FWD,
+                                    ns_code,
+                                    DEFAULT_TARGET_PAGE_BYTES,
+                                )
+                                .map_err(|e| {
+                                    IndexerError::StorageWrite(format!("subject pack build: {}", e))
+                                })?;
+                                let cas_result = storage
+                                    .content_write_bytes(kind, ledger_id, &bytes)
+                                    .await
+                                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                                current_pack_refs.push(PackBranchEntry {
+                                    first_id,
+                                    last_id,
+                                    pack_cid: cid_from_write(kind, &cas_result),
+                                });
+                                current_entries.clear();
+                                current_pack_est = 0;
+                            }
                         }
                     }
                     Some(order) => {
                         for &i in order {
                             let (ns_code, local_id, suffix) = iter_fn(i);
-                            ns_entries
-                                .entry(ns_code)
-                                .or_default()
-                                .push((local_id, suffix));
+
+                            if current_ns != Some(ns_code) {
+                                if let Some(prev_ns) = current_ns {
+                                    if !current_entries.is_empty() {
+                                        let (bytes, first_id, last_id) =
+                                            build_forward_pack_artifact(
+                                                &current_entries,
+                                                KIND_SUBJECT_FWD,
+                                                prev_ns,
+                                                DEFAULT_TARGET_PAGE_BYTES,
+                                            )
+                                            .map_err(
+                                                |e| {
+                                                    IndexerError::StorageWrite(format!(
+                                                        "subject pack build: {}",
+                                                        e
+                                                    ))
+                                                },
+                                            )?;
+                                        let cas_result = storage
+                                            .content_write_bytes(kind, ledger_id, &bytes)
+                                            .await
+                                            .map_err(|e| {
+                                                IndexerError::StorageWrite(e.to_string())
+                                            })?;
+                                        current_pack_refs.push(PackBranchEntry {
+                                            first_id,
+                                            last_id,
+                                            pack_cid: cid_from_write(kind, &cas_result),
+                                        });
+                                        current_entries.clear();
+                                        current_pack_est = 0;
+                                    }
+                                    subject_fwd_ns_packs
+                                        .push((prev_ns, std::mem::take(&mut current_pack_refs)));
+                                }
+                                current_ns = Some(ns_code);
+                            }
+
+                            current_pack_est += suffix.len() + 4;
+                            current_entries.push((local_id, suffix));
+
+                            if current_pack_est >= DEFAULT_TARGET_PACK_BYTES {
+                                let (bytes, first_id, last_id) = build_forward_pack_artifact(
+                                    &current_entries,
+                                    KIND_SUBJECT_FWD,
+                                    ns_code,
+                                    DEFAULT_TARGET_PAGE_BYTES,
+                                )
+                                .map_err(|e| {
+                                    IndexerError::StorageWrite(format!("subject pack build: {}", e))
+                                })?;
+                                let cas_result = storage
+                                    .content_write_bytes(kind, ledger_id, &bytes)
+                                    .await
+                                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                                current_pack_refs.push(PackBranchEntry {
+                                    first_id,
+                                    last_id,
+                                    pack_cid: cid_from_write(kind, &cas_result),
+                                });
+                                current_entries.clear();
+                                current_pack_est = 0;
+                            }
                         }
                     }
                 }
 
-                // Build and upload packs per namespace.
-                let kind = ContentKind::DictBlob {
-                    dict: DictKind::SubjectForward,
-                };
-                let mut subject_fwd_ns_packs: Vec<(u16, Vec<PackBranchEntry>)> = Vec::new();
-                for (ns_code, entries) in &ns_entries {
-                    // Entries should already be sorted by local_id (ascending sid order within ns).
-                    let pack_result = pack_builder::build_subject_forward_packs_for_ns(
-                        *ns_code,
-                        entries,
-                        pack_builder::DEFAULT_TARGET_PAGE_BYTES,
-                        pack_builder::DEFAULT_TARGET_PACK_BYTES,
-                    )
-                    .map_err(|e| {
-                        IndexerError::StorageWrite(format!("subject pack build: {}", e))
-                    })?;
-
-                    let mut ns_pack_refs = Vec::with_capacity(pack_result.packs.len());
-                    for pack_artifact in pack_result.packs {
+                if let Some(ns_code) = current_ns {
+                    if !current_entries.is_empty() {
+                        let (bytes, first_id, last_id) = build_forward_pack_artifact(
+                            &current_entries,
+                            KIND_SUBJECT_FWD,
+                            ns_code,
+                            DEFAULT_TARGET_PAGE_BYTES,
+                        )
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("subject pack build: {}", e))
+                        })?;
                         let cas_result = storage
-                            .content_write_bytes(kind, ledger_id, &pack_artifact.bytes)
+                            .content_write_bytes(kind, ledger_id, &bytes)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                        ns_pack_refs.push(PackBranchEntry {
-                            first_id: pack_artifact.first_id,
-                            last_id: pack_artifact.last_id,
+                        current_pack_refs.push(PackBranchEntry {
+                            first_id,
+                            last_id,
                             pack_cid: cid_from_write(kind, &cas_result),
                         });
                     }
-                    subject_fwd_ns_packs.push((*ns_code, ns_pack_refs));
+                    subject_fwd_ns_packs.push((ns_code, current_pack_refs));
                 }
+
                 subject_fwd_ns_packs
             };
-
             // Pass 2: reverse tree
             // Fast path: when subjects were produced by vocab-merge, the file order is already
             // sorted by `(ns_code, suffix)` (which matches the reverse-tree key ordering).
             // Avoid sorting indices by comparing huge byte slices.
-            let keys_sorted = {
+            let keys_sorted = if trust_sorted_order_invariants {
+                true
+            } else {
                 let mut ok = true;
                 for i in 1..sids.len() {
                     let prev_ns = ns_codes[i - 1];
@@ -276,12 +429,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 }
                 ok
             };
-            tracing::info!(
-                sids_sorted,
-                keys_sorted,
-                "subject dict ordering check (fast-path eligibility)"
-            );
-
             let rev_order: Option<Vec<usize>> = if keys_sorted {
                 None
             } else {
@@ -511,44 +658,78 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 tracing::info!("building string forward packs");
                 // IDs are 0..count contiguous and already in order of the forward file.
                 let string_fwd_pack_refs = {
-                    use fluree_db_binary_index::dict::pack_builder;
+                    use fluree_db_binary_index::dict::forward_pack::KIND_STRING_FWD;
+                    use fluree_db_binary_index::dict::pack_builder::{
+                        DEFAULT_TARGET_PACK_BYTES, DEFAULT_TARGET_PAGE_BYTES,
+                    };
+
                     let kind = ContentKind::DictBlob {
                         dict: DictKind::StringForward,
                     };
-                    let entries: Vec<(u32, &[u8])> = (0..count)
-                        .map(|i| {
-                            let off = str_offsets[i] as usize;
-                            let len = str_lens[i] as usize;
-                            (i as u32, &str_fwd_data[off..off + len])
-                        })
-                        .collect();
-                    let pack_result = pack_builder::build_string_forward_packs(
-                        &entries,
-                        pack_builder::DEFAULT_TARGET_PAGE_BYTES,
-                        pack_builder::DEFAULT_TARGET_PACK_BYTES,
-                    )
-                    .map_err(|e| IndexerError::StorageWrite(format!("string pack build: {}", e)))?;
+                    let mut pack_refs = Vec::new();
+                    let mut entries: Vec<(u64, &[u8])> = Vec::new();
+                    let mut pack_est = 0usize;
 
-                    let mut pack_refs = Vec::with_capacity(pack_result.packs.len());
-                    for pack_artifact in pack_result.packs {
+                    for i in 0..count {
+                        let off = str_offsets[i] as usize;
+                        let len = str_lens[i] as usize;
+                        pack_est += len + 4;
+                        entries.push((i as u64, &str_fwd_data[off..off + len]));
+
+                        if pack_est >= DEFAULT_TARGET_PACK_BYTES {
+                            let (bytes, first_id, last_id) = build_forward_pack_artifact(
+                                &entries,
+                                KIND_STRING_FWD,
+                                0,
+                                DEFAULT_TARGET_PAGE_BYTES,
+                            )
+                            .map_err(|e| {
+                                IndexerError::StorageWrite(format!("string pack build: {}", e))
+                            })?;
+                            let cas_result = storage
+                                .content_write_bytes(kind, ledger_id, &bytes)
+                                .await
+                                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                            pack_refs.push(PackBranchEntry {
+                                first_id,
+                                last_id,
+                                pack_cid: cid_from_write(kind, &cas_result),
+                            });
+                            entries.clear();
+                            pack_est = 0;
+                        }
+                    }
+
+                    if !entries.is_empty() {
+                        let (bytes, first_id, last_id) = build_forward_pack_artifact(
+                            &entries,
+                            KIND_STRING_FWD,
+                            0,
+                            DEFAULT_TARGET_PAGE_BYTES,
+                        )
+                        .map_err(|e| {
+                            IndexerError::StorageWrite(format!("string pack build: {}", e))
+                        })?;
                         let cas_result = storage
-                            .content_write_bytes(kind, ledger_id, &pack_artifact.bytes)
+                            .content_write_bytes(kind, ledger_id, &bytes)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                         pack_refs.push(PackBranchEntry {
-                            first_id: pack_artifact.first_id,
-                            last_id: pack_artifact.last_id,
+                            first_id,
+                            last_id,
                             pack_cid: cid_from_write(kind, &cas_result),
                         });
                     }
+
                     pack_refs
                 };
-
                 // Pass 2: reverse tree
                 // Fast path: when strings were produced by vocab-merge, IDs are assigned
                 // in lexicographic key order, so the forward file order is already the
                 // correct reverse-tree key order. Avoid sorting indices (O(n log n)).
-                let strings_sorted = {
+                let strings_sorted = if trust_sorted_order_invariants {
+                    true
+                } else {
                     let mut ok = true;
                     for i in 1..count {
                         let oa = str_offsets[i - 1] as usize;
@@ -562,11 +743,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     }
                     ok
                 };
-                tracing::info!(
-                    strings_sorted,
-                    "string dict ordering check (fast-path eligibility)"
-                );
-
                 let rev_order: Option<Vec<usize>> = if strings_sorted {
                     None
                 } else {
@@ -988,7 +1164,6 @@ pub async fn upload_dicts_from_disk<S: Storage>(
         string_watermark,
         "dictionary trees built and uploaded to CAS (from disk)"
     );
-
     Ok(UploadedDicts {
         dict_refs: DictRefs {
             forward_packs: DictPackRefs {

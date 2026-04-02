@@ -16,6 +16,37 @@ use super::helpers::{build_regex_with_flags, check_arity};
 use super::value::ComparableValue;
 use crate::parse::UnresolvedDatatypeConstraint;
 
+fn anchored_literal_regex_prefix<'a>(pattern: &'a str, flags: &str) -> Option<&'a str> {
+    if !flags.is_empty() {
+        return None;
+    }
+    let prefix = pattern.strip_prefix('^')?;
+    if prefix.is_empty() {
+        return None;
+    }
+    if prefix.bytes().any(|b| {
+        matches!(
+            b,
+            b'.' | b'+'
+                | b'*'
+                | b'?'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+                | b'|'
+                | b'\\'
+                | b'^'
+                | b'$'
+        )
+    }) {
+        return None;
+    }
+    Some(prefix)
+}
+
 /// Extract the language tag from a binding, if present.
 /// Returns Some(lang) for language-tagged literals, None otherwise.
 /// Handles both materialized (`Lit`) and binary-store (`EncodedLit`) bindings.
@@ -246,6 +277,9 @@ pub fn eval_regex<R: RowAccess>(
 
     match (text, pattern) {
         (Some(ComparableValue::String(t)), Some(ComparableValue::String(p))) => {
+            if let Some(prefix) = anchored_literal_regex_prefix(&p, &flags) {
+                return Ok(Some(ComparableValue::Bool(t.starts_with(prefix))));
+            }
             let re = build_regex_with_flags(&p, &flags)?;
             Ok(Some(ComparableValue::Bool(re.is_match(&t))))
         }
@@ -580,6 +614,29 @@ mod tests {
             &[
                 Expression::Var(VarId(0)),
                 Expression::Const(FilterValue::String("World".to_string())),
+            ],
+            &row,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, Some(ComparableValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_anchored_literal_regex_prefix_shortcut() {
+        assert_eq!(anchored_literal_regex_prefix("^Hello", ""), Some("Hello"));
+        assert_eq!(anchored_literal_regex_prefix("^Hel.o", ""), None);
+        assert_eq!(anchored_literal_regex_prefix("^Hello", "i"), None);
+    }
+
+    #[test]
+    fn test_eval_regex_uses_literal_prefix_semantics() {
+        let batch = make_string_batch();
+        let row = batch.row_view(0).unwrap();
+        let result = eval_regex::<_>(
+            &[
+                Expression::Var(VarId(0)),
+                Expression::Const(FilterValue::String("^Hello".to_string())),
             ],
             &row,
             None,
