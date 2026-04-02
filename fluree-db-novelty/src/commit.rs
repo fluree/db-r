@@ -623,14 +623,13 @@ async fn advance_frontier<C: ContentStore>(
     let envelope = load_commit_envelope_by_id(store, &cid).await?;
     for parent_id in envelope.parent_ids() {
         if visited.insert(parent_id.clone()) {
+            let parent_env = load_commit_envelope_by_id(store, parent_id).await?;
             if other_visited.contains(parent_id) {
-                let parent_env = load_commit_envelope_by_id(store, parent_id).await?;
                 return Ok(Some(CommonAncestor {
                     commit_id: parent_id.clone(),
                     t: parent_env.t,
                 }));
             }
-            let parent_env = load_commit_envelope_by_id(store, parent_id).await?;
             frontier.push((parent_env.t, parent_id.clone()));
         }
     }
