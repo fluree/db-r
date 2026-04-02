@@ -29,7 +29,7 @@ mod inner {
     use crate::value_convert::{convert_native_literal, convert_string_literal};
     use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
     use fluree_db_binary_index::RunRecord;
-    use fluree_db_core::commit_v2::CommitV2Error;
+    use fluree_db_core::commit::codec::CommitV2Error;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeConstraint;
@@ -731,7 +731,7 @@ mod inner {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use fluree_db_core::commit_v2::read_commit;
+        use fluree_db_core::commit::codec::read_commit;
         use fluree_db_indexer::run_index::global_dict::PredicateDict;
 
         fn make_sink_and_parse(

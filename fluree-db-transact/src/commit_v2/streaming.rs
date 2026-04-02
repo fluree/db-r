@@ -16,12 +16,12 @@
 //! // result.bytes is the complete v4 blob (no embedded hash)
 //! ```
 
-use fluree_db_core::commit_v2::envelope::encode_envelope_fields;
-use fluree_db_core::commit_v2::format::{
+use fluree_db_core::commit::codec::envelope::encode_envelope_fields;
+use fluree_db_core::commit::codec::format::{
     CommitV2Footer, CommitV2Header, DictLocation, FLAG_ZSTD, FOOTER_LEN, HEADER_LEN, VERSION,
 };
-use fluree_db_core::commit_v2::op_codec::{encode_op, CommitDicts};
-use fluree_db_core::commit_v2::{CommitV2Envelope, CommitV2Error};
+use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
+use fluree_db_core::commit::codec::{CommitV2Envelope, CommitV2Error};
 use fluree_db_core::Flake;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -238,7 +238,7 @@ impl StreamingCommitWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::commit_v2::read_commit;
+    use fluree_db_core::commit::codec::read_commit;
     use fluree_db_core::{FlakeMeta, FlakeValue, Sid};
     use std::collections::HashMap;
 

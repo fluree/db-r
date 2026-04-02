@@ -27,7 +27,7 @@ use axum::{
     Json,
 };
 use fluree_db_api::block_fetch::{self, BlockContent, EnforcementMode, LedgerBlockContext};
-use fluree_db_api::{verify_commit_v2_blob, NameService, StorageRead};
+use fluree_db_api::{verify_commit_blob, NameService, StorageRead};
 use fluree_db_core::flake::Flake;
 use fluree_db_core::ContentKind;
 use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
@@ -429,14 +429,14 @@ fn is_allowed_object_kind(kind: ContentKind) -> bool {
 /// Verify object bytes against a CID, with format-sniffing for commits.
 ///
 /// Commit blobs are sniffed by magic bytes rather than assuming a fixed format:
-/// - `FCV2` magic → commit-v2 sub-range hash verification
+/// - `FCV2` magic → commit v4 verification (SHA-256 of full blob)
 /// - Anything else → full-bytes SHA-256 (future commit formats, txn, config, etc.)
 fn verify_object_integrity(id: &ContentId, bytes: &[u8]) -> bool {
     const COMMIT_V2_MAGIC: &[u8] = b"FCV2";
 
     if id.codec() == CODEC_FLUREE_COMMIT && bytes.starts_with(COMMIT_V2_MAGIC) {
-        // Commit-v2: canonical sub-range hash (excludes trailing hash + sig block).
-        match verify_commit_v2_blob(bytes) {
+        // Commit blob: CID = SHA-256(full blob).
+        match verify_commit_blob(bytes) {
             Ok(derived_id) => derived_id == *id,
             Err(_) => false,
         }

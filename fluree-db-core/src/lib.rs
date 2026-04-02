@@ -76,8 +76,6 @@ pub use address::{
     ParsedFlureeAddress,
 };
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
-/// Backward-compatible alias for `commit::codec`.
-pub use commit::codec as commit_v2;
 pub use commit::{
     collect_dag_cids, find_common_ancestor, load_commit_by_id, load_commit_envelope_by_id,
     trace_commit_envelopes_by_id, trace_commits_by_id, Commit, CommitEnvelope, CommitRef,

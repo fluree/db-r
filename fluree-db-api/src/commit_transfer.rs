@@ -504,7 +504,7 @@ fn decode_and_validate_commit_chain(
 
     for (idx, b64) in request.commits.iter().enumerate() {
         let bytes = b64.0.clone();
-        let commit = fluree_db_core::commit_v2::read_commit(&bytes)
+        let commit = fluree_db_core::commit::codec::read_commit(&bytes)
             .map_err(|e| PushError::Invalid(format!("invalid commit[{}]: {}", idx, e)))?;
 
         // Reject empty commits (no flakes) - keep semantics clear.
@@ -797,7 +797,7 @@ async fn write_commit_blobs<S: Storage + ContentAddressedWrite + Clone + Send + 
     let mut stored = Vec::with_capacity(decoded.len());
     for (idx, c) in decoded.iter().enumerate() {
         let res = storage
-            .content_write_bytes_with_hash(ContentKind::Commit, ledger_id, &c.digest_hex, &c.bytes)
+            .content_write_bytes(ContentKind::Commit, ledger_id, &c.bytes)
             .await
             .map_err(|e| PushError::Internal(e.to_string()))?;
         if res.content_hash != c.digest_hex {
@@ -927,51 +927,9 @@ fn apply_pushed_commits_to_state(
 ///
 /// This prevents a malicious client from altering payload bytes and the embedded
 /// hash in tandem — the server independently verifies the hash.
-/// Derive the content digest hex from a commit blob.
-///
-/// **V4**: SHA-256 of the full blob (no embedded hash).
-/// **V3** (legacy): Verifies and returns the embedded trailing hash.
+/// Derive the content digest hex from a v4 commit blob (SHA-256 of full blob).
 pub(crate) fn commit_digest_hex_from_bytes(bytes: &[u8]) -> std::result::Result<String, String> {
-    use fluree_db_core::commit_v2::format::{
-        CommitV2Header, FLAG_HAS_COMMIT_SIG, HASH_LEN, HEADER_LEN, VERSION_V3,
-    };
-
-    if bytes.len() < HEADER_LEN {
-        return Err("commit too small".to_string());
-    }
-    let header = CommitV2Header::read_from(bytes).map_err(|e| e.to_string())?;
-
-    // V4: CID is SHA-256 of the full blob
-    if header.version > VERSION_V3 {
-        return Ok(fluree_db_core::sha256_hex(bytes));
-    }
-
-    // V3: verify embedded hash
-    let blob_len = bytes.len();
-    if blob_len < HEADER_LEN + HASH_LEN {
-        return Err("commit too small for v3".to_string());
-    }
-    let sig_block_len = header.sig_block_len as usize;
-    let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
-    let hash_offset = if has_sig_block {
-        blob_len
-            .checked_sub(sig_block_len + HASH_LEN)
-            .ok_or_else(|| "commit too small (sig)".to_string())?
-    } else {
-        blob_len - HASH_LEN
-    };
-    let embedded_hex = hex::encode(&bytes[hash_offset..hash_offset + HASH_LEN]);
-
-    // Recompute the canonical hash over the payload before the trailing hash.
-    let recomputed_hex = fluree_db_core::sha256_hex(&bytes[..hash_offset]);
-    if recomputed_hex != embedded_hex {
-        return Err(format!(
-            "commit hash mismatch: embedded {} vs recomputed {}",
-            embedded_hex, recomputed_hex,
-        ));
-    }
-
-    Ok(recomputed_hex)
+    Ok(fluree_db_core::sha256_hex(bytes))
 }
 
 trait LedgerStateCloneExt {
@@ -1062,8 +1020,8 @@ where
         handle: &LedgerHandle,
         request: &ExportCommitsRequest,
     ) -> Result<ExportCommitsResponse> {
-        use fluree_db_core::commit_v2::envelope::decode_envelope;
-        use fluree_db_core::commit_v2::format::{CommitV2Header, HEADER_LEN};
+        use fluree_db_core::commit::codec::envelope::decode_envelope;
+        use fluree_db_core::commit::codec::format::{CommitV2Header, HEADER_LEN};
         use fluree_db_core::storage::content_store_for;
         use fluree_db_core::ContentStore;
 
@@ -1237,16 +1195,11 @@ where
         let mut stored = 0usize;
         let mut blobs_stored = 0usize;
 
-        // Write commit blobs to local CAS.
-        //
-        // For v4 blobs the CID is SHA-256(full blob); for v3 it is the embedded
-        // trailing hash. `commit_digest_hex_from_bytes` handles both versions.
+        // Write commit blobs to local CAS (v4: CID = SHA-256 of full blob).
         for b64 in &response.commits {
             let bytes = &b64.0;
-            let hash_hex = commit_digest_hex_from_bytes(bytes)
-                .map_err(|e| ApiError::internal(format!("invalid commit blob in export: {}", e)))?;
             storage
-                .content_write_bytes_with_hash(ContentKind::Commit, ledger_id, &hash_hex, bytes)
+                .content_write_bytes(ContentKind::Commit, ledger_id, bytes)
                 .await
                 .map_err(|e| ApiError::internal(format!("failed to write commit blob: {}", e)))?;
             stored += 1;

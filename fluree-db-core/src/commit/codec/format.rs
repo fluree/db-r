@@ -1,15 +1,10 @@
-//! Binary layout constants and header/footer I/O for commit format v2/v4.
+//! Binary layout constants and header/footer I/O for commit format v4.
 //!
 //! All fixed-width numeric fields are little-endian.
 //!
-//! V4 layout (current):
+//! V4 layout:
 //! ```text
 //! [Header 32B][Envelope (binary)][Ops section][Dictionaries][Footer 64B][optional signature block]
-//! ```
-//!
-//! V3 layout (legacy, still readable):
-//! ```text
-//! [Header 32B][Envelope (binary)][Ops section][Dictionaries][Footer 64B][Hash 32B][optional signature block]
 //! ```
 
 use super::error::CommitV2Error;
@@ -23,12 +18,8 @@ use super::varint::{read_exact, read_u8};
 pub const MAGIC: [u8; 4] = *b"FCV2";
 
 /// Current format version.
-/// Version 4: removes embedded 32-byte trailing hash. CID is computed from the
-/// full blob by ContentStore::put(). V3 blobs are still readable.
+/// Version 4: no embedded trailing hash. CID is computed as SHA-256(full blob).
 pub const VERSION: u8 = 4;
-
-/// Legacy format version (readable but no longer written).
-pub const VERSION_V3: u8 = 3;
 
 /// Header size in bytes (fixed).
 pub const HEADER_LEN: usize = 32;
@@ -41,8 +32,6 @@ pub const FOOTER_LEN: usize = 64;
 pub const HASH_LEN: usize = 32;
 
 /// Minimum valid commit blob size (v4: no embedded hash).
-/// V3 blobs are always at least `HEADER_LEN + FOOTER_LEN + HASH_LEN = 128`,
-/// which is larger than this, so this works for both versions.
 pub const MIN_COMMIT_LEN: usize = HEADER_LEN + FOOTER_LEN; // 96
 
 // --- Commit-level flags (header) ---
@@ -328,7 +317,7 @@ impl CommitV2Header {
             return Err(CommitV2Error::InvalidMagic);
         }
         let version = buf[4];
-        if version != VERSION && version != VERSION_V3 {
+        if version != VERSION {
             return Err(CommitV2Error::UnsupportedVersion(version));
         }
         let flags = buf[5];
@@ -477,30 +466,19 @@ mod tests {
             Err(CommitV2Error::UnsupportedVersion(2))
         ));
 
+        // Reject legacy version 3
+        buf[4] = 3;
+        assert!(matches!(
+            CommitV2Header::read_from(&buf),
+            Err(CommitV2Error::UnsupportedVersion(3))
+        ));
+
         // Reject future version 99
         buf[4] = 99;
         assert!(matches!(
             CommitV2Header::read_from(&buf),
             Err(CommitV2Error::UnsupportedVersion(99))
         ));
-    }
-
-    #[test]
-    fn test_header_accepts_v3() {
-        let header = CommitV2Header {
-            version: VERSION_V3,
-            flags: 0,
-            t: 1,
-            op_count: 1,
-            envelope_len: 10,
-            sig_block_len: 0,
-        };
-        let mut buf = [0u8; HEADER_LEN];
-        header.write_to(&mut buf);
-        // Force version byte to 3
-        buf[4] = VERSION_V3;
-        let parsed = CommitV2Header::read_from(&buf).unwrap();
-        assert_eq!(parsed.version, VERSION_V3);
     }
 
     #[test]

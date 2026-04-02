@@ -15,7 +15,7 @@
 //! let entries = hook.into_entries();
 //! ```
 
-use fluree_db_core::commit_v2::raw_reader::{RawObject, RawOp};
+use fluree_db_core::commit::codec::raw_reader::{RawObject, RawOp};
 use fluree_db_core::GraphId;
 use fluree_vocab::{geo_names, namespaces};
 

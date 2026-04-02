@@ -60,7 +60,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     C: ContentStore + Clone + Send + Sync + 'static,
 {
-    use fluree_db_core::commit_v2::read_commit_envelope;
+    use fluree_db_core::commit::codec::read_commit_envelope;
     use run_index::resolver::{RebuildChunk, SharedResolverState};
     use run_index::spool::SortedCommitInfo;
 

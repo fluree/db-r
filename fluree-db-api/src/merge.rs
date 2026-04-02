@@ -6,7 +6,7 @@
 
 use crate::error::{ApiError, Result};
 use crate::rebase::ConflictStrategy;
-use fluree_db_core::commit_v2::read_commit_envelope;
+use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{collect_dag_cids, load_commit_by_id, CommonAncestor};

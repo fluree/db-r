@@ -56,7 +56,7 @@ fn make_commit_bytes(t: i64, previous: Option<&ContentId>, flakes: Vec<Flake>) -
     if let Some(prev_cid) = previous {
         c = c.with_previous_ref(CommitRef::new(prev_cid.clone()));
     }
-    let res = fluree_db_core::commit_v2::write_commit(&c, true, None).expect("write_commit");
+    let res = fluree_db_core::commit::codec::write_commit(&c, true, None).expect("write_commit");
     res.bytes
 }
 
@@ -1105,7 +1105,7 @@ async fn sparql_update_templates_support_graph_iri_blocks() {
     assert_eq!(export.commits.len(), 1);
 
     let commit_bytes = &export.commits[0].0;
-    let commit = fluree_db_core::commit_v2::read_commit(commit_bytes).unwrap();
+    let commit = fluree_db_core::commit::codec::read_commit(commit_bytes).unwrap();
 
     let expected_graph_sid_str = expected_graph_sid.to_string();
     assert!(
@@ -1215,7 +1215,7 @@ async fn sparql_update_with_clause_scopes_default_templates_and_where() {
         .await
         .unwrap();
     let commit_bytes = &export.commits[0].0;
-    let commit = fluree_db_core::commit_v2::read_commit(commit_bytes).unwrap();
+    let commit = fluree_db_core::commit::codec::read_commit(commit_bytes).unwrap();
 
     assert!(
         commit.flakes.iter().any(|f| {
@@ -1324,7 +1324,7 @@ async fn sparql_update_using_clause_scopes_where_default_graph() {
         .await
         .unwrap();
     let commit_bytes = &export.commits[0].0;
-    let commit = fluree_db_core::commit_v2::read_commit(commit_bytes).unwrap();
+    let commit = fluree_db_core::commit::codec::read_commit(commit_bytes).unwrap();
 
     assert!(
         commit.flakes.iter().any(|f| {
@@ -1452,7 +1452,7 @@ async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
         .await
         .unwrap();
     let commit_bytes = &export.commits[0].0;
-    let commit = fluree_db_core::commit_v2::read_commit(commit_bytes).unwrap();
+    let commit = fluree_db_core::commit::codec::read_commit(commit_bytes).unwrap();
 
     assert!(
         commit.flakes.iter().any(|f| {
@@ -1567,7 +1567,7 @@ async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
         .await
         .unwrap();
     let commit_bytes = &export.commits[0].0;
-    let commit = fluree_db_core::commit_v2::read_commit(commit_bytes).unwrap();
+    let commit = fluree_db_core::commit::codec::read_commit(commit_bytes).unwrap();
     assert!(
         !commit.flakes.iter().any(|f| {
             f.op && f.g == Some(g2_sid.clone())
@@ -1622,7 +1622,7 @@ async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
         .await
         .unwrap();
     let commit_bytes = &export.commits[0].0;
-    let commit = fluree_db_core::commit_v2::read_commit(commit_bytes).unwrap();
+    let commit = fluree_db_core::commit::codec::read_commit(commit_bytes).unwrap();
     assert!(
         commit.flakes.iter().any(|f| {
             f.op && f.g == Some(g2_sid.clone())
@@ -1741,7 +1741,7 @@ async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_
         .await
         .unwrap();
     let commit_bytes = &export.commits[0].0;
-    let commit = fluree_db_core::commit_v2::read_commit(commit_bytes).unwrap();
+    let commit = fluree_db_core::commit::codec::read_commit(commit_bytes).unwrap();
 
     assert!(
         commit.flakes.iter().any(|f| {

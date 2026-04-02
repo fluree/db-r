@@ -177,7 +177,7 @@ pub use fluree_db_indexer::{
 
 // Re-export commonly used types from child crates
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
-pub use fluree_db_core::commit_v2::verify_commit_v2_blob;
+pub use fluree_db_core::commit::codec::verify_commit_blob;
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
 pub use fluree_db_core::{

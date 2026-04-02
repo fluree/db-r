@@ -1,9 +1,9 @@
 //! Commit v2 writer: Commit -> binary blob.
 //!
-//! The writer implementation lives in `fluree_db_core::commit_v2::writer`.
+//! The writer implementation lives in `fluree_db_core::commit::codec::writer`.
 //! This module re-exports the public API for backward compatibility.
 
-pub use fluree_db_core::commit_v2::{write_commit, CommitWriteResult};
+pub use fluree_db_core::commit::codec::{write_commit, CommitWriteResult};
 
 // =============================================================================
 // Tests
@@ -12,7 +12,7 @@ pub use fluree_db_core::commit_v2::{write_commit, CommitWriteResult};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::commit_v2::{read_commit, read_commit_envelope, MAGIC};
+    use fluree_db_core::commit::codec::{read_commit, read_commit_envelope, MAGIC};
     use fluree_db_core::{ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;

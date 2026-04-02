@@ -30,10 +30,6 @@ pub mod delta;
 mod error;
 mod stats;
 
-// Re-export commit_v2 from core so downstream crates that still use
-// `fluree_db_novelty::commit_v2::*` continue to compile.
-pub use fluree_db_core::commit_v2;
-
 pub use commit::{
     collect_dag_cids, find_common_ancestor, load_commit_by_id, load_commit_envelope_by_id,
     trace_commit_envelopes_by_id, trace_commits_by_id, Commit, CommitEnvelope, CommitRef,
@@ -41,11 +37,11 @@ pub use commit::{
     MAX_TXN_META_ENTRIES,
 };
 pub use commit_flakes::{generate_commit_flakes, stamp_graph_on_commit_flakes};
-pub use commit_v2::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};
-pub use commit_v2::format::{CommitSignature, ALGO_ED25519};
-pub use commit_v2::verify_commit_v2_blob;
 pub use delta::compute_delta_keys;
 pub use error::{NoveltyError, Result};
+pub use fluree_db_core::commit::codec::envelope::{MAX_GRAPH_DELTA_ENTRIES, MAX_GRAPH_IRI_LENGTH};
+pub use fluree_db_core::commit::codec::format::{CommitSignature, ALGO_ED25519};
+pub use fluree_db_core::commit::codec::verify_commit_blob;
 pub use fluree_db_credential::SigningKey;
 pub use stats::current_stats;
 

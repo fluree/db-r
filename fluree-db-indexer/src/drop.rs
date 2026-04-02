@@ -13,7 +13,7 @@ use std::collections::HashSet;
 
 use fluree_db_binary_index::format::branch::read_branch_from_bytes;
 use fluree_db_binary_index::IndexRoot;
-use fluree_db_core::commit_v2::read_commit_envelope;
+use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::storage::ContentStore;
@@ -244,7 +244,7 @@ mod tests {
     use fluree_db_binary_index::{
         BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
-    use fluree_db_core::commit_v2::write_commit;
+    use fluree_db_core::commit::codec::write_commit;
     use fluree_db_core::prelude::*;
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::BTreeMap;

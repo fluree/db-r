@@ -292,7 +292,7 @@ pub async fn resolve_incremental_commits_v6(
                 ))
             })?;
             let envelope =
-                fluree_db_core::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
+                fluree_db_core::commit::codec::read_commit_envelope(&bytes).map_err(|e| {
                     IncrementalResolveError::CommitChain(format!(
                         "failed to decode envelope for {}: {}",
                         cid, e
