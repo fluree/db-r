@@ -26,7 +26,7 @@ pub enum CommitCodecError {
     EnvelopeEncode(String),
     /// Unexpected end of data while reading.
     UnexpectedEof,
-    /// FlakeValue variant not supported in commit-v2 format.
+    /// FlakeValue variant not supported in commit codec format.
     UnsupportedValue(String),
     /// Non-default graph encountered; Phase 1 only supports default graph.
     NonDefaultGraph { ns_code: u16, name_id: u32 },

@@ -111,7 +111,7 @@ pub enum DictKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ContentKind {
-    /// Commit blob (binary commit-v2 format)
+    /// Commit blob (binary commit format)
     Commit,
     /// Transaction blob (binary encoded flakes)
     Txn,

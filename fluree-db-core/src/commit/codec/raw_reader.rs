@@ -1,4 +1,4 @@
-//! Zero-allocation raw op reader for commit-v2 blobs.
+//! Zero-allocation raw op reader for commit blobs.
 //!
 //! Decodes ops directly into borrowed field references (`&str`) without
 //! constructing `Flake`, `Sid`, or `FlakeValue`. Designed for the dictionary

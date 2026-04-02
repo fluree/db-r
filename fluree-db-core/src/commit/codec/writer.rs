@@ -1,6 +1,6 @@
-//! Commit v2 writer: Commit -> binary blob.
+//! Commit writer: Commit -> binary blob.
 //!
-//! Encodes a [`Commit`] into the v2 binary format using Sid-direct encoding
+//! Encodes a [`Commit`] into the binary format using Sid-direct encoding
 //! (namespace_code + name dict entries). No NamespaceRegistry is needed —
 //! Sid fields are read directly from flakes.
 

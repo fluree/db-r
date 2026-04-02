@@ -770,7 +770,7 @@ mod tests {
     // trace_commits_by_id tests
     // =========================================================================
 
-    /// Helper: serialize a commit to v2 binary, store in a MemoryContentStore,
+    /// Helper: serialize a commit to binary, store in a MemoryContentStore,
     /// and return the CID.
     #[cfg(feature = "credential")]
     async fn store_commit(store: &MemoryContentStore, commit: &Commit) -> ContentId {

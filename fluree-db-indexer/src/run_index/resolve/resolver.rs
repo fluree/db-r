@@ -1868,14 +1868,14 @@ impl Default for RebuildChunk {
 /// Errors from the resolution pipeline.
 #[derive(Debug)]
 pub enum ResolverError {
-    CommitV2(CommitCodecError),
+    Codec(CommitCodecError),
     Io(io::Error),
     Resolve(String),
 }
 
 impl From<CommitCodecError> for ResolverError {
     fn from(e: CommitCodecError) -> Self {
-        Self::CommitV2(e)
+        Self::Codec(e)
     }
 }
 
@@ -1888,7 +1888,7 @@ impl From<io::Error> for ResolverError {
 impl std::fmt::Display for ResolverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CommitV2(e) => write!(f, "commit-v2: {}", e),
+            Self::Codec(e) => write!(f, "commit-codec: {}", e),
             Self::Io(e) => write!(f, "I/O: {}", e),
             Self::Resolve(msg) => write!(f, "resolve: {}", msg),
         }
