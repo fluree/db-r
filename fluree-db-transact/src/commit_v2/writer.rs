@@ -69,7 +69,7 @@ mod tests {
 
         let commit = make_test_commit(flakes, 1);
         let result = write_commit(&commit, false, None).unwrap();
-        assert!(!result.content_hash_hex.is_empty());
+        assert!(!result.bytes.is_empty());
         assert_eq!(&result.bytes[0..4], &MAGIC);
 
         let decoded = read_commit(&result.bytes).unwrap();
@@ -106,7 +106,8 @@ mod tests {
             result_c.bytes.len(),
             result_u.bytes.len()
         );
-        assert_ne!(result_c.content_hash_hex, result_u.content_hash_hex);
+        // Compressed and uncompressed blobs should differ
+        assert_ne!(result_c.bytes, result_u.bytes);
 
         let dec_c = read_commit(&result_c.bytes).unwrap();
         let dec_u = read_commit(&result_u.bytes).unwrap();

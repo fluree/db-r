@@ -13,18 +13,16 @@
 //!     writer.push_flake(&flake)?;
 //! }
 //! let result = writer.finish(&envelope)?;
-//! // result.bytes is the complete v2 blob, result.content_hash_hex is the SHA-256
+//! // result.bytes is the complete v4 blob (no embedded hash)
 //! ```
 
 use fluree_db_core::commit_v2::envelope::encode_envelope_fields;
 use fluree_db_core::commit_v2::format::{
-    CommitV2Footer, CommitV2Header, DictLocation, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN,
-    VERSION,
+    CommitV2Footer, CommitV2Header, DictLocation, FLAG_ZSTD, FOOTER_LEN, HEADER_LEN, VERSION,
 };
 use fluree_db_core::commit_v2::op_codec::{encode_op, CommitDicts};
 use fluree_db_core::commit_v2::{CommitV2Envelope, CommitV2Error};
 use fluree_db_core::Flake;
-use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -168,13 +166,12 @@ impl StreamingCommitWriter {
             bytes
         };
 
-        // 4. Calculate total size and allocate output
+        // 4. Calculate total size and allocate output (v4: no embedded hash)
         let total_size = HEADER_LEN
             + envelope_bytes.len()
             + ops_section.len()
             + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN
-            + HASH_LEN;
+            + FOOTER_LEN;
         let mut output = Vec::with_capacity(total_size);
 
         // 5. Write header
@@ -219,15 +216,6 @@ impl StreamingCommitWriter {
         footer.write_to(&mut footer_buf);
         output.extend_from_slice(&footer_buf);
 
-        // 10. Compute SHA-256, append as trailing hash
-        let hash = {
-            let _span = tracing::debug_span!("v2_sha256_hash", blob_bytes = output.len()).entered();
-            Sha256::digest(&output)
-        };
-        let hash_bytes: [u8; 32] = hash.into();
-        let content_hash_hex = hex::encode(hash_bytes);
-        output.extend_from_slice(&hash_bytes);
-
         debug_assert_eq!(output.len(), total_size);
 
         tracing::debug!(
@@ -236,13 +224,10 @@ impl StreamingCommitWriter {
             envelope_bytes = envelope_bytes.len(),
             ops_bytes = ops_section.len(),
             compressed = is_compressed,
-            "v2 streaming commit written"
+            "v4 streaming commit written"
         );
 
-        Ok(CommitWriteResult {
-            bytes: output,
-            content_hash_hex,
-        })
+        Ok(CommitWriteResult { bytes: output })
     }
 }
 
@@ -309,7 +294,7 @@ mod tests {
 
         let envelope = make_envelope(1);
         let result = writer.finish(&envelope).unwrap();
-        assert!(!result.content_hash_hex.is_empty());
+        assert!(!result.bytes.is_empty());
 
         // Round-trip through reader
         let decoded = read_commit(&result.bytes).unwrap();

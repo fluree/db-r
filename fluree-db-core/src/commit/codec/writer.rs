@@ -7,7 +7,7 @@
 use super::envelope;
 use super::format::{
     encode_sig_block, sig_block_size, CommitSignature, CommitV2Footer, CommitV2Header,
-    DictLocation, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN, VERSION,
+    DictLocation, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN, HEADER_LEN, VERSION,
 };
 use super::op_codec::{encode_op, CommitDicts};
 use super::CommitV2Error;
@@ -15,27 +15,27 @@ use crate::Commit;
 use fluree_db_credential::{did_from_pubkey, sign_commit_digest, SigningKey};
 use sha2::{Digest, Sha256};
 
-/// Result of writing a v2 commit blob.
+/// Result of writing a v4 commit blob.
+///
+/// In v4 there is no embedded hash. The CID is derived from the full blob
+/// bytes via `ContentId::new(ContentKind::Commit, &result.bytes)`.
 pub struct CommitWriteResult {
-    /// The complete binary blob.
+    /// The complete binary blob (body + optional signature block).
     pub bytes: Vec<u8>,
-    /// Hex-encoded SHA-256 of the blob (excluding the trailing 32-byte hash
-    /// and any signature block). Suitable for use as a content address.
-    pub content_hash_hex: String,
 }
 
-/// Write a commit as a v2 binary blob.
+/// Write a commit as a v4 binary blob.
+///
+/// V4 layout: `[header][envelope][ops][dicts][footer][optional signature block]`
+/// No embedded hash — the CID is derived from the full blob by the caller
+/// via `ContentId::new(ContentKind::Commit, &result.bytes)`.
 ///
 /// Encodes flakes using Sid-direct encoding (namespace_code + name dict entries).
 /// No NamespaceRegistry is needed — Sid fields are read directly from flakes.
 ///
-/// When `signing` is `Some((key, ledger_id))`, the commit is signed with
-/// Ed25519 and a signature block is appended after the hash. The header's
-/// `FLAG_HAS_COMMIT_SIG` flag and `sig_block_len` are set *before* hash
-/// computation so they are covered by the content hash.
-///
-/// Returns `CommitWriteResult` containing the blob bytes and the hex-encoded
-/// SHA-256 content hash.
+/// When `signing` is `Some((key, ledger_id))`, the body hash
+/// (`SHA-256([header..footer])`) is computed for signing only (not embedded).
+/// The signature block is appended directly after the footer.
 pub fn write_commit(
     commit: &Commit,
     compress: bool,
@@ -56,7 +56,6 @@ pub fn write_commit(
             signer: did.clone(),
             algo: super::format::ALGO_ED25519,
             signature: [0u8; 64],
-            timestamp: 0,
             metadata: None,
         };
         let len = sig_block_size(&[tmp_sig]);
@@ -117,13 +116,12 @@ pub fn write_commit(
     .map(|d| d.serialize())
     .collect();
 
-    // 6. Calculate total size and allocate output
+    // 6. Calculate total size and allocate output (v4: no embedded hash)
     let total_size = HEADER_LEN
         + envelope_bytes.len()
         + ops_section.len()
         + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
         + FOOTER_LEN
-        + HASH_LEN
         + pre_sig_block_len as usize;
     let mut output = Vec::with_capacity(total_size);
 
@@ -172,24 +170,15 @@ pub fn write_commit(
     footer.write_to(&mut footer_buf);
     output.extend_from_slice(&footer_buf);
 
-    // 12. Compute SHA-256 of everything so far, append as trailing hash
-    let hash_bytes: [u8; 32] = {
-        let _span = tracing::debug_span!("v2_write_hash", blob_bytes = output.len()).entered();
-        Sha256::digest(&output).into()
-    };
-    let content_hash_hex = hex::encode(hash_bytes);
-    output.extend_from_slice(&hash_bytes);
-
-    // 13. If signing, compute domain-separated digest and append signature block
+    // 12. If signing, compute body hash for signature (NOT embedded), append sig block
     if let Some((signing_key, ledger_id)) = signing {
-        let _span = tracing::debug_span!("v2_write_sign").entered();
-        let signature = sign_commit_digest(signing_key, &hash_bytes, ledger_id);
-        let timestamp = chrono::Utc::now().timestamp_millis();
+        let _span = tracing::debug_span!("v4_write_sign").entered();
+        let body_hash: [u8; 32] = Sha256::digest(&output).into();
+        let signature = sign_commit_digest(signing_key, &body_hash, ledger_id);
         let commit_sig = CommitSignature {
             signer: signer_did.expect("signer_did set when signing is Some"),
             algo: super::format::ALGO_ED25519,
             signature,
-            timestamp,
             metadata: None,
         };
         encode_sig_block(&[commit_sig], &mut output);
@@ -204,11 +193,8 @@ pub fn write_commit(
         ops_bytes = ops_section.len(),
         compressed = is_compressed,
         signed = signing.is_some(),
-        "v2 commit written"
+        "commit written"
     );
 
-    Ok(CommitWriteResult {
-        bytes: output,
-        content_hash_hex,
-    })
+    Ok(CommitWriteResult { bytes: output })
 }

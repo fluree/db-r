@@ -10,19 +10,21 @@
 use super::error::CommitV2Error;
 use super::format::{
     decode_sig_block, CommitV2Footer, CommitV2Header, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN,
-    HASH_LEN, HEADER_LEN, MIN_COMMIT_LEN,
+    HASH_LEN, HEADER_LEN, MIN_COMMIT_LEN, VERSION_V3,
 };
 use super::op_codec::{decode_op, ReadDicts};
 use super::string_dict::StringDict;
-use crate::{Commit, CommitEnvelope, ContentId, CODEC_FLUREE_COMMIT};
+use crate::{Commit, CommitEnvelope, ContentId, ContentKind, CODEC_FLUREE_COMMIT};
 use sha2::{Digest, Sha256};
 
-/// Verify a commit-v2 blob's embedded hash and return its `ContentId`.
+/// Verify a commit blob and return its `ContentId`.
 ///
-/// This performs only the hash verification step (no full decode).
-/// For commit-v2, the CID is derived from `SHA-256(bytes[0..hash_offset])`
-/// where `hash_offset` excludes the trailing embedded hash and optional
-/// signature block.
+/// **V4**: No embedded hash. The CID is `SHA-256(full blob)`, computed via
+/// `ContentId::new(ContentKind::Commit, bytes)`. Integrity is guaranteed by
+/// the content-addressed store.
+///
+/// **V3** (legacy): Verifies the embedded trailing hash and derives the CID
+/// from `SHA-256(body)` where body excludes the trailing hash and signature.
 ///
 /// Use this for integrity checks without full commit parsing.
 pub fn verify_commit_v2_blob(bytes: &[u8]) -> Result<ContentId, CommitV2Error> {
@@ -37,6 +39,12 @@ pub fn verify_commit_v2_blob(bytes: &[u8]) -> Result<ContentId, CommitV2Error> {
 
     let header = CommitV2Header::read_from(bytes)?;
 
+    // V4: no embedded hash — CID is SHA-256(full blob)
+    if header.version > VERSION_V3 {
+        return Ok(ContentId::new(ContentKind::Commit, bytes));
+    }
+
+    // V3: verify embedded hash
     let sig_block_len = header.sig_block_len as usize;
     let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
 
@@ -69,11 +77,13 @@ pub fn verify_commit_v2_blob(bytes: &[u8]) -> Result<ContentId, CommitV2Error> {
     ))
 }
 
-/// Read a v2 commit blob and return a full `Commit` (with flakes).
+/// Read a commit blob (v3 or v4) and return a full `Commit` (with flakes).
 ///
-/// The commit's `id` is derived from the v2 blob hash (SHA-256 of
-/// everything before the trailing hash). This CID uses `CODEC_FLUREE_COMMIT`
-/// and matches the hash that was used to construct the storage address.
+/// **V4**: CID = `SHA-256(full blob)` via `ContentId::new(ContentKind::Commit, bytes)`.
+/// No embedded hash to verify.
+///
+/// **V3** (legacy): CID = `SHA-256(body)` where body excludes the trailing
+/// embedded hash and signature block.
 pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     let blob_len = bytes.len();
 
@@ -88,51 +98,82 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     // 2. Parse header
     let header = CommitV2Header::read_from(bytes)?;
 
-    // 3. Determine hash offset (accounts for trailing signature block)
+    // 3. Determine body_end and commit_id based on version
     let sig_block_len = header.sig_block_len as usize;
     let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
 
-    let hash_offset = if has_sig_block {
-        if blob_len < HEADER_LEN + HASH_LEN + sig_block_len {
-            return Err(CommitV2Error::TooSmall {
-                got: blob_len,
-                min: HEADER_LEN + HASH_LEN + sig_block_len,
-            });
-        }
-        blob_len - sig_block_len - HASH_LEN
+    let is_v3 = header.version <= VERSION_V3;
+
+    let (body_end, commit_id, commit_signatures) = if is_v3 {
+        // V3: body ends before the embedded 32-byte hash
+        let hash_offset = if has_sig_block {
+            if blob_len < HEADER_LEN + HASH_LEN + sig_block_len {
+                return Err(CommitV2Error::TooSmall {
+                    got: blob_len,
+                    min: HEADER_LEN + HASH_LEN + sig_block_len,
+                });
+            }
+            blob_len - sig_block_len - HASH_LEN
+        } else {
+            blob_len - HASH_LEN
+        };
+
+        // Verify embedded hash
+        let actual_hash: [u8; 32] = {
+            let _span = tracing::debug_span!("v3_read_verify_hash", blob_len).entered();
+            let expected_hash: [u8; 32] = bytes[hash_offset..hash_offset + HASH_LEN]
+                .try_into()
+                .unwrap();
+            let actual_hash: [u8; 32] = Sha256::digest(&bytes[..hash_offset]).into();
+            if expected_hash != actual_hash {
+                return Err(CommitV2Error::HashMismatch {
+                    expected: expected_hash,
+                    actual: actual_hash,
+                });
+            }
+            actual_hash
+        };
+
+        let cid = ContentId::from_sha256_digest(CODEC_FLUREE_COMMIT, &actual_hash);
+
+        // Parse signature block (if present) — located after the hash
+        let sigs = if has_sig_block {
+            let sig_block_start = hash_offset + HASH_LEN;
+            let sig_block_data = &bytes[sig_block_start..sig_block_start + sig_block_len];
+            decode_sig_block(sig_block_data)?
+        } else {
+            Vec::new()
+        };
+
+        (hash_offset, cid, sigs)
     } else {
-        blob_len - HASH_LEN
+        // V4: no embedded hash. Body ends before signature block (if any).
+        let body_end = if has_sig_block {
+            if blob_len < sig_block_len {
+                return Err(CommitV2Error::TooSmall {
+                    got: blob_len,
+                    min: sig_block_len,
+                });
+            }
+            blob_len - sig_block_len
+        } else {
+            blob_len
+        };
+
+        let cid = ContentId::new(ContentKind::Commit, bytes);
+
+        // Parse signature block (if present) — located directly after footer
+        let sigs = if has_sig_block {
+            let sig_block_data = &bytes[body_end..body_end + sig_block_len];
+            decode_sig_block(sig_block_data)?
+        } else {
+            Vec::new()
+        };
+
+        (body_end, cid, sigs)
     };
 
-    // 4. Verify hash: SHA-256(bytes[0..hash_offset]) == bytes[hash_offset..hash_offset+32]
-    let actual_hash: [u8; 32] = {
-        let _span = tracing::debug_span!("v2_read_verify_hash", blob_len).entered();
-        let expected_hash: [u8; 32] = bytes[hash_offset..hash_offset + HASH_LEN]
-            .try_into()
-            .unwrap();
-        let actual_hash: [u8; 32] = Sha256::digest(&bytes[..hash_offset]).into();
-        if expected_hash != actual_hash {
-            return Err(CommitV2Error::HashMismatch {
-                expected: expected_hash,
-                actual: actual_hash,
-            });
-        }
-        actual_hash
-    };
-
-    // 5. Derive ContentId from the v2 hash
-    let commit_id = ContentId::from_sha256_digest(CODEC_FLUREE_COMMIT, &actual_hash);
-
-    // 6. Parse signature block (if present)
-    let commit_signatures = if has_sig_block {
-        let sig_block_start = hash_offset + HASH_LEN;
-        let sig_block_data = &bytes[sig_block_start..sig_block_start + sig_block_len];
-        decode_sig_block(sig_block_data)?
-    } else {
-        Vec::new()
-    };
-
-    // 7. Decode binary envelope
+    // 4. Decode binary envelope
     let envelope_start = HEADER_LEN;
     let envelope_end = envelope_start + header.envelope_len as usize;
     if envelope_end > blob_len {
@@ -143,11 +184,11 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
     }
     let envelope = super::envelope::decode_envelope(&bytes[envelope_start..envelope_end])?;
 
-    // 8. Parse footer
-    let footer_start = hash_offset - FOOTER_LEN;
-    let footer = CommitV2Footer::read_from(&bytes[footer_start..hash_offset])?;
+    // 5. Parse footer
+    let footer_start = body_end - FOOTER_LEN;
+    let footer = CommitV2Footer::read_from(&bytes[footer_start..body_end])?;
 
-    // 9. Validate ops section bounds
+    // 6. Validate ops section bounds
     let ops_start = envelope_end;
     let ops_end = ops_start + footer.ops_section_len as usize;
     if ops_end > footer_start {
@@ -156,7 +197,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         ));
     }
 
-    // 10. Load dictionaries
+    // 7. Load dictionaries
     let dicts = load_dicts(bytes, &footer, ops_end, footer_start)?;
     let ops_bytes = &bytes[ops_start..ops_end];
     let ops_decompressed;
@@ -175,7 +216,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         ops_bytes
     };
 
-    // 11. Decode ops into flakes
+    // 8. Decode ops into flakes
     let flakes = {
         let _span = tracing::debug_span!(
             "v2_decode_ops",
@@ -200,7 +241,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         "v2 commit read"
     );
 
-    // 12. Assemble Commit with CID-based types
+    // 9. Assemble Commit with CID-based types
     Ok(Commit {
         id: Some(commit_id),
         t: header.t,

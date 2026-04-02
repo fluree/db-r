@@ -8,8 +8,8 @@ use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::{
-    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage,
-    CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN, TXN_META_GRAPH_ID,
+    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage, CODEC_FLUREE_TXN,
+    TXN_META_GRAPH_ID,
 };
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
@@ -78,6 +78,11 @@ pub struct CommitOpts {
     /// commit record, producing a multi-parent (merge) commit. The primary
     /// parent is still derived from `base.head_commit_id`.
     pub merge_parents: Vec<ContentId>,
+    /// ISO 8601 timestamp for the commit.
+    ///
+    /// When `None`, defaults to `Utc::now().to_rfc3339()`. Provide a fixed
+    /// value for deterministic commit hashes (testing, replay).
+    pub timestamp: Option<String>,
 }
 
 impl std::fmt::Debug for CommitOpts {
@@ -175,6 +180,12 @@ impl CommitOpts {
         self.merge_parents = parents;
         self
     }
+
+    /// Set the commit timestamp (ISO 8601). When not set, `Utc::now()` is used.
+    pub fn with_timestamp(mut self, ts: impl Into<String>) -> Self {
+        self.timestamp = Some(ts.into());
+        self
+    }
 }
 
 /// Commit a staged transaction
@@ -229,6 +240,7 @@ where
         skip_backpressure,
         skip_sequencing,
         merge_parents,
+        timestamp: opt_timestamp,
     } = opts;
 
     let commit_span = tracing::debug_span!(
@@ -301,12 +313,8 @@ where
         base.snapshot
             .apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()))?;
 
-        // Generate ISO 8601 timestamp
-        // TODO: Refactor to accept an optional timestamp via CommitOpts instead of calling
-        // Utc::now() directly. This would enable deterministic commit hashes for testing
-        // (see fluree-db-api/tests/it_stable_hashes.rs) and allow callers to provide
-        // externally-sourced timestamps when needed.
-        let timestamp = Utc::now().to_rfc3339();
+        // Use caller-provided timestamp or default to wall clock.
+        let timestamp = opt_timestamp.unwrap_or_else(|| Utc::now().to_rfc3339());
 
         // Store original transaction JSON if provided
         let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
@@ -371,29 +379,21 @@ where
         // 7. Content-address + write (storage-owned)
         //
         // The on-disk commit blob is written *without* `id` set (to avoid
-        // self-reference). We derive the ContentId from the blob's trailing
-        // SHA-256 hash after writing.
+        // self-reference). The ContentId is SHA-256 of the full blob.
 
-        let (commit_cid, commit_hash_hex, bytes) = {
+        let (commit_cid, bytes) = {
             let span = tracing::debug_span!("commit_write_commit_blob");
             let _g = span.enter();
             let signing = signing_key
                 .as_ref()
                 .map(|key| (key.as_ref(), base.ledger_id()));
             let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
-            let commit_cid =
-                ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-                    .expect("valid SHA-256 hex from commit writer");
-            (commit_cid, result.content_hash_hex, result.bytes)
+            let commit_cid = ContentId::new(ContentKind::Commit, &result.bytes);
+            (commit_cid, result.bytes)
         };
 
         storage
-            .content_write_bytes_with_hash(
-                ContentKind::Commit,
-                base.ledger_id(),
-                &commit_hash_hex,
-                &bytes,
-            )
+            .content_write_bytes(ContentKind::Commit, base.ledger_id(), &bytes)
             .await?;
         tracing::info!(commit_bytes = bytes.len(), "commit blob stored");
 
@@ -600,7 +600,7 @@ mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
     use crate::stage::{stage, StageOptions};
-    use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid};
+    use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid, CODEC_FLUREE_COMMIT};
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Novelty;
 

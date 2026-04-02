@@ -1,10 +1,15 @@
-//! Binary layout constants and header/footer I/O for commit format v2.
+//! Binary layout constants and header/footer I/O for commit format v2/v4.
 //!
 //! All fixed-width numeric fields are little-endian.
 //!
-//! Layout:
+//! V4 layout (current):
 //! ```text
-//! [Header 32B][Envelope (binary)][Ops section][Dictionaries][Footer 64B][Hash 32B]
+//! [Header 32B][Envelope (binary)][Ops section][Dictionaries][Footer 64B][optional signature block]
+//! ```
+//!
+//! V3 layout (legacy, still readable):
+//! ```text
+//! [Header 32B][Envelope (binary)][Ops section][Dictionaries][Footer 64B][Hash 32B][optional signature block]
 //! ```
 
 use super::error::CommitV2Error;
@@ -18,8 +23,12 @@ use super::varint::{read_exact, read_u8};
 pub const MAGIC: [u8; 4] = *b"FCV2";
 
 /// Current format version.
-/// Version 3: t narrowed to u32, graph_delta keys to u16, list index unsigned.
-pub const VERSION: u8 = 3;
+/// Version 4: removes embedded 32-byte trailing hash. CID is computed from the
+/// full blob by ContentStore::put(). V3 blobs are still readable.
+pub const VERSION: u8 = 4;
+
+/// Legacy format version (readable but no longer written).
+pub const VERSION_V3: u8 = 3;
 
 /// Header size in bytes (fixed).
 pub const HEADER_LEN: usize = 32;
@@ -31,8 +40,10 @@ pub const FOOTER_LEN: usize = 64;
 /// Trailing SHA-256 hash size.
 pub const HASH_LEN: usize = 32;
 
-/// Minimum valid commit blob size.
-pub const MIN_COMMIT_LEN: usize = HEADER_LEN + FOOTER_LEN + HASH_LEN; // 128
+/// Minimum valid commit blob size (v4: no embedded hash).
+/// V3 blobs are always at least `HEADER_LEN + FOOTER_LEN + HASH_LEN = 128`,
+/// which is larger than this, so this works for both versions.
+pub const MIN_COMMIT_LEN: usize = HEADER_LEN + FOOTER_LEN; // 96
 
 // --- Commit-level flags (header) ---
 
@@ -132,8 +143,6 @@ pub struct CommitSignature {
     pub algo: u8,
     /// Signature bytes (64 bytes for Ed25519) over domain-separated commit digest
     pub signature: [u8; 64],
-    /// Signing timestamp (epoch millis, informational only — not part of signed digest)
-    pub timestamp: i64,
     /// Optional metadata (node_id, region, role, etc. for consensus)
     pub metadata: Option<Vec<u8>>,
 }
@@ -150,7 +159,7 @@ const MAX_METADATA_LEN: usize = 4096;
 /// Encode a signature block into a buffer.
 ///
 /// Format: `sig_count: u16` (LE) + for each signature:
-/// `signer_len: u16` (LE) + `signer` + `algo: u8` + `signature: [u8; 64]` + `timestamp: i64` (LE)
+/// `signer_len: u16` (LE) + `signer` + `algo: u8` + `signature: [u8; 64]`
 /// + `meta_len: u16` (LE) + `metadata` (if meta_len > 0)
 pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
     buf.extend_from_slice(&(sigs.len() as u16).to_le_bytes());
@@ -160,7 +169,6 @@ pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
         buf.extend_from_slice(signer_bytes);
         buf.push(sig.algo);
         buf.extend_from_slice(&sig.signature);
-        buf.extend_from_slice(&sig.timestamp.to_le_bytes());
         // metadata (optional, length-prefixed)
         if let Some(meta) = &sig.metadata {
             buf.extend_from_slice(&(meta.len() as u16).to_le_bytes());
@@ -215,9 +223,6 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
         let mut signature = [0u8; 64];
         signature.copy_from_slice(sig_slice);
 
-        // timestamp (i64 LE)
-        let timestamp = i64::from_le_bytes(read_exact(data, &mut pos, 8)?.try_into().unwrap());
-
         // metadata (optional, length-prefixed)
         let meta_len =
             u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap()) as usize;
@@ -238,7 +243,6 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
             signer: signer.to_string(),
             algo,
             signature,
-            timestamp,
             metadata,
         });
     }
@@ -262,7 +266,6 @@ pub fn sig_block_size(sigs: &[CommitSignature]) -> usize {
         size += sig.signer.len();
         size += 1; // algo: u8
         size += 64; // signature
-        size += 8; // timestamp: i64
         size += 2; // meta_len: u16
         if let Some(meta) = &sig.metadata {
             size += meta.len();
@@ -325,7 +328,7 @@ impl CommitV2Header {
             return Err(CommitV2Error::InvalidMagic);
         }
         let version = buf[4];
-        if version != VERSION {
+        if version != VERSION && version != VERSION_V3 {
             return Err(CommitV2Error::UnsupportedVersion(version));
         }
         let flags = buf[5];
@@ -480,6 +483,24 @@ mod tests {
             CommitV2Header::read_from(&buf),
             Err(CommitV2Error::UnsupportedVersion(99))
         ));
+    }
+
+    #[test]
+    fn test_header_accepts_v3() {
+        let header = CommitV2Header {
+            version: VERSION_V3,
+            flags: 0,
+            t: 1,
+            op_count: 1,
+            envelope_len: 10,
+            sig_block_len: 0,
+        };
+        let mut buf = [0u8; HEADER_LEN];
+        header.write_to(&mut buf);
+        // Force version byte to 3
+        buf[4] = VERSION_V3;
+        let parsed = CommitV2Header::read_from(&buf).unwrap();
+        assert_eq!(parsed.version, VERSION_V3);
     }
 
     #[test]

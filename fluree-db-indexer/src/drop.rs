@@ -245,7 +245,6 @@ mod tests {
         BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
     use fluree_db_core::commit_v2::write_commit;
-    use fluree_db_core::content_kind::CODEC_FLUREE_COMMIT;
     use fluree_db_core::prelude::*;
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::BTreeMap;
@@ -310,10 +309,8 @@ mod tests {
 
     /// Write a minimal commit blob to storage and return its CID.
     ///
-    /// Uses `from_hex_digest(CODEC_FLUREE_COMMIT, &content_hash_hex)` to derive
-    /// the CID — matching how real NsRecord.commit_head_id is produced. The
-    /// content_hash_hex is the SHA-256 of the canonical preimage (excluding the
-    /// trailing embedded hash and signature block), NOT SHA-256(full_bytes).
+    /// Uses `ContentId::new(ContentKind::Commit, &bytes)` to derive the CID
+    /// from the full v4 blob.
     async fn write_test_commit(
         storage: &MemoryStorage,
         t: i64,
@@ -339,14 +336,10 @@ mod tests {
         };
 
         let result = write_commit(&commit, false, None).expect("write_commit");
-        let cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-            .expect("valid hex digest from write_commit");
-        let addr = fluree_db_core::content_address(
-            "memory",
-            ContentKind::Commit,
-            LEDGER,
-            &result.content_hash_hex,
-        );
+        let cid = ContentId::new(ContentKind::Commit, &result.bytes);
+        let hash_hex = cid.digest_hex();
+        let addr =
+            fluree_db_core::content_address("memory", ContentKind::Commit, LEDGER, &hash_hex);
         storage.write_bytes(&addr, &result.bytes).await.unwrap();
         cid
     }
