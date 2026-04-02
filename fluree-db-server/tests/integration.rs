@@ -3009,3 +3009,187 @@ async fn bm25_query_endpoint_accepts_valid_query() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ── End-to-end BM25 test: Adaptive project patterns ──────────────
+// Tests the full lifecycle via HTTP: insert data with unqualified property
+// names → create BM25 index → query via /graph-source/bm25/query endpoint.
+// Mirrors exactly what the Adaptive app does.
+#[tokio::test]
+async fn bm25_query_endpoint_end_to_end_with_unqualified_names() {
+    let (_tmp, state) = test_state().await;
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"adaptive-e2e"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Insert data with unqualified property names (Adaptive's schema)
+    let insert = serde_json::json!({
+        "@graph": [
+            {
+                "@id": "Class_AccessRight",
+                "@type": "Class",
+                "Name": "Access Right",
+                "Description": "Access rights and permissions"
+            },
+            {
+                "@id": "Class_Activity",
+                "@type": "Class",
+                "Name": "Unit Activity",
+                "Description": "Unit of work activity tracking"
+            },
+            {
+                "@id": "Entity_DeptHR",
+                "@type": "ErEntity",
+                "Name": "Department HR",
+                "Description": "Human Resources Department"
+            },
+            {
+                "@id": "Entity_DeptFinance",
+                "@type": "ErEntity",
+                "Name": "Finance Department",
+                "Description": "Corporate finance and accounting"
+            }
+        ]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .header("fluree-ledger", "adaptive-e2e:main")
+                .body(Body::from(insert.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "insert should succeed");
+
+    // Create BM25 index for Name property
+    let create_body = serde_json::json!({
+        "name": "nameSearch",
+        "ledger": "adaptive-e2e:main",
+        "query": {
+            "where": [{"@id": "?x", "Name": "?name"}],
+            "select": {"?x": ["@id", "Name"]}
+        }
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "BM25 create failed ({status}): {json}"
+    );
+    let doc_count = json["doc_count"].as_u64().unwrap_or(0);
+    assert!(doc_count >= 4, "should index at least 4 documents, got {doc_count}");
+
+    // Query via /graph-source/bm25/query — search for "department"
+    let search_query = serde_json::json!({
+        "@context": { "f": "https://ns.flur.ee/db#" },
+        "from": "adaptive-e2e:main",
+        "where": [
+            {
+                "f:graphSource": "nameSearch:main",
+                "f:searchText": "department",
+                "f:searchLimit": 10,
+                "f:searchResult": {
+                    "f:resultId": "?x",
+                    "f:resultScore": "?score"
+                }
+            },
+            { "@id": "?x", "Name": "?name" }
+        ],
+        "select": ["?name", "?score"]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(search_query.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "BM25 query failed: {json}");
+    let results = json.as_array().expect("should return array");
+    assert!(
+        !results.is_empty(),
+        "searching 'department' should find results, got: {json}"
+    );
+
+    // Verify result contains expected names
+    let names: Vec<&str> = results
+        .iter()
+        .filter_map(|r| r.as_array().and_then(|a| a[0].as_str()))
+        .collect();
+    assert!(
+        names.iter().any(|n| n.contains("Department")),
+        "results should include Department entities, got: {:?}",
+        names
+    );
+
+    // Also test: BM25 query with type filter join (search_schema pattern)
+    let class_search = serde_json::json!({
+        "@context": { "f": "https://ns.flur.ee/db#" },
+        "from": "adaptive-e2e:main",
+        "where": [
+            {
+                "f:graphSource": "nameSearch:main",
+                "f:searchText": "access",
+                "f:searchLimit": 10,
+                "f:searchResult": {
+                    "f:resultId": "?s",
+                    "f:resultScore": "?score"
+                }
+            },
+            { "@id": "?s", "@type": "Class", "Name": "?name" }
+        ],
+        "select": ["?name", "?score"]
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(class_search.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "class search failed: {json}");
+    let results = json.as_array().expect("should return array");
+    assert!(
+        !results.is_empty(),
+        "searching 'access' with Class type filter should find Access Right, got: {json}"
+    );
+}
