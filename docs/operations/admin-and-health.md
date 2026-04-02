@@ -119,13 +119,15 @@ curl "http://localhost:8090/v1/fluree/info/mydb:main"
 
 **Optional query params:**
 
-- **`include_property_datatypes=true`**: include `stats.properties[*].datatypes` (datatype → count), **as-of last index**.
-- **`realtime_property_details=true`**: enable real-time datatype details *and* real-time class ref edges. This also enables `include_property_datatypes`.
+- By default, `ledger-info` returns the **full novelty-aware** stats view, including real-time datatype details and class ref edges.
+- **`realtime_property_details=false`**: switch `ledger-info` to the lighter fast novelty-aware stats layer that keeps counts current but skips lookup-backed class/ref enrichment.
+- **`include_property_datatypes=false`**: omit `stats.properties[*].datatypes` when you want a smaller payload.
+- **`include_property_estimates=true`**: include index-derived `ndv-values`, `ndv-subjects`, and selectivity fields under `stats.properties[*]`.
 
 Example:
 
 ```bash
-curl "http://localhost:8090/v1/fluree/info/mydb:main?realtime_property_details=true"
+curl "http://localhost:8090/v1/fluree/info/mydb:main"
 ```
 
 **Response:**
@@ -150,11 +152,7 @@ curl "http://localhost:8090/v1/fluree/info/mydb:main?realtime_property_details=t
     "properties": {
       "ex:name": {
         "count": 3,
-        "ndv-values": 3,
-        "ndv-subjects": 3,
-        "last-modified-t": 150,
-        "selectivity-value": 1,
-        "selectivity-subject": 1
+        "last-modified-t": 150
       }
     },
     "classes": {
@@ -181,14 +179,14 @@ curl "http://localhost:8090/v1/fluree/info/mydb:main?realtime_property_details=t
   - `commit` and top-level `t` reflect the latest committed head.
   - `stats.flakes` and `stats.size` are derived from the current ledger stats view (indexed + novelty deltas).
   - `stats.classes[*].properties` / `property-list` will include properties introduced in novelty, even when the update does not restate `@type`.
-  - `stats.properties[*].datatypes` is real-time **only when** `realtime_property_details=true` is used.
-  - `stats.classes[*].properties[*].refs` is real-time **only when** `realtime_property_details=true` is used.
+  - `stats.properties[*].datatypes` is real-time by default.
+  - `stats.classes[*].properties[*].refs` is real-time by default.
 
 - **As-of last index**:
   - `stats.indexed` is the last index \(t\). If `commit.t > indexed`, the index is behind the head.
-  - NDV-related fields in `stats.properties[*]` (`ndv-values`, `ndv-subjects`) and selectivity derived from them are only as current as the last index refresh.
-  - `stats.properties[*].datatypes` (when present via `include_property_datatypes=true`) is as-of last index unless `realtime_property_details=true` is used.
-  - Class property ref-edge counts (`stats.classes[*].properties[*].refs`) are as-of last index unless `realtime_property_details=true` is used.
+  - NDV-related fields in `stats.properties[*]` (`ndv-values`, `ndv-subjects`) and selectivity derived from them are only as current as the last index refresh, so they are omitted by default and only included when `include_property_estimates=true`.
+  - `stats.properties[*].datatypes` are omitted only when `include_property_datatypes=false` is requested.
+  - Class property ref-edge counts (`stats.classes[*].properties[*].refs`) fall back to the lighter indexed/fast path only when `realtime_property_details=false` is requested.
 
 ### GET /fluree/exists
 

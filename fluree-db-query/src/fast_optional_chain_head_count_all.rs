@@ -8,7 +8,7 @@
 
 use crate::error::{QueryError, Result};
 use crate::fast_path_common::{
-    build_count_batch, fast_path_store, normalize_pred_sid, FastPathOperator,
+    build_count_batch, count_to_i64, fast_path_store, normalize_pred_sid, FastPathOperator,
     PostObjectGroupCountIter, PsotSubjectCountIter, PsotSubjectWeightedSumIter,
 };
 use crate::operator::BoxedOperator;
@@ -42,7 +42,7 @@ pub fn predicate_optional_chain_head_count_all(
             match count_optional_chain_head(store, ctx.binary_g_id, &p1, &p2, &p3)? {
                 Some(count) => Ok(Some(build_count_batch(
                     out_var,
-                    i64::try_from(count).unwrap_or(i64::MAX),
+                    count_to_i64(count, "COUNT(*) optional chain-head")?,
                 )?)),
                 None => Ok(None),
             }

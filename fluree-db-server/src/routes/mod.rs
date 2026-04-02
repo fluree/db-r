@@ -3,6 +3,7 @@
 mod admin;
 mod admin_auth;
 mod commits;
+mod context;
 mod events;
 #[cfg(feature = "iceberg")]
 mod iceberg;
@@ -81,6 +82,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/insert/*ledger", post(transact::insert_ledger_tail))
         .route("/upsert", post(transact::upsert))
         .route("/upsert/*ledger", post(transact::upsert_ledger_tail))
+        // Default context management
+        .route(
+            "/context/*ledger",
+            get(context::get_context).put(context::set_context),
+        )
         // Commit-push endpoint (precomputed commits)
         .route("/push/*ledger", post(push::push_ledger_tail))
         // Commit show endpoint (decoded commit with resolved IRIs)

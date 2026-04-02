@@ -574,7 +574,7 @@ fn query_at_time_travel() {
 // ============================================================================
 
 #[test]
-fn export_jsonld() {
+fn export_jsonld_requires_index() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -591,15 +591,16 @@ fn export_jsonld() {
         .assert()
         .success();
 
+    // JSON-LD now uses the streaming binary index path (same as other formats)
     fluree_cmd(&tmp)
         .args(["export", "--format", "jsonld"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("gadget"));
+        .failure()
+        .stderr(predicate::str::contains("no binary index available"));
 }
 
 #[test]
-fn export_turtle() {
+fn export_ntriples_requires_index() {
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -616,11 +617,66 @@ fn export_turtle() {
         .assert()
         .success();
 
+    // N-Triples streaming export requires a binary index; un-indexed ledgers
+    // get a clear error.
     fluree_cmd(&tmp)
-        .args(["export", "--format", "turtle"])
+        .args(["export", "--format", "ntriples"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("widget"));
+        .failure()
+        .stderr(predicate::str::contains("no binary index available"));
+}
+
+#[test]
+fn export_all_graphs_requires_dataset_format() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "expdb3"])
+        .assert()
+        .success();
+
+    // --all-graphs with turtle/ttl is rejected (graph boundaries would be lost)
+    fluree_cmd(&tmp)
+        .args(["export", "--all-graphs", "--format", "turtle"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("graph boundaries would be lost"));
+
+    // --all-graphs with ntriples is also rejected (same reason)
+    fluree_cmd(&tmp)
+        .args(["export", "--all-graphs", "--format", "ntriples"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("graph boundaries would be lost"));
+}
+
+#[test]
+fn export_all_graphs_nquads_requires_index() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+    fluree_cmd(&tmp)
+        .args(["create", "expdb4"])
+        .assert()
+        .success();
+
+    // Insert one triple in default graph.
+    fluree_cmd(&tmp)
+        .args([
+            "insert",
+            "expdb4",
+            "-e",
+            "<http://example.org/a> <http://example.org/p> \"default\" .\n",
+        ])
+        .assert()
+        .success();
+
+    // N-Quads streaming export requires a binary index; un-indexed ledgers
+    // get a clear error.
+    fluree_cmd(&tmp)
+        .args(["export", "expdb4", "--all-graphs", "--format", "nquads"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no binary index available"));
 }
 
 // ============================================================================

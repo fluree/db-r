@@ -29,6 +29,7 @@ mod commit_flakes;
 pub mod commit_v2;
 pub mod delta;
 mod error;
+mod runtime_stats;
 mod stats;
 
 pub use commit::{
@@ -44,6 +45,10 @@ pub use commit_v2::verify_commit_v2_blob;
 pub use delta::compute_delta_keys;
 pub use error::{NoveltyError, Result};
 pub use fluree_db_credential::SigningKey;
+pub use runtime_stats::{
+    assemble_fast_stats, assemble_full_stats, resolve_runtime_predicate_id, StatsAssemblyError,
+    StatsLookup,
+};
 pub use stats::current_stats;
 
 use fluree_db_core::{Flake, GraphId, IndexType, Sid};
@@ -531,6 +536,10 @@ impl std::fmt::Debug for Novelty {
 use fluree_db_core::OverlayProvider;
 
 impl OverlayProvider for Novelty {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     fn epoch(&self) -> u64 {
         self.epoch
     }

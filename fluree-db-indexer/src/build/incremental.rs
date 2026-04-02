@@ -16,13 +16,16 @@
 //! 4. **Dict updates**: Update reverse trees + forward packs for new subjects/strings
 //! 5. **Root assembly**: `IncrementalRootBuilder` → encode → CAS write → publish
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use fluree_db_binary_index::format::branch::LeafEntry;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef};
 use fluree_db_core::{ContentId, ContentKind, Storage};
+use futures::stream::{self, StreamExt};
 
 use crate::error::{IndexerError, Result};
 use crate::gc;
@@ -35,6 +38,14 @@ use crate::run_index::build::incremental_resolve::{
 use crate::run_index::build::incremental_root::IncrementalRootBuilder;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
+fn artifact_cache_dir(config: &IndexerConfig) -> std::path::PathBuf {
+    config
+        .data_dir
+        .as_ref()
+        .map(|d| d.join("binary_artifact_cache"))
+        .unwrap_or_else(|| std::env::temp_dir().join("fluree_binary_cache"))
+}
+
 /// Run `update_branch` on a blocking thread.
 ///
 /// Uses `spawn_blocking` instead of `block_in_place` so this works on both
@@ -46,31 +57,45 @@ async fn run_update_branch(
     sorted_ops: Vec<u8>,
     branch_config: BranchUpdateConfig,
     content_store: Arc<dyn fluree_db_core::storage::ContentStore>,
+    cache_dir: std::path::PathBuf,
 ) -> std::result::Result<BranchUpdateResult, IndexerError> {
     let handle = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let cs = content_store.clone();
         let cs2 = content_store;
+        let cache_dir2 = cache_dir.clone();
         update_branch(
             &branch_bytes,
             &sorted_records,
             &sorted_ops,
             &branch_config,
             &|cid| {
-                handle
-                    .block_on(async { cs.get(cid).await })
-                    .map_err(std::io::Error::other)
+                handle.block_on(async {
+                    fluree_db_binary_index::read::artifact_cache::fetch_cached_bytes_cid(
+                        cs.as_ref(),
+                        cid,
+                        &cache_dir,
+                    )
+                    .await
+                })
             },
             &|cid| {
                 handle
-                    .block_on(async { cs2.get(cid).await })
+                    .block_on(async {
+                        fluree_db_binary_index::read::artifact_cache::fetch_cached_bytes_cid(
+                            cs2.as_ref(),
+                            cid,
+                            &cache_dir2,
+                        )
+                        .await
+                    })
                     .map(Some)
-                    .or_else(|e| match e {
-                        fluree_db_core::error::Error::NotFound(_) => {
+                    .or_else(|e| match e.kind() {
+                        std::io::ErrorKind::NotFound => {
                             tracing::debug!("sidecar not found (treating as absent): {e}");
                             Ok(None)
                         }
-                        other => Err(std::io::Error::other(other)),
+                        _ => Err(e),
                     })
             },
         )
@@ -78,6 +103,181 @@ async fn run_update_branch(
     .await
     .map_err(|e| IndexerError::StorageWrite(format!("branch update task panicked: {e}")))?
     .map_err(|e| IndexerError::StorageWrite(e.to_string()))
+}
+
+enum Phase2TaskKind {
+    DefaultExisting { leaves: Vec<LeafEntry> },
+    DefaultFresh,
+    NamedExisting { branch_cid: ContentId },
+    NamedFresh,
+}
+
+struct Phase2Task {
+    seq: usize,
+    g_id: u16,
+    order: RunSortOrder,
+    sorted_records: Vec<RunRecordV2>,
+    sorted_ops: Vec<u8>,
+    kind: Phase2TaskKind,
+}
+
+enum Phase2TaskUpdate {
+    Default { leaf_entries: Vec<LeafEntry> },
+    Named { branch_cid: ContentId },
+}
+
+struct Phase2TaskOutput {
+    seq: usize,
+    g_id: u16,
+    order: RunSortOrder,
+    update: Phase2TaskUpdate,
+    replaced_leaf_cids: Vec<ContentId>,
+    replaced_sidecar_cids: Vec<ContentId>,
+    new_leaf_count: usize,
+}
+
+async fn execute_phase2_task<S>(
+    storage: &S,
+    ledger_id: &str,
+    task: Phase2Task,
+    config: &IndexerConfig,
+    content_store: Arc<dyn fluree_db_core::storage::ContentStore>,
+    cache_dir: std::path::PathBuf,
+) -> Result<Phase2TaskOutput>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+{
+    let Phase2Task {
+        seq,
+        g_id,
+        order,
+        sorted_records,
+        sorted_ops,
+        kind,
+    } = task;
+
+    let branch_config = BranchUpdateConfig {
+        order,
+        g_id,
+        zstd_level: 1,
+        leaflet_target_rows: config.leaflet_rows.max(1),
+        leaf_target_rows: config
+            .leaflet_rows
+            .max(1)
+            .saturating_mul(config.leaflets_per_leaf.max(1)),
+    };
+
+    let started = Instant::now();
+    let output = match kind {
+        Phase2TaskKind::DefaultExisting { leaves } => {
+            let branch_bytes =
+                fluree_db_binary_index::format::branch::build_branch_bytes(order, g_id, &leaves);
+            let result = run_update_branch(
+                branch_bytes,
+                sorted_records,
+                sorted_ops,
+                branch_config,
+                content_store,
+                cache_dir,
+            )
+            .await?;
+            upload_leaf_blobs(storage, ledger_id, &result).await?;
+            Phase2TaskOutput {
+                seq,
+                g_id,
+                order,
+                update: Phase2TaskUpdate::Default {
+                    leaf_entries: result.leaf_entries,
+                },
+                replaced_leaf_cids: result.replaced_leaf_cids,
+                replaced_sidecar_cids: result.replaced_sidecar_cids,
+                new_leaf_count: result.new_leaf_blobs.len(),
+            }
+        }
+        Phase2TaskKind::DefaultFresh => {
+            let result =
+                build_fresh_default_graph_v3(&sorted_records, &sorted_ops, order, g_id, config)?;
+            upload_leaf_blobs(storage, ledger_id, &result).await?;
+            Phase2TaskOutput {
+                seq,
+                g_id,
+                order,
+                update: Phase2TaskUpdate::Default {
+                    leaf_entries: result.leaf_entries,
+                },
+                replaced_leaf_cids: Vec::new(),
+                replaced_sidecar_cids: Vec::new(),
+                new_leaf_count: result.new_leaf_blobs.len(),
+            }
+        }
+        Phase2TaskKind::NamedExisting { branch_cid } => {
+            let branch_bytes =
+                fluree_db_binary_index::read::artifact_cache::fetch_cached_bytes_cid(
+                    content_store.as_ref(),
+                    &branch_cid,
+                    &cache_dir,
+                )
+                .await
+                .map_err(|e| {
+                    IndexerError::StorageRead(format!("fetch V3 branch g_id={g_id} {order:?}: {e}"))
+                })?;
+            let result = run_update_branch(
+                branch_bytes,
+                sorted_records,
+                sorted_ops,
+                branch_config,
+                content_store,
+                cache_dir,
+            )
+            .await?;
+            upload_leaf_blobs(storage, ledger_id, &result).await?;
+            storage
+                .content_write_bytes(ContentKind::IndexBranch, ledger_id, &result.branch_bytes)
+                .await
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            Phase2TaskOutput {
+                seq,
+                g_id,
+                order,
+                update: Phase2TaskUpdate::Named {
+                    branch_cid: result.branch_cid,
+                },
+                replaced_leaf_cids: result.replaced_leaf_cids,
+                replaced_sidecar_cids: result.replaced_sidecar_cids,
+                new_leaf_count: result.new_leaf_blobs.len(),
+            }
+        }
+        Phase2TaskKind::NamedFresh => {
+            let result = build_fresh_named_graph_v3(&sorted_records, order, g_id, config)?;
+            upload_leaf_blobs(storage, ledger_id, &result).await?;
+            storage
+                .content_write_bytes(ContentKind::IndexBranch, ledger_id, &result.branch_bytes)
+                .await
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            Phase2TaskOutput {
+                seq,
+                g_id,
+                order,
+                update: Phase2TaskUpdate::Named {
+                    branch_cid: result.branch_cid,
+                },
+                replaced_leaf_cids: Vec::new(),
+                replaced_sidecar_cids: Vec::new(),
+                new_leaf_count: result.new_leaf_blobs.len(),
+            }
+        }
+    };
+
+    tracing::debug!(
+        seq,
+        g_id,
+        ?order,
+        new_leaf_count = output.new_leaf_count,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "V6 Phase 2 task complete"
+    );
+
+    Ok(output)
 }
 
 /// Entry point for incremental indexing.
@@ -99,10 +299,20 @@ where
         .clone()
         .ok_or(IndexerError::NoCommits)?;
     let from_t = record.index_t;
+    tracing::debug!(
+        ledger_id = ledger_id,
+        from_t,
+        to_t = record.commit_t,
+        base_root = %base_root_id,
+        head_commit = %head_commit_id,
+        "starting incremental index build"
+    );
 
     let content_store: Arc<dyn fluree_db_core::storage::ContentStore> = Arc::new(
         fluree_db_core::storage::content_store_for(storage.clone(), ledger_id),
     );
+    let cache_dir = artifact_cache_dir(&config);
+    let _ = std::fs::create_dir_all(&cache_dir);
 
     // ---- Phase 1: Resolve incremental commits ----
     let resolve_config = IncrementalResolveConfig {
@@ -115,7 +325,7 @@ where
         .map_err(|e| IndexerError::StorageWrite(format!("V6 incremental resolve: {e}")))?;
 
     if novelty.records.is_empty() {
-        tracing::info!("no new records resolved; returning existing V6 root");
+        tracing::debug!("no new records resolved; returning existing V6 root");
         return Ok(IndexResult {
             root_id: base_root_id,
             index_t: novelty.max_t,
@@ -124,7 +334,7 @@ where
         });
     }
 
-    tracing::info!(
+    tracing::debug!(
         records = novelty.records.len(),
         new_subjects = novelty.new_subjects.len(),
         new_strings = novelty.new_strings.len(),
@@ -156,17 +366,17 @@ where
         novelty.delta_retracts,
     );
 
-    let mut total_new_leaves = 0usize;
+    let concurrency = config.incremental_max_concurrency.max(1);
+    let mut graph_order: Vec<u16> = by_graph.keys().copied().collect();
+    graph_order.sort_unstable_by_key(|&g_id| (u8::from(g_id == 0), g_id));
 
-    for (&g_id, indices) in &by_graph {
-        // Extract this graph's records + ops.
+    let mut phase2_tasks = Vec::with_capacity(by_graph.len().saturating_mul(all_orders.len()));
+    for g_id in graph_order.iter().copied() {
+        let indices = &by_graph[&g_id];
         let graph_records: Vec<RunRecordV2> = indices.iter().map(|&i| novelty.records[i]).collect();
         let graph_ops: Vec<u8> = indices.iter().map(|&i| novelty.ops[i]).collect();
 
-        let is_default_graph = g_id == 0;
-
         for &order in &all_orders {
-            // Sort records for this order.
             let cmp = cmp_v2_for_order(order);
             let mut sorted_indices: Vec<usize> = (0..graph_records.len()).collect();
             sorted_indices.sort_unstable_by(|&a, &b| cmp(&graph_records[a], &graph_records[b]));
@@ -174,144 +384,92 @@ where
                 sorted_indices.iter().map(|&i| graph_records[i]).collect();
             let sorted_ops: Vec<u8> = sorted_indices.iter().map(|&i| graph_ops[i]).collect();
 
-            if is_default_graph {
-                // Default graph: leaf entries are inline in the root.
-                let existing_leaves = base_root
+            let kind = if g_id == 0 {
+                match base_root
                     .default_graph_orders
                     .iter()
                     .find(|o| o.order == order)
-                    .map(|o| &o.leaves);
-
-                if let Some(leaves) = existing_leaves {
-                    // Build a temporary FBR3 manifest for update_branch.
-                    let branch_bytes = fluree_db_binary_index::format::branch::build_branch_bytes(
-                        order, g_id, leaves,
-                    );
-
-                    let branch_config = BranchUpdateConfig {
-                        order,
-                        g_id,
-                        zstd_level: 1,
-                        leaflet_target_rows: config.leaflet_rows.max(1),
-                        leaf_target_rows: config
-                            .leaflet_rows
-                            .max(1)
-                            .saturating_mul(config.leaflets_per_leaf.max(1)),
-                    };
-
-                    let result = run_update_branch(
-                        branch_bytes,
-                        sorted_records,
-                        sorted_ops,
-                        branch_config,
-                        content_store.clone(),
-                    )
-                    .await?;
-
-                    // Upload new leaf + sidecar blobs.
-                    upload_leaf_blobs(storage, ledger_id, &result).await?;
-
-                    total_new_leaves += result.new_leaf_blobs.len();
-
-                    // Update root with new leaf entries + GC.
-                    root_builder.set_default_graph_order(order, result.leaf_entries);
-                    root_builder.add_replaced_cids(result.replaced_leaf_cids);
-                    root_builder.add_replaced_cids(result.replaced_sidecar_cids);
-                } else {
-                    // No existing branch for this order — build from scratch.
-                    let result = build_fresh_default_graph_v3(
-                        &sorted_records,
-                        &sorted_ops,
-                        order,
-                        g_id,
-                        &config,
-                    )?;
-
-                    upload_leaf_blobs(storage, ledger_id, &result).await?;
-
-                    total_new_leaves += result.new_leaf_blobs.len();
-                    root_builder.set_default_graph_order(order, result.leaf_entries);
+                    .map(|o| o.leaves.clone())
+                {
+                    Some(leaves) => Phase2TaskKind::DefaultExisting { leaves },
+                    None => Phase2TaskKind::DefaultFresh,
                 }
             } else {
-                // Named graph: branch stored as separate CAS object (FBR3).
-                let branch_cid = base_root
+                match base_root
                     .named_graphs
                     .iter()
                     .find(|ng| ng.g_id == g_id)
                     .and_then(|ng| ng.orders.iter().find(|(o, _)| *o == order))
-                    .map(|(_, cid)| cid);
-
-                if let Some(existing_branch_cid) = branch_cid {
-                    // Fetch existing branch manifest.
-                    let branch_bytes =
-                        content_store.get(existing_branch_cid).await.map_err(|e| {
-                            IndexerError::StorageRead(format!(
-                                "fetch V3 branch g_id={g_id} {order:?}: {e}"
-                            ))
-                        })?;
-
-                    let branch_config = BranchUpdateConfig {
-                        order,
-                        g_id,
-                        zstd_level: 1,
-                        leaflet_target_rows: config.leaflet_rows.max(1),
-                        leaf_target_rows: config
-                            .leaflet_rows
-                            .max(1)
-                            .saturating_mul(config.leaflets_per_leaf.max(1)),
-                    };
-
-                    let result = run_update_branch(
-                        branch_bytes,
-                        sorted_records,
-                        sorted_ops,
-                        branch_config,
-                        content_store.clone(),
-                    )
-                    .await?;
-
-                    upload_leaf_blobs(storage, ledger_id, &result).await?;
-
-                    // Upload new branch manifest.
-                    storage
-                        .content_write_bytes(
-                            ContentKind::IndexBranch,
-                            ledger_id,
-                            &result.branch_bytes,
-                        )
-                        .await
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                    total_new_leaves += result.new_leaf_blobs.len();
-                    root_builder.set_named_graph_branch(g_id, order, result.branch_cid);
-                    root_builder.add_replaced_cids(result.replaced_leaf_cids);
-                    root_builder.add_replaced_cids(result.replaced_sidecar_cids);
-                } else {
-                    // No existing branch for this named graph + order — build from scratch.
-                    let result = build_fresh_named_graph_v3(&sorted_records, order, g_id, &config)?;
-
-                    upload_leaf_blobs(storage, ledger_id, &result).await?;
-
-                    // Upload branch manifest.
-                    storage
-                        .content_write_bytes(
-                            ContentKind::IndexBranch,
-                            ledger_id,
-                            &result.branch_bytes,
-                        )
-                        .await
-                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-                    total_new_leaves += result.new_leaf_blobs.len();
-                    root_builder.set_named_graph_branch(g_id, order, result.branch_cid);
+                    .map(|(_, cid)| cid.clone())
+                {
+                    Some(branch_cid) => Phase2TaskKind::NamedExisting { branch_cid },
+                    None => Phase2TaskKind::NamedFresh,
                 }
-            }
+            };
+
+            phase2_tasks.push(Phase2Task {
+                seq: phase2_tasks.len(),
+                g_id,
+                order,
+                sorted_records,
+                sorted_ops,
+                kind,
+            });
         }
     }
 
-    tracing::info!(
+    tracing::debug!(
+        tasks = phase2_tasks.len(),
+        concurrency,
+        graphs = by_graph.len(),
+        graph_order = ?graph_order,
+        "V6 Phase 2: scheduling branch updates"
+    );
+
+    let config_ref = &config;
+    let phase2_results = stream::iter(phase2_tasks)
+        .map(|task| {
+            let content_store = content_store.clone();
+            let cache_dir = cache_dir.clone();
+            async move {
+                execute_phase2_task(
+                    storage,
+                    ledger_id,
+                    task,
+                    config_ref,
+                    content_store,
+                    cache_dir,
+                )
+                .await
+            }
+        })
+        .buffer_unordered(concurrency)
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut total_new_leaves = 0usize;
+    let mut phase2_outputs: Vec<Phase2TaskOutput> =
+        phase2_results.into_iter().collect::<Result<Vec<_>>>()?;
+    phase2_outputs.sort_unstable_by_key(|output| output.seq);
+
+    for output in phase2_outputs {
+        total_new_leaves += output.new_leaf_count;
+        match output.update {
+            Phase2TaskUpdate::Default { leaf_entries } => {
+                root_builder.set_default_graph_order(output.order, leaf_entries);
+            }
+            Phase2TaskUpdate::Named { branch_cid } => {
+                root_builder.set_named_graph_branch(output.g_id, output.order, branch_cid);
+            }
+        }
+        root_builder.add_replaced_cids(output.replaced_leaf_cids);
+        root_builder.add_replaced_cids(output.replaced_sidecar_cids);
+    }
+
+    tracing::debug!(
         new_leaves = total_new_leaves,
         graphs = by_graph.len(),
+        concurrency,
         "V6 Phase 2 complete: branch updates"
     );
 
@@ -323,7 +481,7 @@ where
     let mut new_dict_refs = base_root.dict_refs.clone();
 
     if !novelty.new_subjects.is_empty() {
-        tracing::info!(
+        tracing::debug!(
             count = novelty.new_subjects.len(),
             "V6 Phase 3: updating subject reverse tree"
         );
@@ -341,7 +499,7 @@ where
     }
 
     if !novelty.new_strings.is_empty() {
-        tracing::info!(
+        tracing::debug!(
             count = novelty.new_strings.len(),
             "V6 Phase 3: updating string reverse tree"
         );
@@ -404,7 +562,7 @@ where
             }
             new_dict_refs.forward_packs.string_fwd_packs = updated_refs;
 
-            tracing::info!(
+            tracing::debug!(
                 new_packs = pack_result.new_packs.len(),
                 new_strings = novelty.new_strings.len(),
                 "V6 Phase 3: string forward packs updated"
@@ -490,7 +648,7 @@ where
                         .push((*ns_code, updated_refs));
                 }
 
-                tracing::info!(
+                tracing::debug!(
                     ns_code,
                     new_packs = pack_result.new_packs.len(),
                     new_subjects = entries.len(),
@@ -974,7 +1132,7 @@ where
                         ga.fulltext.sort_by_key(|f| f.p_id);
                     }
 
-                    tracing::info!(
+                    tracing::debug!(
                         g_id,
                         p_id,
                         docs = arena.doc_count(),
@@ -1215,7 +1373,7 @@ where
                         ga.spatial.sort_by_key(|s| s.p_id);
                     }
 
-                    tracing::info!(
+                    tracing::debug!(
                         g_id,
                         p_id,
                         predicate = %pred_iri,
@@ -1229,7 +1387,7 @@ where
             let updated_arenas: Vec<GraphArenaRefs> = arenas_by_gid.into_values().collect();
             root_builder.set_graph_arenas(updated_arenas);
 
-            tracing::info!(
+            tracing::debug!(
                 "Phase 3a complete: arena updates (numbig + vectors + fulltext + spatial)"
             );
         }
@@ -1338,54 +1496,17 @@ where
         let db_stats = {
             use fluree_db_core::index_stats as is;
 
-            struct PropAgg {
-                count: u64,
-                ndv_values: u64,
-                ndv_subjects: u64,
-                last_modified_t: i64,
-                datatypes: Vec<(u8, u64)>,
-            }
-            let mut agg: std::collections::HashMap<u32, PropAgg> = std::collections::HashMap::new();
-            for g in &id_stats_result.graphs {
-                for p in &g.properties {
-                    let e = agg.entry(p.p_id).or_insert(PropAgg {
-                        count: 0,
-                        ndv_values: 0,
-                        ndv_subjects: 0,
-                        last_modified_t: 0,
-                        datatypes: Vec::new(),
-                    });
-                    e.count += p.count;
-                    e.ndv_values = e.ndv_values.max(p.ndv_values);
-                    e.ndv_subjects = e.ndv_subjects.max(p.ndv_subjects);
-                    e.last_modified_t = e.last_modified_t.max(p.last_modified_t);
-                    for &(dt, cnt) in &p.datatypes {
-                        if let Some(existing) = e.datatypes.iter_mut().find(|(d, _)| *d == dt) {
-                            existing.1 += cnt;
-                        } else {
-                            e.datatypes.push((dt, cnt));
-                        }
-                    }
-                }
-            }
-            let properties: Vec<is::PropertyStatEntry> = agg
-                .into_iter()
-                .map(|(p_id, pa)| {
-                    let iri = novelty.shared.predicates.resolve(p_id).unwrap_or("");
-                    let (ns, name) = match trie.longest_match(iri) {
-                        Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
-                        None => (0u16, iri.to_string()),
-                    };
-                    is::PropertyStatEntry {
-                        sid: (ns, name),
-                        count: pa.count,
-                        ndv_values: pa.ndv_values,
-                        ndv_subjects: pa.ndv_subjects,
-                        last_modified_t: pa.last_modified_t,
-                        datatypes: pa.datatypes,
-                    }
-                })
-                .collect();
+            let properties = crate::stats::aggregate_property_entries_from_graphs(
+                &id_stats_result.graphs,
+                &trie,
+                |p_id| {
+                    novelty
+                        .shared
+                        .predicates
+                        .resolve(p_id)
+                        .map(ToString::to_string)
+                },
+            );
 
             // Class-property attribution: build full ClassStatEntry with property usage.
             //
@@ -1402,20 +1523,14 @@ where
                 !class_count_deltas.is_empty() || !novelty_subject_class_deltas.is_empty();
 
             if has_class_changes || !novelty_subject_props.is_empty() {
-                tracing::info!(
+                let phase3b_started = Instant::now();
+                tracing::debug!(
                     has_class_changes,
                     novelty_subject_props = novelty_subject_props.len(),
                     novelty_subject_class_deltas = novelty_subject_class_deltas.len(),
                     novelty_records = novelty.records.len(),
                     "Phase 3b: class-property attribution starting"
                 );
-                let cache_dir = config
-                    .data_dir
-                    .as_ref()
-                    .map(|d| d.join("class_cache"))
-                    .unwrap_or_else(|| std::env::temp_dir().join("fluree_class_cache_v6"));
-                let _ = std::fs::create_dir_all(&cache_dir);
-
                 // subject_classes: (g_id, s_id) → HashSet<class_sid64>
                 let mut subject_classes: std::collections::HashMap<
                     (u16, u64),
@@ -1423,6 +1538,10 @@ where
                 > = std::collections::HashMap::new();
 
                 // SID resolver closure (populated when store loads successfully).
+                let resolve_class_sid_calls = AtomicUsize::new(0usize);
+                let resolve_class_sid_novelty_hits = AtomicUsize::new(0usize);
+                let resolve_class_sid_store_hits = AtomicUsize::new(0usize);
+                let resolve_class_sid_fallbacks = AtomicUsize::new(0usize);
                 let resolve_class_sid =
                     |sid64: u64,
                      store: Option<
@@ -1430,18 +1549,22 @@ where
                     >,
                      new_subs: &std::collections::HashMap<(u16, u64), String>|
                      -> fluree_db_core::Sid {
+                        resolve_class_sid_calls.fetch_add(1, Ordering::Relaxed);
                         let sid = fluree_db_core::subject_id::SubjectId::from_u64(sid64);
                         // Try novelty subjects first.
                         if let Some(suffix) = new_subs.get(&(sid.ns_code(), sid.local_id())) {
+                            resolve_class_sid_novelty_hits.fetch_add(1, Ordering::Relaxed);
                             return fluree_db_core::Sid::new(sid.ns_code(), suffix.as_str());
                         }
                         // Try store resolution.
                         if let Some(s) = store {
                             if let Ok(iri) = s.resolve_subject_iri(sid64) {
+                                resolve_class_sid_store_hits.fetch_add(1, Ordering::Relaxed);
                                 return s.encode_iri(&iri);
                             }
                         }
                         // Fallback: ns_code + local_id (will be opaque but stable).
+                        resolve_class_sid_fallbacks.fetch_add(1, Ordering::Relaxed);
                         fluree_db_core::Sid::new(sid.ns_code(), sid.local_id().to_string())
                     };
 
@@ -1455,6 +1578,7 @@ where
                     .collect();
 
                 // Load store for PSOT lookup + SID resolution.
+                let store_load_started = Instant::now();
                 let store_opt = if rdf_type_p_id != u32::MAX {
                     match fluree_db_binary_index::read::binary_index_store::BinaryIndexStore::load_from_root_v6(
                         content_store.clone(),
@@ -1473,6 +1597,11 @@ where
                 } else {
                     None
                 };
+                tracing::debug!(
+                    loaded = store_opt.is_some(),
+                    elapsed_ms = store_load_started.elapsed().as_millis() as u64,
+                    "Phase 3b: class attribution store load complete"
+                );
 
                 // Partition novelty subjects by g_id for per-graph PSOT scans.
                 // Also include ref-object s_ids so we can resolve ref-class edges.
@@ -1534,7 +1663,7 @@ where
                         }
                         let min_s = scan_sids[0];
                         let max_s = *scan_sids.last().unwrap_or(&min_s);
-                        tracing::info!(
+                        tracing::debug!(
                             g_id = scan_g_id,
                             subjects = scan_sids.len(),
                             min_s_id = min_s,
@@ -1551,7 +1680,7 @@ where
                             base_root.index_t,
                         ) {
                             Ok(base_map) => {
-                                tracing::info!(
+                                tracing::debug!(
                                     g_id = scan_g_id,
                                     subjects_with_hits = base_map.len(),
                                     elapsed_ms = started.elapsed().as_millis() as u64,
@@ -1575,6 +1704,7 @@ where
                 }
 
                 // Apply novelty rdf:type deltas on top of base memberships.
+                let subject_classes_started = Instant::now();
                 for (&(g_id, s_id), class_map) in &novelty_subject_class_deltas {
                     let set = subject_classes.entry((g_id, s_id)).or_default();
                     for (&class_sid64, &delta) in class_map {
@@ -1585,8 +1715,18 @@ where
                         }
                     }
                 }
+                let total_subject_class_links: usize =
+                    subject_classes.values().map(|set| set.len()).sum();
+                tracing::debug!(
+                    subjects = subject_classes.len(),
+                    class_links = total_subject_class_links,
+                    elapsed_ms = subject_classes_started.elapsed().as_millis() as u64,
+                    phase_elapsed_ms = phase3b_started.elapsed().as_millis() as u64,
+                    "Phase 3b: subject class membership ready"
+                );
 
                 // Build class→properties, class→prop→dts, class→prop→langs, ref_edges.
+                let attribution_maps_started = Instant::now();
                 let mut class_properties: std::collections::HashMap<
                     (u16, u64),
                     std::collections::HashSet<u32>,
@@ -1664,6 +1804,26 @@ where
                         }
                     }
                 }
+                let class_property_count: usize =
+                    class_properties.values().map(|set| set.len()).sum();
+                let class_ref_edge_count: usize = ref_edges
+                    .values()
+                    .map(|per_prop| {
+                        per_prop
+                            .values()
+                            .map(|targets| targets.len())
+                            .sum::<usize>()
+                    })
+                    .sum();
+                tracing::debug!(
+                    classes_with_properties = class_properties.len(),
+                    class_property_count,
+                    classes_with_ref_edges = ref_edges.len(),
+                    class_ref_edge_count,
+                    elapsed_ms = attribution_maps_started.elapsed().as_millis() as u64,
+                    phase_elapsed_ms = phase3b_started.elapsed().as_millis() as u64,
+                    "Phase 3b: class attribution maps built"
+                );
 
                 // Build lang_id → tag string map from the language dict (keyed by id, not Vec index).
                 let lang_id_to_tag: std::collections::HashMap<u16, String> = novelty
@@ -1674,6 +1834,9 @@ where
                     .collect();
 
                 // Build entries_by_key from base + apply deltas.
+                let seed_entries_started = Instant::now();
+                let base_class_sid_lookups = AtomicUsize::new(0usize);
+                let base_class_sid_hits = AtomicUsize::new(0usize);
                 let mut entries_by_key: std::collections::HashMap<(u16, u64), is::ClassStatEntry> =
                     std::collections::HashMap::new();
 
@@ -1684,6 +1847,7 @@ where
                             if let Some(ref classes) = g.classes {
                                 for entry in classes {
                                     // Try to resolve class Sid → sid64 via store.
+                                    base_class_sid_lookups.fetch_add(1, Ordering::Relaxed);
                                     let sid64 = store_opt
                                         .as_ref()
                                         .and_then(|s| {
@@ -1696,6 +1860,7 @@ where
                                         })
                                         .unwrap_or(0);
                                     if sid64 != 0 {
+                                        base_class_sid_hits.fetch_add(1, Ordering::Relaxed);
                                         entries_by_key.insert((g.g_id, sid64), entry.clone());
                                     }
                                 }
@@ -1703,8 +1868,17 @@ where
                         }
                     }
                 }
+                tracing::debug!(
+                    seeded_entries = entries_by_key.len(),
+                    base_class_sid_lookups = base_class_sid_lookups.load(Ordering::Relaxed),
+                    base_class_sid_hits = base_class_sid_hits.load(Ordering::Relaxed),
+                    elapsed_ms = seed_entries_started.elapsed().as_millis() as u64,
+                    phase_elapsed_ms = phase3b_started.elapsed().as_millis() as u64,
+                    "Phase 3b: seeded class entries from base stats"
+                );
 
                 // Apply class count deltas (both positive and negative).
+                let class_count_delta_started = Instant::now();
                 for (&(g_id, class_sid64), &delta) in &class_count_deltas {
                     let entry = entries_by_key
                         .entry((g_id, class_sid64))
@@ -1722,8 +1896,20 @@ where
                         });
                     entry.count = (entry.count as i64 + delta).max(0) as u64;
                 }
+                tracing::debug!(
+                    class_count_deltas = class_count_deltas.len(),
+                    entries = entries_by_key.len(),
+                    elapsed_ms = class_count_delta_started.elapsed().as_millis() as u64,
+                    phase_elapsed_ms = phase3b_started.elapsed().as_millis() as u64,
+                    "Phase 3b: applied class count deltas"
+                );
 
                 // Build property attribution for each class entry.
+                let property_merge_started = Instant::now();
+                let ref_class_sid_lookups = AtomicUsize::new(0usize);
+                let ref_class_sid_hits = AtomicUsize::new(0usize);
+                let mut merged_class_entries = 0usize;
+                let total_class_entries = entries_by_key.len();
                 for (&(g_id, class_sid64), entry) in entries_by_key.iter_mut() {
                     if let Some(props) = class_properties.get(&(g_id, class_sid64)) {
                         let class_dts = class_prop_dts.get(&(g_id, class_sid64));
@@ -1831,6 +2017,7 @@ where
                                     std::collections::HashMap::new();
                                 if let Some(bpu) = base_pu {
                                     for rc in &bpu.ref_classes {
+                                        ref_class_sid_lookups.fetch_add(1, Ordering::Relaxed);
                                         let rc_sid64 = store_opt
                                             .as_ref()
                                             .and_then(|s| {
@@ -1843,6 +2030,7 @@ where
                                             })
                                             .unwrap_or(0);
                                         if rc_sid64 != 0 {
+                                            ref_class_sid_hits.fetch_add(1, Ordering::Relaxed);
                                             *merged_refs.entry(rc_sid64).or_insert(0) +=
                                                 rc.count as i64;
                                         }
@@ -1877,6 +2065,7 @@ where
                                 }
                             })
                             .collect();
+                        merged_class_entries += 1;
                     }
                     // Resolve class SID if still placeholder.
                     if entry.class_sid.name.is_empty() && entry.class_sid.namespace_code == 0 {
@@ -1886,7 +2075,36 @@ where
                             &new_subject_suffix,
                         );
                     }
+                    if merged_class_entries > 0 && merged_class_entries.is_multiple_of(500) {
+                        tracing::debug!(
+                            merged_class_entries,
+                            total_entries = total_class_entries,
+                            ref_class_sid_lookups = ref_class_sid_lookups.load(Ordering::Relaxed),
+                            ref_class_sid_hits = ref_class_sid_hits.load(Ordering::Relaxed),
+                            resolve_class_sid_calls =
+                                resolve_class_sid_calls.load(Ordering::Relaxed),
+                            phase_elapsed_ms = phase3b_started.elapsed().as_millis() as u64,
+                            elapsed_ms = property_merge_started.elapsed().as_millis() as u64,
+                            "Phase 3b: property attribution merge progress"
+                        );
+                    }
                 }
+                tracing::debug!(
+                    merged_class_entries,
+                    total_entries = total_class_entries,
+                    ref_class_sid_lookups = ref_class_sid_lookups.load(Ordering::Relaxed),
+                    ref_class_sid_hits = ref_class_sid_hits.load(Ordering::Relaxed),
+                    resolve_class_sid_calls = resolve_class_sid_calls.load(Ordering::Relaxed),
+                    resolve_class_sid_novelty_hits =
+                        resolve_class_sid_novelty_hits.load(Ordering::Relaxed),
+                    resolve_class_sid_store_hits =
+                        resolve_class_sid_store_hits.load(Ordering::Relaxed),
+                    resolve_class_sid_fallbacks =
+                        resolve_class_sid_fallbacks.load(Ordering::Relaxed),
+                    elapsed_ms = property_merge_started.elapsed().as_millis() as u64,
+                    phase_elapsed_ms = phase3b_started.elapsed().as_millis() as u64,
+                    "Phase 3b: property attribution merge complete"
+                );
 
                 // Remove entries with count=0 (fully retracted classes).
                 entries_by_key.retain(|_, e| e.count > 0);
@@ -1903,6 +2121,11 @@ where
                         g.classes = Some(classes);
                     }
                 }
+                tracing::debug!(
+                    final_graphs = final_graphs.len(),
+                    phase_elapsed_ms = phase3b_started.elapsed().as_millis() as u64,
+                    "Phase 3b: class-property attribution complete"
+                );
             }
 
             let root_classes = fluree_db_core::index_stats::union_per_graph_classes(&final_graphs);
@@ -1916,7 +2139,7 @@ where
             }
         };
 
-        tracing::info!(
+        tracing::debug!(
             total_flakes = db_stats.flakes,
             property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
             "incremental V6: stats refreshed"
@@ -1945,13 +2168,6 @@ where
         });
 
         if has_schema_records {
-            let cache_dir = config
-                .data_dir
-                .as_ref()
-                .map(|d| d.join("schema_cache"))
-                .unwrap_or_else(|| std::env::temp_dir().join("fluree_schema_cache_v6"));
-            let _ = std::fs::create_dir_all(&cache_dir);
-
             match fluree_db_binary_index::read::binary_index_store::BinaryIndexStore::load_from_root_v6(
                 content_store.clone(),
                 base_root,
@@ -2023,7 +2239,7 @@ where
 
                     let updated_schema = extractor.finalize(novelty.max_t);
                     root_builder.set_schema(updated_schema);
-                    tracing::info!("Phase 3c: incremental V6 schema refreshed");
+                    tracing::debug!("Phase 3c: incremental V6 schema refreshed");
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -2101,7 +2317,7 @@ where
             ))
         })?;
 
-        tracing::info!(
+        tracing::debug!(
             %root_id,
             index_t = final_root.index_t,
             replaced = replaced_cids.len(),
@@ -2167,7 +2383,7 @@ where
             ))
         })?;
 
-        tracing::info!(
+        tracing::debug!(
             %root_id,
             index_t = final_root.index_t,
             new_leaves = total_new_leaves,

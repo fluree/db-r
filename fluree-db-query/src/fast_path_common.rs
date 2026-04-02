@@ -27,6 +27,32 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
+// 0. Shared string-ID range helpers
+// ---------------------------------------------------------------------------
+
+/// Sort a list of dictionary string IDs and verify they form a single contiguous range.
+///
+/// Returns `[(start, end)]` on success. Errors if the IDs are not contiguous.
+///
+/// Used by both `fast_string_prefix_count_all` and `BinaryScanOperator::build_prefix_id_ranges`.
+pub fn contiguous_id_range(ids: &[u32]) -> Result<Vec<(u32, u32)>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut sorted = ids.to_vec();
+    sorted.sort_unstable();
+    let start = sorted[0];
+    let end = *sorted.last().unwrap_or(&start);
+    let span_len = u64::from(end) - u64::from(start) + 1;
+    if span_len != sorted.len() as u64 {
+        return Err(QueryError::execution(
+            "prefix string ids are not contiguous; refusing range pushdown",
+        ));
+    }
+    Ok(vec![(start, end)])
+}
+
+// ---------------------------------------------------------------------------
 // 1. Predicate resolution
 // ---------------------------------------------------------------------------
 
@@ -1322,7 +1348,7 @@ pub fn build_psot_cursor_for_predicate(
     let Some(branch) = store.branch_for_order(g_id, RunSortOrder::Psot) else {
         return Ok(None);
     };
-    let branch = Arc::new(branch.clone());
+    let branch = Arc::clone(branch);
 
     let (min_key, max_key) = predicate_range_keys(p_id, g_id);
 
@@ -1369,6 +1395,7 @@ pub fn build_psot_cursor_for_predicate(
                     flake,
                     store,
                     Some(&dn),
+                    ctx.runtime_small_dicts,
                     &mut ephemeral_preds,
                     &mut next_ep,
                 ) {
@@ -1412,14 +1439,30 @@ pub fn build_psot_cursor_for_predicate(
 /// Resolve a bound `Ref` (Iri or Sid) to its internal `s_id` (u64).
 ///
 /// Returns `Ok(None)` for `Ref::Var` or if the subject is not found in the store.
-pub fn subject_ref_to_s_id(store: &BinaryIndexStore, r: &Ref) -> Result<Option<u64>> {
+pub fn subject_ref_to_s_id(
+    snapshot: &fluree_db_core::LedgerSnapshot,
+    store: &BinaryIndexStore,
+    r: &Ref,
+) -> Result<Option<u64>> {
     match r {
         Ref::Iri(iri) => Ok(store
             .find_subject_id(iri)
             .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?),
-        Ref::Sid(sid) => Ok(store
-            .find_subject_id_by_parts(sid.namespace_code, &sid.name)
-            .map_err(|e| QueryError::Internal(format!("find_subject_id_by_parts: {e}")))?),
+        Ref::Sid(sid) => {
+            if let Some(s_id) = store
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::Internal(format!("find_subject_id_by_parts: {e}")))?
+            {
+                return Ok(Some(s_id));
+            }
+            if let Some(iri) = snapshot.decode_sid(sid).or_else(|| store.sid_to_iri(sid)) {
+                Ok(store
+                    .find_subject_id(&iri)
+                    .map_err(|e| QueryError::Internal(format!("find_subject_id: {e}")))?)
+            } else {
+                Ok(None)
+            }
+        }
         Ref::Var(_) => Ok(None),
     }
 }
@@ -1580,12 +1623,22 @@ impl Operator for PrecomputedSingleBatchOperator {
     }
 }
 
+/// Build a single-row batch containing an `xsd:integer` value.
+pub fn build_i64_singleton_batch(out_var: VarId, value: i64, label: &str) -> Result<Batch> {
+    let schema: Arc<[VarId]> = Arc::from(vec![out_var].into_boxed_slice());
+    let col = vec![Binding::lit(FlakeValue::Long(value), Sid::xsd_integer())];
+    Batch::new(schema, vec![col])
+        .map_err(|e| QueryError::execution(format!("fast-path {label} batch build: {e}")))
+}
+
 /// Build a single-row batch containing a count value (`xsd:integer`).
 pub fn build_count_batch(out_var: VarId, count: i64) -> Result<Batch> {
-    let schema: Arc<[VarId]> = Arc::from(vec![out_var].into_boxed_slice());
-    let col = vec![Binding::lit(FlakeValue::Long(count), Sid::xsd_integer())];
-    Batch::new(schema, vec![col])
-        .map_err(|e| QueryError::execution(format!("fast-path count batch build: {e}")))
+    build_i64_singleton_batch(out_var, count, "count")
+}
+
+/// Convert a non-negative count to `i64`, erroring on overflow instead of silently capping.
+pub fn count_to_i64(count: u64, label: &'static str) -> Result<i64> {
+    i64::try_from(count).map_err(|_| QueryError::execution(format!("{label} exceeds i64")))
 }
 
 /// Build an empty batch (zero rows) with the given schema.

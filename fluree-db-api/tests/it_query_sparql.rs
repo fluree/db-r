@@ -1176,6 +1176,30 @@ async fn sparql_sum_aggregate_per_group() {
 }
 
 #[tokio::test]
+async fn sparql_sum_boolean_comparison_counts_true_rows() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "people:main";
+    let ledger = seed_people(&fluree, ledger_id).await;
+
+    let query = r#"
+        PREFIX person: <http://example.org/Person#>
+        SELECT (SUM(?favNums > 10) AS ?count)
+        WHERE { ?person person:favNums ?favNums . }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .unwrap();
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&json!([[3]]))
+    );
+}
+
+#[tokio::test]
 async fn sparql_order_by_ascending_sorts_results() {
     assert_index_defaults();
     let fluree = FlureeBuilder::memory().build_memory();

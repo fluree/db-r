@@ -54,7 +54,12 @@ async fn apply_index<S: Storage + Clone + 'static>(
         .expect("load binary index");
     let arc_store = Arc::new(store);
     let dn = Arc::new(DictNovelty::new_uninitialized());
-    let provider = BinaryRangeProvider::new(Arc::clone(&arc_store), dn);
+    let provider = BinaryRangeProvider::new(
+        Arc::clone(&arc_store),
+        dn,
+        Arc::new(arc_store.runtime_small_dicts()),
+        None,
+    );
 
     // Extract metadata from FIR6 root
     let root = fluree_db_binary_index::IndexRoot::decode(&bytes).expect("decode FIR6 root");
@@ -400,6 +405,7 @@ async fn ledger_info_api_returns_expected_structure() {
             // Call ledger_info without context
             let info = fluree
                 .ledger_info(ledger_id)
+                .with_property_estimates(true)
                 .execute()
                 .await
                 .expect("ledger_info");
@@ -672,6 +678,7 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
             // Call ledger_info WITH context
             let info = fluree.ledger_info(ledger_id)
                 .with_context(&context)
+                .with_property_estimates(true)
                 .execute()
                 .await
                 .expect("ledger_info");
@@ -822,35 +829,36 @@ async fn ledger_info_property_datatypes_option_merges_novelty() {
                 .await
                 .expect("insert txn2 (novelty)");
 
-            // 3) Indexed view: include datatypes but do not merge novelty deltas.
-            let indexed_info = fluree
+            // 3) Fast novelty-aware view: top-level property datatypes should still
+            // merge novelty deltas even without the heavier full class/ref lookups.
+            let fast_info = fluree
                 .ledger_info(ledger_id)
+                .with_realtime_property_details(false)
                 .with_property_datatypes(true)
                 .execute()
                 .await
-                .expect("ledger_info indexed view");
-            let indexed_dts = indexed_info["stats"]["properties"]["http://example.org/price"]["datatypes"]
+                .expect("ledger_info fast view");
+            let fast_dts = fast_info["stats"]["properties"]["http://example.org/price"]["datatypes"]
                 .as_object()
                 .expect("datatypes should be an object map");
             assert!(
-                indexed_dts.contains_key("xsd:double") || indexed_dts.contains_key("xsd:float"),
-                "expected indexed ex:price to have float datatypes; got keys: {:?}",
-                indexed_dts.keys().collect::<Vec<_>>()
+                fast_dts.contains_key("xsd:double") || fast_dts.contains_key("xsd:float"),
+                "expected fast ex:price to keep float datatypes; got keys: {:?}",
+                fast_dts.keys().collect::<Vec<_>>()
             );
             assert!(
-                !(indexed_dts.contains_key("xsd:integer")
-                    || indexed_dts.contains_key("xsd:long")
-                    || indexed_dts.contains_key("xsd:int")
-                    || indexed_dts.contains_key("xsd:short")
-                    || indexed_dts.contains_key("xsd:byte")),
-                "expected indexed ex:price to NOT include integer-like datatypes before novelty merge; got keys: {:?}",
-                indexed_dts.keys().collect::<Vec<_>>()
+                fast_dts.contains_key("xsd:integer")
+                    || fast_dts.contains_key("xsd:long")
+                    || fast_dts.contains_key("xsd:int")
+                    || fast_dts.contains_key("xsd:short")
+                    || fast_dts.contains_key("xsd:byte"),
+                "expected fast ex:price to include integer-like datatype after novelty merge; got keys: {:?}",
+                fast_dts.keys().collect::<Vec<_>>()
             );
 
             // 4) Real-time view: merge novelty datatype deltas.
             let realtime_info = fluree
                 .ledger_info(ledger_id)
-                .with_realtime_property_details(true)
                 .execute()
                 .await
                 .expect("ledger_info realtime property details");
@@ -942,9 +950,10 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
                 .await
                 .expect("insert txn2 (novelty)");
 
-            // 3) Base payload: edges are as-of last index (should still be 1).
+            // 3) Explicit fast/index-derived view: edges are as-of last index (should still be 1).
             let base_info = fluree
                 .ledger_info(ledger_id)
+                .with_realtime_property_details(false)
                 .execute()
                 .await
                 .expect("ledger_info base");
@@ -956,13 +965,12 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
             assert_eq!(
                 base_refs.get("http://example.org/Organization"),
                 Some(&json!(1)),
-                "base payload should report indexed edge count only"
+                "fast payload should report indexed edge count only"
             );
 
-            // 4) Real-time edges: merge novelty ref deltas (should be 2).
+            // 4) Default ledger-info: merge novelty ref deltas (should be 2).
             let rt_info = fluree
                 .ledger_info(ledger_id)
-                .with_realtime_property_details(true)
                 .execute()
                 .await
                 .expect("ledger_info realtime edges");
@@ -970,11 +978,11 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
             let rt_refs = rt_info["stats"]["classes"]["http://example.org/Person"]["properties"]
                 ["http://example.org/worksFor"]["ref-classes"]
                 .as_object()
-                .expect("expected ref-classes map in realtime payload");
+                .expect("expected ref-classes map in default payload");
             assert_eq!(
                 rt_refs.get("http://example.org/Organization"),
                 Some(&json!(2)),
-                "realtime payload should include novelty edge count"
+                "default payload should include novelty edge count"
             );
         })
         .await;
@@ -1037,7 +1045,9 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
             // Base indexed ledger-info (include datatypes, but do NOT merge novelty deltas).
             let base_info = fluree
                 .ledger_info(ledger_id)
+                .with_realtime_property_details(false)
                 .with_property_datatypes(true)
+                .with_property_estimates(true)
                 .execute()
                 .await
                 .expect("ledger_info base");
@@ -1092,10 +1102,10 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
                 .await
                 .expect("insert txn2 (novelty)");
 
-            // Realtime ledger-info (merge novelty datatype + ref-edge deltas).
+            // Default ledger-info (merge novelty datatype + ref-edge deltas).
             let rt_info = fluree
                 .ledger_info(ledger_id)
-                .with_realtime_property_details(true)
+                .with_property_estimates(true)
                 .execute()
                 .await
                 .expect("ledger_info realtime details");
@@ -1179,6 +1189,7 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
             let refreshed = fluree
                 .ledger_info(ledger_id)
                 .with_property_datatypes(true)
+                .with_property_estimates(true)
                 .execute()
                 .await
                 .expect("ledger_info refreshed");
@@ -1445,6 +1456,7 @@ async fn selectivity_calculation_is_correct() {
 
             let info = fluree
                 .ledger_info(ledger_id)
+                .with_property_estimates(true)
                 .execute()
                 .await
                 .expect("ledger_info");
