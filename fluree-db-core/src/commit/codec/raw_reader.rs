@@ -472,12 +472,12 @@ fn decode_inline_str<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a str, Com
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commit_v2::envelope::encode_envelope_fields;
-    use crate::commit_v2::format;
-    use crate::commit_v2::format::{
+    use crate::commit::codec::envelope::encode_envelope_fields;
+    use crate::commit::codec::format;
+    use crate::commit::codec::format::{
         CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
     };
-    use crate::commit_v2::op_codec::{encode_op, CommitDicts};
+    use crate::commit::codec::op_codec::{encode_op, CommitDicts};
     use crate::{Flake, FlakeMeta, FlakeValue, Sid};
     use sha2::{Digest, Sha256};
     use std::collections::HashMap;

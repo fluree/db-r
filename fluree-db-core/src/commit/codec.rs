@@ -1,8 +1,9 @@
-//! Commit format v2: binary commit reader and codec.
+//! Binary commit codec.
 //!
-//! The v2 format replaces the JSON serialization of `Commit` with a binary
-//! layout: binary envelope (non-flake metadata) + binary-encoded ops
-//! (flakes with commit-local Sid name dictionaries).
+//! Encodes and decodes [`Commit`](super::Commit) values to/from a compact
+//! binary format. The envelope section supports two versions: v2 (single
+//! parent) and v3 (multi-parent for merge commits). The rest of the layout
+//! is shared.
 //!
 //! # Layout
 //!

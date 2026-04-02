@@ -13,9 +13,11 @@
 //! have `t <= stop_at_t`, which is typically the index `t` — commits at
 //! or below that point are already captured in the index.
 
-use crate::commit_v2::format::CommitSignature;
+pub mod codec;
+
 use crate::error::{Error, Result};
 use crate::{ContentId, ContentStore, Flake};
+use codec::format::CommitSignature;
 use futures::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -327,8 +329,7 @@ pub async fn load_commit_by_id<C: ContentStore>(store: &C, id: &ContentId) -> Re
         .map_err(|e| Error::storage(format!("Failed to read commit {}: {}", id, e)))?;
 
     let _span = tracing::debug_span!("load_commit", blob_bytes = data.len()).entered();
-    let mut commit =
-        crate::commit_v2::read_commit(&data).map_err(|e| Error::invalid_commit(e.to_string()))?;
+    let mut commit = codec::read_commit(&data).map_err(|e| Error::invalid_commit(e.to_string()))?;
 
     // Set the commit's id from the CID we used to load it
     commit.id = Some(id.clone());
@@ -393,8 +394,7 @@ pub async fn load_commit_envelope_by_id<C: ContentStore + ?Sized>(
     let envelope = {
         let _span =
             tracing::debug_span!("load_commit_envelope_by_id", blob_bytes = data.len()).entered();
-        crate::commit_v2::read_commit_envelope(&data)
-            .map_err(|e| Error::invalid_commit(e.to_string()))?
+        codec::read_commit_envelope(&data).map_err(|e| Error::invalid_commit(e.to_string()))?
     };
 
     Ok(envelope)
@@ -774,7 +774,7 @@ mod tests {
     /// and return the CID.
     #[cfg(feature = "credential")]
     async fn store_commit(store: &MemoryContentStore, commit: &Commit) -> ContentId {
-        let result = crate::commit_v2::write_commit(commit, false, None).unwrap();
+        let result = codec::write_commit(commit, false, None).unwrap();
         store.put(ContentKind::Commit, &result.bytes).await.unwrap()
     }
 
