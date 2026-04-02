@@ -32,7 +32,7 @@ mod error;
 mod stats;
 
 pub use commit::{
-    find_common_ancestor, load_commit_by_id, load_commit_envelope_by_id,
+    collect_dag_cids, find_common_ancestor, load_commit_by_id, load_commit_envelope_by_id,
     trace_commit_envelopes_by_id, trace_commits_by_id, Commit, CommitEnvelope, CommitRef,
     CommonAncestor, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_BYTES,
     MAX_TXN_META_ENTRIES,

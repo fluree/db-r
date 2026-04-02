@@ -497,35 +497,11 @@ async fn walk_commit_chain_since(
     head_id: &ContentId,
     from_t: i64,
 ) -> Result<Vec<ContentId>, IncrementalResolveError> {
-    let mut cids = Vec::new();
-    let mut frontier = vec![head_id.clone()];
-    let mut visited = std::collections::HashSet::new();
-
-    while let Some(cid) = frontier.pop() {
-        if !visited.insert(cid.clone()) {
-            continue;
-        }
-        let bytes = cs.get(&cid).await.map_err(|e| {
-            IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
-        })?;
-        let envelope = fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
-            IncrementalResolveError::CommitChain(format!(
-                "failed to decode envelope for {}: {}",
-                cid, e
-            ))
-        })?;
-
-        if envelope.t <= from_t {
-            continue;
-        }
-
-        for parent in envelope.previous_refs {
-            frontier.push(parent.id);
-        }
-        cids.push(cid);
-    }
-
-    cids.reverse();
+    let dag = fluree_db_novelty::collect_dag_cids(cs, head_id, from_t)
+        .await
+        .map_err(|e| IncrementalResolveError::CommitChain(e.to_string()))?;
+    // collect_dag_cids returns (t, cid) sorted by t descending; reverse for chronological order.
+    let cids: Vec<ContentId> = dag.into_iter().rev().map(|(_, cid)| cid).collect();
     Ok(cids)
 }
 

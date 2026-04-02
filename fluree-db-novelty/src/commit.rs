@@ -1,22 +1,17 @@
-//! Commit type and streaming commit trace
+//! Commit type and DAG-aware commit traversal.
 //!
-//! This module provides the Commit type representing a single transaction
-//! and utilities for streaming commits from head backwards.
+//! This module provides the [`Commit`] type representing a single transaction,
+//! [`CommitEnvelope`] for lightweight metadata-only access, and streaming
+//! utilities for walking commit history backwards from a HEAD.
 //!
-//! # Linear History Assumption
+//! Commits form a directed acyclic graph (DAG): normal commits have one
+//! parent, merge commits have two or more. The traversal functions use
+//! BFS with a visited set to handle the DAG correctly, yielding each
+//! commit exactly once in reverse-topological order (highest `t` first).
 //!
-//! The commit tracing utilities assume a **linear commit history** where:
-//! - Each commit has at most one previous commit (single-parent chain)
-//! - Transaction times (`t`) are strictly monotonically increasing
-//! - No branching, rebasing, or merge commits
-//!
-//! This matches Fluree's current commit model. The stop condition for
-//! [`trace_commits_by_id`] uses `t <= stop_at_t`, which relies on `t` being
-//! monotonic to correctly identify which commits are already indexed.
-//!
-//! For future support of git-like branching semantics, the stop condition
-//! would need to be ancestry-based (e.g., comparing commit CIDs or
-//! using Merkle ancestry proofs) rather than `t`-based.
+//! The `stop_at_t` parameter stops traversal when all remaining commits
+//! have `t <= stop_at_t`, which is typically the index `t` — commits at
+//! or below that point are already captured in the index.
 
 use crate::commit_v2::format::CommitSignature;
 use crate::{NoveltyError, Result};
@@ -386,7 +381,7 @@ impl CommitEnvelope {
 ///
 /// More memory-efficient than [`load_commit_by_id`] when you only need
 /// metadata for scanning.
-pub async fn load_commit_envelope_by_id<C: ContentStore>(
+pub async fn load_commit_envelope_by_id<C: ContentStore + ?Sized>(
     store: &C,
     id: &ContentId,
 ) -> Result<CommitEnvelope> {
@@ -404,77 +399,112 @@ pub async fn load_commit_envelope_by_id<C: ContentStore>(
     Ok(envelope)
 }
 
-/// Stream commit envelopes from head backwards using CID-based chain walking.
+/// Walk a commit DAG from a head CID, collecting `(t, ContentId)` pairs for
+/// all commits with `t > stop_at_t`, sorted by `t` descending.
 ///
-/// Returns `(ContentId, envelope)` pairs. Uses a [`ContentStore`] to load
-/// commits by CID, following `envelope.parent_ids()` CID links.
+/// Each commit is visited exactly once. This is the building block for
+/// [`trace_commit_envelopes_by_id`] and [`trace_commits_by_id`].
+pub async fn collect_dag_cids<C: ContentStore + ?Sized>(
+    store: &C,
+    head_id: &ContentId,
+    stop_at_t: i64,
+) -> Result<Vec<(i64, ContentId)>> {
+    let mut result = Vec::new();
+    let mut frontier = vec![head_id.clone()];
+    let mut visited = std::collections::HashSet::new();
+
+    while let Some(cid) = frontier.pop() {
+        if !visited.insert(cid.clone()) {
+            continue;
+        }
+        let envelope = load_commit_envelope_by_id(store, &cid).await?;
+        if envelope.t <= stop_at_t {
+            continue;
+        }
+        for parent_id in envelope.parent_ids() {
+            frontier.push(parent_id.clone());
+        }
+        result.push((envelope.t, cid));
+    }
+
+    // Sort by t descending (highest first = reverse-topological order).
+    result.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(result)
+}
+
+/// Stream commit envelopes from head backwards in reverse-topological order.
 ///
-/// # Arguments
-///
-/// * `store` - Content store for loading commits by CID
-/// * `head_id` - CID of the most recent commit to start from
-/// * `stop_at_t` - Stop when `commit.t <= stop_at_t` (typically 0 for full scan)
+/// Walks the commit DAG, yielding `(ContentId, CommitEnvelope)` pairs ordered
+/// by descending `t`. Each commit is yielded exactly once. Handles merge
+/// commits with multiple parents.
 pub fn trace_commit_envelopes_by_id<C: ContentStore + Clone + 'static>(
     store: C,
     head_id: ContentId,
     stop_at_t: i64,
 ) -> impl Stream<Item = Result<(ContentId, CommitEnvelope)>> {
-    stream::unfold(Some(head_id), move |cid| {
-        let store = store.clone();
-        async move {
-            let cid = cid?;
-            let envelope = match load_commit_envelope_by_id(&store, &cid).await {
-                Ok(e) => e,
-                Err(e) => return Some((Err(e), None)),
-            };
+    // Collect all CIDs first, then stream them.
+    stream::unfold(
+        None::<std::result::Result<std::vec::IntoIter<(i64, ContentId)>, ()>>,
+        move |state| {
+            let store = store.clone();
+            let head_id = head_id.clone();
+            async move {
+                let mut iter = match state {
+                    Some(Ok(iter)) => iter,
+                    Some(Err(())) => return None,
+                    None => {
+                        // First call: walk the DAG and collect all CIDs.
+                        match collect_dag_cids(&store, &head_id, stop_at_t).await {
+                            Ok(cids) => cids.into_iter(),
+                            Err(e) => return Some((Err(e), Some(Err(())))),
+                        }
+                    }
+                };
 
-            if envelope.t <= stop_at_t {
-                return None;
+                // Yield next envelope.
+                let (_t, cid) = iter.next()?;
+                match load_commit_envelope_by_id(&store, &cid).await {
+                    Ok(env) => Some((Ok((cid, env)), Some(Ok(iter)))),
+                    Err(e) => Some((Err(e), Some(Err(())))),
+                }
             }
-
-            let next = envelope.parent_ids().next().cloned();
-            Some((Ok((cid, envelope)), next))
-        }
-    })
+        },
+    )
 }
 
-/// Stream commits from head backwards using CID-based chain walking.
+/// Stream commits from head backwards in reverse-topological order.
 ///
-/// Loads commits by their content identifier via a [`ContentStore`],
-/// following `commit.parent_ids()` CID links.
-///
-/// # Linear History Required
-///
-/// Assumes linear commit history with monotonically increasing `t`.
-/// See [module documentation](self) for details.
-///
-/// # Arguments
-///
-/// * `store` - Content store for loading commits by CID
-/// * `head_id` - CID of the most recent commit to start from
-/// * `stop_at_t` - Stop when `commit.t <= stop_at_t` (typically the index t)
+/// Walks the commit DAG, yielding full [`Commit`] values ordered by
+/// descending `t`. Each commit is yielded exactly once. Handles merge
+/// commits with multiple parents.
 pub fn trace_commits_by_id<C: ContentStore + Clone + 'static>(
     store: C,
     head_id: ContentId,
     stop_at_t: i64,
 ) -> impl Stream<Item = Result<Commit>> {
-    stream::unfold(Some(head_id), move |cid| {
-        let store = store.clone();
-        async move {
-            let cid = cid?;
-            let commit = match load_commit_by_id(&store, &cid).await {
-                Ok(c) => c,
-                Err(e) => return Some((Err(e), None)),
-            };
+    stream::unfold(
+        None::<std::result::Result<std::vec::IntoIter<(i64, ContentId)>, ()>>,
+        move |state| {
+            let store = store.clone();
+            let head_id = head_id.clone();
+            async move {
+                let mut iter = match state {
+                    Some(Ok(iter)) => iter,
+                    Some(Err(())) => return None,
+                    None => match collect_dag_cids(&store, &head_id, stop_at_t).await {
+                        Ok(cids) => cids.into_iter(),
+                        Err(e) => return Some((Err(e), Some(Err(())))),
+                    },
+                };
 
-            if commit.t <= stop_at_t {
-                return None;
+                let (_t, cid) = iter.next()?;
+                match load_commit_by_id(&store, &cid).await {
+                    Ok(commit) => Some((Ok(commit), Some(Ok(iter)))),
+                    Err(e) => Some((Err(e), Some(Err(())))),
+                }
             }
-
-            let next = commit.parent_ids().next().cloned();
-            Some((Ok(commit), next))
-        }
-    })
+        },
+    )
 }
 
 // =============================================================================
@@ -490,14 +520,13 @@ pub struct CommonAncestor {
     pub t: i64,
 }
 
-/// Walk two commit chains from their HEADs and find the most recent common
-/// ancestor.
+/// Find the most recent common ancestor of two commit DAGs.
 ///
-/// Uses [`load_commit_envelope_by_id`] (lightweight — no flake data) to walk
-/// each chain. Advances whichever chain has the higher `t`. When both chains
-/// reach the same CID, that is the common ancestor.
+/// Uses dual-frontier BFS: expands both frontiers by following all parents,
+/// and stops when a CID visited from one side appears in the other's visited
+/// set. Handles merge commits with multiple parents correctly.
 ///
-/// Returns an error if the chains have no common ancestor (should not happen
+/// Returns an error if the DAGs share no common ancestor (should not happen
 /// for branches within the same ledger, since they share a genesis commit).
 pub async fn find_common_ancestor<C: ContentStore>(
     store: &C,
@@ -512,65 +541,100 @@ pub async fn find_common_ancestor<C: ContentStore>(
         });
     }
 
-    let mut cid_a = head_a.clone();
-    let mut cid_b = head_b.clone();
-    let mut env_a = load_commit_envelope_by_id(store, &cid_a).await?;
-    let mut env_b = load_commit_envelope_by_id(store, &cid_b).await?;
+    let mut visited_a = std::collections::HashSet::new();
+    let mut visited_b = std::collections::HashSet::new();
+    // Frontier entries: (t, cid). We advance whichever frontier has the higher max-t.
+    let mut frontier_a = Vec::new();
+    let mut frontier_b = Vec::new();
+
+    // Seed both frontiers.
+    let env_a = load_commit_envelope_by_id(store, head_a).await?;
+    visited_a.insert(head_a.clone());
+    frontier_a.push((env_a.t, head_a.clone()));
+
+    let env_b = load_commit_envelope_by_id(store, head_b).await?;
+    visited_b.insert(head_b.clone());
+    frontier_b.push((env_b.t, head_b.clone()));
+
+    // Check initial overlap.
+    if visited_a.contains(head_b) {
+        return Ok(CommonAncestor {
+            commit_id: head_b.clone(),
+            t: env_b.t,
+        });
+    }
+    if visited_b.contains(head_a) {
+        return Ok(CommonAncestor {
+            commit_id: head_a.clone(),
+            t: env_a.t,
+        });
+    }
 
     loop {
-        match env_a.t.cmp(&env_b.t) {
-            std::cmp::Ordering::Greater => {
-                cid_a = env_a.parent_ids().next().cloned().ok_or_else(|| {
-                    NoveltyError::invalid_commit(
-                        "commit chains have no common ancestor".to_string(),
-                    )
-                })?;
-                if cid_a == cid_b {
-                    return Ok(CommonAncestor {
-                        commit_id: cid_a,
-                        t: env_b.t,
-                    });
-                }
-                env_a = load_commit_envelope_by_id(store, &cid_a).await?;
+        let max_a = frontier_a.iter().map(|(t, _)| *t).max();
+        let max_b = frontier_b.iter().map(|(t, _)| *t).max();
+
+        match (max_a, max_b) {
+            (None, None) => {
+                return Err(NoveltyError::invalid_commit(
+                    "commit chains have no common ancestor".to_string(),
+                ));
             }
-            std::cmp::Ordering::Less => {
-                cid_b = env_b.parent_ids().next().cloned().ok_or_else(|| {
-                    NoveltyError::invalid_commit(
-                        "commit chains have no common ancestor".to_string(),
-                    )
-                })?;
-                if cid_a == cid_b {
-                    return Ok(CommonAncestor {
-                        commit_id: cid_b,
-                        t: env_a.t,
-                    });
+            (Some(ta), Some(tb)) if ta >= tb => {
+                // Advance frontier A: pop highest-t entry, expand its parents.
+                if let Some(ancestor) =
+                    advance_frontier(store, &mut frontier_a, &mut visited_a, &visited_b).await?
+                {
+                    return Ok(ancestor);
                 }
-                env_b = load_commit_envelope_by_id(store, &cid_b).await?;
             }
-            std::cmp::Ordering::Equal => {
-                // Same t but different CIDs — advance both
-                cid_a = env_a.parent_ids().next().cloned().ok_or_else(|| {
-                    NoveltyError::invalid_commit(
-                        "commit chains have no common ancestor".to_string(),
-                    )
-                })?;
-                cid_b = env_b.parent_ids().next().cloned().ok_or_else(|| {
-                    NoveltyError::invalid_commit(
-                        "commit chains have no common ancestor".to_string(),
-                    )
-                })?;
-                if cid_a == cid_b {
-                    let env = load_commit_envelope_by_id(store, &cid_a).await?;
-                    return Ok(CommonAncestor {
-                        commit_id: cid_a,
-                        t: env.t,
-                    });
+            _ => {
+                // Advance frontier B.
+                if let Some(ancestor) =
+                    advance_frontier(store, &mut frontier_b, &mut visited_b, &visited_a).await?
+                {
+                    return Ok(ancestor);
                 }
-                env_a = load_commit_envelope_by_id(store, &cid_a).await?;
-                env_b = load_commit_envelope_by_id(store, &cid_b).await?;
             }
         }
     }
+}
+
+/// Pop the highest-t entry from a frontier, load its parents, and check if
+/// any newly-visited CID appears in the other side's visited set.
+async fn advance_frontier<C: ContentStore>(
+    store: &C,
+    frontier: &mut Vec<(i64, ContentId)>,
+    visited: &mut std::collections::HashSet<ContentId>,
+    other_visited: &std::collections::HashSet<ContentId>,
+) -> Result<Option<CommonAncestor>> {
+    if frontier.is_empty() {
+        return Ok(None);
+    }
+    // Find and remove the highest-t entry.
+    let max_idx = frontier
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (t, _))| *t)
+        .map(|(i, _)| i)
+        .unwrap();
+    let (_t, cid) = frontier.swap_remove(max_idx);
+
+    let envelope = load_commit_envelope_by_id(store, &cid).await?;
+    for parent_id in envelope.parent_ids() {
+        if visited.insert(parent_id.clone()) {
+            if other_visited.contains(parent_id) {
+                let parent_env = load_commit_envelope_by_id(store, parent_id).await?;
+                return Ok(Some(CommonAncestor {
+                    commit_id: parent_id.clone(),
+                    t: parent_env.t,
+                }));
+            }
+            let parent_env = load_commit_envelope_by_id(store, parent_id).await?;
+            frontier.push((parent_env.t, parent_id.clone()));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

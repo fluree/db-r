@@ -111,32 +111,29 @@ where
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
             let (commit_cids, ledger_split_mode) = {
-                let mut cids = Vec::new();
-                let mut frontier = vec![head_commit_id.clone()];
-                let mut visited = std::collections::HashSet::new();
-                let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
+                // stop_at_t=0 collects all commits (t starts at 1).
+                let dag =
+                    fluree_db_novelty::collect_dag_cids(&content_store, &head_commit_id, 0).await?;
 
-                while let Some(cid) = frontier.pop() {
-                    if !visited.insert(cid.clone()) {
-                        continue;
-                    }
+                // collect_dag_cids returns (t, cid) sorted by t descending.
+                // Reverse for chronological (genesis-first) order.
+                let cids: Vec<ContentId> = dag.into_iter().rev().map(|(_, cid)| cid).collect();
+
+                // Extract ns_split_mode by scanning envelopes.
+                // The last seen value (closest to genesis) is authoritative.
+                let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
+                for cid in &cids {
                     let bytes = content_store
-                        .get(&cid)
+                        .get(cid)
                         .await
                         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
                     let envelope = read_commit_envelope(&bytes)
                         .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-                    // Extract ns_split_mode (last seen = genesis = authoritative).
                     if let Some(mode) = envelope.ns_split_mode {
                         split_mode = mode;
                     }
-                    for parent_id in envelope.parent_ids() {
-                        frontier.push(parent_id.clone());
-                    }
-                    cids.push(cid);
                 }
 
-                cids.reverse(); // chronological order (genesis first)
                 (cids, split_mode)
             };
             drop(_span_a);

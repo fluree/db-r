@@ -222,11 +222,9 @@ where
     /// Copy commit blobs (and their referenced txn blobs) from a source
     /// content store into the target's storage namespace.
     ///
-    /// Walks the commit chain from `head_id` backwards, stopping at
-    /// `stop_at_t` (the branch point). Each commit blob is read once,
-    /// the envelope is parsed from the raw bytes to find the previous
-    /// commit and any txn reference, and then the blob is written to
-    /// the target namespace.
+    /// Collects the commit DAG from `head_id` backwards to `stop_at_t`,
+    /// then iterates the resulting CIDs to copy each commit and its txn
+    /// blob into the target namespace.
     async fn copy_commit_chain(
         &self,
         source_store: &impl ContentStore,
@@ -235,24 +233,16 @@ where
         target_ledger_id: &str,
     ) -> Result<usize> {
         let storage = self.connection.storage();
-        let mut frontier = vec![head_id.clone()];
-        let mut visited = std::collections::HashSet::new();
+
+        let dag = fluree_db_novelty::collect_dag_cids(source_store, head_id, stop_at_t).await?;
         let mut copied = 0;
 
-        while let Some(cid) = frontier.pop() {
-            if !visited.insert(cid.clone()) {
-                continue;
-            }
-
-            let bytes = source_store.get(&cid).await?;
+        for (_, cid) in &dag {
+            let bytes = source_store.get(cid).await?;
 
             let envelope = read_commit_envelope(&bytes).map_err(|e| {
                 ApiError::internal(format!("failed to read commit envelope {cid}: {e}"))
             })?;
-
-            if envelope.t <= stop_at_t {
-                continue;
-            }
 
             // Write commit blob to target namespace.
             storage
@@ -277,9 +267,6 @@ where
                     .await?;
             }
 
-            for parent_id in envelope.parent_ids() {
-                frontier.push(parent_id.clone());
-            }
             copied += 1;
         }
 

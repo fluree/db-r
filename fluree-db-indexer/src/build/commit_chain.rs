@@ -5,39 +5,22 @@
 
 use fluree_db_core::storage::ContentStore;
 use fluree_db_core::ContentId;
-use fluree_db_novelty::commit_v2::read_commit_envelope;
 
-use crate::error::{IndexerError, Result};
+use crate::error::Result;
 
 /// Walk the commit chain backward from `head` to genesis, returning CIDs
 /// in chronological order (genesis first).
-// Kept for: shared commit chain walking for both rebuild and incremental pipelines.
-// Use when: rebuild.rs is refactored to use shared helpers instead of inline logic.
+// Kept for: convenience wrapper over collect_dag_cids for callers that need
+// only CIDs in chronological order without (t, cid) pairs.
+// Use when: any indexer pipeline needs a simple genesis-first CID list.
 #[expect(dead_code)]
 pub(crate) async fn walk_commit_chain_full(
     content_store: &dyn ContentStore,
     head_commit_id: &ContentId,
 ) -> Result<Vec<ContentId>> {
-    let mut cids = Vec::new();
-    let mut frontier = vec![head_commit_id.clone()];
-    let mut visited = std::collections::HashSet::new();
-
-    while let Some(cid) = frontier.pop() {
-        if !visited.insert(cid.clone()) {
-            continue;
-        }
-        let bytes = content_store
-            .get(&cid)
-            .await
-            .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
-        let envelope =
-            read_commit_envelope(&bytes).map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-        for parent_id in envelope.parent_ids() {
-            frontier.push(parent_id.clone());
-        }
-        cids.push(cid);
-    }
-
-    cids.reverse(); // chronological order (genesis first)
+    // stop_at_t=0 collects all commits (t starts at 1).
+    let dag = fluree_db_novelty::collect_dag_cids(content_store, head_commit_id, 0).await?;
+    // collect_dag_cids returns (t, cid) sorted by t descending; reverse for chronological order.
+    let cids: Vec<ContentId> = dag.into_iter().rev().map(|(_, cid)| cid).collect();
     Ok(cids)
 }

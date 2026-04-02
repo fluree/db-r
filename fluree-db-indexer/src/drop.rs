@@ -15,6 +15,7 @@ use fluree_db_binary_index::format::branch::read_branch_from_bytes;
 use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::content_kind::ContentKind;
+use fluree_db_core::storage::ContentStore;
 use fluree_db_core::Storage;
 use fluree_db_novelty::commit_v2::read_commit_envelope;
 
@@ -28,7 +29,7 @@ use crate::gc::collector::{derive_address, walk_prev_index_chain};
 /// complete, deduplicated set of CIDs.
 ///
 /// Callers can then derive storage addresses from these CIDs and delete them.
-pub async fn collect_ledger_cids<S: Storage>(
+pub async fn collect_ledger_cids<S: Storage + Clone>(
     storage: &S,
     ledger_id: &str,
     commit_head_id: Option<&ContentId>,
@@ -60,29 +61,38 @@ pub async fn collect_ledger_cids<S: Storage>(
 }
 
 /// Walk the commit chain backward from `head`, collecting commit and txn CIDs.
-async fn collect_commit_chain_cids<S: Storage>(
+async fn collect_commit_chain_cids<S: Storage + Clone>(
     storage: &S,
     head: &ContentId,
     ledger_id: &str,
     cids: &mut HashSet<ContentId>,
 ) -> Result<()> {
-    let storage_method = storage.storage_method();
-    let mut frontier = vec![head.clone()];
+    let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
 
-    while let Some(commit_id) = frontier.pop() {
-        if !cids.insert(commit_id.clone()) {
-            continue; // already visited
-        }
+    // Collect all commit CIDs via DAG walk (stop_at_t=0 means collect all).
+    let dag = fluree_db_novelty::collect_dag_cids(&content_store, head, 0)
+        .await
+        .map_err(|e| {
+            tracing::warn!(
+                head = %head,
+                error = %e,
+                "failed to walk commit DAG during drop CID collection"
+            );
+            e
+        })?;
 
-        // Read commit envelope to get parent CIDs and txn CID
-        let addr = derive_address(&commit_id, ContentKind::Commit, storage_method, ledger_id);
-        let bytes = match storage.read_bytes(&addr).await {
+    // Insert commit CIDs and extract txn CIDs in a second pass.
+    for (_, commit_id) in &dag {
+        cids.insert(commit_id.clone());
+
+        // Load each commit envelope to extract txn references.
+        let bytes = match content_store.get(commit_id).await {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(
                     commit_id = %commit_id,
                     error = %e,
-                    "failed to read commit during drop CID collection, stopping chain walk"
+                    "failed to read commit during drop txn extraction, skipping"
                 );
                 continue;
             }
@@ -94,7 +104,7 @@ async fn collect_commit_chain_cids<S: Storage>(
                 tracing::warn!(
                     commit_id = %commit_id,
                     error = %e,
-                    "failed to parse commit envelope during drop, stopping chain walk"
+                    "failed to parse commit envelope during drop, skipping"
                 );
                 continue;
             }
@@ -102,10 +112,6 @@ async fn collect_commit_chain_cids<S: Storage>(
 
         if let Some(txn_id) = &envelope.txn {
             cids.insert(txn_id.clone());
-        }
-
-        for parent_id in envelope.parent_ids() {
-            frontier.push(parent_id.clone());
         }
     }
 
