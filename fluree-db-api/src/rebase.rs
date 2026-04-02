@@ -7,8 +7,8 @@
 use crate::error::{ApiError, Result};
 use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{
-    range_with_overlay, ConflictKey, ContentAddressedWrite, ContentId, Flake, IndexType,
-    RangeMatch, RangeOptions, RangeTest, Storage,
+    range_with_overlay, ConflictKey, ContentId, Flake, IndexType, RangeMatch, RangeOptions,
+    RangeTest, Storage,
 };
 use fluree_db_ledger::{LedgerState, LedgerView};
 use fluree_db_nameservice::{BranchPoint, NameService, NsRecordSnapshot, Publisher};
@@ -100,7 +100,7 @@ pub struct RebaseReport {
 
 impl<S, N> crate::Fluree<S, N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
+    S: Storage + Clone + 'static,
     N: NameService + Publisher + 'static,
 {
     /// Rebase a branch onto its source branch's current HEAD.

@@ -133,8 +133,6 @@ pub use runtime_small_dicts::RuntimeSmallDicts;
 pub use schema_hierarchy::SchemaHierarchy;
 pub use sid::{Sid, SidInterner};
 pub use stats_view::{PropertyStatData, StatsView};
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-pub use storage::FileStorage;
 pub use storage::{
     bridge_content_store,
     content_address,
@@ -163,11 +161,12 @@ pub use storage::{
     StorageMethod,
     StorageRead,
     StorageWrite,
-    STORAGE_METHOD_FILE,
     STORAGE_METHOD_IPFS,
     STORAGE_METHOD_MEMORY,
     STORAGE_METHOD_S3,
 };
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub use storage::{FileStorage, STORAGE_METHOD_FILE};
 pub use subject_id::{SubjectId, SubjectIdColumn, SubjectIdEncoding};
 pub use temporal::{Date, DateTime, Time};
 pub use tracking::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
