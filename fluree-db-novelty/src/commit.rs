@@ -862,13 +862,10 @@ mod tests {
         let branch_a = store_chain(&store, 4, 2, Some(shared[2].clone()), 100).await;
         let branch_b = store_chain(&store, 4, 1, Some(shared[2].clone()), 200).await;
 
-        let ancestor = find_common_ancestor(
-            &store,
-            branch_a.last().unwrap(),
-            branch_b.last().unwrap(),
-        )
-        .await
-        .unwrap();
+        let ancestor =
+            find_common_ancestor(&store, branch_a.last().unwrap(), branch_b.last().unwrap())
+                .await
+                .unwrap();
 
         assert_eq!(ancestor.commit_id, shared[2]);
         assert_eq!(ancestor.t, 3);
@@ -884,13 +881,10 @@ mod tests {
         let branch_a = store_chain(&store, 2, 4, Some(shared[0].clone()), 100).await;
         let branch_b = store_chain(&store, 2, 2, Some(shared[0].clone()), 200).await;
 
-        let ancestor = find_common_ancestor(
-            &store,
-            branch_a.last().unwrap(),
-            branch_b.last().unwrap(),
-        )
-        .await
-        .unwrap();
+        let ancestor =
+            find_common_ancestor(&store, branch_a.last().unwrap(), branch_b.last().unwrap())
+                .await
+                .unwrap();
 
         assert_eq!(ancestor.commit_id, shared[0]);
         assert_eq!(ancestor.t, 1);
@@ -928,13 +922,10 @@ mod tests {
         let branch_a = store_chain(&store, 2, 2, Some(genesis[0].clone()), 100).await;
         let branch_b = store_chain(&store, 2, 3, Some(genesis[0].clone()), 200).await;
 
-        let ancestor = find_common_ancestor(
-            &store,
-            branch_a.last().unwrap(),
-            branch_b.last().unwrap(),
-        )
-        .await
-        .unwrap();
+        let ancestor =
+            find_common_ancestor(&store, branch_a.last().unwrap(), branch_b.last().unwrap())
+                .await
+                .unwrap();
 
         assert_eq!(ancestor.commit_id, genesis[0]);
         assert_eq!(ancestor.t, 1);
@@ -947,12 +938,8 @@ mod tests {
         let chain_a = store_chain(&store, 1, 2, None, 100).await;
         let chain_b = store_chain(&store, 1, 2, None, 200).await;
 
-        let result = find_common_ancestor(
-            &store,
-            chain_a.last().unwrap(),
-            chain_b.last().unwrap(),
-        )
-        .await;
+        let result =
+            find_common_ancestor(&store, chain_a.last().unwrap(), chain_b.last().unwrap()).await;
 
         assert!(result.is_err());
     }
