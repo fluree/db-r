@@ -8,8 +8,8 @@ mod streaming;
 mod writer;
 
 // Re-export core types from novelty for convenience
-pub use fluree_db_core::commit::codec::CommitV2Envelope;
-pub use fluree_db_core::commit::codec::CommitV2Error;
+pub use fluree_db_core::commit::codec::CodecEnvelope;
+pub use fluree_db_core::commit::codec::CommitCodecError;
 pub use fluree_db_core::commit::codec::MAGIC;
 pub use streaming::StreamingCommitWriter;
 pub use writer::{write_commit, CommitWriteResult};

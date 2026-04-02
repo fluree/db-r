@@ -537,13 +537,13 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
     }
 
     // Filter to only commits with t > local_t, then reverse to oldest→newest.
-    use fluree_db_core::commit::codec::format::{CommitV2Header, HEADER_LEN};
+    use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
     let mut to_import: Vec<fluree_db_api::Base64Bytes> = Vec::new();
     for commit in &all_commits {
         if commit.0.len() < HEADER_LEN {
             continue;
         }
-        let header = CommitV2Header::read_from(&commit.0)
+        let header = CommitHeader::read_from(&commit.0)
             .map_err(|e| CliError::Config(format!("invalid commit in pull response: {e}")))?;
         if header.t > local_ref.t {
             to_import.push(commit.clone());

@@ -6,11 +6,11 @@
 
 use super::envelope;
 use super::format::{
-    encode_sig_block, sig_block_size, CommitSignature, CommitV2Footer, CommitV2Header,
-    DictLocation, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN, HEADER_LEN, VERSION,
+    encode_sig_block, sig_block_size, CommitFooter, CommitHeader, CommitSignature, DictLocation,
+    FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN, HEADER_LEN, VERSION,
 };
 use super::op_codec::{encode_op, CommitDicts};
-use super::CommitV2Error;
+use super::CommitCodecError;
 use crate::Commit;
 use fluree_db_credential::{did_from_pubkey, sign_commit_digest, SigningKey};
 use sha2::{Digest, Sha256};
@@ -40,10 +40,10 @@ pub fn write_commit(
     commit: &Commit,
     compress: bool,
     signing: Option<(&SigningKey, &str)>,
-) -> Result<CommitWriteResult, CommitV2Error> {
+) -> Result<CommitWriteResult, CommitCodecError> {
     // Validate t fits in u32 for v3 wire format
     if commit.t < 0 || commit.t > u32::MAX as i64 {
-        return Err(CommitV2Error::TOutOfRange(commit.t));
+        return Err(CommitCodecError::TOutOfRange(commit.t));
     }
 
     let op_count = commit.flakes.len();
@@ -87,7 +87,7 @@ pub fn write_commit(
     let (ops_section, is_compressed) = if compress && !ops_raw.is_empty() {
         let _span = tracing::debug_span!("v2_compress_ops", raw_bytes = ops_raw.len()).entered();
         let compressed =
-            zstd::encode_all(ops_raw.as_slice(), 3).map_err(CommitV2Error::CompressionFailed)?;
+            zstd::encode_all(ops_raw.as_slice(), 3).map_err(CommitCodecError::CompressionFailed)?;
         // Only use compressed if it's actually smaller
         if compressed.len() < ops_raw.len() {
             tracing::debug!(
@@ -133,7 +133,7 @@ pub fn write_commit(
     if signing.is_some() {
         flags |= FLAG_HAS_COMMIT_SIG;
     }
-    let header = CommitV2Header {
+    let header = CommitHeader {
         version: VERSION,
         flags,
         t: commit.t,
@@ -162,7 +162,7 @@ pub fn write_commit(
     }
 
     // 11. Write footer
-    let footer = CommitV2Footer {
+    let footer = CommitFooter {
         dicts: dict_locations,
         ops_section_len: ops_section.len() as u32,
     };

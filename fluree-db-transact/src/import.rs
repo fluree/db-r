@@ -14,7 +14,7 @@
 //! See the Phase 3 plan for full semantics documentation.
 
 mod inner {
-    use crate::commit_v2::CommitV2Envelope;
+    use crate::commit_v2::CodecEnvelope;
     use crate::commit_v2::StreamingCommitWriter;
     use crate::error::{Result, TransactError};
     use crate::generate::{infer_datatype, DT_ID, DT_LANG_STRING};
@@ -186,7 +186,7 @@ mod inner {
             // Persist split mode in genesis commit (first chunk, no previous ref).
             let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-            let envelope = CommitV2Envelope {
+            let envelope = CodecEnvelope {
                 t: new_t,
                 previous_refs: state.previous_ref.clone().into_iter().collect(),
                 namespace_delta: ns_delta,
@@ -322,7 +322,7 @@ mod inner {
             // Persist split mode in genesis commit (first chunk, no previous ref).
             let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-            let envelope = CommitV2Envelope {
+            let envelope = CodecEnvelope {
                 t: new_t,
                 previous_refs: state.previous_ref.clone().into_iter().collect(),
                 namespace_delta: ns_delta,
@@ -541,7 +541,7 @@ mod inner {
         // Persist split mode in genesis commit (first chunk, no previous ref).
         let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: new_t,
             previous_refs: state.previous_ref.clone().into_iter().collect(),
             namespace_delta: ns_delta,
@@ -984,7 +984,7 @@ mod inner {
         // Persist split mode in genesis commit (first chunk, no previous ref).
         let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: new_t,
             previous_refs: state.previous_ref.clone().into_iter().collect(),
             namespace_delta: ns_delta,

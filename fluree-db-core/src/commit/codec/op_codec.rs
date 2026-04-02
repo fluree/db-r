@@ -14,7 +14,7 @@
 //! flags, [lang], [i]
 //! ```
 
-use super::error::CommitV2Error;
+use super::error::CommitCodecError;
 use super::format::{OTag, OP_FLAG_ASSERT, OP_FLAG_HAS_I, OP_FLAG_HAS_LANG};
 use super::string_dict::{StringDict, StringDictBuilder};
 use super::varint::{decode_varint, encode_varint, read_exact, read_u8, zigzag_encode};
@@ -76,7 +76,7 @@ pub fn encode_op(
     flake: &Flake,
     dicts: &mut CommitDicts,
     buf: &mut Vec<u8>,
-) -> Result<(), CommitV2Error> {
+) -> Result<(), CommitCodecError> {
     // Graph: None = default graph (0, 0), Some(Sid) = named graph
     if let Some(ref g) = flake.g {
         encode_varint(g.namespace_code as u64, buf);
@@ -130,7 +130,7 @@ pub fn encode_op(
     // Optional list index (unsigned varint — negative indices not supported)
     if let Some(i) = flake.m.as_ref().and_then(|m| m.i) {
         if i < 0 {
-            return Err(CommitV2Error::NegativeListIndex(i));
+            return Err(CommitCodecError::NegativeListIndex(i));
         }
         encode_varint(i as u64, buf);
     }
@@ -142,7 +142,7 @@ fn encode_object(
     value: &FlakeValue,
     dicts: &mut CommitDicts,
     buf: &mut Vec<u8>,
-) -> Result<(), CommitV2Error> {
+) -> Result<(), CommitCodecError> {
     match value {
         FlakeValue::Ref(sid) => {
             buf.push(OTag::Ref as u8);
@@ -296,20 +296,21 @@ fn encode_len_prefixed_display(value: &impl std::fmt::Display, buf: &mut Vec<u8>
 // =============================================================================
 
 /// Decode a length-prefixed UTF-8 string, returning an owned `String`.
-fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error> {
+fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, CommitCodecError> {
     let len = decode_varint(data, pos)? as usize;
     let bytes = read_exact(data, pos, len)?;
     std::str::from_utf8(bytes)
         .map(|s| s.to_string())
-        .map_err(|e| CommitV2Error::InvalidOp(format!("invalid UTF-8: {e}")))
+        .map_err(|e| CommitCodecError::InvalidOp(format!("invalid UTF-8: {e}")))
 }
 
 /// Decode a varint as a u16 namespace code, returning an error if the value
 /// exceeds `u16::MAX`.
-fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitV2Error> {
+fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitCodecError> {
     let raw = decode_varint(data, pos)?;
-    u16::try_from(raw)
-        .map_err(|_| CommitV2Error::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw)))
+    u16::try_from(raw).map_err(|_| {
+        CommitCodecError::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw))
+    })
 }
 
 /// Decode a single op from `data` starting at `*pos`, returning a `Flake`.
@@ -321,7 +322,7 @@ pub fn decode_op(
     pos: &mut usize,
     dicts: &ReadDicts,
     t: i64,
-) -> Result<Flake, CommitV2Error> {
+) -> Result<Flake, CommitCodecError> {
     // Graph: (0, 0) = default graph; otherwise named graph Sid encoded as (ns_code, name_id)
     let g_ns_code = decode_ns_code(data, pos)?;
     let g_name_id = decode_varint(data, pos)? as u32;
@@ -329,7 +330,7 @@ pub fn decode_op(
         None
     } else {
         if g_name_id == 0 {
-            return Err(CommitV2Error::InvalidOp(
+            return Err(CommitCodecError::InvalidOp(
                 "graph name_id 0 is reserved (use (0,0) for default graph)".into(),
             ));
         }
@@ -374,7 +375,7 @@ pub fn decode_op(
     let i = if flags & OP_FLAG_HAS_I != 0 {
         let raw = decode_varint(data, pos)?;
         if raw > i32::MAX as u64 {
-            return Err(CommitV2Error::InvalidOp(format!(
+            return Err(CommitCodecError::InvalidOp(format!(
                 "list index {} exceeds i32::MAX",
                 raw
             )));
@@ -409,9 +410,9 @@ fn decode_object(
     data: &[u8],
     pos: &mut usize,
     dicts: &ReadDicts,
-) -> Result<FlakeValue, CommitV2Error> {
+) -> Result<FlakeValue, CommitCodecError> {
     let raw = super::raw_reader::decode_raw_object(tag, data, pos, dicts)?;
-    FlakeValue::try_from(raw).map_err(|e| CommitV2Error::InvalidOp(e.to_string()))
+    FlakeValue::try_from(raw).map_err(|e| CommitCodecError::InvalidOp(e.to_string()))
 }
 
 // =============================================================================

@@ -29,7 +29,7 @@ mod inner {
     use crate::value_convert::{convert_native_literal, convert_string_literal};
     use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
     use fluree_db_binary_index::RunRecord;
-    use fluree_db_core::commit::codec::CommitV2Error;
+    use fluree_db_core::commit::codec::CommitCodecError;
     use fluree_db_core::subject_id::SubjectId;
     use fluree_db_core::value_id::{ObjKey, ObjKind};
     use fluree_db_core::DatatypeConstraint;
@@ -471,7 +471,7 @@ mod inner {
         txn_id: String,
         writer: StreamingCommitWriter,
         /// First encoding error encountered (checked after parse).
-        encode_error: Option<CommitV2Error>,
+        encode_error: Option<CommitCodecError>,
         /// Turtle @prefix short names: IRI → short prefix (e.g., "http://example.org/" → "ex").
         /// Captured from `on_prefix()` calls during parse.
         prefix_map: HashMap<String, String>,
@@ -492,7 +492,7 @@ mod inner {
             t: i64,
             txn_id: String,
             compress: bool,
-        ) -> Result<Self, CommitV2Error> {
+        ) -> Result<Self, CommitCodecError> {
             Ok(Self {
                 terms: Vec::new(),
                 blank_labels: HashMap::new(),
@@ -513,7 +513,7 @@ mod inner {
             t: i64,
             txn_id: String,
             compress: bool,
-        ) -> Result<Self, CommitV2Error> {
+        ) -> Result<Self, CommitCodecError> {
             Ok(Self {
                 terms: Vec::new(),
                 blank_labels: HashMap::new(),
@@ -545,7 +545,7 @@ mod inner {
                 HashMap<String, String>,
                 Option<SpoolContext>,
             ),
-            CommitV2Error,
+            CommitCodecError,
         > {
             if let Some(err) = self.encode_error {
                 return Err(err);
@@ -737,12 +737,12 @@ mod inner {
         fn make_sink_and_parse(
             ns: &mut NamespaceRegistry,
             t: i64,
-        ) -> Result<ImportSink<'_>, CommitV2Error> {
+        ) -> Result<ImportSink<'_>, CommitCodecError> {
             ImportSink::new(ns, t, "test-txn".to_string(), true)
         }
 
-        fn make_envelope(t: i64) -> crate::commit_v2::CommitV2Envelope {
-            crate::commit_v2::CommitV2Envelope {
+        fn make_envelope(t: i64) -> crate::commit_v2::CodecEnvelope {
+            crate::commit_v2::CodecEnvelope {
                 t,
                 previous_refs: Vec::new(),
                 namespace_delta: HashMap::new(),

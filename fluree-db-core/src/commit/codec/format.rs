@@ -7,7 +7,7 @@
 //! [Header 32B][Envelope (binary)][Ops section][Dictionaries][Footer 64B][optional signature block]
 //! ```
 
-use super::error::CommitV2Error;
+use super::error::CommitCodecError;
 use super::varint::{read_exact, read_u8};
 
 // =============================================================================
@@ -27,9 +27,6 @@ pub const HEADER_LEN: usize = 32;
 /// Footer size in bytes (fixed, excludes trailing hash).
 /// 5 dictionaries x (offset: u64 + len: u32) = 5 x 12 = 60, plus ops_section_len: u32 = 4.
 pub const FOOTER_LEN: usize = 64;
-
-/// Trailing SHA-256 hash size.
-pub const HASH_LEN: usize = 32;
 
 /// Minimum valid commit blob size (v4: no embedded hash).
 pub const MIN_COMMIT_LEN: usize = HEADER_LEN + FOOTER_LEN; // 96
@@ -82,7 +79,7 @@ pub enum OTag {
 }
 
 impl OTag {
-    pub fn from_u8(b: u8) -> Result<Self, CommitV2Error> {
+    pub fn from_u8(b: u8) -> Result<Self, CommitCodecError> {
         match b {
             0 => Ok(OTag::Ref),
             1 => Ok(OTag::Long),
@@ -106,7 +103,7 @@ impl OTag {
             19 => Ok(OTag::Duration),
             20 => Ok(OTag::GeoPoint),
             21 => Ok(OTag::Vector),
-            _ => Err(CommitV2Error::InvalidOpTag(b)),
+            _ => Err(CommitCodecError::InvalidOpTag(b)),
         }
     }
 }
@@ -171,11 +168,11 @@ pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
 /// Decode a signature block from a byte slice.
 ///
 /// Returns the parsed signatures and verifies the entire block is consumed.
-pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Error> {
+pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitCodecError> {
     let mut pos = 0;
     let sig_count = u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap());
     if sig_count > MAX_SIG_COUNT {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "signature count {} exceeds maximum {}",
             sig_count, MAX_SIG_COUNT
         )));
@@ -187,7 +184,7 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
         let signer_len =
             u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap()) as usize;
         if signer_len > MAX_SIGNER_LEN {
-            return Err(CommitV2Error::EnvelopeDecode(format!(
+            return Err(CommitCodecError::EnvelopeDecode(format!(
                 "signer length {} exceeds maximum {}",
                 signer_len, MAX_SIGNER_LEN
             )));
@@ -195,13 +192,14 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
 
         // signer
         let signer_bytes = read_exact(data, &mut pos, signer_len)?;
-        let signer = std::str::from_utf8(signer_bytes)
-            .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid signer UTF-8: {}", e)))?;
+        let signer = std::str::from_utf8(signer_bytes).map_err(|e| {
+            CommitCodecError::EnvelopeDecode(format!("invalid signer UTF-8: {}", e))
+        })?;
 
         // algo (u8)
         let algo = read_u8(data, &mut pos)?;
         if algo != ALGO_ED25519 {
-            return Err(CommitV2Error::EnvelopeDecode(format!(
+            return Err(CommitCodecError::EnvelopeDecode(format!(
                 "unknown signature algorithm: 0x{:02x}",
                 algo
             )));
@@ -217,7 +215,7 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
             u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap()) as usize;
         let metadata = if meta_len > 0 {
             if meta_len > MAX_METADATA_LEN {
-                return Err(CommitV2Error::EnvelopeDecode(format!(
+                return Err(CommitCodecError::EnvelopeDecode(format!(
                     "metadata length {} exceeds maximum {}",
                     meta_len, MAX_METADATA_LEN
                 )));
@@ -237,7 +235,7 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
     }
 
     if pos != data.len() {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "signature block: consumed {} of {} bytes",
             pos,
             data.len()
@@ -265,7 +263,7 @@ pub fn sig_block_size(sigs: &[CommitSignature]) -> usize {
 
 /// 32-byte fixed header.
 #[derive(Debug, Clone)]
-pub struct CommitV2Header {
+pub struct CommitHeader {
     pub version: u8,
     pub flags: u8,
     pub t: i64,
@@ -275,7 +273,7 @@ pub struct CommitV2Header {
     pub sig_block_len: u16,
 }
 
-impl CommitV2Header {
+impl CommitHeader {
     /// Write the header into the first 32 bytes of `buf`.
     ///
     /// Wire layout (v3):
@@ -306,19 +304,19 @@ impl CommitV2Header {
     /// `[0..4] magic, [4] version, [5] flags, [6..10] t: u32 LE,
     ///  [10..14] op_count: u32, [14..18] envelope_len: u32,
     ///  [18..20] sig_block_len: u16, [20..32] reserved (12 bytes)`
-    pub fn read_from(buf: &[u8]) -> Result<Self, CommitV2Error> {
+    pub fn read_from(buf: &[u8]) -> Result<Self, CommitCodecError> {
         if buf.len() < HEADER_LEN {
-            return Err(CommitV2Error::TooSmall {
+            return Err(CommitCodecError::TooSmall {
                 got: buf.len(),
                 min: HEADER_LEN,
             });
         }
         if buf[0..4] != MAGIC {
-            return Err(CommitV2Error::InvalidMagic);
+            return Err(CommitCodecError::InvalidMagic);
         }
         let version = buf[4];
         if version != VERSION {
-            return Err(CommitV2Error::UnsupportedVersion(version));
+            return Err(CommitCodecError::UnsupportedVersion(version));
         }
         let flags = buf[5];
         let raw_t = u32::from_le_bytes(buf[6..10].try_into().unwrap());
@@ -351,14 +349,14 @@ pub struct DictLocation {
 
 /// 64-byte fixed footer (does NOT include the trailing 32-byte hash).
 #[derive(Debug, Clone)]
-pub struct CommitV2Footer {
+pub struct CommitFooter {
     /// Dictionary locations in order: graph, subject, predicate, datatype, object_ref.
     pub dicts: [DictLocation; 5],
     /// Length of the (possibly compressed) ops section in bytes.
     pub ops_section_len: u32,
 }
 
-impl CommitV2Footer {
+impl CommitFooter {
     /// Write the footer into `buf` (must be >= FOOTER_LEN bytes).
     pub fn write_to(&self, buf: &mut [u8]) {
         debug_assert!(buf.len() >= FOOTER_LEN);
@@ -373,9 +371,9 @@ impl CommitV2Footer {
     }
 
     /// Read the footer from `buf` (must be >= FOOTER_LEN bytes).
-    pub fn read_from(buf: &[u8]) -> Result<Self, CommitV2Error> {
+    pub fn read_from(buf: &[u8]) -> Result<Self, CommitCodecError> {
         if buf.len() < FOOTER_LEN {
-            return Err(CommitV2Error::TooSmall {
+            return Err(CommitCodecError::TooSmall {
                 got: buf.len(),
                 min: FOOTER_LEN,
             });
@@ -407,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_header_round_trip() {
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: VERSION,
             flags: FLAG_ZSTD,
             t: 42,
@@ -418,7 +416,7 @@ mod tests {
         let mut buf = [0u8; HEADER_LEN];
         header.write_to(&mut buf);
 
-        let parsed = CommitV2Header::read_from(&buf).unwrap();
+        let parsed = CommitHeader::read_from(&buf).unwrap();
         assert_eq!(parsed.version, VERSION);
         assert_eq!(parsed.flags, FLAG_ZSTD);
         assert_eq!(parsed.t, 42);
@@ -429,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_header_with_sig_block_len() {
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: VERSION,
             flags: FLAG_ZSTD | FLAG_HAS_COMMIT_SIG,
             t: 10,
@@ -440,7 +438,7 @@ mod tests {
         let mut buf = [0u8; HEADER_LEN];
         header.write_to(&mut buf);
 
-        let parsed = CommitV2Header::read_from(&buf).unwrap();
+        let parsed = CommitHeader::read_from(&buf).unwrap();
         assert_eq!(parsed.flags, FLAG_ZSTD | FLAG_HAS_COMMIT_SIG);
         assert_eq!(parsed.sig_block_len, 200);
     }
@@ -450,8 +448,8 @@ mod tests {
         let mut buf = [0u8; HEADER_LEN];
         buf[0..4].copy_from_slice(b"NOPE");
         assert!(matches!(
-            CommitV2Header::read_from(&buf),
-            Err(CommitV2Error::InvalidMagic)
+            CommitHeader::read_from(&buf),
+            Err(CommitCodecError::InvalidMagic)
         ));
     }
 
@@ -462,28 +460,28 @@ mod tests {
         buf[0..4].copy_from_slice(&MAGIC);
         buf[4] = 2;
         assert!(matches!(
-            CommitV2Header::read_from(&buf),
-            Err(CommitV2Error::UnsupportedVersion(2))
+            CommitHeader::read_from(&buf),
+            Err(CommitCodecError::UnsupportedVersion(2))
         ));
 
         // Reject legacy version 3
         buf[4] = 3;
         assert!(matches!(
-            CommitV2Header::read_from(&buf),
-            Err(CommitV2Error::UnsupportedVersion(3))
+            CommitHeader::read_from(&buf),
+            Err(CommitCodecError::UnsupportedVersion(3))
         ));
 
         // Reject future version 99
         buf[4] = 99;
         assert!(matches!(
-            CommitV2Header::read_from(&buf),
-            Err(CommitV2Error::UnsupportedVersion(99))
+            CommitHeader::read_from(&buf),
+            Err(CommitCodecError::UnsupportedVersion(99))
         ));
     }
 
     #[test]
     fn test_footer_round_trip() {
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: [
                 DictLocation {
                     offset: 100,
@@ -511,7 +509,7 @@ mod tests {
         let mut buf = [0u8; FOOTER_LEN];
         footer.write_to(&mut buf);
 
-        let parsed = CommitV2Footer::read_from(&buf).unwrap();
+        let parsed = CommitFooter::read_from(&buf).unwrap();
         assert_eq!(parsed.ops_section_len, 9999);
         for i in 0..5 {
             assert_eq!(parsed.dicts[i].offset, footer.dicts[i].offset);

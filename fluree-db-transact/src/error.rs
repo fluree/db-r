@@ -85,9 +85,9 @@ pub enum TransactError {
     #[error("{0}")]
     PolicyViolation(#[from] fluree_db_policy::PolicyError),
 
-    /// Commit format v2 error
-    #[error("Commit v2 error: {0}")]
-    CommitV2(#[from] crate::commit_v2::CommitV2Error),
+    /// Commit codec error
+    #[error("Commit codec error: {0}")]
+    CommitCodec(#[from] crate::commit_v2::CommitCodecError),
 
     /// SHACL validation error (only available with `shacl` feature)
     #[cfg(feature = "shacl")]

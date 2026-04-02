@@ -1064,9 +1064,9 @@ mod tests {
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> ContentId {
-        use fluree_db_core::commit::codec::envelope::{encode_envelope_fields, CommitV2Envelope};
+        use fluree_db_core::commit::codec::envelope::{encode_envelope_fields, CodecEnvelope};
         use fluree_db_core::commit::codec::format::{
-            self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HEADER_LEN,
+            self, CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN,
         };
         use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
         use std::collections::HashMap;
@@ -1077,7 +1077,7 @@ mod tests {
             encode_op(f, &mut dicts, &mut ops_buf).unwrap();
         }
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: commit.t,
             previous_refs: commit.previous_refs.clone(),
             namespace_delta: commit
@@ -1116,11 +1116,11 @@ mod tests {
             offset += d.len() as u64;
         }
 
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: dict_locations,
             ops_section_len,
         };
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: format::VERSION,
             flags: 0,
             t: commit.t,
@@ -1671,9 +1671,9 @@ mod embedded_tests {
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> ContentId {
-        use fluree_db_core::commit::codec::envelope::{encode_envelope_fields, CommitV2Envelope};
+        use fluree_db_core::commit::codec::envelope::{encode_envelope_fields, CodecEnvelope};
         use fluree_db_core::commit::codec::format::{
-            self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HEADER_LEN,
+            self, CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN,
         };
         use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
 
@@ -1683,7 +1683,7 @@ mod embedded_tests {
             encode_op(f, &mut dicts, &mut ops_buf).unwrap();
         }
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: commit.t,
             previous_refs: commit.previous_refs.clone(),
             namespace_delta: commit
@@ -1722,11 +1722,11 @@ mod embedded_tests {
             offset += d.len() as u64;
         }
 
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: dict_locations,
             ops_section_len,
         };
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: format::VERSION,
             flags: 0,
             t: commit.t,

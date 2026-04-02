@@ -516,7 +516,8 @@ fn decode_and_validate_commit_chain(
         }
 
         // Derive the content digest hex for addressing.
-        let digest_hex = commit_digest_hex_from_bytes(&bytes).map_err(PushError::Invalid)?;
+        // V4: CID = SHA-256(full blob). No embedded hash to verify.
+        let digest_hex = fluree_db_core::sha256_hex(&bytes);
 
         // Note: commit blobs are applied to the server-selected `ledger_id` via CAS.
         // We do not currently enforce a ledger identity embedded inside the commit bytes.
@@ -916,22 +917,6 @@ fn apply_pushed_commits_to_state(
     Ok(base)
 }
 
-/// Extract and **verify** the canonical content hash from a commit-v2 blob.
-///
-/// The commit-v2 format stores a 32-byte SHA-256 hash as a trailer (before the
-/// optional signature block). This function:
-/// 1. Locates the embedded hash in the blob layout.
-/// 2. Recomputes SHA-256 over the canonical payload (`bytes[0..hash_offset]`).
-/// 3. Compares the recomputed hash to the embedded hash.
-/// 4. Returns the verified hex digest, or an error if they don't match.
-///
-/// This prevents a malicious client from altering payload bytes and the embedded
-/// hash in tandem — the server independently verifies the hash.
-/// Derive the content digest hex from a v4 commit blob (SHA-256 of full blob).
-pub(crate) fn commit_digest_hex_from_bytes(bytes: &[u8]) -> std::result::Result<String, String> {
-    Ok(fluree_db_core::sha256_hex(bytes))
-}
-
 trait LedgerStateCloneExt {
     fn clone_with_novelty(&self, novelty: Arc<Novelty>) -> Self;
 }
@@ -1021,7 +1006,7 @@ where
         request: &ExportCommitsRequest,
     ) -> Result<ExportCommitsResponse> {
         use fluree_db_core::commit::codec::envelope::decode_envelope;
-        use fluree_db_core::commit::codec::format::{CommitV2Header, HEADER_LEN};
+        use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
         use fluree_db_core::storage::content_store_for;
         use fluree_db_core::ContentStore;
 
@@ -1084,7 +1069,7 @@ where
             })?;
 
             // Lightweight decode: header + envelope only (skip ops decompression).
-            let header = CommitV2Header::read_from(&raw_bytes).map_err(|e| {
+            let header = CommitHeader::read_from(&raw_bytes).map_err(|e| {
                 ApiError::internal(format!("invalid commit header for {}: {}", current_cid, e))
             })?;
 
