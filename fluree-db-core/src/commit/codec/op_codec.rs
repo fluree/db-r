@@ -17,7 +17,9 @@
 use super::error::CommitV2Error;
 use super::format::{OTag, OP_FLAG_ASSERT, OP_FLAG_HAS_I, OP_FLAG_HAS_LANG};
 use super::string_dict::{StringDict, StringDictBuilder};
-use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
+use super::varint::{
+    decode_varint, encode_varint, read_exact, read_u8, zigzag_decode, zigzag_encode,
+};
 use crate::temporal::{
     Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
     YearMonthDuration,
@@ -310,19 +312,11 @@ pub fn decode_op(
     let dt = Sid::new(dt_ns_code, dt_name);
 
     // Object (tag + payload)
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let o_tag = OTag::from_u8(data[*pos])?;
-    *pos += 1;
+    let o_tag = OTag::from_u8(read_u8(data, pos)?)?;
     let o = decode_object(o_tag, data, pos, dicts)?;
 
     // Flags
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let flags = data[*pos];
-    *pos += 1;
+    let flags = read_u8(data, pos)?;
     let op = flags & OP_FLAG_ASSERT != 0;
 
     // Optional lang
@@ -380,11 +374,7 @@ fn decode_object(
             Ok(FlakeValue::Long(zigzag_decode(raw)))
         }
         OTag::Double => {
-            if *pos + 8 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
-            *pos += 8;
+            let bytes: [u8; 8] = read_exact(data, pos, 8)?.try_into().unwrap();
             Ok(FlakeValue::Double(f64::from_le_bytes(bytes)))
         }
         OTag::String => {
@@ -392,11 +382,7 @@ fn decode_object(
             Ok(FlakeValue::String(s))
         }
         OTag::Boolean => {
-            if *pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let b = data[*pos] != 0;
-            *pos += 1;
+            let b = read_u8(data, pos)? != 0;
             Ok(FlakeValue::Boolean(b))
         }
         OTag::DateTime => {
@@ -483,12 +469,9 @@ fn decode_object(
                 .map_err(|e| CommitV2Error::InvalidOp(format!("bad duration: {}", e)))
         }
         OTag::GeoPoint => {
-            if *pos + 16 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let lat = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-            let lng = f64::from_le_bytes(data[*pos + 8..*pos + 16].try_into().unwrap());
-            *pos += 16;
+            let coord_bytes = read_exact(data, pos, 16)?;
+            let lat = f64::from_le_bytes(coord_bytes[..8].try_into().unwrap());
+            let lng = f64::from_le_bytes(coord_bytes[8..].try_into().unwrap());
             GeoPointBits::new(lat, lng)
                 .map(FlakeValue::GeoPoint)
                 .ok_or_else(|| {
@@ -498,13 +481,11 @@ fn decode_object(
         OTag::Vector => {
             let len = decode_varint(data, pos)? as usize;
             let byte_len = len.checked_mul(8).ok_or(CommitV2Error::UnexpectedEof)?;
-            if *pos + byte_len > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
+            let vec_bytes = read_exact(data, pos, byte_len)?;
             let mut vec = Vec::with_capacity(len);
-            for _ in 0..len {
-                let element = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-                *pos += 8;
+            for i in 0..len {
+                let start = i * 8;
+                let element = f64::from_le_bytes(vec_bytes[start..start + 8].try_into().unwrap());
                 vec.push(element);
             }
             Ok(FlakeValue::Vector(vec))
@@ -514,12 +495,9 @@ fn decode_object(
 
 fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error> {
     let len = decode_varint(data, pos)? as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
+    let bytes = read_exact(data, pos, len)?;
+    let s = std::str::from_utf8(bytes)
         .map_err(|e| CommitV2Error::InvalidOp(format!("invalid UTF-8: {}", e)))?;
-    *pos += len;
     Ok(s.to_string())
 }
 

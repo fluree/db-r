@@ -1,6 +1,35 @@
-//! LEB128 variable-length integer encoding and zigzag signed encoding.
+//! Binary read/write primitives: varints, zigzag encoding, and fixed-width reads.
 
 use super::error::CommitV2Error;
+
+/// Read exactly `n` bytes from `data` at `*pos`, advancing `*pos`.
+///
+/// Returns a slice into `data`. Returns `UnexpectedEof` if insufficient bytes.
+#[inline]
+pub fn read_exact<'a>(
+    data: &'a [u8],
+    pos: &mut usize,
+    n: usize,
+) -> Result<&'a [u8], CommitV2Error> {
+    let end = pos.checked_add(n).ok_or(CommitV2Error::UnexpectedEof)?;
+    if end > data.len() {
+        return Err(CommitV2Error::UnexpectedEof);
+    }
+    let slice = &data[*pos..end];
+    *pos = end;
+    Ok(slice)
+}
+
+/// Read a single byte from `data` at `*pos`, advancing `*pos`.
+#[inline]
+pub fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8, CommitV2Error> {
+    if *pos >= data.len() {
+        return Err(CommitV2Error::UnexpectedEof);
+    }
+    let byte = data[*pos];
+    *pos += 1;
+    Ok(byte)
+}
 
 /// Encode an unsigned 64-bit integer as LEB128 into `buf`.
 pub fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {

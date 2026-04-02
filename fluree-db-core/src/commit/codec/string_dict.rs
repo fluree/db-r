@@ -6,7 +6,7 @@
 //! Wire format: `[count: varint][len: varint, utf8_bytes...]*`
 
 use super::error::CommitV2Error;
-use super::varint::{decode_varint, encode_varint};
+use super::varint::{decode_varint, encode_varint, read_exact};
 use rustc_hash::FxHashMap;
 
 // =============================================================================
@@ -98,15 +98,12 @@ impl StringDict {
 
         for _ in 0..count {
             let len = decode_varint(data, &mut pos)? as usize;
-            if pos + len > data.len() {
-                return Err(CommitV2Error::InvalidDictionary(
-                    "string bytes extend past dictionary end".into(),
-                ));
-            }
-            let s = std::str::from_utf8(&data[pos..pos + len])
+            let bytes = read_exact(data, &mut pos, len).map_err(|_| {
+                CommitV2Error::InvalidDictionary("string bytes extend past dictionary end".into())
+            })?;
+            let s = std::str::from_utf8(bytes)
                 .map_err(|e| CommitV2Error::InvalidDictionary(format!("invalid UTF-8: {}", e)))?;
             entries.push(s.to_string());
-            pos += len;
         }
 
         Ok(Self { entries })

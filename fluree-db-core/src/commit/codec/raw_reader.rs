@@ -22,7 +22,7 @@ use super::format::{
 };
 use super::op_codec::ReadDicts;
 use super::reader::load_dicts;
-use super::varint::{decode_varint, zigzag_decode};
+use super::varint::{decode_varint, read_exact, read_u8, zigzag_decode};
 use super::CommitV2Envelope;
 use sha2::{Digest, Sha256};
 
@@ -275,19 +275,11 @@ fn decode_raw_op<'a>(
     let dt_name = dicts.datatype.get(dt_name_id)?;
 
     // Object tag
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let o_tag = OTag::from_u8(data[*pos])?;
-    *pos += 1;
+    let o_tag = OTag::from_u8(read_u8(data, pos)?)?;
     let o = decode_raw_object(o_tag, data, pos, dicts)?;
 
     // Flags
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let flags = data[*pos];
-    *pos += 1;
+    let flags = read_u8(data, pos)?;
     let op = flags & OP_FLAG_ASSERT != 0;
 
     // Optional lang (borrowed from ops buffer)
@@ -347,11 +339,7 @@ fn decode_raw_object<'a>(
             Ok(RawObject::Long(zigzag_decode(raw)))
         }
         OTag::Double => {
-            if *pos + 8 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
-            *pos += 8;
+            let bytes: [u8; 8] = read_exact(data, pos, 8)?.try_into().unwrap();
             Ok(RawObject::Double(f64::from_le_bytes(bytes)))
         }
         OTag::String => {
@@ -359,11 +347,7 @@ fn decode_raw_object<'a>(
             Ok(RawObject::Str(s))
         }
         OTag::Boolean => {
-            if *pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let b = data[*pos] != 0;
-            *pos += 1;
+            let b = read_u8(data, pos)? != 0;
             Ok(RawObject::Boolean(b))
         }
         OTag::DateTime => {
@@ -424,24 +408,19 @@ fn decode_raw_object<'a>(
             Ok(RawObject::DurationStr(s))
         }
         OTag::GeoPoint => {
-            if *pos + 16 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let lat = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-            let lng = f64::from_le_bytes(data[*pos + 8..*pos + 16].try_into().unwrap());
-            *pos += 16;
+            let coord_bytes = read_exact(data, pos, 16)?;
+            let lat = f64::from_le_bytes(coord_bytes[..8].try_into().unwrap());
+            let lng = f64::from_le_bytes(coord_bytes[8..].try_into().unwrap());
             Ok(RawObject::GeoPoint { lat, lng })
         }
         OTag::Vector => {
             let len = decode_varint(data, pos)? as usize;
             let byte_len = len.checked_mul(8).ok_or(CommitV2Error::UnexpectedEof)?;
-            if *pos + byte_len > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
+            let vec_bytes = read_exact(data, pos, byte_len)?;
             let mut vec = Vec::with_capacity(len);
-            for _ in 0..len {
-                let element = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-                *pos += 8;
+            for i in 0..len {
+                let start = i * 8;
+                let element = f64::from_le_bytes(vec_bytes[start..start + 8].try_into().unwrap());
                 vec.push(element);
             }
             Ok(RawObject::Vector(vec))
@@ -456,12 +435,9 @@ fn decode_raw_object<'a>(
 #[inline]
 fn decode_inline_str<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a str, CommitV2Error> {
     let len = decode_varint(data, pos)? as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
+    let bytes = read_exact(data, pos, len)?;
+    let s = std::str::from_utf8(bytes)
         .map_err(|e| CommitV2Error::InvalidOp(format!("invalid UTF-8: {}", e)))?;
-    *pos += len;
     Ok(s)
 }
 

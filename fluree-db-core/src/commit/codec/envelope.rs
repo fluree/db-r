@@ -11,7 +11,9 @@
 //! ```
 
 use super::error::CommitV2Error;
-use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
+use super::varint::{
+    decode_varint, encode_varint, read_exact, read_u8, zigzag_decode, zigzag_encode,
+};
 use crate::ns_encoding::NsSplitMode;
 use crate::ContentId;
 use crate::{CommitRef, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_ENTRIES};
@@ -239,11 +241,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     }
 
     // flags
-    if pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let flags = data[pos];
-    pos += 1;
+    let flags = read_u8(data, &mut pos)?;
 
     // Reject unknown flag bits (forward safety: new flags require a new decoder)
     let unknown = flags & !KNOWN_FLAGS;
@@ -314,11 +312,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
                 signer.len()
             )));
         }
-        if pos >= data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
-        let has_txn_id = data[pos] != 0;
-        pos += 1;
+        let has_txn_id = read_u8(data, &mut pos)? != 0;
         let txn_id = if has_txn_id {
             let id = decode_len_str(data, &mut pos)?;
             if id.len() > 256 {
@@ -338,8 +332,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
 
     // Trailing optional extensions
     let graph_delta = if pos < data.len() {
-        let has_graph_delta = data[pos] != 0;
-        pos += 1;
+        let has_graph_delta = read_u8(data, &mut pos)? != 0;
         if has_graph_delta {
             decode_graph_delta(data, &mut pos)?
         } else {
@@ -351,14 +344,9 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
 
     // ns_split_mode (trailing optional extension)
     let ns_split_mode = if pos < data.len() {
-        let has_mode = data[pos] != 0;
-        pos += 1;
+        let has_mode = read_u8(data, &mut pos)? != 0;
         if has_mode {
-            if pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let mode_byte = data[pos];
-            pos += 1;
+            let mode_byte = read_u8(data, &mut pos)?;
             Some(NsSplitMode::from_byte(mode_byte))
         } else {
             None
@@ -400,12 +388,9 @@ fn encode_len_str(s: &str, buf: &mut Vec<u8>) {
 
 fn decode_len_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error> {
     let len = decode_varint(data, pos)? as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
+    let bytes = read_exact(data, pos, len)?;
+    let s = std::str::from_utf8(bytes)
         .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid UTF-8: {}", e)))?;
-    *pos += len;
     Ok(s.to_string())
 }
 
@@ -437,12 +422,7 @@ fn decode_len_bytes<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], Com
         )));
     }
     let len = len64 as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let slice = &data[*pos..*pos + len];
-    *pos += len;
-    Ok(slice)
+    read_exact(data, pos, len)
 }
 
 // =============================================================================
@@ -610,11 +590,7 @@ fn decode_txn_meta(data: &[u8], pos: &mut usize) -> Result<Vec<TxnMetaEntry>, Co
 }
 
 fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, CommitV2Error> {
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let tag = data[*pos];
-    *pos += 1;
+    let tag = read_u8(data, pos)?;
 
     match tag {
         TXN_META_TAG_STRING => {
@@ -646,11 +622,7 @@ fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, C
             Ok(TxnMetaValue::Long(n))
         }
         TXN_META_TAG_DOUBLE => {
-            if *pos + 8 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
-            *pos += 8;
+            let bytes: [u8; 8] = read_exact(data, pos, 8)?.try_into().unwrap();
             let n = f64::from_le_bytes(bytes);
             if !n.is_finite() {
                 return Err(CommitV2Error::EnvelopeDecode(
@@ -660,11 +632,7 @@ fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, C
             Ok(TxnMetaValue::Double(n))
         }
         TXN_META_TAG_BOOLEAN => {
-            if *pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let b = data[*pos] != 0;
-            *pos += 1;
+            let b = read_u8(data, pos)? != 0;
             Ok(TxnMetaValue::Boolean(b))
         }
         _ => Err(CommitV2Error::EnvelopeDecode(format!(

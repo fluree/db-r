@@ -8,6 +8,7 @@
 //! ```
 
 use super::error::CommitV2Error;
+use super::varint::{read_exact, read_u8};
 
 // =============================================================================
 // Constants
@@ -174,10 +175,8 @@ pub fn encode_sig_block(sigs: &[CommitSignature], buf: &mut Vec<u8>) {
 ///
 /// Returns the parsed signatures and verifies the entire block is consumed.
 pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Error> {
-    if data.len() < 2 {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let sig_count = u16::from_le_bytes(data[0..2].try_into().unwrap());
+    let mut pos = 0;
+    let sig_count = u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap());
     if sig_count > MAX_SIG_COUNT {
         return Err(CommitV2Error::EnvelopeDecode(format!(
             "signature count {} exceeds maximum {}",
@@ -185,15 +184,11 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
         )));
     }
 
-    let mut pos = 2;
     let mut sigs = Vec::with_capacity(sig_count as usize);
     for _ in 0..sig_count {
         // signer_len
-        if pos + 2 > data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
-        let signer_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-        pos += 2;
+        let signer_len =
+            u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap()) as usize;
         if signer_len > MAX_SIGNER_LEN {
             return Err(CommitV2Error::EnvelopeDecode(format!(
                 "signer length {} exceeds maximum {}",
@@ -202,19 +197,12 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
         }
 
         // signer
-        if pos + signer_len > data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
-        let signer = std::str::from_utf8(&data[pos..pos + signer_len])
+        let signer_bytes = read_exact(data, &mut pos, signer_len)?;
+        let signer = std::str::from_utf8(signer_bytes)
             .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid signer UTF-8: {}", e)))?;
-        pos += signer_len;
 
         // algo (u8)
-        if pos + 1 > data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
-        let algo = data[pos];
-        pos += 1;
+        let algo = read_u8(data, &mut pos)?;
         if algo != ALGO_ED25519 {
             return Err(CommitV2Error::EnvelopeDecode(format!(
                 "unknown signature algorithm: 0x{:02x}",
@@ -223,26 +211,16 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
         }
 
         // signature (64 bytes)
-        if pos + 64 > data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
+        let sig_slice = read_exact(data, &mut pos, 64)?;
         let mut signature = [0u8; 64];
-        signature.copy_from_slice(&data[pos..pos + 64]);
-        pos += 64;
+        signature.copy_from_slice(sig_slice);
 
         // timestamp (i64 LE)
-        if pos + 8 > data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
-        let timestamp = i64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
-        pos += 8;
+        let timestamp = i64::from_le_bytes(read_exact(data, &mut pos, 8)?.try_into().unwrap());
 
         // metadata (optional, length-prefixed)
-        if pos + 2 > data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
-        let meta_len = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()) as usize;
-        pos += 2;
+        let meta_len =
+            u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap()) as usize;
         let metadata = if meta_len > 0 {
             if meta_len > MAX_METADATA_LEN {
                 return Err(CommitV2Error::EnvelopeDecode(format!(
@@ -250,11 +228,7 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitV2Err
                     meta_len, MAX_METADATA_LEN
                 )));
             }
-            if pos + meta_len > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let meta = data[pos..pos + meta_len].to_vec();
-            pos += meta_len;
+            let meta = read_exact(data, &mut pos, meta_len)?.to_vec();
             Some(meta)
         } else {
             None
