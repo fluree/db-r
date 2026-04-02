@@ -156,6 +156,79 @@ pub enum RawObject<'a> {
     Vector(Vec<f64>),
 }
 
+impl<'a> TryFrom<RawObject<'a>> for crate::FlakeValue {
+    type Error = crate::error::Error;
+
+    fn try_from(raw: RawObject<'a>) -> Result<Self, Self::Error> {
+        use crate::temporal::{
+            Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth,
+            Time, YearMonthDuration,
+        };
+        use crate::{FlakeValue, GeoPointBits, Sid};
+
+        macro_rules! parse_err {
+            ($kind:expr, $e:expr) => {
+                crate::error::Error::InvalidCommit(format!("bad {}: {}", $kind, $e))
+            };
+        }
+
+        match raw {
+            RawObject::Ref { ns_code, name } => Ok(FlakeValue::Ref(Sid::new(ns_code, name))),
+            RawObject::Long(n) => Ok(FlakeValue::Long(n)),
+            RawObject::Double(n) => Ok(FlakeValue::Double(n)),
+            RawObject::Str(s) => Ok(FlakeValue::String(s.to_string())),
+            RawObject::Boolean(b) => Ok(FlakeValue::Boolean(b)),
+            RawObject::Null => Ok(FlakeValue::Null),
+            RawObject::JsonStr(s) => Ok(FlakeValue::Json(s.to_string())),
+            RawObject::DateTimeStr(s) => DateTime::parse(s)
+                .map(|v| FlakeValue::DateTime(Box::new(v)))
+                .map_err(|e| parse_err!("datetime", e)),
+            RawObject::DateStr(s) => Date::parse(s)
+                .map(|v| FlakeValue::Date(Box::new(v)))
+                .map_err(|e| parse_err!("date", e)),
+            RawObject::TimeStr(s) => Time::parse(s)
+                .map(|v| FlakeValue::Time(Box::new(v)))
+                .map_err(|e| parse_err!("time", e)),
+            RawObject::BigIntStr(s) => s
+                .parse::<num_bigint::BigInt>()
+                .map(|v| FlakeValue::BigInt(Box::new(v)))
+                .map_err(|e| parse_err!("bigint", e)),
+            RawObject::DecimalStr(s) => s
+                .parse::<bigdecimal::BigDecimal>()
+                .map(|v| FlakeValue::Decimal(Box::new(v)))
+                .map_err(|e| parse_err!("decimal", e)),
+            RawObject::GYearStr(s) => GYear::parse(s)
+                .map(|v| FlakeValue::GYear(Box::new(v)))
+                .map_err(|e| parse_err!("gYear", e)),
+            RawObject::GYearMonthStr(s) => GYearMonth::parse(s)
+                .map(|v| FlakeValue::GYearMonth(Box::new(v)))
+                .map_err(|e| parse_err!("gYearMonth", e)),
+            RawObject::GMonthStr(s) => GMonth::parse(s)
+                .map(|v| FlakeValue::GMonth(Box::new(v)))
+                .map_err(|e| parse_err!("gMonth", e)),
+            RawObject::GDayStr(s) => GDay::parse(s)
+                .map(|v| FlakeValue::GDay(Box::new(v)))
+                .map_err(|e| parse_err!("gDay", e)),
+            RawObject::GMonthDayStr(s) => GMonthDay::parse(s)
+                .map(|v| FlakeValue::GMonthDay(Box::new(v)))
+                .map_err(|e| parse_err!("gMonthDay", e)),
+            RawObject::YearMonthDurationStr(s) => YearMonthDuration::parse(s)
+                .map(|v| FlakeValue::YearMonthDuration(Box::new(v)))
+                .map_err(|e| parse_err!("yearMonthDuration", e)),
+            RawObject::DayTimeDurationStr(s) => DayTimeDuration::parse(s)
+                .map(|v| FlakeValue::DayTimeDuration(Box::new(v)))
+                .map_err(|e| parse_err!("dayTimeDuration", e)),
+            RawObject::DurationStr(s) => Duration::parse(s)
+                .map(|v| FlakeValue::Duration(Box::new(v)))
+                .map_err(|e| parse_err!("duration", e)),
+            RawObject::GeoPoint { lat, lng } => GeoPointBits::new(lat, lng)
+                .map(FlakeValue::GeoPoint)
+                .ok_or_else(|| parse_err!("geo point", format!("({lat}, {lng})"))),
+            RawObject::Vector(vec) => Ok(FlakeValue::Vector(vec)),
+        }
+    }
+}
+
 // ============================================================================
 // Load + decode
 // ============================================================================
@@ -321,7 +394,7 @@ fn decode_raw_op<'a>(
 
 /// Decode an object value without allocation. String-like values borrow
 /// from the ops data buffer.
-fn decode_raw_object<'a>(
+pub(super) fn decode_raw_object<'a>(
     tag: OTag,
     data: &'a [u8],
     pos: &mut usize,

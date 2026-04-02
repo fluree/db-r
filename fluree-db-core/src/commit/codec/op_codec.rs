@@ -17,14 +17,8 @@
 use super::error::CommitV2Error;
 use super::format::{OTag, OP_FLAG_ASSERT, OP_FLAG_HAS_I, OP_FLAG_HAS_LANG};
 use super::string_dict::{StringDict, StringDictBuilder};
-use super::varint::{
-    decode_varint, encode_varint, read_exact, read_u8, zigzag_decode, zigzag_encode,
-};
-use crate::temporal::{
-    Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
-    YearMonthDuration,
-};
-use crate::{Flake, FlakeMeta, FlakeValue, GeoPointBits, Sid};
+use super::varint::{decode_varint, encode_varint, read_exact, read_u8, zigzag_encode};
+use crate::{Flake, FlakeMeta, FlakeValue, Sid};
 
 // =============================================================================
 // CommitDicts — dictionary set for writing
@@ -260,6 +254,15 @@ fn encode_len_prefixed_str(s: &str, buf: &mut Vec<u8>) {
 // Decode
 // =============================================================================
 
+/// Decode a length-prefixed UTF-8 string, returning an owned `String`.
+fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error> {
+    let len = decode_varint(data, pos)? as usize;
+    let bytes = read_exact(data, pos, len)?;
+    std::str::from_utf8(bytes)
+        .map(|s| s.to_string())
+        .map_err(|e| CommitV2Error::InvalidOp(format!("invalid UTF-8: {e}")))
+}
+
 /// Decode a varint as a u16 namespace code, returning an error if the value
 /// exceeds `u16::MAX`.
 fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitV2Error> {
@@ -356,149 +359,18 @@ pub fn decode_op(
     })
 }
 
+/// Decode a binary object value into a [`FlakeValue`].
+///
+/// Delegates binary parsing to [`raw_reader::decode_raw_object`] (shared with
+/// the zero-copy raw reader) and converts via `TryFrom<RawObject> for FlakeValue`.
 fn decode_object(
     tag: OTag,
     data: &[u8],
     pos: &mut usize,
     dicts: &ReadDicts,
 ) -> Result<FlakeValue, CommitV2Error> {
-    match tag {
-        OTag::Ref => {
-            let ns_code = decode_ns_code(data, pos)?;
-            let name_id = decode_varint(data, pos)? as u32;
-            let name = dicts.object_ref.get(name_id)?;
-            Ok(FlakeValue::Ref(Sid::new(ns_code, name)))
-        }
-        OTag::Long => {
-            let raw = decode_varint(data, pos)?;
-            Ok(FlakeValue::Long(zigzag_decode(raw)))
-        }
-        OTag::Double => {
-            let bytes: [u8; 8] = read_exact(data, pos, 8)?.try_into().unwrap();
-            Ok(FlakeValue::Double(f64::from_le_bytes(bytes)))
-        }
-        OTag::String => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Ok(FlakeValue::String(s))
-        }
-        OTag::Boolean => {
-            let b = read_u8(data, pos)? != 0;
-            Ok(FlakeValue::Boolean(b))
-        }
-        OTag::DateTime => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            DateTime::parse(&s)
-                .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad datetime: {}", e)))
-        }
-        OTag::Date => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Date::parse(&s)
-                .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad date: {}", e)))
-        }
-        OTag::Time => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Time::parse(&s)
-                .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad time: {}", e)))
-        }
-        OTag::BigInt => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            s.parse::<num_bigint::BigInt>()
-                .map(|n| FlakeValue::BigInt(Box::new(n)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad bigint: {}", e)))
-        }
-        OTag::Decimal => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            s.parse::<bigdecimal::BigDecimal>()
-                .map(|d| FlakeValue::Decimal(Box::new(d)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad decimal: {}", e)))
-        }
-        OTag::Json => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Ok(FlakeValue::Json(s))
-        }
-        OTag::Null => Ok(FlakeValue::Null),
-        OTag::GYear => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GYear::parse(&s)
-                .map(|v| FlakeValue::GYear(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gYear: {}", e)))
-        }
-        OTag::GYearMonth => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GYearMonth::parse(&s)
-                .map(|v| FlakeValue::GYearMonth(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gYearMonth: {}", e)))
-        }
-        OTag::GMonth => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GMonth::parse(&s)
-                .map(|v| FlakeValue::GMonth(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gMonth: {}", e)))
-        }
-        OTag::GDay => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GDay::parse(&s)
-                .map(|v| FlakeValue::GDay(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gDay: {}", e)))
-        }
-        OTag::GMonthDay => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GMonthDay::parse(&s)
-                .map(|v| FlakeValue::GMonthDay(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gMonthDay: {}", e)))
-        }
-        OTag::YearMonthDuration => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            YearMonthDuration::parse(&s)
-                .map(|v| FlakeValue::YearMonthDuration(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad yearMonthDuration: {}", e)))
-        }
-        OTag::DayTimeDuration => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            DayTimeDuration::parse(&s)
-                .map(|v| FlakeValue::DayTimeDuration(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad dayTimeDuration: {}", e)))
-        }
-        OTag::Duration => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Duration::parse(&s)
-                .map(|v| FlakeValue::Duration(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad duration: {}", e)))
-        }
-        OTag::GeoPoint => {
-            let coord_bytes = read_exact(data, pos, 16)?;
-            let lat = f64::from_le_bytes(coord_bytes[..8].try_into().unwrap());
-            let lng = f64::from_le_bytes(coord_bytes[8..].try_into().unwrap());
-            GeoPointBits::new(lat, lng)
-                .map(FlakeValue::GeoPoint)
-                .ok_or_else(|| {
-                    CommitV2Error::InvalidOp(format!("bad geo point: ({}, {})", lat, lng))
-                })
-        }
-        OTag::Vector => {
-            let len = decode_varint(data, pos)? as usize;
-            let byte_len = len.checked_mul(8).ok_or(CommitV2Error::UnexpectedEof)?;
-            let vec_bytes = read_exact(data, pos, byte_len)?;
-            let mut vec = Vec::with_capacity(len);
-            for i in 0..len {
-                let start = i * 8;
-                let element = f64::from_le_bytes(vec_bytes[start..start + 8].try_into().unwrap());
-                vec.push(element);
-            }
-            Ok(FlakeValue::Vector(vec))
-        }
-    }
-}
-
-fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error> {
-    let len = decode_varint(data, pos)? as usize;
-    let bytes = read_exact(data, pos, len)?;
-    let s = std::str::from_utf8(bytes)
-        .map_err(|e| CommitV2Error::InvalidOp(format!("invalid UTF-8: {}", e)))?;
-    Ok(s.to_string())
+    let raw = super::raw_reader::decode_raw_object(tag, data, pos, dicts)?;
+    FlakeValue::try_from(raw).map_err(|e| CommitV2Error::InvalidOp(e.to_string()))
 }
 
 // =============================================================================
