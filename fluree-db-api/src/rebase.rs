@@ -423,10 +423,14 @@ where
             .with_namespace_delta(original_commit.namespace_delta.clone())
             .with_graph_delta(original_commit.graph_delta.clone());
 
+        let content_store = fluree_db_core::content_store_for(
+            self.connection.storage().clone(),
+            view.db().ledger_id.as_str(),
+        );
         let (_receipt, new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
-            self.connection.storage(),
+            &content_store,
             &self.nameservice,
             &self.index_config,
             commit_opts,

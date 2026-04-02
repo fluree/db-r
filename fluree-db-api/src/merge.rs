@@ -371,10 +371,12 @@ where
             commit_opts = commit_opts.with_graph_delta(source_data.graph_delta);
         }
 
+        let content_store =
+            fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
-            self.connection.storage(),
+            &content_store,
             &self.nameservice,
             &self.index_config,
             commit_opts,

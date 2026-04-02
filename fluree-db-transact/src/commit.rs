@@ -7,10 +7,7 @@ use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use chrono::Utc;
 use fluree_db_binary_index::BinaryIndexStore;
-use fluree_db_core::{
-    ContentAddressedWrite, ContentId, ContentKind, DictNovelty, Flake, Storage, CODEC_FLUREE_TXN,
-    TXN_META_GRAPH_ID,
-};
+use fluree_db_core::{ContentId, ContentKind, ContentStore, DictNovelty, Flake, TXN_META_GRAPH_ID};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};
@@ -203,24 +200,24 @@ impl CommitOpts {
 ///
 /// * `view` - The staged ledger view
 /// * `ns_registry` - Namespace registry with any new allocations
-/// * `storage` - Storage backend
+/// * `content_store` - Content-addressed store for writing commit and txn blobs
 /// * `nameservice` - Nameservice for lookup and publishing
 /// * `index_config` - Configuration for backpressure limits
-/// * `opts` - Commit options (message, author, raw_txn for storage)
+/// * `opts` - Commit options (message, author, raw_txn, etc.)
 ///
 /// # Returns
 ///
 /// A tuple of (CommitReceipt, new LedgerState)
-pub async fn commit<S, N>(
+pub async fn commit<C, N>(
     view: LedgerView,
     mut ns_registry: NamespaceRegistry,
-    storage: &S,
+    content_store: &C,
     nameservice: &N,
     index_config: &IndexConfig,
     opts: CommitOpts,
 ) -> Result<(CommitReceipt, LedgerState)>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
+    C: ContentStore,
     N: NameService + Publisher,
 {
     // 1. Extract flakes from view
@@ -318,18 +315,15 @@ where
 
         // Store original transaction JSON if provided
         let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
-            let (txn_bytes, res) = async {
+            let txn_cid = async {
                 let txn_bytes = serde_json::to_vec(txn_json)?;
-                let res = storage
-                    .content_write_bytes(ContentKind::Txn, base.ledger_id(), &txn_bytes)
-                    .await?;
-                Ok::<_, TransactError>((txn_bytes, res))
+                let cid = content_store.put(ContentKind::Txn, &txn_bytes).await?;
+                tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
+                Ok::<_, TransactError>(cid)
             }
             .instrument(tracing::debug_span!("commit_write_raw_txn"))
             .await?;
-            tracing::info!(raw_txn_bytes = txn_bytes.len(), "raw txn stored");
-            // Derive ContentId from the content hash in the write result
-            ContentId::from_hex_digest(CODEC_FLUREE_TXN, &res.content_hash)
+            Some(txn_cid)
         } else {
             None
         };
@@ -381,21 +375,19 @@ where
         // The on-disk commit blob is written *without* `id` set (to avoid
         // self-reference). The ContentId is SHA-256 of the full blob.
 
-        let (commit_cid, bytes) = {
+        let commit_cid = {
             let span = tracing::debug_span!("commit_write_commit_blob");
             let _g = span.enter();
             let signing = signing_key
                 .as_ref()
                 .map(|key| (key.as_ref(), base.ledger_id()));
             let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
-            let commit_cid = ContentId::new(ContentKind::Commit, &result.bytes);
-            (commit_cid, result.bytes)
+            let commit_cid = content_store
+                .put(ContentKind::Commit, &result.bytes)
+                .await?;
+            tracing::info!(commit_bytes = result.bytes.len(), "commit blob stored");
+            commit_cid
         };
-
-        storage
-            .content_write_bytes(ContentKind::Commit, base.ledger_id(), &bytes)
-            .await?;
-        tracing::info!(commit_bytes = bytes.len(), "commit blob stored");
 
         // Update in-memory commit with its ContentId
         commit_record.id = Some(commit_cid.clone());
@@ -600,7 +592,9 @@ mod tests {
     use super::*;
     use crate::ir::{TemplateTerm, TripleTemplate, Txn};
     use crate::stage::{stage, StageOptions};
-    use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid, CODEC_FLUREE_COMMIT};
+    use fluree_db_core::{
+        content_store_for, FlakeValue, LedgerSnapshot, MemoryStorage, Sid, CODEC_FLUREE_COMMIT,
+    };
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_novelty::Novelty;
 
@@ -627,10 +621,11 @@ mod tests {
 
         // Commit
         let config = IndexConfig::default();
+        let cs = content_store_for(storage.clone(), "test:main");
         let (receipt, new_state) = commit(
             view,
             ns_registry,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -664,10 +659,11 @@ mod tests {
 
         // Commit should fail
         let config = IndexConfig::default();
+        let cs = content_store_for(storage.clone(), "test:main");
         let result = commit(
             view,
             ns_registry,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -686,6 +682,7 @@ mod tests {
 
         let nameservice = MemoryNameService::new();
         let config = IndexConfig::default();
+        let cs = content_store_for(storage.clone(), "test:main");
 
         // First commit
         let txn1 = Txn::insert().with_insert(TripleTemplate::new(
@@ -701,7 +698,7 @@ mod tests {
         let (receipt1, state1) = commit(
             view1,
             ns_registry1,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -725,7 +722,7 @@ mod tests {
         let (receipt2, state2) = commit(
             view2,
             ns_registry2,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -771,10 +768,11 @@ mod tests {
             reindex_max_bytes: 100, // Smaller than the big flake
         };
 
+        let cs = content_store_for(storage.clone(), "test:main");
         let result = commit(
             view,
             ns_registry,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
