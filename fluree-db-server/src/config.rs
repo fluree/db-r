@@ -430,6 +430,17 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_REINDEX_MAX_BYTES", default_value_t = server_defaults::DEFAULT_REINDEX_MAX_BYTES)]
     pub reindex_max_bytes: usize,
 
+    /// Base data directory for persistent storage artifacts (binary index cache,
+    /// import staging, etc.). Default: system temp directory.
+    #[arg(long, env = "FLUREE_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// Disk artifact cache budget in bytes. Controls the bounded on-disk cache
+    /// for binary index blobs fetched from remote storage. Default: 90% of
+    /// available disk space. Set to 0 to disable disk caching.
+    #[arg(long, env = "FLUREE_DISK_CACHE_BUDGET_BYTES")]
+    pub disk_cache_budget_bytes: Option<u64>,
+
     /// Global cache budget in MB (default: 50% of system RAM)
     ///
     /// This controls the shared API-level cache budget used for decoded index artifacts.
@@ -740,6 +751,8 @@ impl Default for ServerConfig {
             indexing_enabled: server_defaults::DEFAULT_INDEXING_ENABLED,
             reindex_min_bytes: server_defaults::DEFAULT_REINDEX_MIN_BYTES,
             reindex_max_bytes: server_defaults::DEFAULT_REINDEX_MAX_BYTES,
+            data_dir: None,
+            disk_cache_budget_bytes: None,
             cache_max_mb: None,
             no_preload: false,
             parallelism: None,

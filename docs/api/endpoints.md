@@ -2687,6 +2687,58 @@ curl -X POST "http://localhost:8090/v1/fluree/import?ledger=mydb&format=jsonld" 
   --data-binary @data.jsonld
 ```
 
+### GET /v1/fluree/export/{ledger}
+
+Stream RDF data from a ledger's binary index. Supports multiple output formats and time-travel.
+
+**Authentication:** Data-auth (if enabled); read access required.
+
+**URL:**
+```
+GET /v1/fluree/export/{ledger}
+GET /v1/fluree/export/{ledger}?format=turtle
+GET /v1/fluree/export/{ledger}?format=nquads&all_graphs=true
+GET /v1/fluree/export/{ledger}?format=turtle&at=5
+```
+
+**Query Parameters:**
+- `format` (optional): Output format. Values: `turtle` (default), `ntriples`, `nquads`, `trig`, `jsonld`
+- `at` (optional): Export as-of a specific point in time. Accepts:
+  - Transaction number (integer): `?at=5`
+  - ISO-8601 datetime: `?at=2024-06-15T12:00:00Z`
+  - Commit CID prefix (6+ hex chars): `?at=abc123def456`
+- `graph` (optional): Export a specific named graph by IRI
+- `all_graphs` (optional): Export all named graphs (`true`/`false`). Requires `trig` or `nquads` format.
+- `context` (optional): JSON-LD context override as a JSON string
+
+**Response:** Raw RDF data with appropriate Content-Type header.
+
+**Content-Type values by format:**
+- `turtle` → `text/turtle; charset=utf-8`
+- `ntriples` → `application/n-triples; charset=utf-8`
+- `nquads` → `application/n-quads; charset=utf-8`
+- `trig` → `application/trig; charset=utf-8`
+- `jsonld` → `application/ld+json; charset=utf-8`
+
+**Status Codes:**
+- `200 OK` - Export succeeded
+- `400 Bad Request` - Invalid format or incompatible options (e.g., `all_graphs` with `turtle`)
+- `401 Unauthorized` - Missing or invalid token
+- `404 Not Found` - Ledger not found
+
+**Examples:**
+
+```bash
+# Export as Turtle
+curl http://localhost:8090/v1/fluree/export/mydb
+
+# Export as N-Triples at transaction 5
+curl "http://localhost:8090/v1/fluree/export/mydb?format=ntriples&at=5"
+
+# Export all graphs as TriG
+curl "http://localhost:8090/v1/fluree/export/mydb?format=trig&all_graphs=true"
+```
+
 ## Admin Authentication
 
 Administrative endpoints (`/fluree/create`, `/fluree/drop`) can be protected with Bearer token authentication.

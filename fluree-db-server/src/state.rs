@@ -328,20 +328,35 @@ impl AppState {
             );
         }
 
-        // Wire ledger cache configuration
+        // Disk artifact cache budget: propagate to env var so DiskArtifactCache picks it up.
+        // The env var may already be set directly; config file / CLI flag values override it.
+        // SAFETY: called during single-threaded server init before spawning request handlers.
+        if let Some(budget) = config.disk_cache_budget_bytes {
+            unsafe {
+                std::env::set_var("FLUREE_DISK_CACHE_BUDGET_BYTES", budget.to_string());
+            }
+        }
+
+        // Ledger manager config: data_dir + cache TTL/sweep settings
         if config.no_ledger_cache {
             builder = builder.without_ledger_caching();
-        } else if config.ledger_cache_idle_ttl_secs.is_some()
-            || config.ledger_cache_sweep_secs.is_some()
-        {
-            let mut mgr_config = LedgerManagerConfig::default();
-            if let Some(ttl) = config.ledger_cache_idle_ttl_secs {
-                mgr_config.idle_ttl = Duration::from_secs(ttl);
+        } else {
+            let needs_custom_config = config.data_dir.is_some()
+                || config.ledger_cache_idle_ttl_secs.is_some()
+                || config.ledger_cache_sweep_secs.is_some();
+            if needs_custom_config {
+                let mut mgr_config = LedgerManagerConfig::default();
+                if let Some(ref dir) = config.data_dir {
+                    mgr_config.cache_dir = dir.join("binary_cache");
+                }
+                if let Some(ttl) = config.ledger_cache_idle_ttl_secs {
+                    mgr_config.idle_ttl = Duration::from_secs(ttl);
+                }
+                if let Some(sweep) = config.ledger_cache_sweep_secs {
+                    mgr_config.sweep_interval = Duration::from_secs(sweep);
+                }
+                builder = builder.with_ledger_cache_config(mgr_config);
             }
-            if let Some(sweep) = config.ledger_cache_sweep_secs {
-                mgr_config.sweep_interval = Duration::from_secs(sweep);
-            }
-            builder = builder.with_ledger_cache_config(mgr_config);
         }
 
         // Wire background indexing if enabled

@@ -5,6 +5,7 @@ mod admin_auth;
 mod commits;
 mod context;
 mod events;
+mod export;
 mod graph_source;
 #[cfg(feature = "iceberg")]
 mod iceberg;
@@ -89,6 +90,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // BM25 full-text search query (index provider-aware)
         .route("/graph-source/bm25/query", post(graph_source::bm25_query))
+        // Streaming RDF export
+        .route("/export/*ledger", get(export::export))
         // Transaction endpoints
         .route("/update", post(transact::update))
         .route("/update/*ledger", post(transact::update_ledger_tail))

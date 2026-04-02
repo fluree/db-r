@@ -60,6 +60,8 @@ pub struct ServerFileConfig {
     pub log_level: Option<String>,
     pub cors_enabled: Option<bool>,
     pub body_limit: Option<usize>,
+    pub data_dir: Option<String>,
+    pub disk_cache_budget_bytes: Option<u64>,
     pub cache_max_mb: Option<usize>,
     pub no_preload: Option<bool>,
     pub parallelism: Option<usize>,
@@ -426,6 +428,8 @@ pub const CONFIG_FILE_ARG_IDS: &[&str] = &[
     "storage_proxy_default_policy_class",
     "storage_proxy_debug_headers",
     // Added in server maturity branch:
+    "data_dir",
+    "disk_cache_budget_bytes",
     "no_preload",
     "parallelism",
     "novelty_min_bytes",
@@ -503,6 +507,16 @@ pub fn apply_to_server_config(
     if is_default("body_limit") {
         if let Some(v) = file.body_limit {
             config.body_limit = v;
+        }
+    }
+    if is_default("data_dir") {
+        if let Some(ref path) = file.data_dir {
+            config.data_dir = Some(PathBuf::from(path));
+        }
+    }
+    if is_default("disk_cache_budget_bytes") {
+        if let Some(v) = file.disk_cache_budget_bytes {
+            config.disk_cache_budget_bytes = Some(v);
         }
     }
     if is_default("cache_max_mb") {

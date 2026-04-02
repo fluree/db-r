@@ -96,6 +96,9 @@ pub async fn set_context(
     );
 
     async move {
+        // Reject writes in maintenance mode
+        super::admin::check_maintenance(&state)?;
+
         // Enforce data auth (write operation)
         let data_auth = state.config.data_auth();
         if data_auth.mode == crate::config::DataAuthMode::Required && bearer.0.is_none() {

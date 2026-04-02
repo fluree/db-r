@@ -238,20 +238,38 @@ fn inject_headers_into_query(query: &mut JsonValue, headers: &FlureeHeaders) {
 
 /// Inject server-configured IRI prefixes into the query's `@context`.
 ///
-/// If the server has `.fluree/prefixes.json` loaded, these are merged into
-/// the query's `@context` as default prefix mappings. User-supplied context
-/// entries take precedence (no overwrite).
+/// If the server has `.fluree/prefixes.json` loaded and the query already
+/// has an explicit `@context`, server-wide prefixes are merged as fallbacks
+/// (user-supplied entries take precedence).
+///
+/// If the query has NO `@context`, prefixes are NOT injected — the API layer's
+/// per-ledger default context takes priority over server-wide prefixes.
+///
+/// Resolution order: query `@context` > per-ledger default > `.fluree/prefixes.json`
 fn inject_prefixes(query: &mut JsonValue, state: &AppState) {
     let Some(ref prefixes) = state.prefixes else {
         return;
     };
+    merge_prefixes_into_existing_context(query, prefixes);
+}
+
+/// Merge prefix mappings into a query's existing `@context`, if present.
+///
+/// Does NOT create an `@context` from scratch — queries without one are left
+/// untouched so per-ledger defaults can apply at the API layer.
+fn merge_prefixes_into_existing_context(
+    query: &mut JsonValue,
+    prefixes: &std::collections::HashMap<String, String>,
+) {
     let Some(obj) = query.as_object_mut() else {
         return;
     };
 
-    let ctx = obj
-        .entry("@context")
-        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
+    // Only merge into an existing @context — never create one from scratch,
+    // so that queries without @context can fall through to per-ledger defaults.
+    let Some(ctx) = obj.get_mut("@context") else {
+        return;
+    };
 
     if let Some(ctx_obj) = ctx.as_object_mut() {
         // Only inject prefixes not already defined by the user
@@ -1071,6 +1089,98 @@ mod ledger_scoped_from_tests {
         assert!(requires_dataset_features(&q1));
         let q2 = json!({"select": ["*"], "from": "myledger:main#txn-meta"});
         assert!(requires_dataset_features(&q2));
+    }
+}
+
+#[cfg(test)]
+mod prefix_injection_tests {
+    use super::merge_prefixes_into_existing_context;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn sample_prefixes() -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        m.insert("ex".to_string(), "http://example.org/".to_string());
+        m.insert("schema".to_string(), "http://schema.org/".to_string());
+        m
+    }
+
+    #[test]
+    fn no_context_means_no_injection() {
+        // Queries without @context should pass through untouched so that
+        // per-ledger default context can apply at the API layer.
+        let mut q = json!({"select": ["*"], "from": "mydb"});
+        let prefixes = sample_prefixes();
+        merge_prefixes_into_existing_context(&mut q, &prefixes);
+        assert!(q.get("@context").is_none(), "should not create @context");
+    }
+
+    #[test]
+    fn existing_context_gets_prefixes_merged() {
+        let mut q = json!({
+            "@context": {"foaf": "http://xmlns.com/foaf/0.1/"},
+            "select": ["*"],
+            "from": "mydb"
+        });
+        let prefixes = sample_prefixes();
+        merge_prefixes_into_existing_context(&mut q, &prefixes);
+
+        let ctx = q.get("@context").unwrap().as_object().unwrap();
+        // Original entry preserved
+        assert_eq!(ctx.get("foaf").unwrap(), "http://xmlns.com/foaf/0.1/");
+        // Server-wide prefixes merged
+        assert_eq!(ctx.get("ex").unwrap(), "http://example.org/");
+        assert_eq!(ctx.get("schema").unwrap(), "http://schema.org/");
+    }
+
+    #[test]
+    fn user_context_takes_precedence_over_server_prefixes() {
+        let mut q = json!({
+            "@context": {"ex": "http://user-defined.org/"},
+            "select": ["*"],
+            "from": "mydb"
+        });
+        let prefixes = sample_prefixes();
+        merge_prefixes_into_existing_context(&mut q, &prefixes);
+
+        let ctx = q.get("@context").unwrap().as_object().unwrap();
+        // User's "ex" should NOT be overwritten by server-wide prefix
+        assert_eq!(
+            ctx.get("ex").unwrap(),
+            "http://user-defined.org/",
+            "user-supplied prefix should take precedence"
+        );
+        // Other server-wide prefixes still added
+        assert_eq!(ctx.get("schema").unwrap(), "http://schema.org/");
+    }
+
+    #[test]
+    fn empty_context_gets_prefixes() {
+        let mut q = json!({
+            "@context": {},
+            "select": ["*"],
+            "from": "mydb"
+        });
+        let prefixes = sample_prefixes();
+        merge_prefixes_into_existing_context(&mut q, &prefixes);
+
+        let ctx = q.get("@context").unwrap().as_object().unwrap();
+        assert_eq!(ctx.get("ex").unwrap(), "http://example.org/");
+    }
+
+    #[test]
+    fn non_object_context_is_left_alone() {
+        // @context can be a string URI or array — we don't modify those
+        let mut q = json!({
+            "@context": "http://schema.org/",
+            "select": ["*"],
+            "from": "mydb"
+        });
+        let prefixes = sample_prefixes();
+        merge_prefixes_into_existing_context(&mut q, &prefixes);
+
+        // Should remain a string, not converted to object
+        assert!(q.get("@context").unwrap().is_string());
     }
 }
 

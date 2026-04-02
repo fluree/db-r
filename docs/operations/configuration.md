@@ -38,6 +38,8 @@ listen_addr = "0.0.0.0:8090"
 storage_path = "/var/lib/fluree"
 log_level = "info"
 # cache_max_mb = 4096  # global cache budget (MB); default: 50% of RAM
+# data_dir = "/var/lib/fluree/data"  # base dir for disk caches; default: system temp
+# disk_cache_budget_bytes = 5368709120  # disk artifact cache budget; default: 90% of available
 
 [server.indexing]
 enabled = true
@@ -218,11 +220,24 @@ Options: `trace`, `debug`, `info`, `warn`, `error`
 
 ### Cache Size
 
-Global cache budget (MB):
+Global in-memory cache budget (MB):
 
 | Flag              | Env Var              | Default                |
 | ----------------- | -------------------- | ---------------------- |
 | `--cache-max-mb`  | `FLUREE_CACHE_MAX_MB`| `50% of system RAM`    |
+
+### Disk Cache
+
+Binary index artifacts fetched from remote storage (S3, HTTP) are cached on disk for performance. This is especially impactful for remote/cloud deployments.
+
+| Flag                        | Env Var                          | Default                    | Description                                      |
+| --------------------------- | -------------------------------- | -------------------------- | ------------------------------------------------ |
+| `--data-dir`                | `FLUREE_DATA_DIR`                | System temp dir            | Base directory for disk caches and staging        |
+| `--disk-cache-budget-bytes` | `FLUREE_DISK_CACHE_BUDGET_BYTES` | `90% of available space`   | Max disk cache size in bytes. `0` disables cache  |
+
+The disk artifact cache stores binary index blobs (leaf nodes, branch manifests) fetched during queries. On subsequent queries, cached blobs are served from disk instead of re-fetching from remote storage. LRU eviction keeps the cache within budget.
+
+When `--data-dir` is set, the binary cache lives at `{data_dir}/binary_cache/`. Otherwise it defaults to `{system_temp_dir}/fluree_binary_cache`.
 
 ### Background Indexing
 
@@ -813,6 +828,8 @@ fluree-server \
 | `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes)                  | `100000`                                                                |
 | `FLUREE_REINDEX_MAX_BYTES`              | Hard reindex threshold (bytes)                  | `1000000`                                                               |
 | `FLUREE_CACHE_MAX_MB`                   | Global cache budget (MB)                        | `50% of system RAM`                                                     |
+| `FLUREE_DATA_DIR`                       | Base directory for disk caches                  | System temp dir                                                         |
+| `FLUREE_DISK_CACHE_BUDGET_BYTES`        | Disk artifact cache budget (bytes, 0=disabled)  | `90% of available space`                                                |
 | `FLUREE_NO_PRELOAD`                     | Skip ledger preload at startup                  | `false`                                                                 |
 | `FLUREE_PARALLELISM`                    | Thread pool size (0 = auto-detect)              | `0`                                                                     |
 | `FLUREE_NOVELTY_MIN_BYTES`              | Soft novelty threshold (bytes)                  | `100000`                                                                |

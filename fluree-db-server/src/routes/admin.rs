@@ -168,6 +168,8 @@ pub async fn config_inspect(State(state): State<Arc<AppState>>) -> Json<serde_js
         "s3_bucket": c.s3_bucket.as_deref(),
         "cors_enabled": c.cors_enabled,
         "body_limit": c.body_limit,
+        "data_dir": c.data_dir.as_ref().map(|p| p.display().to_string()),
+        "disk_cache_budget_bytes": c.disk_cache_budget_bytes,
         "cache_max_mb": c.cache_max_mb,
         "no_preload": c.no_preload,
         "parallelism": c.parallelism,
