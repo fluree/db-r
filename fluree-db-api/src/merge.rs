@@ -231,6 +231,10 @@ where
     /// the envelope is parsed from the raw bytes to find the previous
     /// commit and any txn reference, and then the blob is written to
     /// the target namespace.
+    ///
+    /// Within each iteration the txn blob copy (read + write) runs
+    /// concurrently with the next commit blob read, since neither
+    /// depends on the other.
     async fn copy_commit_chain(
         &self,
         source_store: &impl ContentStore,
@@ -239,22 +243,26 @@ where
         target_ledger_id: &str,
     ) -> Result<usize> {
         let storage = self.connection.storage();
-        let mut current_cid = Some(head_id.clone());
         let mut copied = 0;
 
-        while let Some(cid) = current_cid.take() {
-            // The source branch's own commits live in its namespace. When we
-            // follow previous_id past the branch's first unique commit, we
-            // reach the parent namespace where the commit doesn't exist in
-            // the source store.  Treat NotFound as the natural boundary.
-            let bytes = match source_store.get(&cid).await {
-                Ok(b) => b,
-                Err(fluree_db_core::error::Error::NotFound(_)) => break,
-                Err(e) => return Err(e.into()),
-            };
+        /// Read a blob from the source store, treating `NotFound` as `Ok(None)`
+        /// (the commit lives in the parent namespace — we've reached the
+        /// branch boundary).
+        async fn try_get(store: &impl ContentStore, cid: &ContentId) -> Result<Option<Vec<u8>>> {
+            match store.get(cid).await {
+                Ok(b) => Ok(Some(b)),
+                Err(fluree_db_core::error::Error::NotFound(_)) => Ok(None),
+                Err(e) => Err(e.into()),
+            }
+        }
 
+        // Bootstrap: read the first commit before entering the loop.
+        let mut pending_bytes = try_get(source_store, head_id).await?;
+        let mut current_cid = head_id.clone();
+
+        while let Some(bytes) = pending_bytes.take() {
             let envelope = read_commit_envelope(&bytes).map_err(|e| {
-                ApiError::internal(format!("failed to read commit envelope {cid}: {e}"))
+                ApiError::internal(format!("failed to read commit envelope {current_cid}: {e}"))
             })?;
 
             if envelope.t <= stop_at_t {
@@ -266,13 +274,17 @@ where
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
                     target_ledger_id,
-                    &cid.digest_hex(),
+                    &current_cid.digest_hex(),
                     &bytes,
                 )
                 .await?;
 
-            // Copy the txn blob if present.
-            if let Some(ref txn_cid) = envelope.txn {
+            // Overlap: copy the txn blob concurrently with reading the
+            // next commit blob.  The two operations are independent.
+            let txn_fut = async {
+                let Some(ref txn_cid) = envelope.txn else {
+                    return Ok(());
+                };
                 let txn_bytes = source_store.get(txn_cid).await?;
                 storage
                     .content_write_bytes_with_hash(
@@ -282,9 +294,21 @@ where
                         &txn_bytes,
                     )
                     .await?;
-            }
+                Ok::<_, crate::error::ApiError>(())
+            };
 
-            current_cid = envelope.previous_id().cloned();
+            let next_commit_fut = async {
+                let Some(prev_cid) = envelope.previous_id() else {
+                    return Ok::<_, crate::error::ApiError>((current_cid.clone(), None));
+                };
+                Ok((prev_cid.clone(), try_get(source_store, prev_cid).await?))
+            };
+
+            let (txn_result, next_result) = tokio::join!(txn_fut, next_commit_fut);
+            txn_result?;
+            let (next_cid, next_bytes) = next_result?;
+            current_cid = next_cid;
+            pending_bytes = next_bytes;
             copied += 1;
         }
 
