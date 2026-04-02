@@ -6,6 +6,7 @@
 
 mod support;
 
+use fluree_db_api::ConflictStrategy;
 use fluree_db_api::FlureeBuilder;
 use fluree_db_nameservice::NameService;
 use serde_json::json;
@@ -74,7 +75,10 @@ async fn merge_fast_forward() {
     fluree.insert(dev_ledger, &dev_data).await.unwrap();
 
     // Merge dev → main (fast-forward)
-    let report = fluree.merge_branch("mydb", "dev", None).await.unwrap();
+    let report = fluree
+        .merge_branch("mydb", "dev", None, ConflictStrategy::default())
+        .await
+        .unwrap();
 
     assert!(report.fast_forward);
     assert_eq!(report.target, "main");
@@ -122,7 +126,10 @@ async fn merge_fast_forward_multiple_commits() {
     fluree.insert(r.ledger, &data3).await.unwrap();
 
     // Merge
-    let report = fluree.merge_branch("mydb", "dev", None).await.unwrap();
+    let report = fluree
+        .merge_branch("mydb", "dev", None, ConflictStrategy::default())
+        .await
+        .unwrap();
 
     assert!(report.fast_forward);
     assert_eq!(report.commits_copied, 3);
@@ -143,7 +150,7 @@ async fn merge_main_as_source_refused() {
     fluree.create_ledger("mydb").await.unwrap();
 
     let err = fluree
-        .merge_branch("mydb", "main", None)
+        .merge_branch("mydb", "main", None, ConflictStrategy::default())
         .await
         .expect_err("merging main as source should fail");
 
@@ -168,7 +175,7 @@ async fn merge_self_refused() {
     fluree.create_branch("mydb", "dev", None).await.unwrap();
 
     let err = fluree
-        .merge_branch("mydb", "dev", Some("dev"))
+        .merge_branch("mydb", "dev", Some("dev"), ConflictStrategy::default())
         .await
         .expect_err("self-merge should fail");
 
@@ -195,7 +202,7 @@ async fn merge_wrong_target_refused() {
 
     // Try to merge dev into feature (but dev's parent is main, not feature)
     let err = fluree
-        .merge_branch("mydb", "dev", Some("feature"))
+        .merge_branch("mydb", "dev", Some("feature"), ConflictStrategy::default())
         .await
         .expect_err("merging into non-parent should fail");
 
@@ -237,7 +244,7 @@ async fn merge_diverged_target_refused() {
 
     // Merge should fail — target has diverged
     let err = fluree
-        .merge_branch("mydb", "dev", None)
+        .merge_branch("mydb", "dev", None, ConflictStrategy::default())
         .await
         .expect_err("merge into diverged target should fail");
 
@@ -270,7 +277,7 @@ async fn merge_nonexistent_source_fails() {
     fluree.create_ledger("mydb").await.unwrap();
 
     let err = fluree
-        .merge_branch("mydb", "nonexistent", None)
+        .merge_branch("mydb", "nonexistent", None, ConflictStrategy::default())
         .await
         .expect_err("merging nonexistent branch should fail");
 
@@ -306,7 +313,7 @@ async fn merge_empty_source_fails() {
     fluree.create_branch("mydb", "dev", None).await.unwrap();
 
     // Merge dev → main with no unique commits on dev
-    let report = fluree.merge_branch("mydb", "dev", None).await.unwrap();
+    let report = fluree.merge_branch("mydb", "dev", None, ConflictStrategy::default()).await.unwrap();
 
     // Should succeed with 0 commits copied (nothing new on source)
     assert_eq!(report.commits_copied, 0);
@@ -346,7 +353,7 @@ async fn merge_target_head_updated() {
         .unwrap()
         .unwrap();
 
-    let report = fluree.merge_branch("mydb", "dev", None).await.unwrap();
+    let report = fluree.merge_branch("mydb", "dev", None, ConflictStrategy::default()).await.unwrap();
 
     // Target's HEAD should now match what was the source's HEAD
     let target_record = fluree
@@ -365,10 +372,10 @@ async fn merge_target_head_updated() {
     assert_eq!(report.new_head_id, source_record.commit_head_id.unwrap());
 }
 
-/// After merge, the source's branch point is updated so subsequent
-/// merges only consider new commits.
+/// After merge, the common ancestor advances so subsequent merges only
+/// consider new commits (computed via commit-chain walk, not stored).
 #[tokio::test]
-async fn merge_source_branch_point_updated() {
+async fn merge_subsequent_only_copies_new_commits() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = fluree.create_ledger("mydb").await.unwrap();
 
@@ -388,20 +395,18 @@ async fn merge_source_branch_point_updated() {
     });
     fluree.insert(dev_ledger, &dev_data).await.unwrap();
 
-    let report = fluree.merge_branch("mydb", "dev", None).await.unwrap();
-
-    // Source's branch_point should now point at the merged HEAD
-    let source_after = fluree
-        .nameservice()
-        .lookup("mydb:dev")
+    let report = fluree
+        .merge_branch("mydb", "dev", None, ConflictStrategy::default())
         .await
-        .unwrap()
         .unwrap();
-    let bp = source_after
-        .branch_point
-        .expect("source should still have branch_point");
-    assert_eq!(bp.t, report.new_head_t);
-    assert_eq!(bp.commit_id, report.new_head_id);
+    assert!(report.commits_copied > 0);
+
+    // Immediately re-merge with no new commits on dev — should copy 0.
+    let report2 = fluree
+        .merge_branch("mydb", "dev", None, ConflictStrategy::default())
+        .await
+        .unwrap();
+    assert_eq!(report2.commits_copied, 0);
 }
 
 /// After merge, the target branch can still be transacted on normally.
@@ -426,7 +431,7 @@ async fn merge_target_accepts_new_transactions() {
     });
     fluree.insert(dev_ledger, &dev_data).await.unwrap();
 
-    fluree.merge_branch("mydb", "dev", None).await.unwrap();
+    fluree.merge_branch("mydb", "dev", None, ConflictStrategy::default()).await.unwrap();
 
     // Transact on main after merge
     let main_ledger = fluree.ledger("mydb:main").await.unwrap();
@@ -463,7 +468,7 @@ async fn merge_source_continues_after_merge() {
     });
     fluree.insert(dev_ledger, &dev_data1).await.unwrap();
 
-    fluree.merge_branch("mydb", "dev", None).await.unwrap();
+    fluree.merge_branch("mydb", "dev", None, ConflictStrategy::default()).await.unwrap();
 
     // Second round: transact more on dev, merge again
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
@@ -473,7 +478,7 @@ async fn merge_source_continues_after_merge() {
     });
     fluree.insert(dev_ledger, &dev_data2).await.unwrap();
 
-    let report2 = fluree.merge_branch("mydb", "dev", None).await.unwrap();
+    let report2 = fluree.merge_branch("mydb", "dev", None, ConflictStrategy::default()).await.unwrap();
 
     assert!(report2.fast_forward);
     // Only the new commit should be copied in the second merge
@@ -512,7 +517,7 @@ async fn merge_nested_branch() {
     fluree.insert(feature_ledger, &feature_data).await.unwrap();
 
     // Merge feature → dev
-    let report = fluree.merge_branch("mydb", "feature", None).await.unwrap();
+    let report = fluree.merge_branch("mydb", "feature", None, ConflictStrategy::default()).await.unwrap();
 
     assert!(report.fast_forward);
     assert_eq!(report.target, "dev");
@@ -569,7 +574,7 @@ async fn merge_diverged_leaves_nameservice_unchanged() {
 
     // Attempt merge (should fail — diverged)
     let _err = fluree
-        .merge_branch("mydb", "dev", None)
+        .merge_branch("mydb", "dev", None, ConflictStrategy::default())
         .await
         .expect_err("merge should fail on diverged target");
 
@@ -591,7 +596,7 @@ async fn merge_diverged_leaves_nameservice_unchanged() {
     assert_eq!(pre_main.commit_head_id, post_main.commit_head_id);
     assert_eq!(pre_dev.commit_t, post_dev.commit_t);
     assert_eq!(pre_dev.commit_head_id, post_dev.commit_head_id);
-    assert_eq!(pre_dev.branch_point, post_dev.branch_point);
+    assert_eq!(pre_dev.source_branch, post_dev.source_branch);
 }
 
 /// Merge with explicit target branch matching the source's parent works
@@ -619,7 +624,7 @@ async fn merge_explicit_target_matches_parent() {
 
     // Explicitly specify main as the target (same as default)
     let report = fluree
-        .merge_branch("mydb", "dev", Some("main"))
+        .merge_branch("mydb", "dev", Some("main"), ConflictStrategy::default())
         .await
         .unwrap();
 
