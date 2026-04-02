@@ -772,11 +772,13 @@ mod tests {
 
     /// Helper: serialize a commit to v2 binary, store in a MemoryContentStore,
     /// and return the CID.
+    #[cfg(feature = "credential")]
     async fn store_commit(store: &MemoryContentStore, commit: &Commit) -> ContentId {
         let result = crate::commit_v2::write_commit(commit, false, None).unwrap();
         store.put(ContentKind::Commit, &result.bytes).await.unwrap()
     }
 
+    #[cfg(feature = "credential")]
     #[tokio::test]
     async fn test_trace_commits_by_id_single_commit() {
         use futures::StreamExt;
@@ -796,6 +798,7 @@ mod tests {
         assert_eq!(commits[0].t, 1);
     }
 
+    #[cfg(feature = "credential")]
     #[tokio::test]
     async fn test_trace_commits_by_id_chain() {
         use futures::StreamExt;
@@ -828,6 +831,7 @@ mod tests {
         assert_eq!(commits[2].t, 1);
     }
 
+    #[cfg(feature = "credential")]
     #[tokio::test]
     async fn test_trace_commits_by_id_stop_at_t() {
         use futures::StreamExt;
