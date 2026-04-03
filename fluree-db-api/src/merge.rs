@@ -154,7 +154,6 @@ where
         let result: Result<MergeReport> = if is_fast_forward {
             let stop_at_t = ancestor.map(|a| a.t).unwrap_or(0);
             self.fast_forward_merge(
-                &source_id,
                 source_branch,
                 &source_record,
                 &source_head_id,
@@ -162,6 +161,7 @@ where
                 resolved_target,
                 &target_id,
                 stop_at_t,
+                &source_store,
             )
             .await
         } else {
@@ -211,7 +211,6 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn fast_forward_merge(
         &self,
-        source_id: &str,
         source_branch: &str,
         source_record: &NsRecord,
         source_head_id: &ContentId,
@@ -219,13 +218,14 @@ where
         resolved_target: &str,
         target_id: &str,
         stop_at_t: i64,
+        source_store: &impl ContentStore,
     ) -> Result<MergeReport> {
         // Copy commit and txn blobs from the source namespace into the target
         // namespace so the target is self-contained (no fallback reads needed).
-        let copy_store =
-            fluree_db_core::content_store_for(self.connection.storage().clone(), source_id);
+        // We use the branched content store so that collect_dag_cids can read
+        // parent commits from ancestor namespaces when checking stop_at_t.
         let commits_copied = self
-            .copy_commit_chain(&copy_store, source_head_id, stop_at_t, target_id)
+            .copy_commit_chain(source_store, source_head_id, stop_at_t, target_id)
             .await?;
 
         // Advance target's HEAD to source's HEAD.
@@ -234,6 +234,7 @@ where
             .await?;
 
         // Copy source's index to target namespace.
+        let source_id = &source_record.ledger_id;
         if let Some(ref index_cid) = source_record.index_head_id {
             if let Err(e) = self
                 .copy_index_to_branch(source_id, target_id, index_cid)
@@ -385,10 +386,8 @@ where
 
         // Copy source commit chain to target namespace so the target is
         // self-contained for DAG walking.
-        let copy_store =
-            fluree_db_core::content_store_for(self.connection.storage().clone(), source_id);
         let commits_copied = self
-            .copy_commit_chain(&copy_store, source_head_id, ancestor.t, target_id)
+            .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
             .await?;
 
         // Copy source's index to target (best-effort).
