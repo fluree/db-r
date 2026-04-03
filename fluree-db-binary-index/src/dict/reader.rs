@@ -402,7 +402,10 @@ impl DictTreeReader {
             cs: Arc<dyn ContentStore>,
             cid: ContentId,
             disk_cache_dir: Option<PathBuf>,
+            address: String,
         ) -> io::Result<Vec<u8>> {
+            const FETCH_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
             // DictTreeReader is sync, but ContentStore::get is async.
             //
             // We intentionally avoid `block_in_place` here because this code can run on
@@ -413,29 +416,44 @@ impl DictTreeReader {
             })?;
 
             let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
+            let fetch_cid = cid.clone();
             std::thread::spawn(move || {
                 let res = handle
                     .block_on(async {
                         if let Some(cache_dir) = disk_cache_dir {
                             crate::read::artifact_cache::fetch_cached_bytes_cid(
                                 cs.as_ref(),
-                                &cid,
+                                &fetch_cid,
                                 &cache_dir,
                             )
                             .await
                             .map_err(|e| e.to_string())
                         } else {
-                            cs.get(&cid).await.map_err(|e| e.to_string())
+                            cs.get(&fetch_cid).await.map_err(|e| e.to_string())
                         }
                     })
                     .map_err(|e| e.to_string());
                 let _ = tx.send(res);
             });
 
-            let res = rx
-                .recv()
-                .map_err(|_| io::Error::other("dict tree: fetch thread died"))?;
-            res.map_err(io::Error::other)
+            let wait_started = Instant::now();
+            loop {
+                match rx.recv_timeout(FETCH_WATCHDOG_INTERVAL) {
+                    Ok(res) => return res.map_err(io::Error::other),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        tracing::error!(
+                            address,
+                            %cid,
+                            elapsed_ms = wait_started.elapsed().as_millis() as u64,
+                            watchdog_interval_ms = FETCH_WATCHDOG_INTERVAL.as_millis() as u64,
+                            "dict tree: remote leaf fetch worker still blocked"
+                        );
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(io::Error::other("dict tree: fetch thread died"));
+                    }
+                }
+            }
         }
 
         let load_started = Instant::now();
@@ -537,7 +555,7 @@ impl DictTreeReader {
                         disk_reads.fetch_add(1, Ordering::Relaxed);
                         remote_fetches.fetch_add(1, Ordering::Relaxed);
                         let fetch_started = Instant::now();
-                        let bytes = fetch_remote_leaf_bytes(cs, cid, disk_cache_dir)?;
+                        let bytes = fetch_remote_leaf_bytes(cs, cid, disk_cache_dir, address.clone())?;
                         tracing::info!(
                             address,
                             bytes = bytes.len(),
@@ -564,6 +582,7 @@ impl DictTreeReader {
                         Arc::clone(cs),
                         cid.clone(),
                         self.disk_cache_dir.clone(),
+                        address.to_owned(),
                     )?;
                     tracing::info!(
                         address,
