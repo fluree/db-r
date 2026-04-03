@@ -229,6 +229,7 @@ impl StorageRead for S3Storage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, CoreError> {
         const SLOW_S3_SEND_WARN_MS: u64 = 1_000;
         const SLOW_S3_BODY_WARN_MS: u64 = 5_000;
+        const GET_OBJECT_SEND_TIMEOUT: Duration = Duration::from_secs(35);
 
         let key = self.to_key(address)?;
         let total_started = Instant::now();
@@ -242,14 +243,28 @@ impl StorageRead for S3Storage {
         );
 
         let send_started = Instant::now();
-        let response = self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .send()
-            .await
-            .map_err(|e| map_s3_error_core(e, &key))?;
+        let request = self.client.get_object().bucket(&self.bucket).key(&key);
+        let response = match tokio::time::timeout(GET_OBJECT_SEND_TIMEOUT, request.send()).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => return Err(map_s3_error_core(e, &key)),
+            Err(_) => {
+                let send_elapsed_ms = send_started.elapsed().as_millis() as u64;
+                tracing::error!(
+                    bucket = self.bucket.as_str(),
+                    key = key.as_str(),
+                    address,
+                    send_elapsed_ms,
+                    timeout_ms = GET_OBJECT_SEND_TIMEOUT.as_millis() as u64,
+                    is_express = Self::is_express_bucket(&self.bucket),
+                    "s3 read_bytes: get_object send timed out"
+                );
+                return Err(CoreError::io(format!(
+                    "S3 GetObject send timed out after {} ms for {}",
+                    GET_OBJECT_SEND_TIMEOUT.as_millis(),
+                    key
+                )));
+            }
+        };
         let send_elapsed_ms = send_started.elapsed().as_millis() as u64;
 
         tracing::info!(

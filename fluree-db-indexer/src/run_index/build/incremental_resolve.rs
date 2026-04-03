@@ -687,7 +687,6 @@ fn reconcile_chunk_to_global(
         .zip(subject_existing_ids.into_iter())
         .enumerate()
     {
-
         let global_sid64 = match existing_id {
             Some(sid64) => {
                 subject_existing += 1;
@@ -834,7 +833,6 @@ fn reconcile_chunk_to_global(
         .zip(string_existing_ids.into_iter())
         .enumerate()
     {
-
         let global_str_id = match existing_id {
             Some(id) => {
                 string_existing += 1;

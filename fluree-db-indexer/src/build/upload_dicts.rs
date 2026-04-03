@@ -21,7 +21,7 @@ fn flush_reverse_leaf<F>(
     first_key: &mut Option<Vec<u8>>,
     chunk_bytes: &mut usize,
     mut last_key: F,
-) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>)>
+) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>, u32)>
 where
     F: FnMut() -> Vec<u8>,
 {
@@ -48,7 +48,7 @@ where
     leaf_data.clear();
     *chunk_bytes = 0;
 
-    Some((buf, fk, lk))
+    Some((buf, fk, lk, entry_count))
 }
 
 fn build_forward_pack_artifact(
@@ -496,7 +496,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             last_len = suf_lens[i];
 
                             if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
+                                if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
                                     &mut leaf_offsets,
                                     &mut leaf_data,
                                     &mut first_key,
@@ -518,7 +518,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                     branch_entries.push(BranchLeafEntry {
                                         first_key: fk,
                                         last_key: lk,
-                                        entry_count: 0,
+                                        entry_count,
                                         address: cas_result.address,
                                     });
                                 }
@@ -554,7 +554,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             last_len = suf_lens[i];
 
                             if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
+                                if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
                                     &mut leaf_offsets,
                                     &mut leaf_data,
                                     &mut first_key,
@@ -576,7 +576,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                     branch_entries.push(BranchLeafEntry {
                                         first_key: fk,
                                         last_key: lk,
-                                        entry_count: 0,
+                                        entry_count,
                                         address: cas_result.address,
                                     });
                                 }
@@ -585,7 +585,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     }
                 }
 
-                if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
+                if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
                     &mut leaf_offsets,
                     &mut leaf_data,
                     &mut first_key,
@@ -607,7 +607,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     branch_entries.push(BranchLeafEntry {
                         first_key: fk,
                         last_key: lk,
-                        entry_count: 0,
+                        entry_count,
                         address: cas_result.address,
                     });
                 }
@@ -796,7 +796,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 last_len = len;
 
                                 if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                    if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
+                                    if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
                                         &mut leaf_offsets,
                                         &mut leaf_data,
                                         &mut first_key,
@@ -813,7 +813,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         branch_entries.push(BranchLeafEntry {
                                             first_key: fk,
                                             last_key: lk,
-                                            entry_count: 0,
+                                            entry_count,
                                             address: cas_result.address,
                                         });
                                     }
@@ -842,7 +842,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 last_len = len;
 
                                 if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                    if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
+                                    if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
                                         &mut leaf_offsets,
                                         &mut leaf_data,
                                         &mut first_key,
@@ -859,7 +859,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         branch_entries.push(BranchLeafEntry {
                                             first_key: fk,
                                             last_key: lk,
-                                            entry_count: 0,
+                                            entry_count,
                                             address: cas_result.address,
                                         });
                                     }
@@ -868,7 +868,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         }
                     }
 
-                    if let Some((leaf_bytes, fk, lk)) = flush_reverse_leaf(
+                    if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
                         &mut leaf_offsets,
                         &mut leaf_data,
                         &mut first_key,
@@ -883,7 +883,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         branch_entries.push(BranchLeafEntry {
                             first_key: fk,
                             last_key: lk,
-                            entry_count: 0,
+                            entry_count,
                             address: cas_result.address,
                         });
                     }
