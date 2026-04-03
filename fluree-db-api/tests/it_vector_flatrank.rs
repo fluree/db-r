@@ -4,7 +4,7 @@
 //! Tests vector search functionality with dot product, cosine similarity,
 //! and euclidean distance scoring functions.
 //!
-//! ## Post-indexing tests (VEC-PLAN Step 11)
+//! ## Post-indexing tests
 //!
 //! The `vector_search_post_indexing_*` tests exercise the binary index path:
 //! transact → index build → query from arena (not novelty).
@@ -471,7 +471,7 @@ async fn vector_search_mixed_datatypes() {
 }
 
 // ============================================================================
-// VEC-PLAN Step 11: Post-indexing tests (vector arena on binary index path)
+// Post-indexing tests (vector arena on binary index path)
 // ============================================================================
 
 /// Insert vectors → force index build → query from binary index (arena path).

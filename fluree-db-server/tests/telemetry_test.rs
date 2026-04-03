@@ -193,7 +193,7 @@ async fn request_span_otel_name_without_format() {
 async fn set_error_code_records_on_span() {
     let (store, _guard) = init_capture();
 
-    let span = create_request_span("transact", None, None, None, None, Some("fql"));
+    let span = create_request_span("transact", None, None, None, None, Some("json-ld"));
 
     // Record error code on the span
     set_span_error_code(&span, "error:ParseError");
@@ -220,7 +220,7 @@ async fn error_code_is_empty_on_success() {
     let (store, _guard) = init_capture();
 
     // Create span but don't set error code (success path)
-    let span = create_request_span("query", None, None, None, None, Some("fql"));
+    let span = create_request_span("query", None, None, None, None, Some("json-ld"));
     let _entered = span.enter();
     drop(_entered);
 

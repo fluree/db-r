@@ -2,6 +2,9 @@
 name = "fluree-db-connection"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Connection management and storage backends for Fluree DB"
 
 [features]
 default = ["native"]

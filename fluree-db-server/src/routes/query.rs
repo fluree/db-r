@@ -226,7 +226,7 @@ pub async fn query(
     let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -433,7 +433,7 @@ pub async fn query_ledger(
     let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -591,7 +591,7 @@ pub async fn explain_ledger(
     let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -1868,7 +1868,7 @@ pub async fn explain(
     let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(

@@ -1086,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_order_by_db_clojure_compatible_forms() {
+    fn test_parse_order_by_legacy_forms() {
         // Legacy surface supports:
         // - orderBy: "?x" (defaults asc)
         // - orderBy: ["?x", "(desc ?y)", ["asc","?z"]] (mixed forms)

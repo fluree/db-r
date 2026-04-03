@@ -358,7 +358,7 @@ async fn update_local(
     } else if credential.is_turtle_or_trig() {
         "turtle"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -505,7 +505,7 @@ async fn update_ledger_local(
     } else if credential.is_turtle_or_trig() {
         "turtle"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -632,7 +632,7 @@ async fn insert_local(
     } else if credential.is_turtle_or_trig() {
         "turtle"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -778,7 +778,7 @@ async fn upsert_local(
     } else if credential.is_turtle_or_trig() {
         "turtle"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -938,7 +938,7 @@ async fn insert_ledger_local(
     } else if credential.is_turtle_or_trig() {
         "turtle"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(
@@ -1085,7 +1085,7 @@ async fn upsert_ledger_local(
     } else if credential.is_turtle_or_trig() {
         "turtle"
     } else {
-        "fql"
+        "json-ld"
     };
 
     let span = create_request_span(

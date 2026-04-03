@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clean_garbage_clojure_semantics() {
+    async fn test_clean_garbage_semantics() {
         // Test GC with FIR6-encoded roots and garbage items.
         let storage = MemoryStorage::new();
 

@@ -1,4 +1,4 @@
-//! Integration tests for FQL `ask` boolean queries.
+//! Integration tests for JSON-LD `ask` boolean queries.
 //!
 //! Tests the `"ask": [...]` query form where the value of `ask` is the
 //! where clause. Returns a bare boolean indicating whether the patterns
@@ -235,21 +235,21 @@ async fn ask_rejects_non_pattern_values() {
 async fn ask_sparql_parity() {
     let (fluree, ledger) = seed_people().await;
 
-    // FQL ask
-    let fql_query = json!({
+    // JSON-LD ask
+    let jsonld_query = json!({
         "@context": ctx(),
         "ask": [
             { "@id": "?person", "ex:name": "Alice" }
         ]
     });
 
-    let fql_result = support::query_jsonld(&fluree, &ledger, &fql_query)
+    let jsonld_result = support::query_jsonld(&fluree, &ledger, &jsonld_query)
         .await
-        .expect("fql query");
-    let fql_json = fql_result
+        .expect("json-ld query");
+    let jsonld_json = jsonld_result
         .to_jsonld_async(ledger.as_graph_db_ref(0))
         .await
-        .expect("fql format");
+        .expect("json-ld format");
 
     // SPARQL ASK
     let sparql_result = support::query_sparql(
@@ -265,7 +265,7 @@ async fn ask_sparql_parity() {
         .to_sparql_json(&ledger.snapshot)
         .expect("sparql format");
 
-    // Both should indicate true — FQL as bare bool, SPARQL as W3C envelope
-    assert_eq!(fql_json, JsonValue::Bool(true));
+    // Both should indicate true — JSON-LD as bare bool, SPARQL as W3C envelope
+    assert_eq!(jsonld_json, JsonValue::Bool(true));
     assert_eq!(sparql_json["boolean"], true);
 }
