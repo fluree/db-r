@@ -3,6 +3,7 @@ name = "fluree-db-storage-ipfs"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "IPFS storage backend for Fluree DB (Kubo HTTP RPC)"
 
 [features]

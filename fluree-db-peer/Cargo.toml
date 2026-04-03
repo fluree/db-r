@@ -3,6 +3,8 @@ name = "fluree-db-peer"
 description = "SSE protocol types and client for Fluree DB peer mode"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # Library-only crate: SSE parsing types and client reused by fluree-db-server peer mode
 # The standalone binary has been removed; if needed later, it can be added back

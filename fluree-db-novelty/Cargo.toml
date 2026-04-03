@@ -1,9 +1,10 @@
 [package]
 name = "fluree-db-novelty"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Novelty overlay and commit types for Fluree DB"
-license = "Apache-2.0"
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core", features = ["credential"] }

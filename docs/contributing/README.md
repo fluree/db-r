@@ -42,14 +42,6 @@ Guide to the manifest-driven W3C compliance test suite:
 - Architecture overview
 
 
-### [Design Notes](design-notes.md)
-
-Links to design documents:
-- Architecture decisions
-- Implementation plans
-- Technical specifications
-- Future roadmap
-
 ## How to Contribute
 
 ### Ways to Contribute
@@ -368,4 +360,4 @@ Thank you for contributing to Fluree!
 
 - [Dev Setup](dev-setup.md) - Development environment
 - [Tests](tests.md) - Testing guide
-- [Design Notes](design-notes.md) - Design documentation
+- [Graph Identities and Naming](../reference/graph-identities.md) - Naming conventions

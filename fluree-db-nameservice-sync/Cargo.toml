@@ -3,6 +3,8 @@ name = "fluree-db-nameservice-sync"
 description = "Git-like remote sync for Fluree DB nameservice"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }

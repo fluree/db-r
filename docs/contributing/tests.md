@@ -572,5 +572,5 @@ View: `coverage/index.html`
 ## Related Documentation
 
 - [Dev Setup](dev-setup.md) - Development environment
-- [Design Notes](design-notes.md) - Design documents
+- [Graph Identities and Naming](../reference/graph-identities.md) - Naming conventions
 - [Contributing](README.md) - Contribution guidelines

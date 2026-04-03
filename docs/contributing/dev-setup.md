@@ -590,5 +590,5 @@ Warning: Significantly slower compile times.
 ## Related Documentation
 
 - [Tests](tests.md) - Testing guide
-- [Design Notes](design-notes.md) - Design documents
+- [Graph Identities and Naming](../reference/graph-identities.md) - Naming conventions
 - [Crate Map](../reference/crate-map.md) - Code architecture

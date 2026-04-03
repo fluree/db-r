@@ -1,11 +1,11 @@
-//! Regression tests for novelty retraction handling in FQL graph crawl.
+//! Regression tests for novelty retraction handling in JSON-LD graph crawl.
 //!
 //! When an entity is created and then updated (upserted) within novelty
 //! (both transactions after the last index), the graph crawl `select *`
 //! must only return the current (post-upsert) values, not both old and new.
 //!
 //! SPARQL SELECT handles this correctly because the query engine deduplicates
-//! overlay facts. The FQL graph crawl path goes through BinaryRangeProvider
+//! overlay facts. The JSON-LD graph crawl path goes through BinaryRangeProvider
 //! which uses BinaryCursor overlay merge — and the cursor does not deduplicate
 //! intra-overlay assert/retract pairs for the same fact.
 
@@ -75,7 +75,7 @@ fn assert_single_string_value(value: &Value, expected: &str, field: &str, node: 
 // Core regression test: upsert in novelty → graph crawl must show only new value
 // =============================================================================
 
-/// Reproduces the bug where FQL `select *` returns both old and new values
+/// Reproduces the bug where JSON-LD `select *` returns both old and new values
 /// after an upsert when both the original insert and the upsert are in novelty
 /// (not yet indexed).
 ///
@@ -83,7 +83,7 @@ fn assert_single_string_value(value: &Value, expected: &str, field: &str, node: 
 /// 1. Schema insert → reindex (creates binary index)
 /// 2. Insert task with description "original" (novelty only)
 /// 3. Upsert task with description "updated" (novelty only)
-/// 4. FQL `select {IRI: ["*"]}` should return ONLY "updated"
+/// 4. JSON-LD `select {IRI: ["*"]}` should return ONLY "updated"
 #[tokio::test]
 async fn graph_crawl_applies_novelty_retractions() {
     let tmp = tempfile::tempdir().expect("create temp dir");
@@ -153,7 +153,7 @@ async fn graph_crawl_applies_novelty_retractions() {
     );
 
     // -------------------------------------------------------------------------
-    // FQL graph crawl: select {IRI: ["*"]}
+    // JSON-LD graph crawl: select {IRI: ["*"]}
     // -------------------------------------------------------------------------
     let crawl_query = json!({
         "@context": test_context(),
@@ -253,7 +253,7 @@ async fn graph_crawl_applies_novelty_retractions_for_indexed_base_rows() {
         "SPARQL should return only the updated description"
     );
 
-    // FQL graph crawl: select {IRI: ["*"]} should also return only the updated value.
+    // JSON-LD graph crawl: select {IRI: ["*"]} should also return only the updated value.
     let crawl_query = json!({
         "@context": test_context(),
         "select": { TASK_IRI: ["*"] },
@@ -344,7 +344,7 @@ async fn graph_crawl_applies_novelty_retractions_for_list_indexed_values() {
         "SPARQL should return only the updated single description"
     );
 
-    // FQL graph crawl should also contain only one description value.
+    // JSON-LD graph crawl should also contain only one description value.
     let crawl_query = json!({
         "@context": test_context(),
         "select": { TASK_IRI: ["*"] },
