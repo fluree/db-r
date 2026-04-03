@@ -417,24 +417,31 @@ impl DictTreeReader {
 
             let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
             let fetch_cid = cid.clone();
-            std::thread::spawn(move || {
-                let res = handle
-                    .block_on(async {
-                        if let Some(cache_dir) = disk_cache_dir {
-                            crate::read::artifact_cache::fetch_cached_bytes_cid(
-                                cs.as_ref(),
-                                &fetch_cid,
-                                &cache_dir,
-                            )
-                            .await
-                            .map_err(|e| e.to_string())
-                        } else {
-                            cs.get(&fetch_cid).await.map_err(|e| e.to_string())
-                        }
-                    })
-                    .map_err(|e| e.to_string());
-                let _ = tx.send(res);
-            });
+            std::thread::Builder::new()
+                .name("dict-leaf-fetch".to_owned())
+                .spawn(move || {
+                    let res = handle
+                        .block_on(async {
+                            if let Some(cache_dir) = disk_cache_dir {
+                                crate::read::artifact_cache::fetch_cached_bytes_cid(
+                                    cs.as_ref(),
+                                    &fetch_cid,
+                                    &cache_dir,
+                                )
+                                .await
+                                .map_err(|e| e.to_string())
+                            } else {
+                                cs.get(&fetch_cid).await.map_err(|e| e.to_string())
+                            }
+                        })
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(res);
+                })
+                .map_err(|err| {
+                    io::Error::other(format!(
+                        "dict tree: failed to spawn remote leaf fetch thread: {err}"
+                    ))
+                })?;
 
             let wait_started = Instant::now();
             loop {

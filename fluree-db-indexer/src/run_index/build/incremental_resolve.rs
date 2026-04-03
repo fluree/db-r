@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use fluree_db_binary_index::dict::DictTreeReader;
 use fluree_db_binary_index::format::index_root::IndexRoot;
@@ -328,25 +328,6 @@ pub async fn resolve_incremental_commits_v6(
             delta_retracts += resolved.retracts as u64;
             commit_count += 1;
 
-            if commit_count.is_multiple_of(500) {
-                tracing::info!(
-                    commit_count,
-                    total_commits = walked_commits.len(),
-                    current_t = walked.t,
-                    chunk_records = chunk.records.len(),
-                    elapsed_ms = t0.elapsed().as_millis() as u64,
-                    "V6 incremental resolve: commit resolution progress"
-                );
-            } else if commit_count.is_multiple_of(100) {
-                tracing::debug!(
-                    commit_count,
-                    total_commits = walked_commits.len(),
-                    current_t = walked.t,
-                    chunk_records = chunk.records.len(),
-                    elapsed_ms = t0.elapsed().as_millis() as u64,
-                    "V6 incremental resolve: commit resolution progress"
-                );
-            }
         }
 
         (
@@ -585,24 +566,6 @@ async fn walk_commit_chain_since(
             bytes,
         });
 
-        let walked = commits.len();
-        if walked % 500 == 0 {
-            tracing::info!(
-                commits_walked = walked,
-                current_t = commits.last().map(|commit| commit.t).unwrap_or(from_t),
-                from_t,
-                elapsed_ms = walk_started.elapsed().as_millis() as u64,
-                "V6 incremental resolve: commit-chain walk progress"
-            );
-        } else if walked % 100 == 0 {
-            tracing::debug!(
-                commits_walked = walked,
-                current_t = commits.last().map(|commit| commit.t).unwrap_or(from_t),
-                from_t,
-                elapsed_ms = walk_started.elapsed().as_millis() as u64,
-                "V6 incremental resolve: commit-chain walk progress"
-            );
-        }
     }
 
     commits.reverse();
@@ -638,10 +601,6 @@ fn reconcile_chunk_to_global(
     subject_watermarks: &[u64],
     string_watermark: u32,
 ) -> Result<ReconcileResult, IncrementalResolveError> {
-    const INFO_PROGRESS_EVERY: usize = 250;
-    const DEBUG_PROGRESS_EVERY: usize = 50;
-    const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-
     // Subject reconciliation.
     let subject_entries = chunk.subjects.forward_entries();
     let subject_started = Instant::now();
@@ -656,8 +615,6 @@ fn reconcile_chunk_to_global(
     let mut updated_watermarks = subject_watermarks.to_vec();
     let mut subject_existing = 0usize;
     let mut subject_new = 0usize;
-    let mut subject_last_heartbeat = Instant::now();
-
     tracing::info!(
         subject_entries = subject_entries.len(),
         subject_tree_entries = subject_tree.total_entries(),
@@ -711,63 +668,6 @@ fn reconcile_chunk_to_global(
         };
         subject_remap[chunk_local_id] = global_sid64;
 
-        let processed = chunk_local_id + 1;
-        let should_info_progress = processed % INFO_PROGRESS_EVERY == 0
-            || subject_last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL;
-        if should_info_progress {
-            tracing::info!(
-                processed,
-                total = subject_entries.len(),
-                existing = subject_existing,
-                new = subject_new,
-                last_ns_code = *ns_code,
-                last_name_len = name_bytes.len(),
-                disk_reads = subject_tree
-                    .disk_reads()
-                    .saturating_sub(subject_reads_before),
-                local_file_reads = subject_tree
-                    .local_file_reads()
-                    .saturating_sub(subject_local_file_reads_before),
-                cache_hits = subject_tree
-                    .cache_hits()
-                    .saturating_sub(subject_hits_before),
-                remote_fetches = subject_tree
-                    .remote_fetches()
-                    .saturating_sub(subject_remote_fetches_before),
-                cache_misses = subject_tree
-                    .cache_misses()
-                    .saturating_sub(subject_cache_misses_before),
-                elapsed_ms = subject_started.elapsed().as_millis() as u64,
-                "V6 incremental resolve: subject reconciliation progress"
-            );
-            subject_last_heartbeat = Instant::now();
-        } else if processed % DEBUG_PROGRESS_EVERY == 0 {
-            tracing::debug!(
-                processed,
-                total = subject_entries.len(),
-                existing = subject_existing,
-                new = subject_new,
-                last_ns_code = *ns_code,
-                last_name_len = name_bytes.len(),
-                disk_reads = subject_tree
-                    .disk_reads()
-                    .saturating_sub(subject_reads_before),
-                local_file_reads = subject_tree
-                    .local_file_reads()
-                    .saturating_sub(subject_local_file_reads_before),
-                cache_hits = subject_tree
-                    .cache_hits()
-                    .saturating_sub(subject_hits_before),
-                remote_fetches = subject_tree
-                    .remote_fetches()
-                    .saturating_sub(subject_remote_fetches_before),
-                cache_misses = subject_tree
-                    .cache_misses()
-                    .saturating_sub(subject_cache_misses_before),
-                elapsed_ms = subject_started.elapsed().as_millis() as u64,
-                "V6 incremental resolve: subject reconciliation progress"
-            );
-        }
     }
 
     tracing::info!(
@@ -806,8 +706,6 @@ fn reconcile_chunk_to_global(
     let mut next_string_id = string_watermark + 1;
     let mut string_existing = 0usize;
     let mut string_new = 0usize;
-    let mut string_last_heartbeat = Instant::now();
-
     tracing::info!(
         string_entries = string_entries.len(),
         string_tree_entries = string_tree.total_entries(),
@@ -848,53 +746,6 @@ fn reconcile_chunk_to_global(
         };
         string_remap[chunk_local_id] = global_str_id;
 
-        let processed = chunk_local_id + 1;
-        let should_info_progress = processed % INFO_PROGRESS_EVERY == 0
-            || string_last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL;
-        if should_info_progress {
-            tracing::info!(
-                processed,
-                total = string_entries.len(),
-                existing = string_existing,
-                new = string_new,
-                last_value_len = value_bytes.len(),
-                disk_reads = string_tree.disk_reads().saturating_sub(string_reads_before),
-                local_file_reads = string_tree
-                    .local_file_reads()
-                    .saturating_sub(string_local_file_reads_before),
-                cache_hits = string_tree.cache_hits().saturating_sub(string_hits_before),
-                remote_fetches = string_tree
-                    .remote_fetches()
-                    .saturating_sub(string_remote_fetches_before),
-                cache_misses = string_tree
-                    .cache_misses()
-                    .saturating_sub(string_cache_misses_before),
-                elapsed_ms = string_started.elapsed().as_millis() as u64,
-                "V6 incremental resolve: string reconciliation progress"
-            );
-            string_last_heartbeat = Instant::now();
-        } else if processed % DEBUG_PROGRESS_EVERY == 0 {
-            tracing::debug!(
-                processed,
-                total = string_entries.len(),
-                existing = string_existing,
-                new = string_new,
-                last_value_len = value_bytes.len(),
-                disk_reads = string_tree.disk_reads().saturating_sub(string_reads_before),
-                local_file_reads = string_tree
-                    .local_file_reads()
-                    .saturating_sub(string_local_file_reads_before),
-                cache_hits = string_tree.cache_hits().saturating_sub(string_hits_before),
-                remote_fetches = string_tree
-                    .remote_fetches()
-                    .saturating_sub(string_remote_fetches_before),
-                cache_misses = string_tree
-                    .cache_misses()
-                    .saturating_sub(string_cache_misses_before),
-                elapsed_ms = string_started.elapsed().as_millis() as u64,
-                "V6 incremental resolve: string reconciliation progress"
-            );
-        }
     }
 
     tracing::info!(
