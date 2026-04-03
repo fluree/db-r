@@ -245,7 +245,7 @@ impl DictTreeReader {
         let total_ms = lookup_started.elapsed().as_millis() as u64;
 
         if total_ms >= SLOW_LOOKUP_WARN_MS || load_leaf_ms >= SLOW_LOOKUP_WARN_MS {
-            tracing::warn!(
+            tracing::debug!(
                 key_len = key.len(),
                 leaf_idx,
                 address,
@@ -311,7 +311,7 @@ impl DictTreeReader {
         let total_ms = lookup_started.elapsed().as_millis() as u64;
 
         if total_ms >= SLOW_BATCH_WARN_MS {
-            tracing::warn!(
+            tracing::debug!(
                 key_count = key_refs.len(),
                 touched_leaves,
                 total_ms,
@@ -402,10 +402,8 @@ impl DictTreeReader {
             cs: Arc<dyn ContentStore>,
             cid: ContentId,
             disk_cache_dir: Option<PathBuf>,
-            address: String,
+            _address: String,
         ) -> io::Result<Vec<u8>> {
-            const FETCH_WATCHDOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
-
             // DictTreeReader is sync, but ContentStore::get is async.
             //
             // We intentionally avoid `block_in_place` here because this code can run on
@@ -443,23 +441,9 @@ impl DictTreeReader {
                     ))
                 })?;
 
-            let wait_started = Instant::now();
-            loop {
-                match rx.recv_timeout(FETCH_WATCHDOG_INTERVAL) {
-                    Ok(res) => return res.map_err(io::Error::other),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        tracing::error!(
-                            address,
-                            %cid,
-                            elapsed_ms = wait_started.elapsed().as_millis() as u64,
-                            watchdog_interval_ms = FETCH_WATCHDOG_INTERVAL.as_millis() as u64,
-                            "dict tree: remote leaf fetch worker still blocked"
-                        );
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        return Err(io::Error::other("dict tree: fetch thread died"));
-                    }
-                }
+            match rx.recv() {
+                Ok(res) => res.map_err(io::Error::other),
+                Err(_) => Err(io::Error::other("dict tree: fetch thread died")),
             }
         }
 
@@ -554,7 +538,7 @@ impl DictTreeReader {
                             local_file_reads.fetch_add(1, Ordering::Relaxed);
                             return Ok(Arc::from(bytes.into_boxed_slice()));
                         }
-                        tracing::info!(
+                        tracing::debug!(
                             address,
                             %cid,
                             "dict tree: remote leaf fetch starting"
@@ -562,8 +546,9 @@ impl DictTreeReader {
                         disk_reads.fetch_add(1, Ordering::Relaxed);
                         remote_fetches.fetch_add(1, Ordering::Relaxed);
                         let fetch_started = Instant::now();
-                        let bytes = fetch_remote_leaf_bytes(cs, cid, disk_cache_dir, address.clone())?;
-                        tracing::info!(
+                        let bytes =
+                            fetch_remote_leaf_bytes(cs, cid, disk_cache_dir, address.clone())?;
+                        tracing::debug!(
                             address,
                             bytes = bytes.len(),
                             elapsed_ms = fetch_started.elapsed().as_millis() as u64,
@@ -577,7 +562,7 @@ impl DictTreeReader {
                         self.local_file_reads.fetch_add(1, Ordering::Relaxed);
                         return Ok(Arc::from(bytes.into_boxed_slice()));
                     }
-                    tracing::info!(
+                    tracing::debug!(
                         address,
                         %cid,
                         "dict tree: remote leaf fetch starting"
@@ -591,7 +576,7 @@ impl DictTreeReader {
                         self.disk_cache_dir.clone(),
                         address.to_owned(),
                     )?;
-                    tracing::info!(
+                    tracing::debug!(
                         address,
                         bytes = bytes.len(),
                         elapsed_ms = fetch_started.elapsed().as_millis() as u64,
@@ -614,7 +599,7 @@ impl DictTreeReader {
         if let Ok(bytes) = &result {
             let elapsed_ms = load_started.elapsed().as_millis() as u64;
             if elapsed_ms >= 250 {
-                tracing::warn!(
+                tracing::debug!(
                     address,
                     source = self.source_kind(),
                     bytes = bytes.len(),

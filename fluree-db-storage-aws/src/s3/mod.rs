@@ -40,9 +40,6 @@ use fluree_db_core::{
     StorageExtResult, StorageList, StorageRead, StorageWrite,
 };
 use std::fmt::Debug;
-use std::net::{TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// S3 storage configuration
@@ -79,8 +76,6 @@ pub struct S3Storage {
     bucket: String,
     /// Optional key prefix
     prefix: Option<String>,
-    /// AWS region string, used for out-of-band endpoint probes.
-    region: Option<String>,
 }
 
 impl Debug for S3Storage {
@@ -94,173 +89,6 @@ impl Debug for S3Storage {
 }
 
 impl S3Storage {
-    fn probe_process_snapshot() -> (Option<String>, Option<usize>) {
-        let status = std::fs::read_to_string("/proc/self/status").ok().map(|status| {
-            status
-                .lines()
-                .filter(|line| {
-                    line.starts_with("Threads:")
-                        || line.starts_with("VmRSS:")
-                        || line.starts_with("FDSize:")
-                })
-                .collect::<Vec<_>>()
-                .join("; ")
-        });
-        let fd_count = std::fs::read_dir("/proc/self/fd")
-            .ok()
-            .map(|entries| entries.filter_map(|entry| entry.ok()).count());
-        (status, fd_count)
-    }
-
-    fn should_probe_send(&self, address: &str, key: &str) -> bool {
-        Self::is_express_bucket(&self.bucket)
-            && (address.contains("/@shared/dicts/") || key.contains("@shared/dicts/"))
-    }
-
-    fn run_out_of_band_sdk_probe(client: Client, bucket: &str, key: &str, address: &str) {
-        const SDK_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(err) => {
-                tracing::error!(
-                    bucket,
-                    key,
-                    address,
-                    error = %err,
-                    "s3 read_bytes: failed to build runtime for out-of-band SDK probe"
-                );
-                return;
-            }
-        };
-
-        runtime.block_on(async move {
-            tracing::error!(
-                bucket,
-                key,
-                address,
-                timeout_ms = SDK_PROBE_TIMEOUT.as_millis() as u64,
-                "s3 read_bytes: starting out-of-band SDK probe"
-            );
-
-            let head_started = Instant::now();
-            match tokio::time::timeout(
-                SDK_PROBE_TIMEOUT,
-                client.head_object().bucket(bucket).key(key).send(),
-            )
-            .await
-            {
-                Ok(Ok(response)) => {
-                    tracing::error!(
-                        bucket,
-                        key,
-                        address,
-                        elapsed_ms = head_started.elapsed().as_millis() as u64,
-                        content_length = response.content_length(),
-                        etag = response.e_tag(),
-                        "s3 read_bytes: out-of-band head-object succeeded"
-                    );
-                }
-                Ok(Err(err)) => {
-                    tracing::error!(
-                        bucket,
-                        key,
-                        address,
-                        elapsed_ms = head_started.elapsed().as_millis() as u64,
-                        error = %err,
-                        "s3 read_bytes: out-of-band head-object failed"
-                    );
-                }
-                Err(_) => {
-                    tracing::error!(
-                        bucket,
-                        key,
-                        address,
-                        elapsed_ms = head_started.elapsed().as_millis() as u64,
-                        timeout_ms = SDK_PROBE_TIMEOUT.as_millis() as u64,
-                        "s3 read_bytes: out-of-band head-object timed out"
-                    );
-                }
-            }
-
-            let range_started = Instant::now();
-            match tokio::time::timeout(
-                SDK_PROBE_TIMEOUT,
-                client
-                    .get_object()
-                    .bucket(bucket)
-                    .key(key)
-                    .range("bytes=0-0")
-                    .send(),
-            )
-            .await
-            {
-                Ok(Ok(response)) => {
-                    let body_started = Instant::now();
-                    match tokio::time::timeout(SDK_PROBE_TIMEOUT, response.body.collect()).await {
-                        Ok(Ok(body)) => {
-                            let bytes = body.into_bytes();
-                            tracing::error!(
-                                bucket,
-                                key,
-                                address,
-                                send_elapsed_ms = range_started.elapsed().as_millis() as u64,
-                                body_elapsed_ms = body_started.elapsed().as_millis() as u64,
-                                body_bytes = bytes.len(),
-                                "s3 read_bytes: out-of-band range get succeeded"
-                            );
-                        }
-                        Ok(Err(err)) => {
-                            tracing::error!(
-                                bucket,
-                                key,
-                                address,
-                                send_elapsed_ms = range_started.elapsed().as_millis() as u64,
-                                body_elapsed_ms = body_started.elapsed().as_millis() as u64,
-                                error = %err,
-                                "s3 read_bytes: out-of-band range body collect failed"
-                            );
-                        }
-                        Err(_) => {
-                            tracing::error!(
-                                bucket,
-                                key,
-                                address,
-                                send_elapsed_ms = range_started.elapsed().as_millis() as u64,
-                                body_elapsed_ms = body_started.elapsed().as_millis() as u64,
-                                timeout_ms = SDK_PROBE_TIMEOUT.as_millis() as u64,
-                                "s3 read_bytes: out-of-band range body collect timed out"
-                            );
-                        }
-                    }
-                }
-                Ok(Err(err)) => {
-                    tracing::error!(
-                        bucket,
-                        key,
-                        address,
-                        elapsed_ms = range_started.elapsed().as_millis() as u64,
-                        error = %err,
-                        "s3 read_bytes: out-of-band range get failed"
-                    );
-                }
-                Err(_) => {
-                    tracing::error!(
-                        bucket,
-                        key,
-                        address,
-                        elapsed_ms = range_started.elapsed().as_millis() as u64,
-                        timeout_ms = SDK_PROBE_TIMEOUT.as_millis() as u64,
-                        "s3 read_bytes: out-of-band range get timed out"
-                    );
-                }
-            }
-        });
-    }
-
     /// Create a new S3 storage backend
     ///
     /// For S3 Express buckets (detected by `--x-s3` suffix), the SDK
@@ -331,7 +159,6 @@ impl S3Storage {
             client,
             bucket: config.bucket,
             prefix: config.prefix,
-            region: sdk_config.region().map(|region| region.as_ref().to_owned()),
         })
     }
 
@@ -341,7 +168,6 @@ impl S3Storage {
             client,
             bucket,
             prefix,
-            region: None,
         }
     }
 
@@ -396,139 +222,6 @@ impl S3Storage {
     fn to_address(&self, key: &str) -> String {
         key_to_address(key, self.prefix.as_deref())
     }
-
-    fn endpoint_host(&self) -> Option<String> {
-        let region = self.region.as_deref()?;
-        if Self::is_express_bucket(&self.bucket) {
-            let without_suffix = self.bucket.strip_suffix("--x-s3")?;
-            let zone_delim = without_suffix.rfind("--")?;
-            let zone_id = &without_suffix[zone_delim + 2..];
-            Some(format!(
-                "{}.s3express-{}.{}.amazonaws.com",
-                self.bucket, zone_id, region
-            ))
-        } else {
-            Some(format!("{}.s3.{}.amazonaws.com", self.bucket, region))
-        }
-    }
-
-    fn spawn_send_probe(&self, address: &str, key: &str) -> Option<Arc<AtomicBool>> {
-        const PROBE_DELAY: Duration = Duration::from_secs(30);
-        const TCP_TIMEOUT: Duration = Duration::from_secs(5);
-        const MAX_ADDRS_TO_PROBE: usize = 3;
-
-        if !self.should_probe_send(address, key) {
-            return None;
-        }
-
-        let host = self.endpoint_host()?;
-        let bucket = self.bucket.clone();
-        let key = key.to_owned();
-        let address = address.to_owned();
-        let client = self.client.clone();
-        let key_for_spawn_err = key.clone();
-        let address_for_spawn_err = address.clone();
-        let done = Arc::new(AtomicBool::new(false));
-        let done_for_thread = Arc::clone(&done);
-
-        let spawn_result = std::thread::Builder::new()
-            .name("s3-send-probe".to_owned())
-            .spawn(move || {
-                std::thread::sleep(PROBE_DELAY);
-                if done_for_thread.load(Ordering::Relaxed) {
-                    return;
-                }
-
-                let (proc_status, fd_count) = Self::probe_process_snapshot();
-                tracing::error!(
-                    bucket = bucket.as_str(),
-                    key = key.as_str(),
-                    address = address.as_str(),
-                    host = host.as_str(),
-                    probe_delay_ms = PROBE_DELAY.as_millis() as u64,
-                    process_status = proc_status.as_deref().unwrap_or("unavailable"),
-                    open_fd_count = fd_count,
-                    "s3 read_bytes: send still in flight, starting out-of-band endpoint probe"
-                );
-
-                let resolution_started = Instant::now();
-                match (host.as_str(), 443).to_socket_addrs() {
-                    Ok(iter) => {
-                        let addrs: Vec<std::net::SocketAddr> = iter.collect();
-                        tracing::error!(
-                            bucket = bucket.as_str(),
-                            key = key.as_str(),
-                            address = address.as_str(),
-                            host = host.as_str(),
-                            resolution_elapsed_ms = resolution_started.elapsed().as_millis() as u64,
-                            resolved_addr_count = addrs.len(),
-                            resolved_addrs = ?addrs,
-                            "s3 read_bytes: out-of-band DNS resolution complete"
-                        );
-
-                        for addr in addrs.into_iter().take(MAX_ADDRS_TO_PROBE) {
-                            let tcp_started = Instant::now();
-                            match TcpStream::connect_timeout(&addr, TCP_TIMEOUT) {
-                                Ok(stream) => {
-                                    let local_addr = stream.local_addr().ok();
-                                    tracing::error!(
-                                        bucket = bucket.as_str(),
-                                        key = key.as_str(),
-                                        address = address.as_str(),
-                                        host = host.as_str(),
-                                        probe_addr = %addr,
-                                        local_addr = ?local_addr,
-                                        tcp_elapsed_ms = tcp_started.elapsed().as_millis() as u64,
-                                        tcp_timeout_ms = TCP_TIMEOUT.as_millis() as u64,
-                                        "s3 read_bytes: out-of-band TCP connect succeeded"
-                                    );
-                                    break;
-                                }
-                                Err(err) => {
-                                    tracing::error!(
-                                        bucket = bucket.as_str(),
-                                        key = key.as_str(),
-                                        address = address.as_str(),
-                                        host = host.as_str(),
-                                        probe_addr = %addr,
-                                        tcp_elapsed_ms = tcp_started.elapsed().as_millis() as u64,
-                                        tcp_timeout_ms = TCP_TIMEOUT.as_millis() as u64,
-                                        error = %err,
-                                        "s3 read_bytes: out-of-band TCP connect failed"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        tracing::error!(
-                            bucket = bucket.as_str(),
-                            key = key.as_str(),
-                            address = address.as_str(),
-                            host = host.as_str(),
-                            resolution_elapsed_ms = resolution_started.elapsed().as_millis() as u64,
-                            error = %err,
-                            "s3 read_bytes: out-of-band DNS resolution failed"
-                        );
-                    }
-                }
-
-                Self::run_out_of_band_sdk_probe(client, &bucket, &key, &address);
-            });
-
-        if let Err(err) = spawn_result {
-            tracing::error!(
-                bucket = self.bucket.as_str(),
-                key = key_for_spawn_err,
-                address = address_for_spawn_err,
-                error = %err,
-                "s3 read_bytes: failed to spawn out-of-band endpoint probe thread"
-            );
-            return None;
-        }
-
-        Some(done)
-    }
 }
 
 #[async_trait]
@@ -542,25 +235,11 @@ impl StorageRead for S3Storage {
         let total_started = Instant::now();
 
         let send_started = Instant::now();
-        let send_probe = self.spawn_send_probe(address, &key);
         let request = self.client.get_object().bucket(&self.bucket).key(&key);
         let response = match tokio::time::timeout(GET_OBJECT_SEND_TIMEOUT, request.send()).await {
-            Ok(Ok(response)) => {
-                if let Some(done) = &send_probe {
-                    done.store(true, Ordering::Relaxed);
-                }
-                response
-            }
-            Ok(Err(e)) => {
-                if let Some(done) = &send_probe {
-                    done.store(true, Ordering::Relaxed);
-                }
-                return Err(map_s3_error_core(e, &key));
-            }
+            Ok(Ok(response)) => response,
+            Ok(Err(e)) => return Err(map_s3_error_core(e, &key)),
             Err(_) => {
-                if let Some(done) = &send_probe {
-                    done.store(true, Ordering::Relaxed);
-                }
                 let send_elapsed_ms = send_started.elapsed().as_millis() as u64;
                 tracing::error!(
                     bucket = self.bucket.as_str(),
@@ -581,7 +260,7 @@ impl StorageRead for S3Storage {
         let send_elapsed_ms = send_started.elapsed().as_millis() as u64;
 
         if send_elapsed_ms >= SLOW_S3_SEND_WARN_MS {
-            tracing::warn!(
+            tracing::debug!(
                 bucket = self.bucket.as_str(),
                 key = key.as_str(),
                 address,
@@ -603,7 +282,7 @@ impl StorageRead for S3Storage {
         let total_elapsed_ms = total_started.elapsed().as_millis() as u64;
 
         if body_collect_elapsed_ms >= SLOW_S3_BODY_WARN_MS {
-            tracing::warn!(
+            tracing::debug!(
                 bucket = self.bucket.as_str(),
                 key = key.as_str(),
                 address,

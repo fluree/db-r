@@ -147,7 +147,7 @@ pub async fn resolve_incremental_commits_v6(
     config: IncrementalResolveConfig,
 ) -> Result<IncrementalNovelty, IncrementalResolveError> {
     let t_start = Instant::now();
-    tracing::info!(
+    tracing::debug!(
         base_root = %config.base_root_id,
         head = %config.head_commit_id,
         from_t = config.from_t,
@@ -174,7 +174,7 @@ pub async fn resolve_incremental_commits_v6(
         (root, t0.elapsed().as_millis() as u64)
     };
 
-    tracing::info!(
+    tracing::debug!(
         index_t = root.index_t,
         from_t = config.from_t,
         head = %config.head_commit_id,
@@ -284,7 +284,7 @@ pub async fn resolve_incremental_commits_v6(
         (commits, t0.elapsed().as_millis() as u64)
     };
 
-    tracing::info!(
+    tracing::debug!(
         commit_count = walked_commits.len(),
         root_load_ms = t_root_load_ms,
         root_decode_ms = t_root_decode_ms,
@@ -327,7 +327,6 @@ pub async fn resolve_incremental_commits_v6(
             delta_asserts += resolved.asserts as u64;
             delta_retracts += resolved.retracts as u64;
             commit_count += 1;
-
         }
 
         (
@@ -341,13 +340,13 @@ pub async fn resolve_incremental_commits_v6(
         )
     };
 
-    tracing::info!(
+    tracing::debug!(
         commit_count,
         records = chunk.records.len(),
         max_t,
         "V6 incremental resolve: commits resolved into chunk"
     );
-    tracing::info!(
+    tracing::debug!(
         commit_count,
         chunk_records = chunk.records.len(),
         max_t,
@@ -369,7 +368,7 @@ pub async fn resolve_incremental_commits_v6(
     let base_string_watermark = root.string_watermark;
 
     if chunk.records.is_empty() {
-        tracing::info!(
+        tracing::debug!(
             root_load_ms = t_root_load_ms,
             root_decode_ms = t_root_decode_ms,
             dict_load_ms = t_dict_load_ms,
@@ -486,7 +485,7 @@ pub async fn resolve_incremental_commits_v6(
     }
     let t_convert_ms = t0.elapsed().as_millis() as u64;
 
-    tracing::info!(
+    tracing::debug!(
         root_load_ms = t_root_load_ms,
         root_decode_ms = t_root_decode_ms,
         dict_load_ms = t_dict_load_ms,
@@ -565,11 +564,10 @@ async fn walk_commit_chain_since(
             t: envelope.t,
             bytes,
         });
-
     }
 
     commits.reverse();
-    tracing::info!(
+    tracing::debug!(
         commits = commits.len(),
         from_t,
         head = %head_id,
@@ -615,7 +613,7 @@ fn reconcile_chunk_to_global(
     let mut updated_watermarks = subject_watermarks.to_vec();
     let mut subject_existing = 0usize;
     let mut subject_new = 0usize;
-    tracing::info!(
+    tracing::debug!(
         subject_entries = subject_entries.len(),
         subject_tree_entries = subject_tree.total_entries(),
         subject_tree_source = subject_tree.source_kind(),
@@ -667,10 +665,9 @@ fn reconcile_chunk_to_global(
             }
         };
         subject_remap[chunk_local_id] = global_sid64;
-
     }
 
-    tracing::info!(
+    tracing::debug!(
         subject_entries = subject_entries.len(),
         existing = subject_existing,
         new = subject_new,
@@ -706,7 +703,7 @@ fn reconcile_chunk_to_global(
     let mut next_string_id = string_watermark + 1;
     let mut string_existing = 0usize;
     let mut string_new = 0usize;
-    tracing::info!(
+    tracing::debug!(
         string_entries = string_entries.len(),
         string_tree_entries = string_tree.total_entries(),
         string_tree_source = string_tree.source_kind(),
@@ -745,10 +742,9 @@ fn reconcile_chunk_to_global(
             }
         };
         string_remap[chunk_local_id] = global_str_id;
-
     }
 
-    tracing::info!(
+    tracing::debug!(
         string_entries = string_entries.len(),
         existing = string_existing,
         new = string_new,

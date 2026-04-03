@@ -796,13 +796,18 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 last_len = len;
 
                                 if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                    if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
-                                        &mut leaf_offsets,
-                                        &mut leaf_data,
-                                        &mut first_key,
-                                        &mut chunk_bytes,
-                                        || str_fwd_data[last_off..(last_off + last_len)].to_vec(),
-                                    ) {
+                                    if let Some((leaf_bytes, fk, lk, entry_count)) =
+                                        flush_reverse_leaf(
+                                            &mut leaf_offsets,
+                                            &mut leaf_data,
+                                            &mut first_key,
+                                            &mut chunk_bytes,
+                                            || {
+                                                str_fwd_data[last_off..(last_off + last_len)]
+                                                    .to_vec()
+                                            },
+                                        )
+                                    {
                                         let cas_result = storage
                                             .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                             .await
@@ -842,13 +847,18 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 last_len = len;
 
                                 if chunk_bytes >= builder::DEFAULT_TARGET_LEAF_BYTES {
-                                    if let Some((leaf_bytes, fk, lk, entry_count)) = flush_reverse_leaf(
-                                        &mut leaf_offsets,
-                                        &mut leaf_data,
-                                        &mut first_key,
-                                        &mut chunk_bytes,
-                                        || str_fwd_data[last_off..(last_off + last_len)].to_vec(),
-                                    ) {
+                                    if let Some((leaf_bytes, fk, lk, entry_count)) =
+                                        flush_reverse_leaf(
+                                            &mut leaf_offsets,
+                                            &mut leaf_data,
+                                            &mut first_key,
+                                            &mut chunk_bytes,
+                                            || {
+                                                str_fwd_data[last_off..(last_off + last_len)]
+                                                    .to_vec()
+                                            },
+                                        )
+                                    {
                                         let cas_result = storage
                                             .content_write_bytes(kind, ledger_id, &leaf_bytes)
                                             .await
