@@ -209,9 +209,9 @@ async fn merge_into_non_parent_allowed() {
     assert!(report.fast_forward);
 }
 
-/// Cannot merge when the target has diverged (not fast-forwardable).
+/// General merge when the target has diverged (not fast-forwardable).
 #[tokio::test]
-async fn merge_diverged_target_refused() {
+async fn merge_diverged_target_general_merge() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = fluree.create_ledger("mydb").await.unwrap();
 
@@ -239,31 +239,27 @@ async fn merge_diverged_target_refused() {
     });
     fluree.insert(main_ledger, &main_data).await.unwrap();
 
-    // Merge should fail — target has diverged
-    let err = fluree
+    // General merge should succeed with TakeBoth (default) strategy
+    let report = fluree
         .merge_branch("mydb", "dev", None, ConflictStrategy::default())
         .await
-        .expect_err("merge into diverged target should fail");
+        .unwrap();
 
-    assert!(
-        err.to_string().to_lowercase().contains("diverged")
-            || err.to_string().to_lowercase().contains("fast-forward"),
-        "expected divergence/fast-forward error, got: {err}"
-    );
+    assert!(!report.fast_forward);
 
-    // Main should be unchanged — still has Alice and Carol, no Bob
+    // Main should now have all three names
     let names = query_all_names(&fluree, "mydb:main").await;
     assert!(
         names.contains(&"Alice".to_string()),
         "expected Alice in {names:?}"
     );
     assert!(
-        names.contains(&"Carol".to_string()),
-        "expected Carol in {names:?}"
+        names.contains(&"Bob".to_string()),
+        "expected Bob in {names:?}"
     );
     assert!(
-        !names.contains(&"Bob".to_string()),
-        "Bob should not be on main, got {names:?}"
+        names.contains(&"Carol".to_string()),
+        "expected Carol in {names:?}"
     );
 }
 
@@ -550,10 +546,10 @@ async fn merge_nested_branch() {
     assert_eq!(names, vec!["Alice", "Bob"]);
 }
 
-/// After a failed merge attempt on a diverged target, nameservice state
-/// for both source and target should be unchanged.
+/// After a failed merge attempt (abort strategy on conflicts), nameservice
+/// state for both source and target should be unchanged.
 #[tokio::test]
-async fn merge_diverged_leaves_nameservice_unchanged() {
+async fn merge_abort_leaves_nameservice_unchanged() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = fluree.create_ledger("mydb").await.unwrap();
 
@@ -566,17 +562,18 @@ async fn merge_diverged_leaves_nameservice_unchanged() {
 
     fluree.create_branch("mydb", "dev", None).await.unwrap();
 
+    // Both branches modify the same subject+predicate to create a real conflict.
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
     let dev_data = json!({
         "@context": {"ex": "http://example.org/ns/"},
-        "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice-dev"}]
     });
     fluree.insert(dev_ledger, &dev_data).await.unwrap();
 
-    // Advance main
+    // Advance main with a conflicting change
     let main_data = json!({
         "@context": {"ex": "http://example.org/ns/"},
-        "@graph": [{"@id": "ex:carol", "ex:name": "Carol"}]
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice-main"}]
     });
     fluree.insert(main_ledger, &main_data).await.unwrap();
 
@@ -594,11 +591,11 @@ async fn merge_diverged_leaves_nameservice_unchanged() {
         .unwrap()
         .unwrap();
 
-    // Attempt merge (should fail — diverged)
+    // Attempt merge with Abort strategy (should fail on conflict)
     let _err = fluree
-        .merge_branch("mydb", "dev", None, ConflictStrategy::default())
+        .merge_branch("mydb", "dev", None, ConflictStrategy::Abort)
         .await
-        .expect_err("merge should fail on diverged target");
+        .expect_err("merge should fail with abort strategy on conflicts");
 
     // Both branches should be unchanged
     let post_main = fluree
