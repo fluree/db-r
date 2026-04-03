@@ -236,10 +236,10 @@ Each HTTP request span is named dynamically via the `otel.name` field so that tr
 
 | Operation | otel.name examples |
 |-----------|-------------------|
-| Query | `query:fql`, `query:sparql`, `query:explain` |
-| Transact | `transact:fql`, `transact:sparql-update`, `transact:turtle` |
-| Insert | `insert:fql`, `insert:turtle` |
-| Upsert | `upsert:fql`, `upsert:turtle`, `upsert:trig` |
+| Query | `query:json-ld`, `query:sparql`, `query:explain` |
+| Transact | `transact:json-ld`, `transact:sparql-update`, `transact:turtle` |
+| Insert | `insert:json-ld`, `insert:turtle` |
+| Upsert | `upsert:json-ld`, `upsert:turtle`, `upsert:trig` |
 | Ledger mgmt | `ledger:create`, `ledger:drop`, `ledger:info`, `ledger:exists` |
 
 The `operation` span attribute retains the handler-specific name for precise filtering when needed.

@@ -333,7 +333,7 @@ async fn minus_all_literals_no_common_bindings_removes_nothing() {
 }
 
 #[tokio::test]
-async fn inner_filter_not_exists_vs_minus_behavior_matches_clojure() {
+async fn inner_filter_not_exists_vs_minus_behavior() {
     // Scenario: demonstrates that NOT-EXISTS sees existing bindings for filter,
     // while MINUS does not (i.e. filter inside MINUS can't reference outer vars).
     let fluree = FlureeBuilder::memory().build_memory();

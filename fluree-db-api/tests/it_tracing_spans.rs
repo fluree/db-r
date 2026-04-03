@@ -55,7 +55,7 @@ async fn ac1_fql_query_waterfall() {
     let (_store, _guard) = span_capture::init_test_tracing();
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger = seed_people(&fluree, "ac1-fql:main").await;
+    let ledger = seed_people(&fluree, "ac1-jsonld:main").await;
 
     // Clear seeding spans by creating a fresh store (re-init tracing)
     drop(_guard);
@@ -177,7 +177,7 @@ async fn ac1_sparql_query_waterfall() {
         result.err()
     );
 
-    // Same hierarchy as FQL — execution path is shared
+    // Same hierarchy as JSON-LD — execution path is shared
     assert!(
         store.has_span("query_prepare"),
         "query_prepare span should exist"
