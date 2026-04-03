@@ -84,7 +84,7 @@ impl NsRecordResponse {
                 .default_context
                 .and_then(|s| s.parse::<ContentId>().ok()),
             retracted: self.retracted,
-            branch_point: None,
+            source_branch: None,
             branches: 0,
         }
     }
@@ -174,7 +174,7 @@ impl NameService for ProxyNameService {
         &self,
         _ledger_name: &str,
         _new_branch: &str,
-        _branch_point: fluree_db_nameservice::BranchPoint,
+        _source_branch: &str,
     ) -> Result<()> {
         // Proxy peers forward branch creation to the tx server via HTTP
         Err(NameServiceError::storage(
@@ -186,17 +186,6 @@ impl NameService for ProxyNameService {
         // Proxy peers forward branch deletion to the tx server via HTTP
         Err(NameServiceError::storage(
             "drop_branch not supported in proxy mode".to_string(),
-        ))
-    }
-
-    async fn update_branch_point(
-        &self,
-        _ledger_id: &str,
-        _new_branch_point: fluree_db_nameservice::BranchPoint,
-    ) -> Result<()> {
-        // Proxy peers forward rebase to the tx server via HTTP
-        Err(NameServiceError::storage(
-            "update_branch_point not supported in proxy mode".to_string(),
         ))
     }
 

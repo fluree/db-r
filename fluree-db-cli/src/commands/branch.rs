@@ -47,6 +47,22 @@ pub async fn run(action: BranchAction, dirs: &FlureeDir, direct: bool) -> CliRes
             )
             .await
         }
+        BranchAction::Merge {
+            source,
+            target,
+            ledger,
+            remote,
+        } => {
+            run_merge(
+                &source,
+                target.as_deref(),
+                ledger.as_deref(),
+                dirs,
+                remote.as_deref(),
+                direct,
+            )
+            .await
+        }
     }
 }
 
@@ -101,12 +117,8 @@ async fn run_create(
             let (ledger_name, _) = split_ledger_id(&alias)?;
             let record = fluree.create_branch(&ledger_name, name, from).await?;
 
-            let source = record
-                .branch_point
-                .as_ref()
-                .map(|bp| bp.source.as_str())
-                .unwrap_or("main");
-            let t = record.branch_point.as_ref().map(|bp| bp.t).unwrap_or(0);
+            let source = record.source_branch.as_deref().unwrap_or("main");
+            let t = record.commit_t;
 
             println!("Created branch '{}' from '{}' at t={}", name, source, t);
             println!("Ledger ID: {}", record.ledger_id);
@@ -194,11 +206,7 @@ async fn run_list(
             table.set_header(vec!["BRANCH", "T", "SOURCE"]);
 
             for record in &records {
-                let source = record
-                    .branch_point
-                    .as_ref()
-                    .map(|bp| bp.source.as_str())
-                    .unwrap_or("-");
+                let source = record.source_branch.as_deref().unwrap_or("-");
                 table.add_row(vec![
                     record.branch.clone(),
                     record.commit_t.to_string(),
@@ -386,7 +394,7 @@ async fn run_rebase(
             if report.fast_forward {
                 println!(
                     "Fast-forward rebase of '{}' to t={}.",
-                    name, report.new_branch_point_t
+                    name, report.source_head_t
                 );
             } else {
                 println!(
@@ -397,7 +405,7 @@ async fn run_rebase(
                     report.conflicts.len(),
                     report.failures.len(),
                 );
-                println!("  New branch point: t={}", report.new_branch_point_t);
+                println!("  Source head: t={}", report.source_head_t);
             }
         }
     }
@@ -415,7 +423,7 @@ fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
         .and_then(|v| v.as_str())
         .unwrap_or("(unknown)");
     let new_t = result
-        .get("new_branch_point_t")
+        .get("source_head_t")
         .and_then(|v| v.as_i64())
         .unwrap_or(0);
 
@@ -434,8 +442,91 @@ fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
             "Rebased '{}': {} commits replayed, {} skipped, {} conflicts, {} failures.",
             branch, replayed, skipped, conflicts, failures,
         );
-        println!("  New branch point: t={}", new_t);
+        println!("  Source head: t={}", new_t);
     }
+    Ok(())
+}
+
+async fn run_merge(
+    source: &str,
+    target: Option<&str>,
+    ledger: Option<&str>,
+    dirs: &FlureeDir,
+    remote_flag: Option<&str>,
+    direct: bool,
+) -> CliResult<()> {
+    if let Some(remote_name) = remote_flag {
+        let alias = context::resolve_ledger(ledger, dirs)?;
+        let (ledger_name, _) = split_ledger_id(&alias)?;
+        let client = context::build_remote_client(remote_name, dirs).await?;
+        let result = client.merge_branch(&ledger_name, source, target).await?;
+
+        context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+
+        print_merge_result(&result)?;
+        return Ok(());
+    }
+
+    let mode = {
+        let mode = context::resolve_ledger_mode(ledger, dirs).await?;
+        if direct {
+            mode
+        } else {
+            context::try_server_route(mode, dirs)
+        }
+    };
+
+    match mode {
+        LedgerMode::Tracked {
+            client,
+            remote_alias,
+            remote_name,
+            ..
+        } => {
+            let (ledger_name, _) = split_ledger_id(&remote_alias)?;
+            let result = client.merge_branch(&ledger_name, source, target).await?;
+
+            context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
+
+            print_merge_result(&result)?;
+        }
+        LedgerMode::Local { fluree, alias } => {
+            let (ledger_name, _) = split_ledger_id(&alias)?;
+
+            let report = fluree.merge_branch(&ledger_name, source, target).await?;
+
+            println!(
+                "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
+                report.source, report.target, report.new_head_t, report.commits_copied,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn print_merge_result(result: &serde_json::Value) -> CliResult<()> {
+    let source = result
+        .get("source")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    let target = result
+        .get("target")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    let new_t = result
+        .get("new_head_t")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let commits_copied = result
+        .get("commits_copied")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    println!(
+        "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
+        source, target, new_t, commits_copied,
+    );
     Ok(())
 }
 

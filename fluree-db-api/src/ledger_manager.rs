@@ -1598,7 +1598,7 @@ mod tests {
             index_t,
             default_context: None,
             retracted: false,
-            branch_point: None,
+            source_branch: None,
             branches: 0,
         }
     }

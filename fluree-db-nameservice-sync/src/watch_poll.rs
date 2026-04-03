@@ -206,7 +206,7 @@ mod tests {
             index_t: 0,
             retracted: false,
             default_context: None,
-            branch_point: None,
+            source_branch: None,
             branches: 0,
         }
     }

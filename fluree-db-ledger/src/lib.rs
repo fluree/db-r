@@ -151,7 +151,7 @@ impl LedgerState {
         // back through the branch ancestry DAG. This avoids copying the
         // commit chain when creating a branch — reads fall through to
         // ancestor namespaces for pre-branch-point content.
-        if record.branch_point.is_some() {
+        if record.source_branch.is_some() {
             let store = Self::build_branched_store(ns, &record, &storage).await?;
             return Self::load_with_store(store, record).await;
         }
@@ -169,15 +169,15 @@ impl LedgerState {
         record: &NsRecord,
         storage: &S,
     ) -> Result<BranchedContentStore<S>> {
-        let bp = record.branch_point.as_ref().expect("called on non-branch");
-        let parent_id = format_ledger_id(&record.name, &bp.source);
+        let source = record.source_branch.as_ref().expect("called on non-branch");
+        let parent_id = format_ledger_id(&record.name, source);
 
         let parent_record = ns
             .lookup(&parent_id)
             .await?
             .ok_or_else(|| LedgerError::not_found(&parent_id))?;
 
-        let parent_store = if parent_record.branch_point.is_some() {
+        let parent_store = if parent_record.source_branch.is_some() {
             Box::pin(Self::build_branched_store(ns, &parent_record, storage)).await?
         } else {
             BranchedContentStore::leaf(storage.clone(), &parent_id)

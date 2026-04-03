@@ -117,23 +117,6 @@ pub fn parse_default_context_value(s: &str) -> Option<ContentId> {
     s.parse::<ContentId>().ok()
 }
 
-/// Records where a branch was created from.
-///
-/// When a branch is created via [`Publisher::create_branch`], this struct captures
-/// the source branch and commit state at the time of branching. This enables ancestry
-/// queries (e.g., determining common ancestors for future merge operations).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BranchPoint {
-    /// The branch this was created from (e.g., "main")
-    pub source: String,
-
-    /// Content identifier of the source commit at branch time
-    pub commit_id: ContentId,
-
-    /// Transaction time of the source commit at branch time
-    pub t: i64,
-}
-
 /// Nameservice record containing ledger metadata
 ///
 /// This struct preserves the distinction between the ledger_id (canonical ledger:branch)
@@ -182,10 +165,11 @@ pub struct NsRecord {
     #[serde(default)]
     pub config_id: Option<ContentId>,
 
-    /// The point at which this branch was created, if it was created via
-    /// [`Publisher::create_branch`]. `None` for the initial branch (typically "main").
+    /// The branch this was created from (e.g., "main"). `None` for the
+    /// initial branch. The divergence point is computed on demand by walking
+    /// the commit chains rather than being stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch_point: Option<BranchPoint>,
+    pub source_branch: Option<String>,
 
     /// Number of child branches that were created from this branch.
     /// Used for safe deletion: a branch with children cannot be fully purged
@@ -216,7 +200,7 @@ impl NsRecord {
             default_context: None,
             retracted: false,
             config_id: None,
-            branch_point: None,
+            source_branch: None,
             branches: 0,
         }
     }
@@ -445,17 +429,12 @@ pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
     /// Create a new branch for a ledger.
     ///
     /// Creates a new [`NsRecord`] for `ledger_name:new_branch` with its
-    /// [`branch_point`](NsRecord::branch_point) set to record the branch origin.
+    /// [`source_branch`](NsRecord::source_branch) set to record the parent.
     /// The new branch starts at the same commit head as the source, so
     /// subsequent transactions on either branch will diverge independently.
     ///
     /// Also increments the source branch's `branches` count to track
     /// the child reference for safe deletion.
-    ///
-    /// # Arguments
-    /// * `ledger_name` - The base ledger name (e.g., `"mydb"`)
-    /// * `new_branch` - The branch name to create (e.g., `"feature-x"`)
-    /// * `branch_point` - The source branch state at branch time
     ///
     /// # Errors
     /// Returns [`LedgerAlreadyExists`](NameServiceError::LedgerAlreadyExists)
@@ -464,7 +443,7 @@ pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
         &self,
         ledger_name: &str,
         new_branch: &str,
-        branch_point: BranchPoint,
+        source_branch: &str,
     ) -> Result<()>;
 
     /// Drop a branch, purging its nameservice record and decrementing
@@ -479,26 +458,8 @@ pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
     /// record does not exist.
     async fn drop_branch(&self, ledger_id: &str) -> Result<Option<u32>>;
 
-    /// Update a branch's branch point after a rebase operation.
-    ///
-    /// Replaces the existing [`BranchPoint`] on the branch's [`NsRecord`]
-    /// with `new_branch_point`, effectively re-anchoring the branch to a
-    /// new position on its source branch.
-    ///
-    /// # Arguments
-    /// * `ledger_id` - The full ledger:branch identifier (e.g., `"mydb:feature-x"`)
-    /// * `new_branch_point` - The updated branch point referencing the source's current HEAD
-    ///
-    /// # Errors
-    /// Returns [`NotFound`](NameServiceError::NotFound) if the branch does not exist.
-    async fn update_branch_point(
-        &self,
-        ledger_id: &str,
-        new_branch_point: BranchPoint,
-    ) -> Result<()>;
-
-    /// Force-reset a branch's commit head, index head, and branch point to
-    /// a previously captured snapshot.
+    /// Force-reset a branch's commit head and index head to a previously
+    /// captured snapshot.
     ///
     /// Unlike [`Publisher::publish_commit`] and [`Publisher::publish_index`],
     /// this bypasses monotonic guards — the new `t` values may be lower than
@@ -512,14 +473,13 @@ pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
 /// Captured state of an `NsRecord` for rollback purposes.
 ///
 /// Contains only the fields that `reset_head` restores — commit head,
-/// index head, and branch point.
+/// index head.
 #[derive(Clone, Debug)]
 pub struct NsRecordSnapshot {
     pub commit_head_id: Option<ContentId>,
     pub commit_t: i64,
     pub index_head_id: Option<ContentId>,
     pub index_t: i64,
-    pub branch_point: Option<BranchPoint>,
 }
 
 impl NsRecordSnapshot {
@@ -530,7 +490,6 @@ impl NsRecordSnapshot {
             commit_t: record.commit_t,
             index_head_id: record.index_head_id.clone(),
             index_t: record.index_t,
-            branch_point: record.branch_point.clone(),
         }
     }
 }

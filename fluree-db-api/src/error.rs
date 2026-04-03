@@ -195,6 +195,14 @@ pub enum ApiError {
     #[error("Drop error: {0}")]
     Drop(String),
 
+    /// Invalid branch operation (merge into self, missing branch point, etc.)
+    #[error("Invalid branch operation: {0}")]
+    InvalidBranch(String),
+
+    /// Branch conflict (fast-forward not possible, rebase abort, etc.)
+    #[error("Branch conflict: {0}")]
+    BranchConflict(String),
+
     /// Not found errors
     #[error("Not found: {0}")]
     NotFound(String),
@@ -343,6 +351,8 @@ impl ApiError {
             ApiError::Http { status, .. } => *status,
             #[cfg(feature = "credential")]
             ApiError::Credential(e) => e.status_code(),
+            ApiError::InvalidBranch(_) => 400,
+            ApiError::BranchConflict(_) => 409,
             ApiError::NotFound(_) => 404,
             ApiError::LedgerExists(_) => 409,
             ApiError::ReindexConflict { .. } => 409,

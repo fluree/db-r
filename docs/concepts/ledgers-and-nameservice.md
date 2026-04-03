@@ -96,12 +96,9 @@ The index represents a queryable snapshot of the ledger state. Indexes are creat
 
 #### Branch Metadata
 
-- **`branch_point`**: For branches created via `create_branch`, records the branch origin:
-  - `source` — the source branch name (e.g., `"main"`)
-  - `commit_id` — the source's commit head ContentId at the time of branching
-  - `t` — the source's transaction time at the time of branching
+- **`source_branch`**: For branches created via `create_branch`, records the name of the source branch (e.g., `"main"`). `None` for the initial branch.
 
-This metadata is absent for the original `main` branch and present only on branches created from other branches.
+The divergence point (common ancestor) between a branch and its source is computed on demand by walking the commit chains rather than being stored. This avoids stale metadata and supports merge scenarios where the relationship between branches changes over time.
 
 #### Additional Metadata
 
@@ -167,7 +164,7 @@ Publishing is **monotonic**—the nameservice only accepts updates that advance 
 
 Create and list branches:
 
-- **`create_branch(ledger_name, new_branch, branch_point)`**: Create a new branch with a `BranchPoint` linking to the source
+- **`create_branch(ledger_name, new_branch, source_branch)`**: Create a new branch from the source
 - **`list_branches(ledger_name)`**: List all non-retracted branches for a ledger
 
 #### Discovery
@@ -240,7 +237,7 @@ curl -X POST http://localhost:8090/nameservice/query \
 | `f:status` | Status: "ready" or "retracted" |
 | `f:ledgerCommit` | Reference to latest commit ContentId |
 | `f:ledgerIndex` | Index info object with `@id` (ContentId) and `f:t` |
-| `f:branchPoint` | Branch origin info with `f:source`, `f:commitCid`, `f:t` (if branched) |
+| `f:sourceBranch` | Source branch name (e.g., `"main"`) if this is a branched ledger |
 | `f:defaultContextCid` | Default JSON-LD context ContentId (if set) |
 
 **Graph Source Records** (`@type: "f:GraphSourceDatabase"`):
@@ -486,13 +483,9 @@ Each branch is a fully independent `LedgerState` with its own snapshot, novelty 
 
 #### Nameservice Metadata
 
-When a branch is created, the nameservice records a **branch point** on the new branch's `NsRecord`:
+When a branch is created, the nameservice records the **source branch name** on the new branch's `NsRecord` (e.g., `source_branch: Some("main")`). The divergence point between the branch and its source is computed on demand by walking the commit chains rather than being stored as a static snapshot.
 
-- `source` — the branch it was created from (e.g., `"main"`)
-- `commit_id` — the source branch's commit head at the time of branching
-- `t` — the source branch's transaction time at the time of branching
-
-This metadata enables the system to reconstruct the `BranchedContentStore` tree when loading a branch. For nested branches, the ancestry chain is walked recursively.
+This metadata enables the system to reconstruct the `BranchedContentStore` tree when loading a branch. For nested branches, the ancestry chain is walked recursively via `source_branch` lookups.
 
 #### API
 
