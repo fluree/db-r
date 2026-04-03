@@ -100,33 +100,23 @@ pub struct IndexStats {
 /// Current index version for compatibility checking
 pub const CURRENT_INDEX_VERSION: i32 = 2;
 
-/// External indexer entry point
+/// Build a binary index from an existing nameservice record.
 ///
-/// Builds a binary columnar index from the commit chain. The pipeline:
-/// 1. Walks the commit chain and generates sorted run files
-/// 2. Builds per-graph leaf/branch indexes for all sort orders
-/// 3. Creates an FIR6 root descriptor and writes it to storage
-///
-/// Returns early if the index is already current (no work needed).
-/// Use `rebuild_index_from_commits` directly to force a rebuild regardless.
-pub async fn build_index_for_ledger<S, N>(
+/// This is the main index-build implementation once the caller already has an
+/// up-to-date [`fluree_db_nameservice::NsRecord`]. It preserves the same
+/// refresh-first behavior as [`build_index_for_ledger`], but skips the extra
+/// nameservice lookup.
+pub async fn build_index_for_record<S>(
     storage: &S,
-    nameservice: &N,
-    ledger_id: &str,
+    record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
 ) -> Result<IndexResult>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService,
 {
+    let ledger_id = record.ledger_id.as_str();
     let span = tracing::debug_span!("index_build", ledger_id = ledger_id);
     async move {
-        // Look up the ledger record
-        let record = nameservice
-            .lookup(ledger_id)
-            .await
-            .map_err(|e| IndexerError::NameService(e.to_string()))?
-            .ok_or_else(|| IndexerError::LedgerNotFound(ledger_id.to_string()))?;
         let commit_gap = record.commit_t - record.index_t;
 
         tracing::info!(
@@ -172,7 +162,7 @@ where
                 "attempting incremental index"
             );
 
-            match incremental_index(storage, ledger_id, &record, config.clone()).await {
+            match incremental_index(storage, ledger_id, record, config.clone()).await {
                 Ok(result) => {
                     return Ok(result);
                 }
@@ -199,10 +189,38 @@ where
             commit_gap,
             "starting full rebuild path"
         );
-        rebuild_index_from_commits(storage, ledger_id, &record, config).await
+        rebuild_index_from_commits(storage, ledger_id, record, config).await
     }
     .instrument(span)
     .await
+}
+
+/// External indexer entry point
+///
+/// Builds a binary columnar index from the commit chain. The pipeline:
+/// 1. Walks the commit chain and generates sorted run files
+/// 2. Builds per-graph leaf/branch indexes for all sort orders
+/// 3. Creates an FIR6 root descriptor and writes it to storage
+///
+/// Returns early if the index is already current (no work needed).
+/// Use `rebuild_index_from_commits` directly to force a rebuild regardless.
+pub async fn build_index_for_ledger<S, N>(
+    storage: &S,
+    nameservice: &N,
+    ledger_id: &str,
+    config: IndexerConfig,
+) -> Result<IndexResult>
+where
+    S: Storage + Clone + Send + Sync + 'static,
+    N: NameService,
+{
+    let record = nameservice
+        .lookup(ledger_id)
+        .await
+        .map_err(|e| IndexerError::NameService(e.to_string()))?
+        .ok_or_else(|| IndexerError::LedgerNotFound(ledger_id.to_string()))?;
+
+    build_index_for_record(storage, &record, config).await
 }
 
 /// Build a binary index from an existing nameservice record.

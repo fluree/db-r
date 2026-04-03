@@ -86,6 +86,8 @@ pub struct IncrementalResolveConfig {
     pub head_commit_id: ContentId,
     /// Only include commits with `t > from_t` (typically `root.index_t`).
     pub from_t: i64,
+    /// Optional disk-backed artifact cache directory for remote dict leaves.
+    pub artifact_cache_dir: Option<std::path::PathBuf>,
 }
 
 /// Result of V6 incremental commit resolution.
@@ -191,12 +193,22 @@ pub async fn resolve_incremental_commits_v6(
     // 3. Load subject + string reverse dict trees (same DictRefs as V5).
     let (subject_tree, string_tree, t_dict_load_ms) = {
         let t0 = Instant::now();
-        let subject_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, None)
-            .await
-            .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("subject reverse: {e}")))?;
-        let string_tree = DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, None)
-            .await
-            .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}")))?;
+        let subject_tree = DictTreeReader::from_refs(
+            &cs,
+            &root.dict_refs.subject_reverse,
+            None,
+            config.artifact_cache_dir.as_deref(),
+        )
+        .await
+        .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("subject reverse: {e}")))?;
+        let string_tree = DictTreeReader::from_refs(
+            &cs,
+            &root.dict_refs.string_reverse,
+            None,
+            config.artifact_cache_dir.as_deref(),
+        )
+        .await
+        .map_err(|e| IncrementalResolveError::DictTreeLoad(format!("string reverse: {e}")))?;
         (subject_tree, string_tree, t0.elapsed().as_millis() as u64)
     };
 
@@ -265,24 +277,24 @@ pub async fn resolve_incremental_commits_v6(
     };
 
     // 5. Walk commit chain (commit format is version-independent).
-    let (commit_cids, t_walk_chain_ms) = {
+    let (walked_commits, t_walk_chain_ms) = {
         let t0 = Instant::now();
-        let cids =
+        let commits =
             walk_commit_chain_since(cs.as_ref(), &config.head_commit_id, config.from_t).await?;
-        (cids, t0.elapsed().as_millis() as u64)
+        (commits, t0.elapsed().as_millis() as u64)
     };
 
     tracing::info!(
-        commit_count = commit_cids.len(),
+        commit_count = walked_commits.len(),
         root_load_ms = t_root_load_ms,
         root_decode_ms = t_root_decode_ms,
         dict_load_ms = t_dict_load_ms,
         seed_arenas_ms = t_seed_arenas_ms,
         walk_chain_ms = t_walk_chain_ms,
-        avg_walk_ms_per_commit = if commit_cids.is_empty() {
+        avg_walk_ms_per_commit = if walked_commits.is_empty() {
             0.0
         } else {
-            t_walk_chain_ms as f64 / commit_cids.len() as f64
+            t_walk_chain_ms as f64 / walked_commits.len() as f64
         },
         "V6 incremental resolve: setup and commit-chain walk finished"
     );
@@ -305,25 +317,12 @@ pub async fn resolve_incremental_commits_v6(
         let mut delta_retracts = 0u64;
         let mut commit_count = 0usize;
 
-        for cid in &commit_cids {
-            let bytes = cs.get(cid).await.map_err(|e| {
-                IncrementalResolveError::CommitChain(format!(
-                    "failed to load commit {}: {}",
-                    cid, e
-                ))
-            })?;
-            let envelope =
-                fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
-                    IncrementalResolveError::CommitChain(format!(
-                        "failed to decode envelope for {}: {}",
-                        cid, e
-                    ))
-                })?;
+        for walked in &walked_commits {
             let resolved = shared
-                .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
+                .resolve_commit_into_chunk(&walked.bytes, &walked.cid.digest_hex(), &mut chunk)
                 .map_err(IncrementalResolveError::Resolve)?;
 
-            max_t = max_t.max(envelope.t);
+            max_t = max_t.max(walked.t);
             delta_commit_size += resolved.size;
             delta_asserts += resolved.asserts as u64;
             delta_retracts += resolved.retracts as u64;
@@ -332,8 +331,8 @@ pub async fn resolve_incremental_commits_v6(
             if commit_count.is_multiple_of(500) {
                 tracing::info!(
                     commit_count,
-                    total_commits = commit_cids.len(),
-                    current_t = envelope.t,
+                    total_commits = walked_commits.len(),
+                    current_t = walked.t,
                     chunk_records = chunk.records.len(),
                     elapsed_ms = t0.elapsed().as_millis() as u64,
                     "V6 incremental resolve: commit resolution progress"
@@ -341,8 +340,8 @@ pub async fn resolve_incremental_commits_v6(
             } else if commit_count.is_multiple_of(100) {
                 tracing::debug!(
                     commit_count,
-                    total_commits = commit_cids.len(),
-                    current_t = envelope.t,
+                    total_commits = walked_commits.len(),
+                    current_t = walked.t,
                     chunk_records = chunk.records.len(),
                     elapsed_ms = t0.elapsed().as_millis() as u64,
                     "V6 incremental resolve: commit resolution progress"
@@ -549,12 +548,18 @@ pub async fn resolve_incremental_commits_v6(
 // Internal: Commit Chain Walking
 // ============================================================================
 
+struct WalkedCommit {
+    cid: ContentId,
+    t: i64,
+    bytes: Vec<u8>,
+}
+
 async fn walk_commit_chain_since(
     cs: &dyn ContentStore,
     head_id: &ContentId,
     from_t: i64,
-) -> Result<Vec<ContentId>, IncrementalResolveError> {
-    let mut cids = Vec::new();
+) -> Result<Vec<WalkedCommit>, IncrementalResolveError> {
+    let mut commits = Vec::new();
     let mut current = Some(head_id.clone());
     let walk_started = Instant::now();
 
@@ -574,13 +579,17 @@ async fn walk_commit_chain_since(
         }
 
         current = envelope.previous_ref.map(|r| r.id);
-        cids.push(cid);
+        commits.push(WalkedCommit {
+            cid,
+            t: envelope.t,
+            bytes,
+        });
 
-        let walked = cids.len();
+        let walked = commits.len();
         if walked % 500 == 0 {
             tracing::info!(
                 commits_walked = walked,
-                current_t = envelope.t,
+                current_t = commits.last().map(|commit| commit.t).unwrap_or(from_t),
                 from_t,
                 elapsed_ms = walk_started.elapsed().as_millis() as u64,
                 "V6 incremental resolve: commit-chain walk progress"
@@ -588,7 +597,7 @@ async fn walk_commit_chain_since(
         } else if walked % 100 == 0 {
             tracing::debug!(
                 commits_walked = walked,
-                current_t = envelope.t,
+                current_t = commits.last().map(|commit| commit.t).unwrap_or(from_t),
                 from_t,
                 elapsed_ms = walk_started.elapsed().as_millis() as u64,
                 "V6 incremental resolve: commit-chain walk progress"
@@ -596,15 +605,15 @@ async fn walk_commit_chain_since(
         }
     }
 
-    cids.reverse();
+    commits.reverse();
     tracing::info!(
-        commits = cids.len(),
+        commits = commits.len(),
         from_t,
         head = %head_id,
         elapsed_ms = walk_started.elapsed().as_millis() as u64,
         "V6 incremental resolve: commit-chain walk complete"
     );
-    Ok(cids)
+    Ok(commits)
 }
 
 // ============================================================================
@@ -632,7 +641,6 @@ fn reconcile_chunk_to_global(
     const INFO_PROGRESS_EVERY: usize = 250;
     const DEBUG_PROGRESS_EVERY: usize = 50;
     const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-    const SLOW_LOOKUP_WARN_MS: u64 = 250;
 
     // Subject reconciliation.
     let subject_entries = chunk.subjects.forward_entries();
@@ -666,18 +674,19 @@ fn reconcile_chunk_to_global(
         "V6 incremental resolve: subject reconciliation starting"
     );
 
-    for (chunk_local_id, (ns_code, name_bytes)) in subject_entries.iter().enumerate() {
-        let reverse_key = subject_reverse_key(*ns_code, name_bytes);
-        let lookup_started = Instant::now();
-        let lookup_disk_reads_before = subject_tree.disk_reads();
-        let lookup_local_file_reads_before = subject_tree.local_file_reads();
-        let lookup_remote_fetches_before = subject_tree.remote_fetches();
-        let lookup_cache_hits_before = subject_tree.cache_hits();
-        let lookup_cache_misses_before = subject_tree.cache_misses();
-        let existing_id = subject_tree
-            .reverse_lookup(&reverse_key)
-            .map_err(IncrementalResolveError::Io)?;
-        let lookup_elapsed_ms = lookup_started.elapsed().as_millis() as u64;
+    let subject_reverse_keys: Vec<Vec<u8>> = subject_entries
+        .iter()
+        .map(|(ns_code, name_bytes)| subject_reverse_key(*ns_code, name_bytes))
+        .collect();
+    let subject_existing_ids = subject_tree
+        .reverse_lookup_many(subject_reverse_keys.iter().map(Vec::as_slice))
+        .map_err(IncrementalResolveError::Io)?;
+
+    for (chunk_local_id, ((ns_code, name_bytes), existing_id)) in subject_entries
+        .iter()
+        .zip(subject_existing_ids.into_iter())
+        .enumerate()
+    {
 
         let global_sid64 = match existing_id {
             Some(sid64) => {
@@ -704,33 +713,6 @@ fn reconcile_chunk_to_global(
         subject_remap[chunk_local_id] = global_sid64;
 
         let processed = chunk_local_id + 1;
-        if lookup_elapsed_ms >= SLOW_LOOKUP_WARN_MS {
-            tracing::warn!(
-                processed,
-                total = subject_entries.len(),
-                ns_code = *ns_code,
-                name_len = name_bytes.len(),
-                key_len = reverse_key.len(),
-                lookup_elapsed_ms,
-                lookup_disk_reads = subject_tree
-                    .disk_reads()
-                    .saturating_sub(lookup_disk_reads_before),
-                lookup_local_file_reads = subject_tree
-                    .local_file_reads()
-                    .saturating_sub(lookup_local_file_reads_before),
-                lookup_remote_fetches = subject_tree
-                    .remote_fetches()
-                    .saturating_sub(lookup_remote_fetches_before),
-                lookup_cache_hits = subject_tree
-                    .cache_hits()
-                    .saturating_sub(lookup_cache_hits_before),
-                lookup_cache_misses = subject_tree
-                    .cache_misses()
-                    .saturating_sub(lookup_cache_misses_before),
-                "V6 incremental resolve: slow subject reverse lookup"
-            );
-        }
-
         let should_info_progress = processed % INFO_PROGRESS_EVERY == 0
             || subject_last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL;
         if should_info_progress {
@@ -843,17 +825,15 @@ fn reconcile_chunk_to_global(
         "V6 incremental resolve: string reconciliation starting"
     );
 
-    for (chunk_local_id, value_bytes) in string_entries.iter().enumerate() {
-        let lookup_started = Instant::now();
-        let lookup_disk_reads_before = string_tree.disk_reads();
-        let lookup_local_file_reads_before = string_tree.local_file_reads();
-        let lookup_remote_fetches_before = string_tree.remote_fetches();
-        let lookup_cache_hits_before = string_tree.cache_hits();
-        let lookup_cache_misses_before = string_tree.cache_misses();
-        let existing_id = string_tree
-            .reverse_lookup(value_bytes)
-            .map_err(IncrementalResolveError::Io)?;
-        let lookup_elapsed_ms = lookup_started.elapsed().as_millis() as u64;
+    let string_existing_ids = string_tree
+        .reverse_lookup_many(string_entries.iter().map(Vec::as_slice))
+        .map_err(IncrementalResolveError::Io)?;
+
+    for (chunk_local_id, (value_bytes, existing_id)) in string_entries
+        .iter()
+        .zip(string_existing_ids.into_iter())
+        .enumerate()
+    {
 
         let global_str_id = match existing_id {
             Some(id) => {
@@ -871,31 +851,6 @@ fn reconcile_chunk_to_global(
         string_remap[chunk_local_id] = global_str_id;
 
         let processed = chunk_local_id + 1;
-        if lookup_elapsed_ms >= SLOW_LOOKUP_WARN_MS {
-            tracing::warn!(
-                processed,
-                total = string_entries.len(),
-                value_len = value_bytes.len(),
-                lookup_elapsed_ms,
-                lookup_disk_reads = string_tree
-                    .disk_reads()
-                    .saturating_sub(lookup_disk_reads_before),
-                lookup_local_file_reads = string_tree
-                    .local_file_reads()
-                    .saturating_sub(lookup_local_file_reads_before),
-                lookup_remote_fetches = string_tree
-                    .remote_fetches()
-                    .saturating_sub(lookup_remote_fetches_before),
-                lookup_cache_hits = string_tree
-                    .cache_hits()
-                    .saturating_sub(lookup_cache_hits_before),
-                lookup_cache_misses = string_tree
-                    .cache_misses()
-                    .saturating_sub(lookup_cache_misses_before),
-                "V6 incremental resolve: slow string reverse lookup"
-            );
-        }
-
         let should_info_progress = processed % INFO_PROGRESS_EVERY == 0
             || string_last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL;
         if should_info_progress {

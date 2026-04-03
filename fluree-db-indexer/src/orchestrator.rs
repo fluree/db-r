@@ -924,7 +924,7 @@ where
         debug!(
             ledger_id = %ledger_id,
             process_elapsed_ms = process_started.elapsed().as_millis(),
-            "Queued indexing is about to call build_index_for_ledger"
+            "Queued indexing is about to call build_index_for_record"
         );
         // Execute refresh-first indexing to CURRENT commit_t
         info!(
@@ -935,13 +935,8 @@ where
             pending_min_t = ?pending_min_t,
             "Starting index build for queued work"
         );
-        let result = crate::build_index_for_ledger(
-            &self.storage,
-            self.nameservice.as_ref(),
-            ledger_id,
-            self.config.clone(),
-        )
-        .await;
+        let result =
+            crate::build_index_for_record(&self.storage, &record, self.config.clone()).await;
 
         match result {
             Ok(index_result) => {
@@ -1086,6 +1081,21 @@ pub struct PostCommitIndexResult {
 /// - Never fails the commit path; returns status + error string for logging.
 /// - **Applies index even if publish fails** for local correctness.
 #[cfg(feature = "embedded-orchestrator")]
+fn current_ns_record(ledger: &LedgerState) -> Option<&fluree_db_nameservice::NsRecord> {
+    let record = ledger.ns_record.as_ref()?;
+    let commit_matches =
+        record.commit_t == ledger.t() && record.commit_head_id == ledger.head_commit_id;
+    let index_matches =
+        record.index_t == ledger.index_t() && record.index_head_id == ledger.head_index_id;
+
+    if record.ledger_id == ledger.ledger_id() && commit_matches && index_matches {
+        Some(record)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "embedded-orchestrator")]
 pub async fn maybe_refresh_after_commit<S, N>(
     storage: &S,
     nameservice: &N,
@@ -1136,7 +1146,13 @@ where
         storage.storage_method(),
     );
 
-    match crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await {
+    let build_result = if let Some(record) = current_ns_record(&ledger) {
+        crate::build_index_for_record(storage, record, indexer_config).await
+    } else {
+        crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await
+    };
+
+    match build_result {
         Ok(result) => {
             // Track publish result but continue regardless
             let publish_result = nameservice
@@ -1210,8 +1226,11 @@ where
         storage.storage_method(),
     );
 
-    let result =
-        crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await?;
+    let result = if let Some(record) = current_ns_record(&ledger) {
+        crate::build_index_for_record(storage, record, indexer_config).await?
+    } else {
+        crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await?
+    };
 
     nameservice
         .publish_index(&ledger_addr, result.index_t, &result.root_id)

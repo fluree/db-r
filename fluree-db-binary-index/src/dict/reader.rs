@@ -50,6 +50,9 @@ pub enum LeafSource {
 pub struct DictTreeReader {
     branch: DictBranch,
     leaf_source: LeafSource,
+    /// Optional disk-backed artifact cache directory for whole remote dict leaves.
+    /// Used in remote/object-store environments to avoid repeated full-blob fetches.
+    disk_cache_dir: Option<PathBuf>,
     /// Shared global cache for dict leaf blobs. Content-addressed leaves
     /// use `xxh3_128(cas_address)` as the cache key — immutable, no
     /// epoch/time dimension needed.
@@ -68,6 +71,7 @@ impl DictTreeReader {
         Self {
             branch,
             leaf_source,
+            disk_cache_dir: None,
             global_cache: None,
             disk_reads: AtomicU64::new(0),
             local_file_reads: AtomicU64::new(0),
@@ -90,6 +94,7 @@ impl DictTreeReader {
         Self {
             branch,
             leaf_source,
+            disk_cache_dir: None,
             global_cache: Some(cache),
             disk_reads: AtomicU64::new(0),
             local_file_reads: AtomicU64::new(0),
@@ -108,6 +113,7 @@ impl DictTreeReader {
         Self {
             branch,
             leaf_source: LeafSource::InMemory(arc_leaves),
+            disk_cache_dir: None,
             global_cache: None,
             disk_reads: AtomicU64::new(0),
             local_file_reads: AtomicU64::new(0),
@@ -126,6 +132,7 @@ impl DictTreeReader {
         cs: &Arc<dyn ContentStore>,
         refs: &crate::format::wire_helpers::DictTreeRefs,
         leaflet_cache: Option<&Arc<LeafletCache>>,
+        disk_cache_dir: Option<&std::path::Path>,
     ) -> io::Result<Self> {
         let branch_bytes = cs
             .get(&refs.branch)
@@ -154,15 +161,22 @@ impl DictTreeReader {
             }
         };
 
-        match leaflet_cache {
-            Some(cache) => Ok(Self::with_cache(branch, leaf_source, Arc::clone(cache))),
-            None => Ok(Self::new(branch, leaf_source)),
-        }
+        let mut reader = match leaflet_cache {
+            Some(cache) => Self::with_cache(branch, leaf_source, Arc::clone(cache)),
+            None => Self::new(branch, leaf_source),
+        };
+        reader.disk_cache_dir = disk_cache_dir.map(|p| p.to_path_buf());
+        Ok(reader)
     }
 
     /// Attach a global cache to this reader.
     pub fn set_cache(&mut self, cache: Option<Arc<LeafletCache>>) {
         self.global_cache = cache;
+    }
+
+    /// Attach or clear the disk-backed artifact cache directory.
+    pub fn set_disk_cache_dir(&mut self, cache_dir: Option<PathBuf>) {
+        self.disk_cache_dir = cache_dir;
     }
 
     /// The underlying branch manifest.
@@ -253,6 +267,68 @@ impl DictTreeReader {
         Ok(result)
     }
 
+    /// Batched reverse lookup: find IDs by key bytes while loading each touched
+    /// leaf at most once for the batch.
+    pub fn reverse_lookup_many<'a, I>(&self, keys: I) -> io::Result<Vec<Option<u64>>>
+    where
+        I: IntoIterator<Item = &'a [u8]>,
+    {
+        const SLOW_BATCH_WARN_MS: u64 = 250;
+
+        let lookup_started = Instant::now();
+        let key_refs: Vec<&[u8]> = keys.into_iter().collect();
+        if key_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let find_leaf_started = Instant::now();
+        let mut results = vec![None; key_refs.len()];
+        let mut key_indices_by_leaf = vec![Vec::<usize>::new(); self.branch.leaves.len()];
+
+        for (idx, key) in key_refs.iter().enumerate() {
+            if let Some(leaf_idx) = self.branch.find_leaf(key) {
+                key_indices_by_leaf[leaf_idx].push(idx);
+            }
+        }
+        let find_leaf_ms = find_leaf_started.elapsed().as_millis() as u64;
+
+        let load_and_decode_started = Instant::now();
+        let mut touched_leaves = 0usize;
+        for (leaf_idx, key_indices) in key_indices_by_leaf.iter().enumerate() {
+            if key_indices.is_empty() {
+                continue;
+            }
+
+            touched_leaves += 1;
+            let address = &self.branch.leaves[leaf_idx].address;
+            let leaf_data = self.load_leaf(address)?;
+            let leaf = ReverseLeaf::from_bytes(&leaf_data)?;
+            for &key_idx in key_indices {
+                results[key_idx] = leaf.lookup(key_refs[key_idx]);
+            }
+        }
+        let load_and_decode_ms = load_and_decode_started.elapsed().as_millis() as u64;
+        let total_ms = lookup_started.elapsed().as_millis() as u64;
+
+        if total_ms >= SLOW_BATCH_WARN_MS {
+            tracing::warn!(
+                key_count = key_refs.len(),
+                touched_leaves,
+                total_ms,
+                find_leaf_ms,
+                load_and_decode_ms,
+                disk_reads = self.disk_reads(),
+                local_file_reads = self.local_file_reads(),
+                remote_fetches = self.remote_fetches(),
+                cache_hits = self.cache_hits(),
+                cache_misses = self.cache_misses(),
+                "dict tree: slow batched reverse lookup"
+            );
+        }
+
+        Ok(results)
+    }
+
     /// Range scan: find all entries whose key is in `[start_key, end_key)`.
     ///
     /// Scans across multiple B-tree leaves as needed. Returns `(key_bytes, id)` pairs
@@ -307,9 +383,25 @@ impl DictTreeReader {
     /// `xxh3_128(cas_address)`) to avoid repeated disk reads.
     /// Without a cache: reads directly from disk.
     fn load_leaf(&self, address: &str) -> io::Result<Arc<[u8]>> {
+        fn read_disk_cached_leaf(
+            disk_cache_dir: Option<&PathBuf>,
+            cid: &ContentId,
+        ) -> io::Result<Option<Vec<u8>>> {
+            let Some(cache_dir) = disk_cache_dir else {
+                return Ok(None);
+            };
+            let cache_path = cache_dir.join(cid.to_string());
+            match std::fs::read(&cache_path) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(err) => Err(err),
+            }
+        }
+
         fn fetch_remote_leaf_bytes(
             cs: Arc<dyn ContentStore>,
             cid: ContentId,
+            disk_cache_dir: Option<PathBuf>,
         ) -> io::Result<Vec<u8>> {
             // DictTreeReader is sync, but ContentStore::get is async.
             //
@@ -323,7 +415,19 @@ impl DictTreeReader {
             let (tx, rx) = std::sync::mpsc::sync_channel::<Result<Vec<u8>, String>>(1);
             std::thread::spawn(move || {
                 let res = handle
-                    .block_on(async { cs.get(&cid).await })
+                    .block_on(async {
+                        if let Some(cache_dir) = disk_cache_dir {
+                            crate::read::artifact_cache::fetch_cached_bytes_cid(
+                                cs.as_ref(),
+                                &cid,
+                                &cache_dir,
+                            )
+                            .await
+                            .map_err(|e| e.to_string())
+                        } else {
+                            cs.get(&cid).await.map_err(|e| e.to_string())
+                        }
+                    })
                     .map_err(|e| e.to_string());
                 let _ = tx.send(res);
             });
@@ -416,8 +520,15 @@ impl DictTreeReader {
                     let cid = cid.clone();
                     let disk_reads = &self.disk_reads;
                     let remote_fetches = &self.remote_fetches;
+                    let local_file_reads = &self.local_file_reads;
                     let address = address.to_owned();
+                    let disk_cache_dir = self.disk_cache_dir.clone();
                     cache.try_get_or_load_dict_leaf(cache_key, || {
+                        if let Some(bytes) = read_disk_cached_leaf(disk_cache_dir.as_ref(), &cid)? {
+                            disk_reads.fetch_add(1, Ordering::Relaxed);
+                            local_file_reads.fetch_add(1, Ordering::Relaxed);
+                            return Ok(Arc::from(bytes.into_boxed_slice()));
+                        }
                         tracing::info!(
                             address,
                             %cid,
@@ -426,7 +537,7 @@ impl DictTreeReader {
                         disk_reads.fetch_add(1, Ordering::Relaxed);
                         remote_fetches.fetch_add(1, Ordering::Relaxed);
                         let fetch_started = Instant::now();
-                        let bytes = fetch_remote_leaf_bytes(cs, cid)?;
+                        let bytes = fetch_remote_leaf_bytes(cs, cid, disk_cache_dir)?;
                         tracing::info!(
                             address,
                             bytes = bytes.len(),
@@ -436,15 +547,24 @@ impl DictTreeReader {
                         Ok(Arc::from(bytes.into_boxed_slice()))
                     })
                 } else {
-                    self.disk_reads.fetch_add(1, Ordering::Relaxed);
-                    self.remote_fetches.fetch_add(1, Ordering::Relaxed);
+                    if let Some(bytes) = read_disk_cached_leaf(self.disk_cache_dir.as_ref(), cid)? {
+                        self.disk_reads.fetch_add(1, Ordering::Relaxed);
+                        self.local_file_reads.fetch_add(1, Ordering::Relaxed);
+                        return Ok(Arc::from(bytes.into_boxed_slice()));
+                    }
                     tracing::info!(
                         address,
                         %cid,
                         "dict tree: remote leaf fetch starting"
                     );
+                    self.disk_reads.fetch_add(1, Ordering::Relaxed);
+                    self.remote_fetches.fetch_add(1, Ordering::Relaxed);
                     let fetch_started = Instant::now();
-                    let bytes = fetch_remote_leaf_bytes(Arc::clone(cs), cid.clone())?;
+                    let bytes = fetch_remote_leaf_bytes(
+                        Arc::clone(cs),
+                        cid.clone(),
+                        self.disk_cache_dir.clone(),
+                    )?;
                     tracing::info!(
                         address,
                         bytes = bytes.len(),
