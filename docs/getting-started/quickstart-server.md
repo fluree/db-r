@@ -4,43 +4,55 @@ This guide will get the Fluree server running on your machine in minutes.
 
 ## Installation
 
-### Option 1: Download Pre-built Binary
-
-Download the latest release for your platform from [GitHub Releases](https://github.com/fluree/db-rust/releases):
+### Option 1: Shell Installer (macOS / Linux)
 
 ```bash
-# Linux
-curl -L https://github.com/fluree/db-rust/releases/latest/download/fluree-server-linux -o fluree-server
-chmod +x fluree-server
-
-# macOS
-curl -L https://github.com/fluree/db-rust/releases/latest/download/fluree-server-macos -o fluree-server
-chmod +x fluree-server
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/fluree/db/releases/latest/download/fluree-db-cli-installer.sh | sh
 ```
 
-### Option 2: Build from Source
+### Option 2: Homebrew (macOS / Linux)
+
+```bash
+brew install fluree/tap/fluree
+```
+
+### Option 3: Download Pre-built Binary
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/fluree/db/releases):
+
+```bash
+# Linux (x86_64)
+curl -L https://github.com/fluree/db/releases/latest/download/fluree-db-cli-x86_64-unknown-linux-gnu.tar.xz | tar xJ
+chmod +x fluree-db-cli-x86_64-unknown-linux-gnu/fluree
+
+# macOS (Apple Silicon)
+curl -L https://github.com/fluree/db/releases/latest/download/fluree-db-cli-aarch64-apple-darwin.tar.xz | tar xJ
+chmod +x fluree-db-cli-aarch64-apple-darwin/fluree
+```
+
+### Option 4: Build from Source
 
 If you have Rust installed:
 
 ```bash
 # Clone the repository
-git clone https://github.com/fluree/db-rust.git
-cd db-rust
+git clone https://github.com/fluree/db.git
+cd db
 
-# Build the server
-cargo build --release -p fluree-db-server
+# Build the CLI (includes embedded server)
+cargo build --release -p fluree-db-cli
 
-# Binary will be at target/release/fluree-server
+# Binary will be at target/release/fluree
 ```
 
-### Option 3: Docker
+### Option 5: Docker
 
 ```bash
 # Pull the image
-docker pull fluree/fluree-server:latest
+docker pull fluree/fluree:latest
 
 # Run the container
-docker run -p 8090:8090 fluree/fluree-server:latest
+docker run -p 8090:8090 fluree/fluree:latest
 ```
 
 ## Start the Server
@@ -50,7 +62,7 @@ docker run -p 8090:8090 fluree/fluree-server:latest
 Start the server with in-memory storage (data is lost on restart):
 
 ```bash
-./fluree-server
+fluree server run
 ```
 
 You should see output like:
@@ -66,19 +78,19 @@ INFO fluree_db_server: Server listening on 0.0.0.0:8090
 For persistent storage, specify a storage path:
 
 ```bash
-./fluree-server --storage-path /var/lib/fluree
+fluree server run --storage-path /var/lib/fluree
 ```
 
 ### Custom Port
 
 ```bash
-./fluree-server --listen-addr 0.0.0.0:9090
+fluree server run --listen-addr 0.0.0.0:9090
 ```
 
 ### Debug Logging
 
 ```bash
-./fluree-server --log-level debug
+fluree server run --log-level debug
 ```
 
 ## Verify Installation
@@ -167,12 +179,12 @@ All options can be set via CLI flags or environment variables:
 
 ```bash
 # CLI flag
-./fluree-server --storage-path /data --log-level debug
+fluree server run --storage-path /data --log-level debug
 
 # Environment variables
 export FLUREE_STORAGE_PATH=/data
 export FLUREE_LOG_LEVEL=debug
-./fluree-server
+fluree server run
 ```
 
 See [Configuration](../operations/configuration.md) for all options.
@@ -182,13 +194,13 @@ See [Configuration](../operations/configuration.md) for all options.
 ### Development
 
 ```bash
-./fluree-server --log-level debug
+fluree server run --log-level debug
 ```
 
 ### Production (Single Server)
 
 ```bash
-./fluree-server \
+fluree server run \
   --storage-path /var/lib/fluree \
   --indexing-enabled \
   --admin-auth-mode required \
@@ -198,7 +210,7 @@ See [Configuration](../operations/configuration.md) for all options.
 ### With Background Indexing
 
 ```bash
-./fluree-server \
+fluree server run \
   --storage-path /var/lib/fluree \
   --indexing-enabled
 ```
@@ -211,7 +223,7 @@ See [Configuration](../operations/configuration.md) for all options.
 docker run -d \
   --name fluree \
   -p 8090:8090 \
-  fluree/fluree-server:latest
+  fluree/fluree:latest
 ```
 
 ### With Persistent Storage
@@ -222,7 +234,7 @@ docker run -d \
   -p 8090:8090 \
   -v /path/to/data:/data \
   -e FLUREE_STORAGE_PATH=/data \
-  fluree/fluree-server:latest
+  fluree/fluree:latest
 ```
 
 ### Docker Compose
@@ -234,7 +246,7 @@ version: '3.8'
 
 services:
   fluree:
-    image: fluree/fluree-server:latest
+    image: fluree/fluree:latest
     ports:
       - "8090:8090"
     environment:
@@ -261,7 +273,7 @@ docker-compose up -d
 
 ```bash
 # Use a different port
-./fluree-server --listen-addr 0.0.0.0:9090
+fluree server run --listen-addr 0.0.0.0:9090
 ```
 
 ### Permission Denied (File Storage)
@@ -276,7 +288,7 @@ chmod -R 755 /var/lib/fluree
 Check logs with debug level:
 
 ```bash
-./fluree-server --log-level debug
+fluree server run --log-level debug
 ```
 
 ### Connection Refused
@@ -285,7 +297,7 @@ Verify the server is running and check the listen address:
 
 ```bash
 # Listen on all interfaces (not just localhost)
-./fluree-server --listen-addr 0.0.0.0:8090
+fluree server run --listen-addr 0.0.0.0:8090
 ```
 
 ## Next Steps

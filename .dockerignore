@@ -1,0 +1,7 @@
+target/
+.git/
+docs/
+testsuite-sparql/
+benchmarks/
+otel/
+*.md

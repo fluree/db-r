@@ -2054,6 +2054,12 @@ Graph source metadata can be discovered via the [POST /nameservice/query](#post-
 
 Trigger manual indexing for a ledger.
 
+This endpoint triggers background indexing and returns immediately. If you call
+indexing through the Rust API via `trigger_index()`, the optional
+`TriggerIndexOptions.timeout_ms` is caller-owned: omit it to wait indefinitely,
+or set it explicitly when the calling environment has a hard runtime limit such
+as AWS Lambda's 15-minute maximum.
+
 **URL:**
 ```
 POST /admin/index?ledger={ledger-id}

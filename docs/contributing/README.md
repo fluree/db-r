@@ -69,8 +69,8 @@ Guide to the manifest-driven W3C compliance test suite:
 
 ```bash
 # Fork on GitHub, then clone
-git clone https://github.com/YOUR-USERNAME/db-rust.git
-cd db-rust
+git clone https://github.com/YOUR-USERNAME/db.git
+cd db
 ```
 
 ### 2. Create Branch

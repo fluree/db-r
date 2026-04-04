@@ -106,6 +106,10 @@ fluree-server \
 - `POST /admin/index` — Trigger manual indexing
 - `POST /admin/compact` — Compact indexes
 
+`POST /admin/index` triggers work and returns immediately. If you need to wait
+for indexing in custom Rust code, use `trigger_index()` and set a timeout only
+when your runtime has a hard ceiling, such as Lambda.
+
 **Replication (Storage Proxy):**
 - `GET /commits/{ledger}` — Paginated commit export
 - `POST /pack/{ledger}` — Binary pack stream
