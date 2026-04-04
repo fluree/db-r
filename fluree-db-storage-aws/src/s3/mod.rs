@@ -76,6 +76,8 @@ pub struct S3Storage {
     bucket: String,
     /// Optional key prefix
     prefix: Option<String>,
+    /// Per-request send timeout (from `S3Config::timeout_ms`, or default 35s)
+    send_timeout: Duration,
 }
 
 impl Debug for S3Storage {
@@ -155,10 +157,16 @@ impl S3Storage {
 
         let client = Client::from_conf(s3_config_builder.build());
 
+        let send_timeout = config
+            .timeout_ms
+            .map(Duration::from_millis)
+            .unwrap_or(Duration::from_secs(35));
+
         Ok(Self {
             client,
             bucket: config.bucket,
             prefix: config.prefix,
+            send_timeout,
         })
     }
 
@@ -168,6 +176,7 @@ impl S3Storage {
             client,
             bucket,
             prefix,
+            send_timeout: Duration::from_secs(35),
         }
     }
 
@@ -229,14 +238,14 @@ impl StorageRead for S3Storage {
     async fn read_bytes(&self, address: &str) -> std::result::Result<Vec<u8>, CoreError> {
         const SLOW_S3_SEND_WARN_MS: u64 = 1_000;
         const SLOW_S3_BODY_WARN_MS: u64 = 5_000;
-        const GET_OBJECT_SEND_TIMEOUT: Duration = Duration::from_secs(35);
 
+        let send_timeout = self.send_timeout;
         let key = self.to_key(address)?;
         let total_started = Instant::now();
 
         let send_started = Instant::now();
         let request = self.client.get_object().bucket(&self.bucket).key(&key);
-        let response = match tokio::time::timeout(GET_OBJECT_SEND_TIMEOUT, request.send()).await {
+        let response = match tokio::time::timeout(send_timeout, request.send()).await {
             Ok(Ok(response)) => response,
             Ok(Err(e)) => return Err(map_s3_error_core(e, &key)),
             Err(_) => {
@@ -246,13 +255,13 @@ impl StorageRead for S3Storage {
                     key = key.as_str(),
                     address,
                     send_elapsed_ms,
-                    timeout_ms = GET_OBJECT_SEND_TIMEOUT.as_millis() as u64,
+                    timeout_ms = send_timeout.as_millis() as u64,
                     is_express = Self::is_express_bucket(&self.bucket),
                     "s3 read_bytes: get_object send timed out"
                 );
                 return Err(CoreError::io(format!(
                     "S3 GetObject send timed out after {} ms for {}",
-                    GET_OBJECT_SEND_TIMEOUT.as_millis(),
+                    send_timeout.as_millis(),
                     key
                 )));
             }

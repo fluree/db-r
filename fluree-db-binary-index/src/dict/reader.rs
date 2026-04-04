@@ -402,7 +402,6 @@ impl DictTreeReader {
             cs: Arc<dyn ContentStore>,
             cid: ContentId,
             disk_cache_dir: Option<PathBuf>,
-            _address: String,
         ) -> io::Result<Vec<u8>> {
             // DictTreeReader is sync, but ContentStore::get is async.
             //
@@ -547,7 +546,7 @@ impl DictTreeReader {
                         remote_fetches.fetch_add(1, Ordering::Relaxed);
                         let fetch_started = Instant::now();
                         let bytes =
-                            fetch_remote_leaf_bytes(cs, cid, disk_cache_dir, address.clone())?;
+                            fetch_remote_leaf_bytes(cs, cid, disk_cache_dir)?;
                         tracing::debug!(
                             address,
                             bytes = bytes.len(),
@@ -574,7 +573,6 @@ impl DictTreeReader {
                         Arc::clone(cs),
                         cid.clone(),
                         self.disk_cache_dir.clone(),
-                        address.to_owned(),
                     )?;
                     tracing::debug!(
                         address,
