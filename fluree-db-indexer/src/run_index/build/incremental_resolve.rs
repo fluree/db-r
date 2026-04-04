@@ -88,6 +88,10 @@ pub struct IncrementalResolveConfig {
     pub from_t: i64,
     /// Optional disk-backed artifact cache directory for remote dict leaves.
     pub artifact_cache_dir: Option<std::path::PathBuf>,
+    /// Maximum cumulative commit bytes to load during the commit-chain walk.
+    /// If exceeded, incremental resolution aborts so the caller can fall back
+    /// to a full rebuild. `None` means unlimited.
+    pub max_commit_bytes: Option<usize>,
 }
 
 /// Result of V6 incremental commit resolution.
@@ -279,8 +283,13 @@ pub async fn resolve_incremental_commits_v6(
     // 5. Walk commit chain (commit format is version-independent).
     let (walked_commits, t_walk_chain_ms) = {
         let t0 = Instant::now();
-        let commits =
-            walk_commit_chain_since(cs.as_ref(), &config.head_commit_id, config.from_t).await?;
+        let commits = walk_commit_chain_since(
+            cs.as_ref(),
+            &config.head_commit_id,
+            config.from_t,
+            config.max_commit_bytes,
+        )
+        .await?;
         (commits, t0.elapsed().as_millis() as u64)
     };
 
@@ -538,12 +547,31 @@ async fn walk_commit_chain_since(
     cs: &dyn ContentStore,
     head_id: &ContentId,
     from_t: i64,
+    max_commit_bytes: Option<usize>,
 ) -> Result<Vec<WalkedCommit>, IncrementalResolveError> {
     let mut commits = Vec::new();
     let mut current = Some(head_id.clone());
+    let mut cumulative_bytes: usize = 0;
     let walk_started = Instant::now();
 
     while let Some(cid) = current {
+        // Check budget *before* fetching the next commit — if we've already
+        // exceeded the limit (the previous commit pushed us over), stop here.
+        if let Some(budget) = max_commit_bytes {
+            if cumulative_bytes >= budget {
+                tracing::info!(
+                    cumulative_bytes,
+                    budget,
+                    commits_so_far = commits.len(),
+                    "V6 incremental resolve: commit-chain walk exceeded byte budget, aborting"
+                );
+                return Err(IncrementalResolveError::CommitChain(format!(
+                    "commit chain bytes ({cumulative_bytes}) exceeded budget ({budget}); \
+                     falling back to full rebuild"
+                )));
+            }
+        }
+
         let bytes = cs.get(&cid).await.map_err(|e| {
             IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
         })?;
@@ -558,6 +586,7 @@ async fn walk_commit_chain_since(
             break;
         }
 
+        cumulative_bytes += bytes.len();
         current = envelope.previous_ref.map(|r| r.id);
         commits.push(WalkedCommit {
             cid,
@@ -569,6 +598,7 @@ async fn walk_commit_chain_since(
     commits.reverse();
     tracing::debug!(
         commits = commits.len(),
+        cumulative_bytes,
         from_t,
         head = %head_id,
         elapsed_ms = walk_started.elapsed().as_millis() as u64,

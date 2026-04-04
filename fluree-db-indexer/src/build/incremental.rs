@@ -320,6 +320,7 @@ where
         head_commit_id,
         from_t,
         artifact_cache_dir: Some(cache_dir.clone()),
+        max_commit_bytes: config.incremental_max_commit_bytes,
     };
     let novelty = resolve_incremental_commits_v6(content_store.clone(), resolve_config)
         .await

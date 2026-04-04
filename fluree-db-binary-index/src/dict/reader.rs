@@ -545,8 +545,7 @@ impl DictTreeReader {
                         disk_reads.fetch_add(1, Ordering::Relaxed);
                         remote_fetches.fetch_add(1, Ordering::Relaxed);
                         let fetch_started = Instant::now();
-                        let bytes =
-                            fetch_remote_leaf_bytes(cs, cid, disk_cache_dir)?;
+                        let bytes = fetch_remote_leaf_bytes(cs, cid, disk_cache_dir)?;
                         tracing::debug!(
                             address,
                             bytes = bytes.len(),

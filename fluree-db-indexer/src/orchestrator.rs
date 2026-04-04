@@ -1146,6 +1146,14 @@ where
         storage.storage_method(),
     );
 
+    // Use the ledger's reindex_max_bytes as the commit-walk byte budget
+    // so incremental indexing falls back to a full rebuild when the
+    // commit chain would exceed the novelty threshold.
+    let mut indexer_config = indexer_config;
+    if indexer_config.incremental_max_commit_bytes.is_none() {
+        indexer_config.incremental_max_commit_bytes = Some(index_config.reindex_max_bytes);
+    }
+
     let build_result = if let Some(record) = current_ns_record(&ledger) {
         crate::build_index_for_record(storage, record, indexer_config).await
     } else {
