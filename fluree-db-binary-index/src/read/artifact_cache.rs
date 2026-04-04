@@ -136,14 +136,14 @@ impl DiskArtifactCache {
         let budget_bytes = match std::env::var("FLUREE_DISK_CACHE_BUDGET_BYTES") {
             Ok(val) => match val.parse::<u64>() {
                 Ok(0) => {
-                    tracing::info!(
+                    tracing::debug!(
                         cache_dir = %root.display(),
                         "FLUREE_DISK_CACHE_BUDGET_BYTES=0; disk cache writes disabled"
                     );
                     0
                 }
                 Ok(bytes) => {
-                    tracing::info!(
+                    tracing::debug!(
                         cache_dir = %root.display(),
                         budget_bytes = bytes,
                         "using FLUREE_DISK_CACHE_BUDGET_BYTES override"

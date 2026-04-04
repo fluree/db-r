@@ -69,19 +69,13 @@ pub(crate) fn parse_sparql_to_ir(
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let mut ast = parse_and_validate_sparql(sparql)?;
 
-    // Inject default prefixes from the ledger's stored @context.
-    // Only add prefixes not already declared in the query prologue so that
-    // explicit PREFIX declarations always take precedence.
-    if let Some(ctx_obj) = default_context.and_then(|v| v.as_object()) {
-        let declared: std::collections::HashSet<String> = ast
-            .prologue
-            .prefixes
-            .iter()
-            .map(|p| p.prefix.to_string())
-            .collect();
-
-        for (short, iri_val) in ctx_obj {
-            if !declared.contains(short.as_str()) {
+    // Inject default prefixes from the ledger's stored @context, but only
+    // when the query declares no PREFIX of its own. Any explicit PREFIX
+    // declaration (even `PREFIX : <>`) signals the user is managing their
+    // own prefix environment, so we skip default injection entirely.
+    if ast.prologue.prefixes.is_empty() {
+        if let Some(ctx_obj) = default_context.and_then(|v| v.as_object()) {
+            for (short, iri_val) in ctx_obj {
                 if let Some(iri) = iri_val.as_str() {
                     ast.prologue
                         .prefixes

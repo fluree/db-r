@@ -68,7 +68,7 @@ pub fn batched_lookup_predicate_refs(
 
     let min_s = *sorted_subjects.first().unwrap_or(&0);
     let max_s = *sorted_subjects.last().unwrap_or(&min_s);
-    tracing::info!(
+    tracing::debug!(
         g_id,
         p_id,
         subjects = sorted_subjects.len(),
@@ -111,7 +111,7 @@ pub fn batched_lookup_predicate_refs(
                 let r = hb_scanned_rows.load(std::sync::atomic::Ordering::Relaxed);
                 let c = hb_chunk_idx.load(std::sync::atomic::Ordering::Relaxed);
                 let h = hb_hits.load(std::sync::atomic::Ordering::Relaxed);
-                tracing::info!(
+                tracing::debug!(
                     g_id,
                     p_id,
                     chunk_idx = c,
@@ -204,7 +204,7 @@ pub fn batched_lookup_predicate_refs(
     let _ = stop_tx.send(());
     let _ = hb.join();
 
-    tracing::info!(
+    tracing::debug!(
         g_id,
         p_id,
         subjects_with_hits = out.len(),

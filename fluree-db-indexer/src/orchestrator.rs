@@ -974,7 +974,7 @@ where
                         )
                         .await
                         {
-                            warn!(
+                            debug!(
                                 error = %e,
                                 root_id = %gc_root_id,
                                 "Background GC failed (non-fatal)"

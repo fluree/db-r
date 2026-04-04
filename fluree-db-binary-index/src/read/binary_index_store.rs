@@ -208,7 +208,7 @@ impl BinaryIndexStore {
         cache_dir: &Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
     ) -> io::Result<Self> {
-        tracing::info!("BinaryIndexStore::load_from_root_v6 starting");
+        tracing::debug!("BinaryIndexStore::load_from_root_v6 starting");
         std::fs::create_dir_all(cache_dir)?;
 
         // ── Dict loading ──────────────────────────────────────────────────────────────
@@ -279,7 +279,7 @@ impl BinaryIndexStore {
             .flat_map(|gi| gi.orders.values())
             .map(|b| b.leaves.len())
             .sum();
-        tracing::info!(
+        tracing::debug!(
             graphs = graph_indexes.len(),
             leaves = leaf_count,
             "loaded V6 graph indexes"
