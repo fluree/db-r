@@ -1472,12 +1472,19 @@ impl BinaryIndexStore {
         lang_id: u16,
         g_id: GraphId,
     ) -> io::Result<FlakeValue> {
+        let obj_kind = ObjKind::from_u8(o_kind);
         let registry = OTypeRegistry::builtin_only();
-        let o_type = registry.resolve(
-            ObjKind::from_u8(o_kind),
-            DatatypeDictId::from_u16(dt_id),
-            lang_id,
-        );
+        let o_type = registry.resolve(obj_kind, DatatypeDictId::from_u16(dt_id), lang_id);
+
+        // Handle legacy data where integral doubles were stored as NUM_INT but
+        // the property's datatype is float/double. The OType resolves to F64
+        // decode, but the key was encoded with encode_i64. Decode as integer
+        // and convert to f64 to avoid bit-reinterpretation corruption. (fluree/db-r#142)
+        if obj_kind == ObjKind::NUM_INT && o_type.decode_kind() == DecodeKind::F64 {
+            let int_val = ObjKey::from_u64(o_key).decode_i64();
+            return Ok(FlakeValue::Double(int_val as f64));
+        }
+
         self.decode_value_v3(o_type.as_u16(), o_key, p_id, g_id)
     }
 }

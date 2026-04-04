@@ -1185,3 +1185,120 @@ async fn values_decimal_string_becomes_bigdecimal() {
         arr
     );
 }
+
+/// Regression test for fluree/db-r#142: JSON integer values with xsd:float or
+/// xsd:double @type were stored as NUM_INT (integer encoding) but decoded as
+/// F64 after indexing, producing garbage subnormal floats.
+#[tokio::test]
+async fn float_typed_integer_values_survive_indexing() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().to_str().unwrap();
+
+    let fluree = FlureeBuilder::file(path).build().expect("build");
+    let ledger0 = fluree.create_ledger("test:floats").await.expect("create");
+
+    let ctx = ctx_datatype();
+
+    let insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:campaign1",
+                "@type": "ex:Campaign",
+                "ex:name": "Alpha",
+                "ex:budget": {"@type": "xsd:float", "@value": 1350000},
+                "ex:revenue": {"@type": "xsd:double", "@value": 5000000}
+            },
+            {
+                "@id": "ex:campaign2",
+                "@type": "ex:Campaign",
+                "ex:name": "Beta",
+                "ex:budget": {"@type": "xsd:float", "@value": 750000.50},
+                "ex:revenue": {"@type": "xsd:double", "@value": 2500000.75}
+            }
+        ]
+    });
+
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+
+    // Query before indexing — values are in novelty, should be correct.
+    let q = json!({
+        "@context": ctx,
+        "select": ["?name", "?budget", "?revenue"],
+        "where": {
+            "@id": "?c",
+            "@type": "ex:Campaign",
+            "ex:name": "?name",
+            "ex:budget": "?budget",
+            "ex:revenue": "?revenue"
+        },
+        "orderBy": "?name"
+    });
+
+    let pre_index = support::query_jsonld(&fluree, &receipt.ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&receipt.ledger.snapshot)
+        .unwrap();
+
+    // Force indexing so values are read from the binary index.
+    let _index = fluree
+        .reindex("test:floats", fluree_db_api::ReindexOptions::default())
+        .await;
+
+    // Re-load ledger state after indexing.
+    let ledger_post = fluree.ledger("test:floats").await.expect("reload ledger");
+
+    let post_index = support::query_jsonld(&fluree, &ledger_post, &q)
+        .await
+        .unwrap()
+        .to_jsonld(&ledger_post.snapshot)
+        .unwrap();
+
+    // Both should return the same values.
+    assert_eq!(
+        pre_index, post_index,
+        "Float values changed after indexing!\n  pre:  {}\n  post: {}",
+        pre_index, post_index,
+    );
+
+    // Verify the actual values are correct (not garbage subnormals).
+    let rows = post_index.as_array().expect("array");
+    assert_eq!(rows.len(), 2, "expected 2 campaigns");
+
+    // Helper: extract f64 from either a bare number or {"@value": n, "@type": ...}
+    let extract_f64 = |v: &JsonValue| -> f64 {
+        v.as_f64()
+            .or_else(|| v.get("@value").and_then(|inner| inner.as_f64()))
+            .unwrap_or_else(|| panic!("expected a number, got: {}", v))
+    };
+
+    // Rows ordered by name: Alpha (campaign1) first, Beta (campaign2) second.
+    // campaign1: budget=1350000, revenue=5000000 (JSON integers → should be floats)
+    let budget1 = extract_f64(&rows[0][1]);
+    let revenue1 = extract_f64(&rows[0][2]);
+    assert!(
+        (budget1 - 1_350_000.0).abs() < 0.01,
+        "budget1 should be 1350000, got {}",
+        budget1
+    );
+    assert!(
+        (revenue1 - 5_000_000.0).abs() < 0.01,
+        "revenue1 should be 5000000, got {}",
+        revenue1
+    );
+
+    // campaign2: budget=750000.50, revenue=2500000.75 (JSON floats → should be fine)
+    let budget2 = extract_f64(&rows[1][1]);
+    let revenue2 = extract_f64(&rows[1][2]);
+    assert!(
+        (budget2 - 750_000.5).abs() < 0.01,
+        "budget2 should be 750000.5, got {}",
+        budget2
+    );
+    assert!(
+        (revenue2 - 2_500_000.75).abs() < 0.01,
+        "revenue2 should be 2500000.75, got {}",
+        revenue2
+    );
+}
