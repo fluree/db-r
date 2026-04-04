@@ -706,7 +706,7 @@ impl CommitResolver {
     ///
     /// Numeric routing:
     /// - Integers -> NumInt (full i64 range, order-preserving)
-    /// - Finite floats: integer-valued that fit i64 -> NumInt; otherwise -> NumF64 (inline)
+    /// - Finite floats -> NumF64 (inline); see fluree/db-r#142
     /// - NaN / Inf -> REJECT (error)
     /// - Overflow BigInt / BigDecimal -> NumBig (per-predicate equality-only arena)
     fn resolve_object(

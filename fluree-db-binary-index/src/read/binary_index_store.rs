@@ -2469,4 +2469,58 @@ mod tests {
             Some(Sid::new(namespaces::OVERFLOW, full_iri))
         );
     }
+
+    /// Regression test for fluree/db-r#142: legacy data where integral doubles
+    /// were stored as NUM_INT but the property datatype is xsd:double/float.
+    /// decode_value_from_kind must detect the mismatch and convert i64 → f64
+    /// instead of reinterpreting integer bits as IEEE 754.
+    #[test]
+    fn decode_value_from_kind_num_int_with_float_datatype() {
+        use fluree_db_core::ids::DatatypeDictId;
+
+        let cache_dir = temp_cache_dir();
+        let cs: Arc<dyn ContentStore> = Arc::new(CountingContentStore::new());
+        let store = empty_store(cs, cache_dir);
+
+        let int_key = ObjKey::encode_i64(1_350_000).as_u64();
+
+        // NUM_INT + dt=DOUBLE → should return Double(1350000.0), not garbage.
+        let val = store
+            .decode_value_from_kind(
+                ObjKind::NUM_INT.as_u8(),
+                int_key,
+                0, // p_id
+                DatatypeDictId::DOUBLE.as_u16(),
+                0, // lang_id
+                0, // g_id
+            )
+            .unwrap();
+        assert_eq!(val, FlakeValue::Double(1_350_000.0));
+
+        // NUM_INT + dt=FLOAT → same fix applies.
+        let val = store
+            .decode_value_from_kind(
+                ObjKind::NUM_INT.as_u8(),
+                int_key,
+                0,
+                DatatypeDictId::FLOAT.as_u16(),
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(val, FlakeValue::Double(1_350_000.0));
+
+        // NUM_INT + dt=INTEGER → should still decode as Long (no mismatch).
+        let val = store
+            .decode_value_from_kind(
+                ObjKind::NUM_INT.as_u8(),
+                int_key,
+                0,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(val, FlakeValue::Long(1_350_000));
+    }
 }

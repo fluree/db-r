@@ -391,13 +391,16 @@ fn process_literal<S: GraphSink>(
             }
         }
         Value::Number(n) => {
-            // When the declared @type is a float/double datatype, always produce
-            // LiteralValue::Double even if the JSON number is an integer. Otherwise
-            // the integer bits get stored as NUM_INT but decoded as F64, producing
-            // garbage subnormal values after indexing. (fluree/db-r#142)
+            // When the declared @type decodes as F64 (float, double, decimal),
+            // always produce LiteralValue::Double even if the JSON number is an
+            // integer. Otherwise the integer bits get stored as NUM_INT but
+            // decoded as F64, producing garbage subnormal values after indexing.
+            // (fluree/db-r#142)
             let is_float_type = {
                 let iri = datatype.as_iri();
-                iri == fluree_vocab::xsd::DOUBLE || iri == fluree_vocab::xsd::FLOAT
+                iri == fluree_vocab::xsd::DOUBLE
+                    || iri == fluree_vocab::xsd::FLOAT
+                    || iri == fluree_vocab::xsd::DECIMAL
             };
             if is_float_type {
                 if let Some(f) = n.as_f64() {

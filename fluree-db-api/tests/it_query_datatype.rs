@@ -1242,9 +1242,10 @@ async fn float_typed_integer_values_survive_indexing() {
         .unwrap();
 
     // Force indexing so values are read from the binary index.
-    let _index = fluree
+    fluree
         .reindex("test:floats", fluree_db_api::ReindexOptions::default())
-        .await;
+        .await
+        .expect("reindex");
 
     // Re-load ledger state after indexing.
     let ledger_post = fluree.ledger("test:floats").await.expect("reload ledger");
