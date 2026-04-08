@@ -1,6 +1,6 @@
 # Iceberg / Parquet
 
-Fluree integrates with Apache Iceberg to query data lake tables as graph sources. This enables querying large-scale analytical data stored in Parquet format using the same RDF query interface.
+Fluree integrates with Apache Iceberg to query data lake tables as graph sources. An [R2RML mapping](r2rml.md) defines how Iceberg table rows are materialized into RDF triples, enabling you to query large-scale analytical data stored in Parquet format using the same SPARQL / JSON-LD query interface as regular ledgers.
 
 **Note:** Requires the `iceberg` feature flag. See [Compatibility and Feature Flags](../reference/compatibility.md#fluree-db-api-features).
 
@@ -24,25 +24,20 @@ Fluree supports two ways to discover Iceberg metadata:
 
 ### CLI
 
-The `fluree iceberg map` command creates Iceberg graph sources from the command line:
+The `fluree iceberg map` command creates Iceberg graph sources from the command line. An R2RML mapping is required to define how table rows become RDF triples.
 
 ```bash
-# REST catalog
-fluree iceberg map warehouse-orders \
-  --catalog-uri https://polaris.example.com/api/catalog \
-  --table sales.orders \
-  --auth-bearer $POLARIS_TOKEN
-
 # REST catalog with R2RML mapping
 fluree iceberg map warehouse-orders \
   --catalog-uri https://polaris.example.com/api/catalog \
   --r2rml mappings/orders.ttl \
   --auth-bearer $POLARIS_TOKEN
 
-# Direct S3 (no catalog server)
+# Direct S3 (no catalog server) with R2RML mapping
 fluree iceberg map execution-log \
   --mode direct \
-  --table-location s3://bucket/warehouse/logs/execution_log
+  --table-location s3://bucket/warehouse/logs/execution_log \
+  --r2rml mappings/execution_log.ttl
 ```
 
 Once mapped, graph sources appear in `fluree list`, can be inspected with `fluree info`, and removed with `fluree drop`. See [CLI iceberg reference](../cli/iceberg.md) for all options.
@@ -52,33 +47,35 @@ Once mapped, graph sources appear in `fluree list`, can be inspected with `flure
 **REST catalog mode (Polaris-style):**
 
 ```rust
-use fluree_db_api::IcebergCreateConfig;
+use fluree_db_api::R2rmlCreateConfig;
 
-let config = IcebergCreateConfig::new(
+let config = R2rmlCreateConfig::new(
     "warehouse-orders",
     "https://polaris.example.com/api/catalog",
     "sales.orders",
+    "fluree:file://mappings/orders.ttl",
 )
 .with_warehouse("my-warehouse")
 .with_auth_bearer("my-token")
 .with_vended_credentials(true);
 
-fluree.create_iceberg_graph_source(config).await?;
+fluree.create_r2rml_graph_source(config).await?;
 ```
 
 **Direct S3 mode (no REST catalog):**
 
 ```rust
-use fluree_db_api::IcebergCreateConfig;
+use fluree_db_api::R2rmlCreateConfig;
 
-let config = IcebergCreateConfig::new_direct(
+let config = R2rmlCreateConfig::new_direct(
     "execution-log",
     "s3://bucket/warehouse/logs/execution_log",
+    "fluree:file://mappings/execution_log.ttl",
 )
 .with_s3_region("us-east-1")
 .with_s3_path_style(true);
 
-fluree.create_iceberg_graph_source(config).await?;
+fluree.create_r2rml_graph_source(config).await?;
 ```
 
 ### Stored Configuration Format (Nameservice)
@@ -156,7 +153,7 @@ Direct mode assumes `table_location` points at a **valid Iceberg table layout** 
 
 ## RDF Mapping (R2RML)
 
-Fluree maps Iceberg table rows to RDF triples using an R2RML mapping (Turtle). See [R2RML](r2rml.md) for details.
+Every Iceberg graph source requires an [R2RML mapping](r2rml.md) (Turtle format) that defines how table rows become RDF triples — specifying subject IRI templates, predicate mappings, and type conversions. See [R2RML](r2rml.md) for the full mapping reference.
 
 ### Type Mapping
 
@@ -360,7 +357,7 @@ Iceberg supports schema evolution via metadata updates. If a schema change renam
 
 ### AWS Credentials
 
-For S3-backed Iceberg:
+For S3-backed Iceberg (both REST and Direct modes):
 
 ```bash
 export AWS_ACCESS_KEY_ID=your-key
@@ -368,34 +365,7 @@ export AWS_SECRET_ACCESS_KEY=your-secret
 export AWS_REGION=us-east-1
 ```
 
-Or configure in graph source:
-
-```json
-{
-  "catalog": "glue",
-  "warehouse": "s3://bucket/path/",
-  "aws_credentials": {
-    "access_key": "your-key",
-    "secret_key": "your-secret",
-    "region": "us-east-1"
-  }
-}
-```
-
-### Caching
-
-Enable Parquet file caching:
-
-```json
-{
-  "type": "iceberg",
-  "cache": {
-    "enabled": true,
-    "max_size_mb": 1024,
-    "ttl_seconds": 3600
-  }
-}
-```
+REST catalog mode also supports vended credentials (credentials issued by the catalog). Direct mode uses only ambient AWS credentials (env vars, IAM roles, `~/.aws/credentials`).
 
 ## Use Cases
 

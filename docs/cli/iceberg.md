@@ -37,7 +37,7 @@ fluree iceberg map <NAME> [OPTIONS]
 | Option | Description |
 |--------|-------------|
 | `--catalog-uri <URI>` | REST catalog URI (required for rest mode) |
-| `--table <ID>` | Table identifier in `namespace.table` format (required without `--r2rml`) |
+| `--table <ID>` | Table identifier in `namespace.table` format (required if not specified in R2RML mapping) |
 | `--warehouse <NAME>` | Warehouse identifier |
 | `--no-vended-credentials` | Disable vended credentials (enabled by default) |
 
@@ -51,7 +51,7 @@ fluree iceberg map <NAME> [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
-| `--r2rml <PATH>` | R2RML mapping file (Turtle format). When provided, table references come from the mapping's `rr:tableName` entries. |
+| `--r2rml <PATH>` | R2RML mapping file (Turtle format, required). Defines how table rows become RDF triples. Table references come from the mapping's `rr:tableName` entries. |
 | `--r2rml-type <TYPE>` | Mapping media type (e.g., `text/turtle`); inferred from extension if omitted |
 
 **Authentication:**
@@ -81,39 +81,42 @@ fluree iceberg map <NAME> [OPTIONS]
 
 Maps an Apache Iceberg table as a graph source that can be queried using SPARQL or JSON-LD queries. The table is accessed read-only; Fluree does not modify the Iceberg table.
 
+An R2RML mapping (`--r2rml`) is required to define how Iceberg table rows are transformed into RDF triples.
+
 Two catalog modes are supported:
 
 - **REST mode** (default): Connects to an Iceberg REST catalog (e.g., Apache Polaris) to discover table metadata. Supports vended credentials and warehouse selection.
 - **Direct S3 mode**: Reads table metadata directly from S3 by resolving `version-hint.text` in the table's `metadata/` directory. No catalog server required.
 
-When `--r2rml` is provided, the mapping file defines how Iceberg table rows are transformed into RDF triples. Without `--r2rml`, the table is accessible as a raw Iceberg graph source.
-
 ### Examples
 
 ```bash
-# REST catalog, raw Iceberg (no R2RML)
-fluree iceberg map warehouse-orders \
-  --catalog-uri https://polaris.example.com/api/catalog \
-  --table sales.orders \
-  --auth-bearer $POLARIS_TOKEN \
-  --warehouse my-warehouse
-
 # REST catalog with R2RML mapping
 fluree iceberg map airlines \
   --catalog-uri https://polaris.example.com/api/catalog \
   --r2rml mappings/airlines.ttl \
   --auth-bearer $POLARIS_TOKEN
 
+# REST catalog with explicit table and warehouse
+fluree iceberg map warehouse-orders \
+  --catalog-uri https://polaris.example.com/api/catalog \
+  --table sales.orders \
+  --r2rml mappings/orders.ttl \
+  --auth-bearer $POLARIS_TOKEN \
+  --warehouse my-warehouse
+
 # Direct S3 (no catalog server)
 fluree iceberg map execution-log \
   --mode direct \
   --table-location s3://my-bucket/warehouse/logs/execution_log \
+  --r2rml mappings/execution_log.ttl \
   --s3-region us-east-1
 
 # OAuth2 authentication
 fluree iceberg map orders \
   --catalog-uri https://polaris.example.com/api/catalog \
   --table sales.orders \
+  --r2rml mappings/orders.ttl \
   --oauth2-token-url https://auth.example.com/token \
   --oauth2-client-id my-client \
   --oauth2-client-secret $CLIENT_SECRET
@@ -121,15 +124,6 @@ fluree iceberg map orders \
 
 ### Output
 
-Without R2RML:
-```
-Mapped Iceberg table as graph source 'warehouse-orders:main'
-  Table:       sales.orders
-  Catalog:     https://polaris.example.com/api/catalog
-  Connection:  verified
-```
-
-With R2RML:
 ```
 Mapped Iceberg table as R2RML graph source 'airlines:main'
   Table:       openflights.airlines

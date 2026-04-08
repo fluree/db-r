@@ -136,45 +136,16 @@ Non-ledger graph sources are registered in nameservice:
 
 ### 3. Apache Iceberg
 
-**Backend:** Iceberg tables / Parquet files
+**Backend:** Iceberg tables / Parquet files via R2RML mapping
 
 **Purpose:** Analytics on data lake
 
-**Configuration (REST catalog):**
-```json
-{
-  "type": "iceberg",
-  "catalog": {
-    "type": "rest",
-    "uri": "https://polaris.example.com/api/catalog",
-    "warehouse": "my-warehouse",
-    "auth": { "type": "bearer", "token": { "env_var": "POLARIS_TOKEN" } }
-  },
-  "table": "sales.orders",
-  "io": { "vended_credentials": true }
-}
-```
+Iceberg graph sources require an [R2RML mapping](r2rml.md) that defines how table rows become RDF triples. Two catalog modes select how Iceberg metadata is discovered:
 
-Note the nesting: the outer `"type": "iceberg"` is the graph source backend; the inner `catalog.type` selects the Iceberg catalog **mode** (`rest` vs `direct`).
+- **REST catalog**: connects to an Iceberg REST catalog API (e.g., Polaris)
+- **Direct S3**: reads `metadata/version-hint.text` from the table’s S3 location (no catalog server required)
 
-**Configuration (Direct S3 — no catalog server):**
-```json
-{
-  "type": "iceberg",
-  "catalog": {
-    "type": "direct",
-    "table_location": "s3://bucket/warehouse/sales/orders"
-  },
-  "table": "",
-  "io": {
-    "vended_credentials": false,
-    "s3_region": "us-east-1",
-    "s3_path_style": true
-  }
-}
-```
-
-**Note:** In Direct mode, Fluree resolves the current metadata by reading `metadata/version-hint.text` under `table_location` (which contains the current metadata filename) and then loading that file. The Iceberg table’s `metadata/` directory and files must already exist.
+See [Iceberg / Parquet](iceberg.md) for full configuration details and examples.
 
 **Query:**
 ```json
@@ -188,33 +159,6 @@ Note the nesting: the outer `"type": "iceberg"` is the graph source backend; the
 }
 ```
 
-### 4. R2RML Relational Mapping
-
-**Backend:** SQL databases
-
-**Purpose:** Query relational data as RDF
-
-**Configuration:**
-```json
-{
-  "type": "r2rml",
-  "database": "postgresql://localhost/mydb",
-  "mapping": "r2rml-mapping.ttl"
-}
-```
-
-**Query:**
-```json
-{
-  "from": "sql-customers:main",
-  "select": ["?name", "?email"],
-  "where": [
-    { "@id": "?customer", "schema:name": "?name" },
-    { "@id": "?customer", "schema:email": "?email" }
-  ]
-}
-```
-
 ## Creating Graph Sources
 
 ### Via Rust API
@@ -222,27 +166,28 @@ Note the nesting: the outer `"type": "iceberg"` is the graph source backend; the
 Graph sources are created and registered via the `fluree-db-api` Rust API, which publishes the graph source record into the nameservice.
 
 ```rust
-use fluree_db_api::{FlureeBuilder, IcebergCreateConfig};
+use fluree_db_api::{FlureeBuilder, R2rmlCreateConfig};
 
 let fluree = FlureeBuilder::default().build().await?;
 
-let config = IcebergCreateConfig::new_direct(
+let config = R2rmlCreateConfig::new_direct(
     "execution-log",
     "s3://bucket/warehouse/logs/execution_log",
+    "fluree:file://mappings/execution_log.ttl",
 )
 .with_s3_region("us-east-1");
 
-fluree.create_iceberg_graph_source(config).await?;
+fluree.create_r2rml_graph_source(config).await?;
 ```
 
 ## Querying Graph Sources
 
 Graph sources come in two flavors with different query models:
 
-- **Iceberg / R2RML sources** — queried transparently using standard SPARQL/JSON-LD patterns (FROM, GRAPH, or as a direct query target)
+- **Iceberg sources** — queried transparently using standard SPARQL/JSON-LD patterns (FROM, GRAPH, or as a direct query target)
 - **Search indexes** (BM25, Vector) — queried using the `f:graphSource` / `f:searchText` pattern
 
-### Iceberg / R2RML (Transparent)
+### Iceberg (Transparent)
 
 Iceberg graph sources are queried just like ledgers. No special syntax is needed:
 
@@ -272,7 +217,7 @@ SELECT ?s ?p ?o FROM <execution-log:main> WHERE { ?s ?p ?o } LIMIT 10
 }
 ```
 
-R2RML mappings define how Iceberg table rows become RDF triples. See [Iceberg / Parquet](iceberg.md) and [R2RML](r2rml.md) for details.
+Iceberg graph sources use R2RML mappings to define how table rows become RDF triples. See [Iceberg / Parquet](iceberg.md) and [R2RML](r2rml.md) for details.
 
 ### Search Indexes (BM25, Vector)
 
@@ -470,13 +415,6 @@ Execution Plan:
 - **Space:** Zero overhead (uses Parquet files)
 - **Update:** Batch-oriented
 
-### R2RML Graph Sources
-
-- **Index Build:** No index (SQL queries)
-- **Query:** O(SQL complexity)
-- **Space:** Zero overhead (uses SQL database)
-- **Update:** Real-time (direct DB access)
-
 ## Best Practices
 
 ### 1. Choose Appropriate Type
@@ -484,8 +422,7 @@ Execution Plan:
 Match graph source type to use case:
 - **Keyword search** → BM25
 - **Semantic search** → Vector
-- **Analytics** → Iceberg
-- **Existing system integration** → R2RML
+- **Analytics / data lake** → Iceberg (with R2RML mapping)
 
 ### 2. Monitor Synchronization
 
@@ -602,7 +539,7 @@ Always use LIMIT with graph sources:
 
 - [BM25 Graph Source](bm25.md) - Full-text search
 - [Iceberg](iceberg.md) - Data lake integration
-- [R2RML](r2rml.md) - Relational mapping
+- [R2RML](r2rml.md) - R2RML mapping reference
 - [BM25 Indexing](../indexing-and-search/bm25.md) - BM25 details
 - [Vector Search](../indexing-and-search/vector-search.md) - Vector details
 - [Query Datasets](../query/datasets.md) - Multi-graph queries

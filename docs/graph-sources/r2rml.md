@@ -10,7 +10,7 @@ R2RML defines how to map:
 - Rows to RDF resources
 - Foreign keys to RDF relationships
 
-This enables querying existing relational databases as if they were RDF graphs.
+In Fluree, this enables querying Iceberg tables as if they were RDF graphs.
 
 ## Configuration
 
@@ -200,7 +200,7 @@ Graph sources can be:
     "schema": "http://schema.org/",
     "ex": "http://example.org/ns/"
   },
-  "from": "sql-customers:main",
+  "from": "warehouse-customers:main",
   "select": ["?name", "?email"],
   "where": [
     { "@id": "?customer", "@type": "schema:Person" },
@@ -219,7 +219,7 @@ PREFIX schema: <http://schema.org/>
 PREFIX ex: <http://example.org/ns/>
 
 SELECT ?name ?email
-FROM <sql-customers:main>
+FROM <warehouse-customers:main>
 WHERE {
   ?customer a schema:Person .
   ?customer schema:name ?name .
@@ -231,7 +231,7 @@ WHERE {
 
 ```json
 {
-  "from": "sql-customers:main",
+  "from": "warehouse-customers:main",
   "select": ["?name", "?email"],
   "where": [
     { "@id": "?customer", "schema:name": "?name" },
@@ -242,19 +242,11 @@ WHERE {
 }
 ```
 
-Generates SQL with WHERE clause:
-
-```sql
-SELECT c.name, c.email
-FROM customers c
-WHERE c.status = 'active'
-```
-
 ### Joins
 
 ```json
 {
-  "from": "sql-db:main",
+  "from": "warehouse-orders:main",
   "select": ["?customerName", "?orderTotal"],
   "where": [
     { "@id": "?customer", "schema:name": "?customerName" },
@@ -264,23 +256,13 @@ WHERE c.status = 'active'
 }
 ```
 
-Generates SQL with JOIN:
-
-```sql
-SELECT
-  c.name as customerName,
-  o.total as orderTotal
-FROM customers c
-JOIN orders o ON o.customer_id = c.id
-```
-
 ## Combining with Fluree Data
 
-Join SQL database data with Fluree ledgers:
+Join Iceberg data with Fluree ledgers:
 
 ```json
 {
-  "from": ["products:main", "sql-inventory:main"],
+  "from": ["products:main", "warehouse-inventory:main"],
   "select": ["?productName", "?stockLevel"],
   "where": [
     { "@id": "?product", "schema:name": "?productName" },
@@ -293,134 +275,54 @@ Join SQL database data with Fluree ledgers:
 
 Combines product data from Fluree with inventory from an Iceberg-backed R2RML graph source.
 
-## Performance Notes
-
-R2RML graph sources execute by scanning the underlying Iceberg table and materializing RDF terms according to the mapping. For performance, prefer:
-
-- filtering early,
-- projecting only the columns needed by your query and mapping,
-- and partitioning Iceberg tables by common filters.
-
 ## Performance
 
-### Query Performance
-
-SQL queries execute at native database speed:
-- Indexes used automatically
-- Query optimizer in SQL database
-- Minimal overhead from RDF mapping
+R2RML graph sources execute by scanning the underlying Iceberg table and materializing RDF terms according to the mapping.
 
 ### Best Practices
 
-1. **Use Database Indexes:**
-   ```sql
-   CREATE INDEX idx_customers_email ON customers(email);
-   ```
-
-2. **Filter Early:**
+1. **Filter Early:** Filters are pushed down to Iceberg for partition pruning.
    ```json
    {
      "where": [...],
-     "filter": "?status == 'active'"  // Pushed to SQL WHERE
+     "filter": "?date >= '2024-01-01'"
    }
    ```
 
-3. **Limit Results:**
+2. **Limit Results:**
    ```json
    {
      "where": [...],
-     "limit": 100  // Pushed to SQL LIMIT
+     "limit": 100
    }
    ```
 
-4. **Use SQL Views:**
-   For complex queries, create SQL views and map those:
-   ```sql
-   CREATE VIEW active_customers AS
-   SELECT * FROM customers WHERE status = 'active';
-   ```
+3. **Project Only Needed Columns:** Only columns referenced in the query and mapping are read from Parquet files.
+
+4. **Partition by Common Filters:** Partition your Iceberg tables by columns frequently used in filters (e.g., date).
 
 ## Use Cases
 
-### Existing System Integration
+### Data Lake Analytics
 
-Query existing systems without moving data:
-
-```json
-{
-  "from": ["new-system:main", "existing-system:main"],
-  "select": ["?customerName", "?newData", "?existingData"],
-  "where": [...]
-}
-```
-
-### Incremental Adoption
-
-Adopt new systems while keeping existing systems operational:
-
-```text
-Phase 1: Both systems running, joined in queries
-Phase 2: Write to new system, read from both
-Phase 3: Copy data (optional)
-Phase 4: Retire the existing system (optional)
-```
-
-### Unified Reporting
-
-Report across multiple databases:
+Query Iceberg tables containing large-scale analytical data alongside Fluree ledgers:
 
 ```json
 {
-  "from": [
-    "sales-db:main",
-    "inventory-db:main",
-    "customer-db:main"
-  ],
-  "select": [...],
-  "where": [...]
+  "from": ["products:main", "warehouse-sales:main"],
+  "select": ["?productName", "?totalSold"],
+  "where": [
+    { "@id": "?product", "schema:name": "?productName" },
+    { "@id": "?product", "ex:productId": "?pid" },
+    { "@id": "?sale", "ex:productId": "?pid" },
+    { "@id": "?sale", "ex:quantity": "?totalSold" }
+  ]
 }
 ```
 
-## Configuration Options
+### Multi-Table Mapping
 
-### Connection Pooling
-
-```json
-{
-  "type": "r2rml",
-  "database": "postgresql://localhost/mydb",
-  "pool": {
-    "min_connections": 5,
-    "max_connections": 20,
-    "connection_timeout": 30
-  }
-}
-```
-
-### Query Timeout
-
-```json
-{
-  "type": "r2rml",
-  "database": "postgresql://localhost/mydb",
-  "query_timeout": 60000  // 60 seconds
-}
-```
-
-### SSL/TLS
-
-```json
-{
-  "type": "r2rml",
-  "database": "postgresql://localhost/mydb",
-  "ssl": {
-    "enabled": true,
-    "ca_cert": "/path/to/ca.pem",
-    "client_cert": "/path/to/client.pem",
-    "client_key": "/path/to/client-key.pem"
-  }
-}
-```
+A single R2RML mapping file can define multiple `TriplesMap` entries, each targeting a different Iceberg table or logical view. This enables querying across related tables through a single graph source.
 
 ## Limitations
 
@@ -461,15 +363,15 @@ Report across multiple databases:
 ### Slow Queries
 
 **Causes:**
-- Missing indexes
-- Large result sets
-- Complex joins
+- Large result sets (many Parquet files scanned)
+- No partition pruning
+- Complex joins across Fluree + Iceberg
 
 **Solutions:**
-- Add database indexes
+- Add date/partition filters to enable Iceberg partition pruning
 - Use LIMIT clause
-- Optimize R2RML mapping
-- Use SQL views for complex queries
+- Optimize R2RML mapping to project only needed columns
+- Partition Iceberg tables by common filter columns
 
 ## Related Documentation
 
