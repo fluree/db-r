@@ -15,7 +15,8 @@ use crate::run_index;
 use super::types::UploadedDicts;
 use super::upload::{cid_from_write, upload_dict_file};
 
-type ReverseLeafChunk = (Vec<u8>, Vec<u8>, Vec<u8>, u32);
+/// Output of a flushed reverse-index leaf: `(leaf_bytes, first_key, last_key, entry_count)`.
+type FlushedLeaf = (Vec<u8>, Vec<u8>, Vec<u8>, u32);
 
 fn flush_reverse_leaf<F>(
     leaf_offsets: &mut Vec<u32>,
@@ -23,7 +24,7 @@ fn flush_reverse_leaf<F>(
     first_key: &mut Option<Vec<u8>>,
     chunk_bytes: &mut usize,
     mut last_key: F,
-) -> Option<ReverseLeafChunk>
+) -> Option<FlushedLeaf>
 where
     F: FnMut() -> Vec<u8>,
 {

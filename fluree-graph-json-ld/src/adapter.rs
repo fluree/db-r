@@ -391,7 +391,26 @@ fn process_literal<S: GraphSink>(
             }
         }
         Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
+            // When the declared @type decodes as F64 (float, double, decimal),
+            // always produce LiteralValue::Double even if the JSON number is an
+            // integer. Otherwise the integer bits get stored as NUM_INT but
+            // decoded as F64, producing garbage subnormal values after indexing.
+            // (fluree/db-r#142)
+            let is_float_type = {
+                let iri = datatype.as_iri();
+                iri == fluree_vocab::xsd::DOUBLE
+                    || iri == fluree_vocab::xsd::FLOAT
+                    || iri == fluree_vocab::xsd::DECIMAL
+            };
+            if is_float_type {
+                if let Some(f) = n.as_f64() {
+                    Ok(ProcessedValue::Single(
+                        sink.term_literal_value(LiteralValue::Double(f), datatype),
+                    ))
+                } else {
+                    Ok(ProcessedValue::None)
+                }
+            } else if let Some(i) = n.as_i64() {
                 Ok(ProcessedValue::Single(
                     sink.term_literal_value(LiteralValue::Integer(i), datatype),
                 ))
@@ -992,6 +1011,42 @@ mod tests {
         graph.sort();
         for (i, triple) in graph.iter().enumerate() {
             assert_eq!(triple.list_index(), Some(i as i32));
+        }
+    }
+
+    /// Regression test for fluree/db-r#142: JSON integer @value with xsd:float
+    /// or xsd:double @type must produce LiteralValue::Double, not Integer.
+    #[test]
+    fn test_float_typed_integer_produces_double() {
+        let expanded = json!([{
+            "@id": "http://example.org/campaign1",
+            "http://example.org/ns#budget": [{
+                "@value": 1350000,
+                "@type": "http://www.w3.org/2001/XMLSchema#float"
+            }],
+            "http://example.org/ns#revenue": [{
+                "@value": 5000000,
+                "@type": "http://www.w3.org/2001/XMLSchema#double"
+            }]
+        }]);
+
+        let mut sink = GraphCollectorSink::new();
+        to_graph_events(&expanded, &mut sink).unwrap();
+
+        let graph = sink.graph();
+        assert_eq!(graph.len(), 2);
+
+        for triple in graph.iter() {
+            match &triple.o {
+                Term::Literal { value, .. } => {
+                    assert!(
+                        matches!(value, LiteralValue::Double(_)),
+                        "Expected Double for float-typed integer, got {:?}",
+                        value
+                    );
+                }
+                other => panic!("Expected literal, got {:?}", other),
+            }
         }
     }
 }
