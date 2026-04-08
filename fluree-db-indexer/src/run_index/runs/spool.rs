@@ -645,6 +645,77 @@ impl Iterator for SpoolReader {
 }
 
 // ============================================================================
+// V1 spool → V2 merge adapter (for rebuild stats pass)
+// ============================================================================
+
+/// Adapts a V1 `SpoolReader` (reading `.fsc` files) into a `MergeSource`
+/// that emits `RunRecordV2` values for use with `KWayMerge`.
+///
+/// Each `.fsc` file is sorted by `cmp_g_spot` (V1). After conversion to V2
+/// via `RunRecordV2::from_v1()`, the sort order corresponds to `cmp_v2_g_spot`.
+///
+/// The V1 `op` byte (assert=1, retract=0) is preserved separately since
+/// `RunRecordV2` has no `op` field.
+pub struct V1SpoolMergeAdapter {
+    reader: SpoolReader,
+    registry: fluree_db_core::o_type_registry::OTypeRegistry,
+    current: Option<RunRecordV2>,
+    current_op: u8,
+}
+
+impl V1SpoolMergeAdapter {
+    /// Open an `.fsc` file and prime the first record.
+    pub fn open(
+        path: &std::path::Path,
+        record_count: u64,
+        registry: fluree_db_core::o_type_registry::OTypeRegistry,
+    ) -> io::Result<Self> {
+        let mut reader = SpoolReader::open(path, record_count)?;
+        let (current, current_op) = match reader.next_record()? {
+            Some(v1) => {
+                let op = v1.op;
+                let v2 = RunRecordV2::from_v1(&v1, &registry);
+                (Some(v2), op)
+            }
+            None => (None, 1),
+        };
+        Ok(Self {
+            reader,
+            registry,
+            current,
+            current_op,
+        })
+    }
+}
+
+impl super::streaming_reader::MergeSource for V1SpoolMergeAdapter {
+    fn peek(&self) -> Option<&RunRecordV2> {
+        self.current.as_ref()
+    }
+
+    fn advance(&mut self) -> io::Result<()> {
+        match self.reader.next_record()? {
+            Some(v1) => {
+                self.current_op = v1.op;
+                self.current = Some(RunRecordV2::from_v1(&v1, &self.registry));
+            }
+            None => {
+                self.current = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.current.is_none()
+    }
+
+    fn peek_op(&self) -> u8 {
+        self.current_op
+    }
+}
+
+// ============================================================================
 // Import sorted-commit V2 files
 // ============================================================================
 

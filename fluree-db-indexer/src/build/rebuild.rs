@@ -744,17 +744,24 @@ where
             );
             mp::log_rss("Phase D-V3 complete — before stats collection");
 
-            // Phase D-V3 stats: collect per-(g_id, p_id) HLL sketches
-            // by reading all sorted commit files and feeding IdStatsHook.
+            // ---- Phase D-V3 stats: Streaming HLL + class stats ----
             //
-            // IMPORTANT: use stats_record_from_v2 (V2 hashing) so sketches
-            // are compatible with V6 incremental refresh. Convert V1 RunRecord
-            // to V2 RunRecordV2 via the OTypeRegistry before hashing.
+            // Uses two separate passes over the .fsc files:
+            //   Pass 1 (HLL): feeds ALL records to IdStatsHook in HLL-only mode
+            //                  (no per-subject maps — bounded memory).
+            //   Pass 2 (class): k-way merges .fsc files, deduplicates, feeds
+            //                   winning assertions to SpotClassStatsCollector
+            //                   (O(1) per-subject, class-level accumulators).
+            //
+            // This replaces the old approach that accumulated ~16 GB of per-subject
+            // HashMaps. Total stats-phase memory is now ~200 MB - 1 GB.
+
             let rdf_type_p_id = shared
                 .predicates
                 .get_or_insert("http://www.w3.org/1999/02/22-rdf-syntax-ns#type");
 
-            let mut stats_hook = crate::stats::IdStatsHook::new();
+            // ---- Pass 1: HLL sketches (all records, no ordering needed) ----
+            let mut stats_hook = crate::stats::IdStatsHook::new_hll_only();
             stats_hook.set_rdf_type_p_id(rdf_type_p_id);
 
             for info in &sorted_commit_infos {
@@ -763,8 +770,6 @@ where
 
                 for result in reader {
                     let record = result.map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                    // Convert V1 → V2 so we use value_hash_v2 (compatible
-                    // with V6 incremental's stats_record_from_v2).
                     let v2 = fluree_db_binary_index::format::run_record_v2::RunRecordV2::from_v1(
                         &record, &registry,
                     );
@@ -773,33 +778,14 @@ where
                 }
             }
 
-            // ---- MEM_PROFILE: IdStatsHook accumulation complete ----
-            {
-                mp::log_rss("Phase D stats — IdStatsHook fully populated");
-                tracing::info!(
-                    properties_count = stats_hook.properties().len(),
-                    class_counts_entries = stats_hook.class_count_deltas().len(),
-                    subject_class_deltas_entries = stats_hook.subject_class_deltas().len(),
-                    subject_class_deltas_deep_bytes = mp::deep_size_subject_class_deltas(stats_hook.subject_class_deltas()),
-                    subject_class_deltas_human = %mp::human(mp::deep_size_subject_class_deltas(stats_hook.subject_class_deltas())),
-                    subject_props_entries = stats_hook.subject_props().len(),
-                    subject_props_deep_bytes = mp::deep_size_subject_props(stats_hook.subject_props()),
-                    subject_props_human = %mp::human(mp::deep_size_subject_props(stats_hook.subject_props())),
-                    subject_prop_dts_entries = stats_hook.subject_prop_dts().len(),
-                    subject_prop_dts_deep_bytes = mp::deep_size_3level_u8(stats_hook.subject_prop_dts()),
-                    subject_prop_dts_human = %mp::human(mp::deep_size_3level_u8(stats_hook.subject_prop_dts())),
-                    subject_prop_langs_entries = stats_hook.subject_prop_langs().len(),
-                    subject_prop_langs_deep_bytes = mp::deep_size_3level_u16(stats_hook.subject_prop_langs()),
-                    subject_prop_langs_human = %mp::human(mp::deep_size_3level_u16(stats_hook.subject_prop_langs())),
-                    subject_ref_history_entries = stats_hook.subject_ref_history().len(),
-                    subject_ref_history_deep_bytes = mp::deep_size_ref_history(stats_hook.subject_ref_history()),
-                    subject_ref_history_human = %mp::human(mp::deep_size_ref_history(stats_hook.subject_ref_history())),
-                    "MEM_PROFILE: IdStatsHook sizes (BEFORE clone)"
-                );
-            }
+            mp::log_rss("Phase D stats — HLL pass complete (hll_only mode)");
+            tracing::info!(
+                properties_count = stats_hook.properties().len(),
+                class_counts_entries = stats_hook.class_count_deltas().len(),
+                "MEM_PROFILE: IdStatsHook HLL-only sizes"
+            );
 
-            // Upload HLL sketches to CAS (must happen before finalize
-            // consumes the hook).
+            // Upload HLL sketches to CAS.
             let sketch_ref = {
                 let sketch_blob =
                     crate::stats::HllSketchBlob::from_properties(commit_t, stats_hook.properties());
@@ -824,25 +810,75 @@ where
                 }
             };
 
-            // Move per-subject maps out of the hook (avoids cloning ~15 GB
-            // of nested HashMaps for large datasets). finalize() runs on the
-            // emptied struct to produce the IdStatsResult.
-            let (
-                id_stats_result,
-                class_count_deltas,
-                subject_class_deltas,
-                subject_props,
-                subject_prop_dts,
-                subject_prop_langs,
-                subject_ref_history,
-            ) = stats_hook.finalize_into_parts();
+            // Finalize HLL stats (no per-subject maps to move — hll_only mode).
+            let id_stats_result = stats_hook.finalize();
 
-            // Build the full IndexStats for the FIR6 root.
+            // ---- Pass 2: Streaming class stats via k-way merge ----
+            //
+            // Build ClassBitsetTable from .types sidecars (global IDs), then
+            // k-way merge .fsc files in cmp_v2_g_spot order with dedup. Feed
+            // deduped winning assertions to SpotClassStatsCollector.
+
+            let types_paths: Vec<std::path::PathBuf> = sorted_commit_infos
+                .iter()
+                .filter_map(|info| info.types_map_path.clone())
+                .collect();
+            let class_bitset =
+                crate::run_index::build::ClassBitsetTable::build_from_global_types(&types_paths)
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+            mp::log_rss("Phase D stats — before streaming class stats pass");
+
+            let spot_class_stats = {
+                use crate::run_index::build::SpotClassStatsCollector;
+                use crate::run_index::runs::spool::V1SpoolMergeAdapter;
+                use fluree_db_binary_index::format::run_record_v2::cmp_v2_g_spot;
+
+                let mut collector = SpotClassStatsCollector::new(rdf_type_p_id, class_bitset);
+
+                // Open V1 spool merge adapters for all .fsc files.
+                let mut streams: Vec<V1SpoolMergeAdapter> = Vec::with_capacity(sorted_commit_infos.len());
+                for info in &sorted_commit_infos {
+                    let adapter = V1SpoolMergeAdapter::open(
+                        &info.path,
+                        info.record_count,
+                        registry.clone(),
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    streams.push(adapter);
+                }
+
+                let mut merge =
+                    crate::run_index::build::merge::KWayMerge::new(streams, cmp_v2_g_spot)
+                        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                // Iterate with dedup: next_deduped() returns the winning record
+                // per identity group (highest t wins). Feed assertions to collector.
+                while let Some((winner, op)) = merge
+                    .next_deduped()
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
+                {
+                    if op == 1 {
+                        collector.on_record(&winner);
+                    }
+                }
+
+                collector.finish()
+            };
+
+            mp::log_rss("Phase D stats — streaming class stats complete");
+            tracing::info!(
+                class_counts = spot_class_stats.class_counts.len(),
+                class_prop_dts = spot_class_stats.class_prop_dts.len(),
+                class_prop_refs = spot_class_stats.class_prop_refs.len(),
+                "MEM_PROFILE: SpotClassStats sizes"
+            );
+
+            // ---- Build IndexStats for FIR6 root ----
             let trie_for_stats =
                 fluree_db_core::PrefixTrie::from_namespace_codes(&shared.ns_prefixes);
             let db_stats = {
                 use fluree_db_core::index_stats as is;
-                use fluree_db_core::{ClassPropertyUsage, ClassRefCount, ClassStatEntry};
 
                 let properties = crate::stats::aggregate_property_entries_from_graphs(
                     &id_stats_result.graphs,
@@ -850,318 +886,39 @@ where
                     |p_id| shared.predicates.resolve(p_id).map(ToString::to_string),
                 );
 
-                // ---- Class stats (graph-scoped) ----
-                //
-                // Rebuild has the full record stream in `IdStatsHook`, so we can derive
-                // class stats directly (no PSOT lookups needed).
-
-                // Resolve lang_id -> tag for per-class language distributions.
-                let lang_id_to_tag: std::collections::HashMap<u16, String> = shared
-                    .languages
-                    .iter()
-                    .map(|(lang_id, tag)| (lang_id, tag.to_string()))
+                // Convert SpotClassStats → per-graph ClassStatEntry using the
+                // existing build_class_stat_entries() (shared with import path).
+                let predicate_sids: Vec<(u16, String)> = (0..shared.predicates.len())
+                    .map(|p_id| {
+                        let iri = shared.predicates.resolve(p_id).unwrap_or("");
+                        match trie_for_stats.longest_match(iri) {
+                            Some((code, prefix_len)) => (code, iri[prefix_len..].to_string()),
+                            None => (0u16, iri.to_string()),
+                        }
+                    })
                     .collect();
 
-                // Load subject forward dict artifacts for resolving class sid64 -> Sid.
-                // (Reuses the persisted merge artifacts in run_dir.)
-                #[allow(clippy::type_complexity)]
-                let subject_lookup: Option<(
-                    Vec<u64>,
-                    Vec<u64>,
-                    Vec<u32>,
-                    memmap2::Mmap,
-                )> = {
-                    use crate::run_index::dict_io;
-                    let sids_path = run_dir.join("subjects.sids");
-                    let idx_path = run_dir.join("subjects.idx");
-                    let fwd_path = run_dir.join("subjects.fwd");
-
-                    let sids_vec = dict_io::read_subject_sid_map(&sids_path).ok();
-                    let fwd_idx = dict_io::read_forward_index(&idx_path).ok();
-                    let fwd_mmap = std::fs::File::open(&fwd_path).ok().and_then(|fwd_file| {
-                        // SAFETY: opened read-only; index artifacts are immutable.
-                        unsafe { memmap2::Mmap::map(&fwd_file) }.ok()
-                    });
-
-                    match (sids_vec, fwd_idx, fwd_mmap) {
-                        (Some(sids_vec), Some((fwd_offsets, fwd_lens)), Some(fwd_mmap)) => {
-                            Some((sids_vec, fwd_offsets, fwd_lens, fwd_mmap))
-                        }
-                        _ => None,
-                    }
-                };
-
-                let resolve_class_sid = |sid64: u64,
-                                         ns_prefixes: &std::collections::HashMap<u16, String>|
-                 -> fluree_db_core::Sid {
-                    use fluree_db_core::subject_id::SubjectId;
-                    let subj = SubjectId::from_u64(sid64);
-                    let ns_code = subj.ns_code();
-                    let local_id = subj.local_id();
-
-                    let Some((sids_vec, fwd_offsets, fwd_lens, fwd_mmap)) = subject_lookup.as_ref()
-                    else {
-                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
-                    };
-
-                    let Some(pos) = sids_vec.binary_search(&sid64).ok() else {
-                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
-                    };
-                    let off = fwd_offsets[pos] as usize;
-                    let len = fwd_lens[pos] as usize;
-                    if off + len > fwd_mmap.len() {
-                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
-                    }
-                    let iri_bytes = &fwd_mmap[off..off + len];
-                    let Ok(iri) = std::str::from_utf8(iri_bytes) else {
-                        return fluree_db_core::Sid::new(ns_code, local_id.to_string());
-                    };
-                    let prefix = ns_prefixes.get(&ns_code).map(|s| s.as_str()).unwrap_or("");
-                    let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
-                        &iri[prefix.len()..]
-                    } else {
-                        iri
-                    };
-                    fluree_db_core::Sid::new(ns_code, suffix)
-                };
-
-                mp::log_rss("Phase D class stats — before building subject_classes");
-
-                // subject_classes: (g_id, subject_sid64) -> set of class_sid64
-                let mut subject_classes: std::collections::HashMap<
-                    (u16, u64),
-                    std::collections::HashSet<u64>,
-                > = std::collections::HashMap::new();
-                for (&(g_id, s_id), class_map) in &subject_class_deltas {
-                    if g_id == 1 {
-                        continue; // txn-meta excluded
-                    }
-                    let mut set = std::collections::HashSet::new();
-                    for (&class_sid64, &delta) in class_map {
-                        if delta > 0 {
-                            set.insert(class_sid64);
-                        }
-                    }
-                    if !set.is_empty() {
-                        subject_classes.insert((g_id, s_id), set);
-                    }
-                }
-
-                mp::log_rss("Phase D class stats — after subject_classes built");
-                tracing::info!(
-                    subject_classes_entries = subject_classes.len(),
-                    subject_classes_deep_bytes = {
-                        let mut total = mp::hashmap_shallow_bytes(&subject_classes);
-                        for v in subject_classes.values() {
-                            total += mp::hashset_shallow_bytes(v);
-                        }
-                        total
-                    },
-                    "MEM_PROFILE: subject_classes size"
-                );
-
-                // class -> properties, datatype/lang usage, ref target edges
-                let mut class_properties: std::collections::HashMap<
-                    (u16, u64),
-                    std::collections::HashSet<u32>,
-                > = std::collections::HashMap::new();
-                let mut class_prop_dts: std::collections::HashMap<
-                    (u16, u64),
-                    std::collections::HashMap<u32, std::collections::HashMap<u8, i64>>,
-                > = std::collections::HashMap::new();
-                let mut class_prop_langs: std::collections::HashMap<
-                    (u16, u64),
-                    std::collections::HashMap<u32, std::collections::HashMap<u16, i64>>,
-                > = std::collections::HashMap::new();
-                let mut ref_edges: std::collections::HashMap<
-                    (u16, u64),
-                    std::collections::HashMap<u32, std::collections::HashMap<u64, i64>>,
-                > = std::collections::HashMap::new();
-
-                for (&(g_id, s_id), props) in &subject_props {
-                    if g_id == 1 {
-                        continue;
-                    }
-                    let Some(classes) = subject_classes.get(&(g_id, s_id)) else {
-                        continue;
-                    };
-                    for &class_sid64 in classes {
-                        class_properties
-                            .entry((g_id, class_sid64))
-                            .or_default()
-                            .extend(props.iter().copied());
-
-                        if let Some(s_dts) = subject_prop_dts.get(&(g_id, s_id)) {
-                            for (&p_id, dt_map) in s_dts {
-                                let cp = class_prop_dts
-                                    .entry((g_id, class_sid64))
-                                    .or_default()
-                                    .entry(p_id)
-                                    .or_default();
-                                for (&dt, &cnt) in dt_map {
-                                    *cp.entry(dt).or_insert(0) += cnt;
-                                }
-                            }
-                        }
-                        if let Some(s_langs) = subject_prop_langs.get(&(g_id, s_id)) {
-                            for (&p_id, lang_map) in s_langs {
-                                let cl = class_prop_langs
-                                    .entry((g_id, class_sid64))
-                                    .or_default()
-                                    .entry(p_id)
-                                    .or_default();
-                                for (&lang_id, &cnt) in lang_map {
-                                    *cl.entry(lang_id).or_insert(0) += cnt;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                for (&(g_id, subj), per_prop) in &subject_ref_history {
-                    if g_id == 1 {
-                        continue;
-                    }
-                    let Some(subj_classes) = subject_classes.get(&(g_id, subj)) else {
-                        continue;
-                    };
-                    for (&p_id, objs) in per_prop {
-                        for (&obj, &delta) in objs {
-                            if delta == 0 {
-                                continue;
-                            }
-                            let Some(obj_classes) = subject_classes.get(&(g_id, obj)) else {
-                                continue;
-                            };
-                            for &sc in subj_classes {
-                                for &oc in obj_classes {
-                                    *ref_edges
-                                        .entry((g_id, sc))
-                                        .or_default()
-                                        .entry(p_id)
-                                        .or_default()
-                                        .entry(oc)
-                                        .or_insert(0) += delta;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                mp::log_rss("Phase D class stats — after class_properties + ref_edges built");
-                tracing::info!(
-                    class_properties_entries = class_properties.len(),
-                    class_prop_dts_entries = class_prop_dts.len(),
-                    class_prop_langs_entries = class_prop_langs.len(),
-                    ref_edges_entries = ref_edges.len(),
-                    ref_edges_deep_bytes = mp::deep_size_ref_history(&ref_edges),
-                    ref_edges_human = %mp::human(mp::deep_size_ref_history(&ref_edges)),
-                    "MEM_PROFILE: class-level derived structures"
-                );
-
-                // Build graph-scoped class entries.
-                let mut per_graph_classes: std::collections::HashMap<u16, Vec<ClassStatEntry>> =
-                    std::collections::HashMap::new();
-                for (&(g_id, class_sid64), &delta) in &class_count_deltas {
-                    if g_id == 1 || delta <= 0 {
-                        continue;
-                    }
-                    let class_sid = resolve_class_sid(class_sid64, &shared.ns_prefixes);
-
-                    let props = class_properties
-                        .get(&(g_id, class_sid64))
-                        .cloned()
-                        .unwrap_or_default();
-                    let mut p_ids: Vec<u32> = props.into_iter().collect();
-                    p_ids.sort_unstable();
-
-                    let properties: Vec<ClassPropertyUsage> = p_ids
-                        .into_iter()
-                        .map(|p_id| {
-                            let iri = shared.predicates.resolve(p_id).unwrap_or("");
-                            let property_sid = match trie_for_stats.longest_match(iri) {
-                                Some((code, prefix_len)) => {
-                                    fluree_db_core::Sid::new(code, &iri[prefix_len..])
-                                }
-                                None => fluree_db_core::Sid::new(0, iri),
-                            };
-
-                            // Datatypes (ValueTypeTag u8)
-                            let mut dt_out: Vec<(u8, u64)> = class_prop_dts
-                                .get(&(g_id, class_sid64))
-                                .and_then(|m| m.get(&p_id))
-                                .map(|dt_map| {
-                                    dt_map
-                                        .iter()
-                                        .filter_map(|(&dt, &cnt)| {
-                                            (cnt > 0).then_some((dt, cnt as u64))
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default();
-                            dt_out.sort_by_key(|(dt, _)| *dt);
-
-                            // Langs (lang_id -> tag)
-                            let mut langs: Vec<(String, u64)> = class_prop_langs
-                                .get(&(g_id, class_sid64))
-                                .and_then(|m| m.get(&p_id))
-                                .map(|lang_map| {
-                                    lang_map
-                                        .iter()
-                                        .filter_map(|(&lang_id, &cnt)| {
-                                            if cnt <= 0 {
-                                                return None;
-                                            }
-                                            let tag = lang_id_to_tag
-                                                .get(&lang_id)
-                                                .cloned()
-                                                .unwrap_or_else(|| format!("lang:{lang_id}"));
-                                            Some((tag, cnt as u64))
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default();
-                            langs.sort_by(|a, b| a.0.cmp(&b.0));
-
-                            // Ref-classes (target class sid64 -> count)
-                            let mut ref_classes: Vec<ClassRefCount> = ref_edges
-                                .get(&(g_id, class_sid64))
-                                .and_then(|m| m.get(&p_id))
-                                .map(|target_map| {
-                                    target_map
-                                        .iter()
-                                        .filter_map(|(&target_sid64, &cnt)| {
-                                            (cnt > 0).then_some(ClassRefCount {
-                                                class_sid: resolve_class_sid(
-                                                    target_sid64,
-                                                    &shared.ns_prefixes,
-                                                ),
-                                                count: cnt as u64,
-                                            })
-                                        })
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default();
-                            ref_classes.sort_by(|a, b| a.class_sid.cmp(&b.class_sid));
-
-                            ClassPropertyUsage {
-                                property_sid,
-                                datatypes: dt_out,
-                                langs,
-                                ref_classes,
-                            }
-                        })
+                let language_tags: Vec<String> = {
+                    let mut tags: Vec<(u16, String)> = shared
+                        .languages
+                        .iter()
+                        .map(|(id, tag)| (id, tag.to_string()))
                         .collect();
+                    tags.sort_by_key(|(id, _)| *id);
+                    tags.into_iter().map(|(_, tag)| tag).collect()
+                };
 
-                    per_graph_classes
-                        .entry(g_id)
-                        .or_default()
-                        .push(ClassStatEntry {
-                            class_sid,
-                            count: delta as u64,
-                            properties,
-                        });
-                }
+                let mut per_graph_classes = crate::stats::build_class_stat_entries(
+                    &spot_class_stats,
+                    &predicate_sids,
+                    &shared.dt_tags,
+                    &language_tags,
+                    &run_dir,
+                    &shared.ns_prefixes,
+                )
+                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+
+                mp::log_rss("Phase D stats — after build_class_stat_entries");
 
                 // Attach class stats onto per-graph stats entries.
                 let mut final_graphs = id_stats_result.graphs;

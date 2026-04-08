@@ -95,13 +95,13 @@ pub struct BuildResult {
     pub build_elapsed: std::time::Duration,
 }
 
-struct ClassBitsetTable {
-    bit_to_class: Vec<u64>,
+pub struct ClassBitsetTable {
+    pub bit_to_class: Vec<u64>,
     graph_bitsets: FxHashMap<u16, FxHashMap<u16, Vec<u64>>>,
 }
 
 impl ClassBitsetTable {
-    fn get(&self, g_id: u16, sid: u64) -> u64 {
+    pub fn get(&self, g_id: u16, sid: u64) -> u64 {
         let ns_code = (sid >> 48) as u16;
         let local_id = (sid & 0x0000_FFFF_FFFF_FFFF) as usize;
         self.graph_bitsets
@@ -193,9 +193,95 @@ impl ClassBitsetTable {
             graph_bitsets,
         }))
     }
+
+    /// Build from `.types` sidecar files that already contain **global** IDs.
+    ///
+    /// Used by the full rebuild path (`rebuild.rs`) where `.types` sidecars are
+    /// written after chunk-local → global remapping (no `MmapSubjectRemap` needed).
+    ///
+    /// Wire format: 18 bytes per entry — `(g_id: u16 LE, s_id: u64 LE, class_sid64: u64 LE)`.
+    pub fn build_from_global_types(types_paths: &[PathBuf]) -> io::Result<Option<Self>> {
+        use std::io::{BufReader, Read};
+
+        let mut class_to_bit: FxHashMap<u64, u8> = FxHashMap::default();
+        let mut bit_to_class: Vec<u64> = Vec::new();
+        let mut graph_bitsets: FxHashMap<u16, FxHashMap<u16, Vec<u64>>> = FxHashMap::default();
+        let mut overflow_classes: FxHashSet<u64> = FxHashSet::default();
+        let mut overflow_entries = 0u64;
+        let mut saw_sidecar = false;
+        let mut buf = [0u8; 18];
+
+        for types_path in types_paths {
+            if !types_path.exists() {
+                continue;
+            }
+            saw_sidecar = true;
+            let file = std::fs::File::open(types_path)?;
+            let entry_count = file.metadata()?.len() / 18;
+            let mut reader = BufReader::new(file);
+
+            for _ in 0..entry_count {
+                reader.read_exact(&mut buf)?;
+                let g_id = u16::from_le_bytes([buf[0], buf[1]]);
+                let s_global = u64::from_le_bytes(buf[2..10].try_into().unwrap());
+                let c_global = u64::from_le_bytes(buf[10..18].try_into().unwrap());
+
+                let bit_idx = if let Some(&idx) = class_to_bit.get(&c_global) {
+                    idx
+                } else if bit_to_class.len() < 64 {
+                    let idx = bit_to_class.len() as u8;
+                    class_to_bit.insert(c_global, idx);
+                    bit_to_class.push(c_global);
+                    idx
+                } else {
+                    overflow_classes.insert(c_global);
+                    overflow_entries += 1;
+                    continue;
+                };
+
+                let ns_code = (s_global >> 48) as u16;
+                let local_id = (s_global & 0x0000_FFFF_FFFF_FFFF) as usize;
+                let ns_map = graph_bitsets.entry(g_id).or_default();
+                let vec = ns_map.entry(ns_code).or_default();
+                if local_id >= vec.len() {
+                    vec.resize(local_id + 1, 0);
+                }
+                vec[local_id] |= 1u64 << bit_idx;
+            }
+        }
+
+        if !saw_sidecar {
+            return Ok(None);
+        }
+
+        tracing::info!(
+            classes = bit_to_class.len(),
+            graphs = graph_bitsets.len(),
+            total_subjects = graph_bitsets
+                .values()
+                .flat_map(|ns| ns.values())
+                .map(|v| v.len())
+                .sum::<usize>(),
+            "class bitset table built (from global types)"
+        );
+
+        if !overflow_classes.is_empty() {
+            tracing::warn!(
+                retained_classes = bit_to_class.len(),
+                skipped_classes = overflow_classes.len(),
+                skipped_type_assertions = overflow_entries,
+                "class ref stats truncated at 64 distinct classes; stats.classes[*].properties[*].ref-classes may be incomplete"
+            );
+        }
+
+        Ok(Some(Self {
+            bit_to_class,
+            graph_bitsets,
+        }))
+    }
 }
 
-struct SpotClassStatsCollector {
+pub struct SpotClassStatsCollector {
     rdf_type_p_id: u32,
     current_s_id: Option<u64>,
     current_g_id: u16,
@@ -208,7 +294,7 @@ struct SpotClassStatsCollector {
 }
 
 impl SpotClassStatsCollector {
-    fn new(rdf_type_p_id: u32, class_bitset: Option<ClassBitsetTable>) -> Self {
+    pub fn new(rdf_type_p_id: u32, class_bitset: Option<ClassBitsetTable>) -> Self {
         Self {
             rdf_type_p_id,
             current_s_id: None,
@@ -222,7 +308,7 @@ impl SpotClassStatsCollector {
         }
     }
 
-    fn on_record(&mut self, rec: &fluree_db_binary_index::format::run_record_v2::RunRecordV2) {
+    pub fn on_record(&mut self, rec: &fluree_db_binary_index::format::run_record_v2::RunRecordV2) {
         let sr = stats_record_from_v2(rec, 1);
         if self.current_s_id != Some(sr.s_id) || self.current_g_id != sr.g_id {
             self.flush_subject();
@@ -253,7 +339,7 @@ impl SpotClassStatsCollector {
         }
     }
 
-    fn flush_subject(&mut self) {
+    pub fn flush_subject(&mut self) {
         if self.classes.is_empty() {
             self.prop_dts.clear();
             self.prop_langs.clear();
@@ -323,7 +409,7 @@ impl SpotClassStatsCollector {
         self.ref_targets.clear();
     }
 
-    fn finish(mut self) -> SpotClassStats {
+    pub fn finish(mut self) -> SpotClassStats {
         self.flush_subject();
         self.result
     }

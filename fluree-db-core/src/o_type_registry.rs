@@ -12,6 +12,7 @@ use crate::value_id::ObjKind;
 /// Constructed from the ledger's datatype IRI list so that non-reserved
 /// `DatatypeDictId` values (≥ `RESERVED_COUNT`) can be resolved to known
 /// XSD subtypes or tagged as customer-defined types.
+#[derive(Clone)]
 pub struct OTypeRegistry {
     /// Pre-resolved OType for each DatatypeDictId value.
     /// Index = `DatatypeDictId.as_u16()`.
