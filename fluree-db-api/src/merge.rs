@@ -344,14 +344,9 @@ where
             .resolve_merge_flakes(&source_data.flakes, &conflicts, strategy, &target_state)
             .await?;
 
-        if resolved_flakes.is_empty() {
-            // Nothing to merge after conflict resolution — all flakes were dropped.
-            return Err(ApiError::InvalidBranch(
-                "Merge produced no flakes after conflict resolution".to_string(),
-            ));
-        }
-
-        // Stage resolved flakes onto target state.
+        // Stage resolved flakes onto target state. An empty flake set is valid
+        // (e.g., TakeBranch drops all source flakes) — we still create the merge
+        // commit to record the parent relationship and prevent future re-merges.
         let reverse_graph = target_state.snapshot.build_reverse_graph().map_err(|e| {
             ApiError::internal(format!("Failed to build reverse graph during merge: {e}"))
         })?;
