@@ -626,19 +626,26 @@ async fn advance_frontier<C: ContentStore>(
     let (_t, cid) = frontier.swap_remove(max_idx);
 
     let envelope = load_commit_envelope_by_id(store, &cid).await?;
+    let mut best_ancestor: Option<CommonAncestor> = None;
     for parent_id in envelope.parent_ids() {
         if visited.insert(parent_id.clone()) {
             let parent_env = load_commit_envelope_by_id(store, parent_id).await?;
             if other_visited.contains(parent_id) {
-                return Ok(Some(CommonAncestor {
-                    commit_id: parent_id.clone(),
-                    t: parent_env.t,
-                }));
+                match best_ancestor {
+                    Some(ref current) if parent_env.t <= current.t => {}
+                    _ => {
+                        best_ancestor = Some(CommonAncestor {
+                            commit_id: parent_id.clone(),
+                            t: parent_env.t,
+                        });
+                    }
+                }
+            } else {
+                frontier.push((parent_env.t, parent_id.clone()));
             }
-            frontier.push((parent_env.t, parent_id.clone()));
         }
     }
-    Ok(None)
+    Ok(best_ancestor)
 }
 
 #[cfg(test)]
