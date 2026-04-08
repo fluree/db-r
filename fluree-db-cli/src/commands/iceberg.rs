@@ -11,10 +11,24 @@ pub async fn run_iceberg_map(
     dirs: &FlureeDir,
     direct: bool,
 ) -> CliResult<()> {
+    if let Some(remote_name) = args.remote.as_deref() {
+        let client = crate::context::build_remote_client(remote_name, dirs).await?;
+        let result = run_iceberg_map_remote(&client, &args).await.map_err(|e| {
+            CliError::Remote(format!(
+                "failed to map Iceberg graph source on '{}': {}",
+                remote_name, e
+            ))
+        });
+        crate::context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+        return result;
+    }
+
     // Try server routing (unless --direct)
     if !direct {
         if let Some(client) = crate::context::try_server_route_client(dirs) {
-            return run_iceberg_map_remote(&client, &args).await;
+            return run_iceberg_map_remote(&client, &args).await.map_err(|e| {
+                CliError::Remote(format!("failed to map Iceberg graph source: {}", e))
+            });
         }
     }
 

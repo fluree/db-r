@@ -214,6 +214,8 @@ Publisher node:
 The primary API revolves around `fluree.graph(graph_ref)`, which returns a lazy `Graph` handle.
 No I/O occurs until a terminal method (`.execute()`, `.commit()`, `.load()`) is called.
 
+Use `graph(...).query()` when the target may be a mapped graph source as well as a native ledger. If the query body itself carries `"from"` / `FROM`, use `query_from()`. The lower-level `fluree.db(...)` + `fluree.query(&view, ...)` path is for materialized native ledger snapshots, not graph source aliases.
+
 **When I/O happens:**
 - `.execute()` / `.execute_formatted()` / `.execute_tracked()` — loads the graph from storage, then runs the query (each call reloads)
 - `.commit()` — loads the cached ledger handle, stages, and commits

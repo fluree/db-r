@@ -1396,6 +1396,56 @@ fn auth_login_discovery_fallback_unreachable_server() {
         .stdout(predicate::str::contains("Token stored"));
 }
 
+#[test]
+fn iceberg_map_remote_uses_remote_client() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://127.0.0.1:19999"])
+        .assert()
+        .success();
+
+    let mapping_path = tmp.path().join("orders.ttl");
+    std::fs::write(
+        &mapping_path,
+        r#"@prefix rr: <http://www.w3.org/ns/r2rml#> .
+@prefix ex: <http://example.org/ns/> .
+
+<http://example.org/mapping#Orders>
+    a rr:TriplesMap ;
+    rr:logicalTable [ rr:tableName "sales.orders" ] ;
+    rr:subjectMap [ rr:template "http://example.org/order/{id}" ] ;
+    rr:predicateObjectMap [
+        rr:predicate ex:orderId ;
+        rr:objectMap [ rr:column "id" ]
+    ] .
+"#,
+    )
+    .unwrap();
+
+    fluree_cmd(&tmp)
+        .args([
+            "iceberg",
+            "map",
+            "warehouse-orders",
+            "--remote",
+            "origin",
+            "--catalog-uri",
+            "https://polaris.example.com/api/catalog",
+            "--table",
+            "sales.orders",
+            "--r2rml",
+            mapping_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "failed to map Iceberg graph source on 'origin'",
+        ))
+        .stderr(predicate::str::contains("connection failed"));
+}
+
 // ============================================================================
 // Directory --from support
 // ============================================================================

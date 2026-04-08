@@ -75,6 +75,7 @@ fluree iceberg map <NAME> [OPTIONS]
 
 | Option | Description |
 |--------|-------------|
+| `--remote <NAME>` | Execute against a remote server (by remote name) |
 | `--branch <NAME>` | Branch name (defaults to "main") |
 
 ### Description
@@ -120,6 +121,13 @@ fluree iceberg map orders \
   --oauth2-token-url https://auth.example.com/token \
   --oauth2-client-id my-client \
   --oauth2-client-secret $CLIENT_SECRET
+
+# Create the graph source on a remote Fluree server
+fluree iceberg map warehouse-orders \
+  --remote origin \
+  --catalog-uri https://polaris.example.com/api/catalog \
+  --table sales.orders \
+  --r2rml mappings/orders.ttl
 ```
 
 ### Output

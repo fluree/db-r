@@ -372,11 +372,15 @@ Creates an Iceberg graph source with an R2RML mapping that defines how table row
 
 ### Querying graph sources
 
-Graph source queries work through normal query endpoints. No separate endpoint is needed, but **your query code path must use `query_from()` (connection-level) rather than the single-ledger `query(&view, ...)` path**.
+Graph source queries work through normal query endpoints. No separate endpoint is needed, but the Rust API has an important distinction:
 
-> **Critical:** The single-ledger query path (`fluree.db(&alias)` → `fluree.query(&view, ...)`) does NOT resolve graph sources. It bypasses the R2RML provider and dataset builder entirely. If your server routes queries through a single-view `GraphDb`, Iceberg graph source queries will fail. You must use the connection-level `query_from()` builder.
+- Use `query_from()` when the query body carries the dataset (`"from"` in JSON-LD, `FROM` / `FROM NAMED` in SPARQL), or when you are composing multiple sources.
+- Use `graph(alias).query()` for a single lazy query target that may be either a native ledger or a mapped graph source.
+- Do not use the raw materialized-snapshot path (`fluree.db(&alias)` → `fluree.query(&view, ...)`) for graph source aliases.
 
-**Required query path:**
+> **Important:** The unsupported path is specifically the raw `GraphDb` snapshot flow (`fluree.db(&alias)` → `fluree.query(&view, ...)`). That API assumes you already loaded a native ledger snapshot. Graph source resolution happens in the lazy builder paths (`graph().query()` and `query_from()`), which wire in the R2RML provider and can fall back from "ledger not found" to "mapped graph source".
+
+**Supported query paths:**
 
 ```rust
 // Connection-level — graph sources resolve transparently
@@ -385,14 +389,17 @@ Graph source queries work through normal query endpoints. No separate endpoint i
 f.query_from().sparql(sparql).execute_formatted().await
 f.query_from().jsonld(&query_json).execute_formatted().await
 
-// Ledger-scoped with graph source support (e.g., GRAPH patterns)
+// Single-target lazy query — works for ledgers and mapped graph sources
+f.graph(alias).query().sparql(sparql).execute_formatted().await
+
+// Ledger-scoped query that may reference graph sources in GRAPH patterns
 f.graph(ledger_id).query().sparql(sparql).execute_formatted().await
 ```
 
 **Do NOT use:**
 
 ```rust
-// Single-ledger path — does NOT support graph sources
+// Raw materialized snapshot path — native ledgers only
 let view = f.db(&alias).await?;
 f.query(&view, query_input).await?  // ❌ No R2RML, no graph source resolution
 ```

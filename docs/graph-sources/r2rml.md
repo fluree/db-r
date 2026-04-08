@@ -185,7 +185,12 @@ Use SQL views for complex mappings:
 
 ## Querying R2RML Graph Sources
 
-R2RML graph sources are queried using standard SPARQL and JSON-LD query syntax — no special API calls or configuration needed. When the `iceberg` feature is compiled, R2RML support is automatically enabled for all query paths.
+R2RML graph sources are queried using standard SPARQL and JSON-LD query syntax — no special query language is needed. In the Rust API, graph source resolution is wired into the lazy query builders:
+
+- `fluree.graph("my-gs:main").query()` for a single target that may be either a native ledger or a mapped graph source
+- `fluree.query_from()` when the query body specifies the dataset (`"from"` / `FROM`) or combines multiple sources
+
+The raw materialized snapshot path (`fluree.db(&alias)` → `fluree.query(&view, ...)`) is still the wrong abstraction for graph source aliases because it assumes a native ledger snapshot has already been loaded.
 
 Graph sources can be:
 - **Queried directly** as the target: `fluree query my-gs 'SELECT * WHERE { ?s ?p ?o }'`

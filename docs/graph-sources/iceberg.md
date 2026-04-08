@@ -171,10 +171,22 @@ Iceberg types map to XSD types:
 
 ## Querying Iceberg Tables
 
-Iceberg graph sources are queried using standard SPARQL and JSON-LD syntax. When the `iceberg` feature is compiled, R2RML support is automatically enabled.
+Iceberg graph sources are queried using standard SPARQL and JSON-LD syntax. In the Rust API, mapped sources resolve transparently through the lazy query builders:
+
+- `fluree.graph("warehouse-orders:main").query()` for a single target that may be either a native ledger or a mapped graph source
+- `fluree.query_from()` when the query body itself carries the dataset (`"from"` / `FROM`) or when composing multiple sources
+
+The lower-level materialized snapshot path (`let view = fluree.db(...).await?; fluree.query(&view, ...)`) is still native-ledger-oriented and should not be used for graph source aliases.
 
 ```rust
-// Rust API — graph sources resolve transparently
+// Single-target lazy query
+let result = fluree.graph("warehouse-orders:main")
+    .query()
+    .sparql("SELECT * WHERE { ?s ?p ?o } LIMIT 10")
+    .execute()
+    .await?;
+
+// FROM-driven query
 let result = fluree.query_from()
     .sparql("SELECT * FROM <warehouse-orders:main> WHERE { ?s ?p ?o } LIMIT 10")
     .execute()

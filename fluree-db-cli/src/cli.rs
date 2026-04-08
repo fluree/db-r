@@ -1284,6 +1284,10 @@ pub struct IcebergMapArgs {
     /// Graph source name (e.g., "my-iceberg-gs")
     pub name: String,
 
+    /// Execute against a remote server (by remote name, e.g., "origin")
+    #[arg(long)]
+    pub remote: Option<String>,
+
     /// Catalog mode: "rest" (default) or "direct"
     #[arg(long, default_value = "rest")]
     pub mode: String,
