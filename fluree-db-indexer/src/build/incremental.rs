@@ -60,7 +60,9 @@ async fn run_update_branch(
     cache_dir: std::path::PathBuf,
 ) -> std::result::Result<BranchUpdateResult, IndexerError> {
     let handle = tokio::runtime::Handle::current();
+    let parent_span = tracing::Span::current();
     tokio::task::spawn_blocking(move || {
+        let _guard = parent_span.enter();
         let cs = content_store.clone();
         let cs2 = content_store;
         let cache_dir2 = cache_dir.clone();

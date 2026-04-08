@@ -116,7 +116,18 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     let ledger_id = record.ledger_id.as_str();
-    let span = tracing::debug_span!("index_build", ledger_id = ledger_id);
+    let correlation = crate::orchestrator::current_index_request_correlation();
+    let span = tracing::debug_span!(
+        "index_build",
+        ledger_id = ledger_id,
+        request_id = correlation
+            .as_ref()
+            .and_then(|ctx| ctx.request_id.as_deref()),
+        trace_id = correlation.as_ref().and_then(|ctx| ctx.trace_id.as_deref()),
+        trigger_operation = correlation
+            .as_ref()
+            .and_then(|ctx| ctx.operation.as_deref()),
+    );
     async move {
         let commit_gap = record.commit_t - record.index_t;
 

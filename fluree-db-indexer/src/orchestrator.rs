@@ -51,7 +51,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, Notify};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, Instrument};
 
 tokio::task_local! {
     static INDEX_REQUEST_CORRELATION: IndexRequestCorrelation;
@@ -1116,8 +1116,22 @@ where
                 "Starting index build for queued work"
             );
         }
-        let result =
-            crate::build_index_for_record(&self.storage, &record, self.config.clone()).await;
+        let build_future = async {
+            if let Some(correlation) = correlation.clone() {
+                with_index_request_correlation(
+                    correlation,
+                    crate::build_index_for_record(&self.storage, &record, self.config.clone()),
+                )
+                .await
+            } else {
+                crate::build_index_for_record(&self.storage, &record, self.config.clone()).await
+            }
+        };
+        let result = if let Some(span) = context_span.clone() {
+            build_future.instrument(span).await
+        } else {
+            build_future.await
+        };
 
         match result {
             Ok(index_result) => {
