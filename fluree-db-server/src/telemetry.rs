@@ -12,6 +12,39 @@ use tracing_subscriber::filter::Targets;
 use tracing_subscriber::Layer;
 use tracing_subscriber::{layer::SubscriberExt, EnvFilter};
 
+// ---------------------------------------------------------------------------
+// W3C Trace Context propagation (otel feature)
+// ---------------------------------------------------------------------------
+
+/// Implements [`opentelemetry::propagation::Extractor`] for axum's `HeaderMap`,
+/// allowing the global `TextMapPropagator` to extract `traceparent` / `tracestate`
+/// headers from incoming HTTP requests.
+#[cfg(feature = "otel")]
+struct HeaderMapExtractor<'a>(&'a axum::http::HeaderMap);
+
+#[cfg(feature = "otel")]
+impl opentelemetry::propagation::Extractor for HeaderMapExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+/// Extract an OpenTelemetry [`Context`] from HTTP headers using the globally
+/// registered `TextMapPropagator` (W3C `traceparent` / `tracestate`).
+///
+/// Returns `Context::current()` (i.e. no remote parent) when the `otel` feature
+/// is disabled or when no valid trace context headers are present.
+#[cfg(feature = "otel")]
+fn extract_otel_context(headers: &axum::http::HeaderMap) -> opentelemetry::Context {
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.extract(&HeaderMapExtractor(headers))
+    })
+}
+
 /// Telemetry configuration
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
@@ -294,6 +327,13 @@ fn init_otel_layer(
     let _ = OTEL_PROVIDER.set(tracer_provider.clone());
     global::set_tracer_provider(tracer_provider);
 
+    // Register W3C TraceContext propagator so incoming `traceparent` headers
+    // are extracted into a parent SpanContext for distributed trace linking.
+    //
+    // SYNC: fluree-db-cli/src/main.rs::init_otel_layer must register the same
+    // propagator. See CLAUDE.md § "Tracing & OTEL Spans".
+    global::set_text_map_propagator(opentelemetry_sdk::propagation::TraceContextPropagator::new());
+
     // Create tracing layer
     OpenTelemetryLayer::new(global::tracer("fluree-db"))
 }
@@ -382,31 +422,47 @@ pub fn extract_trace_id(headers: &axum::http::HeaderMap) -> Option<String> {
 /// When `input_format` is provided, the OTEL span name becomes
 /// `"operation:format"` (e.g. `"query:sparql"`, `"transact:turtle"`),
 /// producing descriptive names in Jaeger/Tempo instead of generic "request".
+///
+/// When the `otel` feature is enabled and the incoming `headers` contain a
+/// W3C `traceparent` header, the returned span is automatically linked as a
+/// child of the caller's distributed trace via [`OpenTelemetrySpanExt::set_parent`].
 pub fn create_request_span(
     operation: &str,
     request_id: Option<&str>,
-    trace_id: Option<&str>,
+    headers: &axum::http::HeaderMap,
     ledger_id: Option<&str>,
     tenant_id: Option<&str>,
     input_format: Option<&str>,
 ) -> tracing::Span {
+    let trace_id = extract_trace_id(headers);
     let otel_name: Cow<'_, str> = match input_format {
         Some(fmt) => format!("{operation}:{fmt}").into(),
         None => operation.into(),
     };
     // error_code: intentionally Empty on success (OTEL convention — omit, don't record "ok").
     // Only recorded on error paths via set_span_error_code().
-    tracing::info_span!(
+    let span = tracing::info_span!(
         "request",
         otel.name = %otel_name,
         operation = operation,
         request_id = request_id,
-        trace_id = trace_id,
+        trace_id = trace_id.as_deref(),
         ledger_id = ledger_id,
         tenant_id = tenant_id,
         error_code = tracing::field::Empty,
         query_hash = tracing::field::Empty,
-    )
+    );
+
+    // When OTEL is enabled, propagate the incoming W3C trace context so that
+    // this request span becomes a child of the caller's distributed trace.
+    #[cfg(feature = "otel")]
+    {
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        let parent_cx = extract_otel_context(headers);
+        let _ = span.set_parent(parent_cx);
+    }
+
+    span
 }
 
 /// Helper to set error code on a span

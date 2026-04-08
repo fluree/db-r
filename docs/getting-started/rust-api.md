@@ -1914,6 +1914,7 @@ cargo doc --open -p fluree-db-api
 
 - [Getting Started](README.md) - Overview
 - [HTTP API](../api/README.md) - Server-based usage
+- [Distributed Tracing Integration](../operations/distributed-tracing.md) - Correlating your app's traces with Fluree
 - [Query](../query/README.md) - Query documentation
 - [Transactions](../transactions/README.md) - Write operations
 - [Crate Map](../reference/crate-map.md) - Architecture overview

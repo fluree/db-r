@@ -4,9 +4,7 @@ use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
 use crate::extract::{FlureeHeaders, MaybeDataBearer};
 use crate::state::AppState;
-use crate::telemetry::{
-    create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
-};
+use crate::telemetry::{create_request_span, extract_request_id, set_span_error_code};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -87,12 +85,10 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
 
     // Create request span
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
-
     let span = create_request_span(
         "ledger:create",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         None, // ledger alias determined later
         None,
         None, // no input format for ledger ops
@@ -233,12 +229,10 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
 
     // Create request span
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
-
     let span = create_request_span(
         "ledger:drop",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&req.ledger),
         None,
         None,
@@ -449,12 +443,10 @@ pub async fn info(
 ) -> Result<Response> {
     // Create request span
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
-
     let span = create_request_span(
         "ledger:info",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         None, // ledger alias determined later
         None,
         None,
@@ -678,12 +670,10 @@ pub async fn exists(
 ) -> Result<Json<ExistsResponse>> {
     // Create request span
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
-
     let span = create_request_span(
         "ledger:exists",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         None,
         None,
         None,
@@ -839,11 +829,10 @@ async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<i
     let branch = req.branch;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
     let span = create_request_span(
         "branch:create",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&ledger),
         None,
         None,
@@ -900,12 +889,10 @@ pub async fn list_branches(
     bearer: MaybeDataBearer,
 ) -> Result<Json<Vec<BranchInfo>>> {
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
-
     let span = create_request_span(
         "branch:list",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&ledger),
         None,
         None,
@@ -1040,12 +1027,10 @@ async fn drop_branch_local(
         .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
-
     let span = create_request_span(
         "branch:drop",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&req.ledger),
         None,
         None,
@@ -1159,11 +1144,10 @@ async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl Int
     };
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
     let span = create_request_span(
         "branch:rebase",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&req.ledger),
         None,
         None,
@@ -1279,11 +1263,10 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
         .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
     let span = create_request_span(
         "branch:merge",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&req.ledger),
         None,
         None,

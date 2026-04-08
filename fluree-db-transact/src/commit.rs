@@ -387,6 +387,7 @@ where
             .publish_commit(base.ledger_id(), new_t, &commit_cid)
             .instrument(tracing::debug_span!("commit_publish_nameservice"))
             .await?;
+        verify_published_head(nameservice, base.ledger_id(), new_t, &commit_cid).await?;
 
         // 9. Generate commit metadata flakes
         // Note: We merge these into novelty only, not into commit_record.flakes
@@ -584,6 +585,38 @@ fn verify_sequencing(
     }
 }
 
+async fn verify_published_head<N: NameService>(
+    nameservice: &N,
+    ledger_id: &str,
+    attempted_t: i64,
+    attempted_commit_id: &ContentId,
+) -> Result<()> {
+    let published = nameservice.lookup(ledger_id).await?;
+    match published {
+        Some(record)
+            if record.commit_t == attempted_t
+                && record.commit_head_id.as_ref() == Some(attempted_commit_id) =>
+        {
+            Ok(())
+        }
+        Some(record) => Err(TransactError::PublishLostRace {
+            ledger_id: ledger_id.to_string(),
+            attempted_t,
+            attempted_commit_id: attempted_commit_id.to_string(),
+            published_t: record.commit_t,
+            published_commit_id: record
+                .commit_head_id
+                .map(|cid| cid.to_string())
+                .unwrap_or_else(|| "None".to_string()),
+        }),
+        None => Err(TransactError::Nameservice(
+            fluree_db_nameservice::NameServiceError::NotFound(format!(
+                "ledger {ledger_id} missing after commit publish"
+            )),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,7 +624,119 @@ mod tests {
     use crate::stage::{stage, StageOptions};
     use fluree_db_core::{FlakeValue, LedgerSnapshot, MemoryStorage, Sid};
     use fluree_db_nameservice::memory::MemoryNameService;
+    use fluree_db_nameservice::{
+        GraphSourceLookup, GraphSourceRecord, NameService, NsLookupResult, NsRecord,
+        NsRecordSnapshot,
+    };
     use fluree_db_novelty::Novelty;
+    use std::fmt;
+
+    #[derive(Clone)]
+    struct LosePublishRaceNameService {
+        inner: MemoryNameService,
+        winner_commit_id: ContentId,
+    }
+
+    impl fmt::Debug for LosePublishRaceNameService {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("LosePublishRaceNameService").finish()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl GraphSourceLookup for LosePublishRaceNameService {
+        async fn lookup_graph_source(
+            &self,
+            graph_source_id: &str,
+        ) -> fluree_db_nameservice::Result<Option<GraphSourceRecord>> {
+            self.inner.lookup_graph_source(graph_source_id).await
+        }
+
+        async fn lookup_any(
+            &self,
+            resource_id: &str,
+        ) -> fluree_db_nameservice::Result<NsLookupResult> {
+            self.inner.lookup_any(resource_id).await
+        }
+
+        async fn all_graph_source_records(
+            &self,
+        ) -> fluree_db_nameservice::Result<Vec<GraphSourceRecord>> {
+            self.inner.all_graph_source_records().await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl NameService for LosePublishRaceNameService {
+        async fn lookup(&self, ledger_id: &str) -> fluree_db_nameservice::Result<Option<NsRecord>> {
+            self.inner.lookup(ledger_id).await
+        }
+
+        async fn all_records(&self) -> fluree_db_nameservice::Result<Vec<NsRecord>> {
+            self.inner.all_records().await
+        }
+
+        async fn create_branch(
+            &self,
+            ledger_name: &str,
+            new_branch: &str,
+            source_branch: &str,
+        ) -> fluree_db_nameservice::Result<()> {
+            self.inner
+                .create_branch(ledger_name, new_branch, source_branch)
+                .await
+        }
+
+        async fn drop_branch(&self, ledger_id: &str) -> fluree_db_nameservice::Result<Option<u32>> {
+            self.inner.drop_branch(ledger_id).await
+        }
+
+        async fn reset_head(
+            &self,
+            ledger_id: &str,
+            snapshot: NsRecordSnapshot,
+        ) -> fluree_db_nameservice::Result<()> {
+            self.inner.reset_head(ledger_id, snapshot).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Publisher for LosePublishRaceNameService {
+        async fn publish_ledger_init(&self, ledger_id: &str) -> fluree_db_nameservice::Result<()> {
+            self.inner.publish_ledger_init(ledger_id).await
+        }
+
+        async fn publish_commit(
+            &self,
+            ledger_id: &str,
+            commit_t: i64,
+            commit_id: &ContentId,
+        ) -> fluree_db_nameservice::Result<()> {
+            self.inner
+                .publish_commit(ledger_id, commit_t, &self.winner_commit_id)
+                .await?;
+            self.inner
+                .publish_commit(ledger_id, commit_t, commit_id)
+                .await
+        }
+
+        async fn publish_index(
+            &self,
+            ledger_id: &str,
+            index_t: i64,
+            index_id: &ContentId,
+        ) -> fluree_db_nameservice::Result<()> {
+            self.inner.publish_index(ledger_id, index_t, index_id).await
+        }
+
+        async fn retract(&self, ledger_id: &str) -> fluree_db_nameservice::Result<()> {
+            self.inner.retract(ledger_id).await
+        }
+
+        fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+            self.inner.publishing_ledger_id(ledger_id)
+        }
+    }
 
     #[tokio::test]
     async fn test_commit_simple_insert() {
@@ -775,5 +920,57 @@ mod tests {
             result,
             Err(TransactError::NoveltyWouldExceed { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn test_commit_reports_publish_lost_race() {
+        let storage = MemoryStorage::new();
+        let db = LedgerSnapshot::genesis("test:main");
+        let novelty = Novelty::new(0);
+        let ledger = LedgerState::new(db, novelty);
+
+        let winner_commit_id = ContentId::new(ContentKind::Commit, b"winner");
+        let nameservice = LosePublishRaceNameService {
+            inner: MemoryNameService::new(),
+            winner_commit_id: winner_commit_id.clone(),
+        };
+
+        let txn = Txn::insert().with_insert(TripleTemplate::new(
+            TemplateTerm::Sid(Sid::new(1, "ex:alice")),
+            TemplateTerm::Sid(Sid::new(1, "ex:name")),
+            TemplateTerm::Value(FlakeValue::String("Alice".to_string())),
+        ));
+
+        let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
+        let (view, ns_registry) = stage(ledger, txn, ns_registry, StageOptions::default())
+            .await
+            .unwrap();
+
+        let config = IndexConfig::default();
+        let result = commit(
+            view,
+            ns_registry,
+            &storage,
+            &nameservice,
+            &config,
+            CommitOpts::default(),
+        )
+        .await;
+
+        match result {
+            Err(TransactError::PublishLostRace {
+                ledger_id,
+                attempted_t,
+                published_t,
+                published_commit_id,
+                ..
+            }) => {
+                assert_eq!(ledger_id, "test:main");
+                assert_eq!(attempted_t, 1);
+                assert_eq!(published_t, 1);
+                assert_eq!(published_commit_id, winner_commit_id.to_string());
+            }
+            other => panic!("expected PublishLostRace, got {other:?}"),
+        }
     }
 }

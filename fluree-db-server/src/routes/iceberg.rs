@@ -4,7 +4,7 @@ use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
 use crate::extract::FlureeHeaders;
 use crate::state::AppState;
-use crate::telemetry::{create_request_span, extract_request_id, extract_trace_id};
+use crate::telemetry::{create_request_span, extract_request_id};
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -101,12 +101,11 @@ async fn iceberg_map_local(state: Arc<AppState>, request: Request) -> Result<imp
         .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
         "iceberg:map",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&req.name),
         None,
         None,

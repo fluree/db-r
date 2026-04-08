@@ -25,9 +25,7 @@ use crate::error::{Result, ServerError};
 use crate::extract::tracking_headers;
 use crate::extract::{FlureeHeaders, MaybeCredential, MaybeDataBearer};
 use crate::state::AppState;
-use crate::telemetry::{
-    create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
-};
+use crate::telemetry::{create_request_span, extract_request_id, set_span_error_code};
 use axum::extract::{Path, Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -348,7 +346,6 @@ async fn update_local(
 
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     // Detect input format before span creation so otel.name is set at open time
     let input_format = if credential.is_sparql_update() {
@@ -364,7 +361,7 @@ async fn update_local(
     let span = create_request_span(
         "update",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         None, // ledger ID determined later
         None, // tenant_id not yet supported
         Some(input_format),
@@ -496,7 +493,6 @@ async fn update_ledger_local(
     maybe_rewrite_form_encoded_update(&mut credential);
 
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if credential.is_sparql_update() {
         "sparql-update"
@@ -511,7 +507,7 @@ async fn update_ledger_local(
     let span = create_request_span(
         "update",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         Some(&ledger),
         None,
         Some(input_format),
@@ -625,7 +621,6 @@ async fn insert_local(
     let credential = MaybeCredential::extract(request).await?;
 
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if credential.is_trig() {
         "trig"
@@ -638,7 +633,7 @@ async fn insert_local(
     let span = create_request_span(
         "insert",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         None,
         None,
         Some(input_format),
@@ -771,7 +766,6 @@ async fn upsert_local(
     let credential = MaybeCredential::extract(request).await?;
 
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if credential.is_trig() {
         "trig"
@@ -784,7 +778,7 @@ async fn upsert_local(
     let span = create_request_span(
         "upsert",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         None,
         None,
         Some(input_format),
@@ -931,7 +925,6 @@ async fn insert_ledger_local(
     let credential = MaybeCredential::extract(request).await?;
 
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if credential.is_trig() {
         "trig"
@@ -944,7 +937,7 @@ async fn insert_ledger_local(
     let span = create_request_span(
         "insert",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         Some(&ledger),
         None,
         Some(input_format),
@@ -1078,7 +1071,6 @@ async fn upsert_ledger_local(
     let credential = MaybeCredential::extract(request).await?;
 
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if credential.is_trig() {
         "trig"
@@ -1091,7 +1083,7 @@ async fn upsert_ledger_local(
     let span = create_request_span(
         "upsert",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         Some(&ledger),
         None,
         Some(input_format),

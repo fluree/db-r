@@ -13,7 +13,7 @@ use crate::extract::{tracking_headers, FlureeHeaders, MaybeCredential, MaybeData
 use crate::state::AppState;
 use crate::state::FlureeInstance;
 use crate::telemetry::{
-    create_request_span, extract_request_id, extract_trace_id, log_query_text, set_span_error_code,
+    create_request_span, extract_request_id, log_query_text, set_span_error_code,
     should_log_query_text,
 };
 use axum::extract::{Path, Query, State};
@@ -220,7 +220,6 @@ pub async fn query(
 ) -> Result<impl IntoResponse> {
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     // Detect input format before span creation so otel.name is set at open time
     let input_format = if is_sparql_request(&headers, &credential, &params) {
@@ -232,7 +231,7 @@ pub async fn query(
     let span = create_request_span(
         "query",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         None, // ledger ID determined later
         None, // tenant_id not yet supported
         Some(input_format),
@@ -428,7 +427,6 @@ pub async fn query_ledger(
 ) -> Result<impl IntoResponse> {
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
@@ -439,7 +437,7 @@ pub async fn query_ledger(
     let span = create_request_span(
         "query",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         Some(&ledger),
         None, // tenant_id not yet supported
         Some(input_format),
@@ -586,7 +584,6 @@ pub async fn explain_ledger(
 ) -> Result<Json<JsonValue>> {
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
@@ -597,7 +594,7 @@ pub async fn explain_ledger(
     let span = create_request_span(
         "explain",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         Some(&ledger),
         None, // tenant_id not yet supported
         Some(input_format),
@@ -1863,7 +1860,6 @@ pub async fn explain(
 ) -> Result<Json<JsonValue>> {
     // Create request span with correlation context
     let request_id = extract_request_id(&credential.headers, &state.telemetry_config);
-    let trace_id = extract_trace_id(&credential.headers);
 
     let input_format = if is_sparql_request(&headers, &credential, &params) {
         "sparql"
@@ -1874,7 +1870,7 @@ pub async fn explain(
     let span = create_request_span(
         "explain",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &credential.headers,
         None, // ledger ID determined later
         None, // tenant_id not yet supported
         Some(input_format),

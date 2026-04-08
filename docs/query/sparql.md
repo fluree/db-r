@@ -30,7 +30,9 @@ WHERE {
 }
 ```
 
-Explicit `PREFIX` declarations in a query take precedence over the default context for that prefix. You can view and manage the default context with `fluree context get/set` or `GET/PUT /fluree/context/:ledger`.
+If a query includes any `PREFIX` declarations, the default context is not used — you must declare every prefix you need. To explicitly opt out of the default context without defining any real prefix, use `PREFIX : <>`. See [opting out of the default context](../concepts/iri-and-context.md#opting-out-of-the-default-context) for details.
+
+You can view and manage the default context with `fluree context get/set` or `GET/PUT /fluree/context/:ledger`.
 
 ## Query Forms
 

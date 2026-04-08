@@ -8,9 +8,7 @@ use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
 use crate::extract::{FlureeHeaders, MaybeDataBearer};
 use crate::state::AppState;
-use crate::telemetry::{
-    create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
-};
+use crate::telemetry::{create_request_span, extract_request_id, set_span_error_code};
 use axum::extract::{Path, Query, Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -65,12 +63,11 @@ async fn show_local(
     query: CommitShowQuery,
 ) -> Result<Response> {
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
         "commit:show",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         None,
         None,
         None,

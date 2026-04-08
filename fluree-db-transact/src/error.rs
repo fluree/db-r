@@ -53,6 +53,18 @@ pub enum TransactError {
     #[error("Commit ID mismatch: expected {expected}, found {found}")]
     CommitIdMismatch { expected: String, found: String },
 
+    /// Commit lost the race while publishing the new head.
+    #[error(
+        "Commit publish race lost for ledger {ledger_id}: attempted t={attempted_t} commit={attempted_commit_id}, current head is t={published_t} commit={published_commit_id}"
+    )]
+    PublishLostRace {
+        ledger_id: String,
+        attempted_t: i64,
+        attempted_commit_id: String,
+        published_t: i64,
+        published_commit_id: String,
+    },
+
     /// Ledger or branch has been retracted (soft-deleted)
     #[error("Ledger has been retracted: {0}")]
     Retracted(String),

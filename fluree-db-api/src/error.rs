@@ -378,7 +378,10 @@ impl ApiError {
             | ApiError::Json(_)
             | ApiError::Batch(_)
             | ApiError::Format(_) => 400,
-            // Transaction errors could be validation failures
+            ApiError::Transact(fluree_db_transact::TransactError::CommitConflict { .. })
+            | ApiError::Transact(fluree_db_transact::TransactError::CommitIdMismatch { .. })
+            | ApiError::Transact(fluree_db_transact::TransactError::PublishLostRace { .. }) => 409,
+            // Other transaction errors are usually validation failures
             ApiError::Transact(_) => 400,
             // Internal/infrastructure errors
             _ => 500,

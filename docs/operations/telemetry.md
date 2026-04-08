@@ -167,6 +167,8 @@ scrape_configs:
 
 Fluree supports OpenTelemetry (OTEL) distributed tracing, providing deep visibility into query, transaction, and indexing performance. Traces are exported to any OTLP-compatible backend (Jaeger, Grafana Tempo, AWS X-Ray, Datadog, etc.).
 
+> **Integrating your application's traces with Fluree?** See [Distributed Tracing Integration](distributed-tracing.md) for how to correlate your spans with Fluree's -- both for the Rust library (`fluree-db-api`) and the HTTP server (`fluree-db-server` with W3C `traceparent`).
+
 ### Enabling OTEL
 
 Build the server with the `otel` feature flag:
@@ -375,6 +377,7 @@ When tracked queries or transactions are executed (via the `/query` or `/update`
 
 ### Further Reading
 
+- [Distributed Tracing Integration](distributed-tracing.md) -- How to correlate your application's traces with Fluree (library and HTTP)
 - [Performance Investigation with Distributed Tracing](../troubleshooting/performance-tracing.md) -- How to use tracing to find bottlenecks, including AWS deployment patterns (ECS, Lambda, X-Ray, Tempo)
 - [Adding Tracing Spans](../contributing/tracing-guide.md) -- How contributors should instrument new code
 - [otel/ README](../../otel/README.md) -- OTEL validation harness reference

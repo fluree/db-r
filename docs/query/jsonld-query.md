@@ -36,6 +36,8 @@ The `@context` defines namespace mappings for IRI expansion/compaction:
 }
 ```
 
+If omitted, the ledger's [default context](../concepts/iri-and-context.md#default-context) is used. To opt out of the default context and get full IRIs in results, pass an empty object: `"@context": {}`. See [opting out of the default context](../concepts/iri-and-context.md#opting-out-of-the-default-context).
+
 ### select
 
 Specifies which variables to return in results:

@@ -215,7 +215,7 @@ Each ledger can store a **default context** — a JSON object mapping prefixes t
 ### Resolution precedence
 
 1. **Query-level `@context`** (JSON-LD) or **`PREFIX` declarations** (SPARQL) — always win
-2. **Ledger default context** — merged as a fallback for any prefixes not declared in the query
+2. **Ledger default context** — applied only when the query provides no context of its own (no `@context` key for JSON-LD, no `PREFIX` declarations for SPARQL)
 3. **Built-in prefixes** — `rdf`, `rdfs`, `xsd`, etc. are always available
 
 ### Use with SPARQL
@@ -228,7 +228,7 @@ SELECT ?name WHERE {
 }
 ```
 
-without an explicit `PREFIX ex: <http://example.org/>` declaration — the default context supplies it. If you do declare a `PREFIX` in the query, it takes precedence over the default for that prefix.
+without an explicit `PREFIX ex: <http://example.org/>` declaration — the default context supplies it. If you declare any `PREFIX` in the query, the default context is not used at all — you must declare every prefix you need.
 
 ### Use with JSON-LD queries
 
@@ -264,6 +264,31 @@ curl -X PUT http://localhost:8090/fluree/context/mydb:main \
 ```
 
 See [CLI context command](../cli/context.md) and [API endpoints](../api/endpoints.md#get-flureecontextledger) for full details.
+
+### Opting out of the default context
+
+Sometimes you want full, unexpanded IRIs in query results — for debugging, interoperability with other RDF tools, or simply to avoid any prefix assumptions. You can opt out of the default context entirely:
+
+**JSON-LD queries** — pass an empty `@context` object:
+
+```json
+{
+  "@context": {},
+  "select": ["?s", "?p", "?o"],
+  "where": [["?s", "?p", "?o"]]
+}
+```
+
+Results will contain full IRIs (e.g., `http://example.org/ns/alice`) instead of compacted forms (`ex:alice`).
+
+**SPARQL queries** — include any `PREFIX` declaration. When a query declares its own prefixes, the default context is not injected at all. To opt out without defining any real prefix, use an empty default prefix:
+
+```sparql
+PREFIX : <>
+SELECT ?s ?p ?o WHERE { ?s ?p ?o }
+```
+
+Or simply declare the specific prefixes you need — the default context is only applied when the query has *no* `PREFIX` declarations whatsoever.
 
 ### Storage
 

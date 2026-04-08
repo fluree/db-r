@@ -165,6 +165,12 @@ fn init_otel_layer(
     let _ = OTEL_PROVIDER.set(tracer_provider.clone());
     global::set_tracer_provider(tracer_provider);
 
+    // Register W3C TraceContext propagator (kept in sync with fluree-db-server).
+    //
+    // SYNC: fluree-db-server/src/telemetry.rs::init_otel_layer registers the
+    // same propagator. See CLAUDE.md § "Tracing & OTEL Spans".
+    global::set_text_map_propagator(opentelemetry_sdk::propagation::TraceContextPropagator::new());
+
     OpenTelemetryLayer::new(global::tracer("fluree-cli"))
 }
 

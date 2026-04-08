@@ -4,7 +4,7 @@ use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
 use crate::extract::{FlureeHeaders, MaybeDataBearer};
 use crate::state::AppState;
-use crate::telemetry::{create_request_span, extract_request_id, extract_trace_id};
+use crate::telemetry::{create_request_span, extract_request_id};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -23,12 +23,11 @@ pub async fn get_context(
     bearer: MaybeDataBearer,
 ) -> Result<Response> {
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
         "context:get",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&ledger),
         None,
         None,
@@ -91,12 +90,11 @@ pub async fn set_context(
     }
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-    let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
         "context:set",
         request_id.as_deref(),
-        trace_id.as_deref(),
+        &headers.raw,
         Some(&ledger),
         None,
         None,
