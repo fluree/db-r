@@ -48,13 +48,14 @@ pub use gc::{
     clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
     CleanGarbageResult, GarbageRecord, DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
 };
+pub use orchestrator::{
+    current_index_request_correlation, with_index_request_correlation, BackgroundIndexerWorker,
+    IndexCompletion, IndexOutcome, IndexPhase, IndexRequestCorrelation, IndexStatusSnapshot,
+    IndexerHandle, IndexerOrchestrator,
+};
 #[cfg(feature = "embedded-orchestrator")]
 pub use orchestrator::{
     maybe_refresh_after_commit, require_refresh_before_commit, PostCommitIndexResult,
-};
-pub use orchestrator::{
-    BackgroundIndexerWorker, IndexCompletion, IndexOutcome, IndexPhase, IndexStatusSnapshot,
-    IndexerHandle, IndexerOrchestrator,
 };
 pub use stats::{IndexStatsHook, NoOpStatsHook, StatsArtifacts, StatsSummary};
 

@@ -284,7 +284,7 @@ Existing endpoint, extended with graph source fallback. Request body is unchange
 
 - `POST {api_base_url}/iceberg/map` (admin-protected)
 
-Creates an Iceberg graph source, optionally with an R2RML mapping. This is a write operation and should be admin-protected (same middleware as `/create` and `/drop`).
+Creates an Iceberg graph source with an R2RML mapping that defines how table rows become RDF triples. This is a write operation and should be admin-protected (same middleware as `/create` and `/drop`).
 
 **Request body fields:**
 
@@ -293,9 +293,9 @@ Creates an Iceberg graph source, optionally with an R2RML mapping. This is a wri
 | `name` | string | Yes | Graph source name (no colons) |
 | `mode` | string | No | `"rest"` (default) or `"direct"` |
 | `catalog_uri` | string | REST mode | REST catalog URI |
-| `table` | string | REST mode (without `r2rml`) | Table identifier (`namespace.table`) |
+| `table` | string | No | Table identifier (`namespace.table`); required for REST mode if not specified in R2RML mapping |
 | `table_location` | string | Direct mode | S3 URI (`s3://bucket/path/to/table`) |
-| `r2rml` | string | No | R2RML mapping source (storage address or path) |
+| `r2rml` | string | Yes | R2RML mapping source (storage address or path) |
 | `r2rml_type` | string | No | Mapping media type (e.g., `"text/turtle"`); inferred from extension |
 | `branch` | string | No | Branch name (default: `"main"`) |
 | `auth_bearer` | string | No | Bearer token for REST catalog auth |
@@ -310,11 +310,12 @@ Creates an Iceberg graph source, optionally with an R2RML mapping. This is a wri
 
 **Validation rules:**
 - `name` must not be empty or contain `:`
-- REST mode requires `catalog_uri`; requires `table` unless `r2rml` is provided
+- `r2rml` is required (defines how table rows become RDF triples)
+- REST mode requires `catalog_uri`; requires `table` unless specified in R2RML mapping's `rr:tableName`
 - Direct mode requires `table_location` (must start with `s3://` or `s3a://`)
 - OAuth2 fields must all be provided together (url + id + secret)
 
-**Example — REST catalog:**
+**Example — REST catalog with R2RML:**
 
 ```json
 {
@@ -322,12 +323,13 @@ Creates an Iceberg graph source, optionally with an R2RML mapping. This is a wri
   "mode": "rest",
   "catalog_uri": "https://polaris.example.com/api/catalog",
   "table": "sales.orders",
+  "r2rml": "mappings/orders.ttl",
   "auth_bearer": "my-token",
   "warehouse": "my-warehouse"
 }
 ```
 
-**Example — REST catalog with R2RML:**
+**Example — REST catalog (table inferred from R2RML `rr:tableName`):**
 
 ```json
 {
@@ -346,6 +348,7 @@ Creates an Iceberg graph source, optionally with an R2RML mapping. This is a wri
   "name": "execution-log",
   "mode": "direct",
   "table_location": "s3://bucket/warehouse/logs/execution_log",
+  "r2rml": "mappings/execution_log.ttl",
   "s3_region": "us-east-1"
 }
 ```
@@ -358,9 +361,9 @@ Creates an Iceberg graph source, optionally with an R2RML mapping. This is a wri
 | `table_identifier` | string | Always | Table identifier or derived from location |
 | `catalog_uri` | string | Always | Catalog URI or S3 location |
 | `connection_tested` | boolean | Always | Whether catalog connection was verified (always `false` for direct mode) |
-| `mapping_source` | string | With `r2rml` | R2RML mapping source |
-| `triples_map_count` | integer | With `r2rml` | Number of TriplesMap definitions found |
-| `mapping_validated` | boolean | With `r2rml` | Whether mapping was parsed and compiled successfully |
+| `mapping_source` | string | Always | R2RML mapping source |
+| `triples_map_count` | integer | Always | Number of TriplesMap definitions found |
+| `mapping_validated` | boolean | Always | Whether mapping was parsed and compiled successfully |
 
 **Error responses:**
 - `400 Bad Request` — validation failures (missing fields, invalid mode, bad table identifier)
@@ -369,36 +372,60 @@ Creates an Iceberg graph source, optionally with an R2RML mapping. This is a wri
 
 ### Querying graph sources
 
-Graph source queries work through normal query endpoints. No separate endpoint or special wiring is needed.
+Graph source queries work through normal query endpoints. No separate endpoint is needed, but **your query code path must use `query_from()` (connection-level) rather than the single-ledger `query(&view, ...)` path**.
 
-**As a direct target:**
+> **Critical:** The single-ledger query path (`fluree.db(&alias)` → `fluree.query(&view, ...)`) does NOT resolve graph sources. It bypasses the R2RML provider and dataset builder entirely. If your server routes queries through a single-view `GraphDb`, Iceberg graph source queries will fail. You must use the connection-level `query_from()` builder.
+
+**Required query path:**
+
+```rust
+// Connection-level — graph sources resolve transparently
+// When compiled with the `iceberg` feature, query_from() automatically
+// enables R2RML provider support via .with_r2rml().
+f.query_from().sparql(sparql).execute_formatted().await
+f.query_from().jsonld(&query_json).execute_formatted().await
+
+// Ledger-scoped with graph source support (e.g., GRAPH patterns)
+f.graph(ledger_id).query().sparql(sparql).execute_formatted().await
+```
+
+**Do NOT use:**
+
+```rust
+// Single-ledger path — does NOT support graph sources
+let view = f.db(&alias).await?;
+f.query(&view, query_input).await?  // ❌ No R2RML, no graph source resolution
+```
+
+**Query patterns that reference graph sources:**
 
 Graph sources can be queried directly, just like ledgers:
 
 - `POST {api_base_url}/query/execution-log:main` with a SPARQL or JSON-LD query body
-- The server resolves the name as a graph source (not a ledger), creates a minimal query context, and routes triple patterns through the R2RML/Iceberg scan engine
 
-**Via FROM clauses:**
-
-Graph sources can appear in `FROM` / `FROM NAMED` clauses:
+Via `FROM` / `FROM NAMED` clauses:
 
 ```sparql
 SELECT * FROM <execution-log:main> WHERE { ?s ?p ?o } LIMIT 10
 ```
 
-**Via GRAPH patterns (from within a ledger query):**
+Via `GRAPH` patterns (joining with ledger data):
 
 ```sparql
-SELECT * WHERE { GRAPH <execution-log:main> { ?s ?p ?o } } LIMIT 10
+SELECT ?name ?orderId ?total
+FROM <mydb:main>
+WHERE {
+  ?customer schema:name ?name .
+  ?customer ex:customerId ?custId .
+  GRAPH <warehouse-orders:main> {
+    ?order ex:customerId ?custId .
+    ?order ex:orderId ?orderId .
+    ?order ex:total ?total .
+  }
+}
 ```
 
-**How it works:** When the `iceberg` feature is compiled, `query_from()` and `graph().query()` automatically enable R2RML provider support. The `NameService` trait requires `GraphSourceLookup` (read-only graph source discovery), so graph source resolution is always available. No special API calls are needed — callers just use the standard query API:
-
-```rust
-// Standard query — graph sources resolve transparently
-f.query_from().sparql(sparql).execute_formatted().await
-f.graph(ledger_id).query().sparql(sparql).execute_formatted().await
-```
+**How it works:** When the `iceberg` feature is compiled, `query_from()` and `graph().query()` automatically call `.with_r2rml()`, which constructs a `FlureeR2rmlProvider` that can resolve graph source names to R2RML mappings and route triple patterns through the Iceberg scan engine. The `NameService` trait requires `GraphSourceLookup` (read-only graph source discovery), so graph source resolution is always available at the nameservice layer.
 
 **Known limitation:** `FROM <ledger>, <graph-source>` with bare WHERE patterns (no GRAPH wrapper) — the graph source participates in the dataset but bare triple patterns only scan native indexes. Use explicit `GRAPH <gs:main> { ... }` for the graph source part in mixed-source queries.
 
@@ -477,11 +504,11 @@ fluree create imported --from mydb.flpack
 # Iceberg operations (requires iceberg feature on server)
 fluree iceberg map my-gs \
   --catalog-uri https://polaris.example.com/api/catalog \
-  --table sales.orders \
+  --r2rml mappings/orders.ttl \
   --auth-bearer $POLARIS_TOKEN
 
 fluree list                    # should show mydb (Ledger) + my-gs (Iceberg)
-fluree info my-gs              # should show Iceberg config
+fluree info my-gs              # should show Iceberg config + R2RML mapping
 fluree show t:1 --remote origin  # should show decoded commit with resolved IRIs
 fluree drop my-gs --force      # should drop the graph source
 ```

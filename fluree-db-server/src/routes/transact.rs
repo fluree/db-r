@@ -25,13 +25,15 @@ use crate::error::{Result, ServerError};
 use crate::extract::tracking_headers;
 use crate::extract::{FlureeHeaders, MaybeCredential, MaybeDataBearer};
 use crate::state::AppState;
-use crate::telemetry::{create_request_span, extract_request_id, set_span_error_code};
+use crate::telemetry::{
+    create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
+};
 use axum::extract::{Path, Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use fluree_db_api::{
-    lower_sparql_update, parse_sparql, CommitOpts, NamespaceRegistry, SparqlQueryBody,
-    TrackingOptions, TxnOpts, TxnType,
+    lower_sparql_update, parse_sparql, with_index_request_correlation, CommitOpts,
+    IndexRequestCorrelation, NamespaceRegistry, SparqlQueryBody, TrackingOptions, TxnOpts, TxnType,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -1243,7 +1245,16 @@ async fn execute_transaction(
             builder = builder.tracking(opts);
         }
 
-        let result = match builder.execute().await {
+        let correlation = index_request_correlation(
+            &credential.headers,
+            extract_request_id(&credential.headers, &state.telemetry_config),
+            match txn_type {
+                TxnType::Insert => "insert",
+                TxnType::Upsert => "upsert",
+                TxnType::Update => "update",
+            },
+        );
+        let result = match with_index_request_correlation(correlation, builder.execute()).await {
             Ok(result) => {
                 tracing::info!(
                     status = "success",
@@ -1289,6 +1300,14 @@ async fn execute_transaction(
 fn compute_tx_id_turtle(turtle: &str) -> String {
     let hash = Sha256::digest(turtle.as_bytes());
     format!("fluree:tx:sha256:{}", hex::encode(hash))
+}
+
+fn index_request_correlation(
+    headers: &axum::http::HeaderMap,
+    request_id: Option<String>,
+    operation: &'static str,
+) -> IndexRequestCorrelation {
+    IndexRequestCorrelation::new(request_id, extract_trace_id(headers), Some(operation))
 }
 
 /// Execute a Turtle/TriG transaction
@@ -1386,7 +1405,16 @@ async fn execute_turtle_transaction(
             builder = builder.index_config(config.clone());
         }
 
-        let result = match builder.execute().await {
+        let correlation = index_request_correlation(
+            &credential.headers,
+            extract_request_id(&credential.headers, &state.telemetry_config),
+            match txn_type {
+                TxnType::Insert => "insert",
+                TxnType::Upsert => "upsert",
+                TxnType::Update => "update",
+            },
+        );
+        let result = match with_index_request_correlation(correlation, builder.execute()).await {
             Ok(result) => {
                 tracing::info!(
                     status = "success",
@@ -1568,7 +1596,12 @@ async fn execute_sparql_update_request(
         builder = builder.index_config(config.clone());
     }
 
-    let result = match builder.execute().await {
+    let correlation = index_request_correlation(
+        &credential.headers,
+        extract_request_id(&credential.headers, &state.telemetry_config),
+        "sparql-update",
+    );
+    let result = match with_index_request_correlation(correlation, builder.execute()).await {
         Ok(result) => {
             tracing::info!(
                 status = "success",

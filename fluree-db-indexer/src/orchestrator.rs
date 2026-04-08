@@ -47,10 +47,60 @@ use crate::{publish_index_result, IndexResult};
 use fluree_db_core::Storage;
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, Notify};
 use tracing::{debug, info, warn};
+
+tokio::task_local! {
+    static INDEX_REQUEST_CORRELATION: IndexRequestCorrelation;
+}
+
+/// Lightweight request correlation copied from the triggering request.
+///
+/// The background index worker keeps only these copied fields so it can emit
+/// correlated logs without holding the original request span open.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IndexRequestCorrelation {
+    /// Request identifier extracted from ingress headers.
+    pub request_id: Option<String>,
+    /// Trace identifier extracted from distributed tracing context.
+    pub trace_id: Option<String>,
+    /// High-level operation that queued the indexing work.
+    pub operation: Option<String>,
+}
+
+impl IndexRequestCorrelation {
+    /// Create a correlation payload, skipping absent values.
+    pub fn new(
+        request_id: Option<impl Into<String>>,
+        trace_id: Option<impl Into<String>>,
+        operation: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            request_id: request_id.map(Into::into),
+            trace_id: trace_id.map(Into::into),
+            operation: operation.map(Into::into),
+        }
+    }
+}
+
+/// Run a future with request correlation available to background triggers.
+pub async fn with_index_request_correlation<Fut>(
+    correlation: IndexRequestCorrelation,
+    future: Fut,
+) -> Fut::Output
+where
+    Fut: Future,
+{
+    INDEX_REQUEST_CORRELATION.scope(correlation, future).await
+}
+
+/// Return the request correlation copied onto the current task, if any.
+pub fn current_index_request_correlation() -> Option<IndexRequestCorrelation> {
+    INDEX_REQUEST_CORRELATION.try_with(Clone::clone).ok()
+}
 
 // =============================================================================
 // Indexing Status & Completion Types
@@ -151,6 +201,8 @@ struct LedgerIndexState {
     retry_count: u32,
     /// When to retry next (if in backoff)
     next_retry_at: Option<tokio::time::Instant>,
+    /// Latest concrete request metadata associated with queued work.
+    request_correlation: Option<IndexRequestCorrelation>,
 }
 
 impl Default for LedgerIndexState {
@@ -164,6 +216,7 @@ impl Default for LedgerIndexState {
             cancelled: false,
             retry_count: 0,
             next_retry_at: None,
+            request_correlation: None,
         }
     }
 }
@@ -198,6 +251,7 @@ impl LedgerIndexState {
         self.pending_min_t = self.waiters.iter().map(|(min_t, _)| *min_t).min();
         if self.pending_min_t.is_none() {
             self.phase = IndexPhase::Idle;
+            self.request_correlation = None;
         }
     }
 
@@ -346,6 +400,17 @@ impl IndexerHandle {
     ///
     /// Fire-and-forget: just drop the returned `IndexCompletion`.
     pub async fn trigger(&self, ledger_id: impl Into<String>, min_t: i64) -> IndexCompletion {
+        self.trigger_with_correlation(ledger_id, min_t, current_index_request_correlation())
+            .await
+    }
+
+    /// Trigger indexing while explicitly carrying copied request correlation.
+    pub async fn trigger_with_correlation(
+        &self,
+        ledger_id: impl Into<String>,
+        min_t: i64,
+        correlation: Option<IndexRequestCorrelation>,
+    ) -> IndexCompletion {
         let ledger_id = ledger_id.into();
         let (tx, rx) = oneshot::channel();
         let (phase, pending_min_t, waiter_count);
@@ -364,6 +429,12 @@ impl IndexerHandle {
 
             // Add waiter
             state.waiters.push((min_t, tx));
+
+            // When multiple requests coalesce, prefer the latest concrete
+            // request metadata over leaving stale or absent fields behind.
+            if correlation.is_some() {
+                state.request_correlation = correlation.clone();
+            }
 
             // Update coalesced min_t
             state.pending_min_t = Some(
@@ -388,6 +459,9 @@ impl IndexerHandle {
         info!(
             ledger_id = %ledger_id,
             requested_min_t = min_t,
+            request_id = correlation.as_ref().and_then(|ctx| ctx.request_id.as_deref()),
+            trace_id = correlation.as_ref().and_then(|ctx| ctx.trace_id.as_deref()),
+            trigger_operation = correlation.as_ref().and_then(|ctx| ctx.operation.as_deref()),
             phase = ?phase,
             pending_min_t = ?pending_min_t,
             waiter_count,
@@ -414,6 +488,7 @@ impl IndexerHandle {
                 // Resolve all waiters as cancelled (they haven't been satisfied)
                 state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                 state.pending_min_t = None;
+                state.request_correlation = None;
                 if state.phase == IndexPhase::Pending {
                     state.phase = IndexPhase::Idle;
                 }
@@ -438,6 +513,7 @@ impl IndexerHandle {
             state.cancelled = true;
             state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
             state.pending_min_t = None;
+            state.request_correlation = None;
             if state.phase == IndexPhase::Pending {
                 state.phase = IndexPhase::Idle;
             }
@@ -627,6 +703,7 @@ where
                     if state.cancelled && state.has_pending_work() {
                         state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                         state.pending_min_t = None;
+                        state.request_correlation = None;
                         state.phase = IndexPhase::Idle;
                         state.cancelled = false;
                     }
@@ -642,7 +719,7 @@ where
     async fn process_ledger(&self, ledger_id: &str) {
         let process_started = Instant::now();
 
-        let (pending_min_t, waiter_count, retry_count) = {
+        let (pending_min_t, waiter_count, retry_count, correlation) = {
             let lock_started = Instant::now();
             let states = self.states.lock().await;
             debug!(
@@ -651,7 +728,12 @@ where
                 "Acquired state lock for queued indexing snapshot"
             );
             if let Some(state) = states.get(ledger_id) {
-                (state.pending_min_t, state.waiters.len(), state.retry_count)
+                (
+                    state.pending_min_t,
+                    state.waiters.len(),
+                    state.retry_count,
+                    state.request_correlation.clone(),
+                )
             } else {
                 debug!(
                     ledger_id = %ledger_id,
@@ -660,6 +742,13 @@ where
                 return;
             }
         };
+        let request_id = correlation
+            .as_ref()
+            .and_then(|ctx| ctx.request_id.as_deref());
+        let trace_id = correlation.as_ref().and_then(|ctx| ctx.trace_id.as_deref());
+        let trigger_operation = correlation
+            .as_ref()
+            .and_then(|ctx| ctx.operation.as_deref());
 
         // Mark as in-progress
         {
@@ -696,6 +785,9 @@ where
 
         info!(
             ledger_id = %ledger_id,
+            request_id,
+            trace_id,
+            trigger_operation,
             pending_min_t = ?pending_min_t,
             waiter_count,
             retry_count,
@@ -715,6 +807,7 @@ where
                         IndexOutcome::Failed("Ledger not found".to_string()),
                     );
                     state.pending_min_t = None;
+                    state.request_correlation = None;
                     state.phase = IndexPhase::Idle;
                 }
                 return;
@@ -722,6 +815,9 @@ where
             Err(e) => {
                 warn!(
                 ledger_id = %ledger_id,
+                        request_id,
+                        trace_id,
+                        trigger_operation,
                         error = %e,
                         "Nameservice lookup failed, will retry"
                     );
@@ -734,6 +830,9 @@ where
         let commit_gap = record.commit_t - current_index_t;
         info!(
             ledger_id = %ledger_id,
+            request_id,
+            trace_id,
+            trigger_operation,
             current_index_t,
             commit_t = record.commit_t,
             commit_gap,
@@ -929,6 +1028,9 @@ where
         // Execute refresh-first indexing to CURRENT commit_t
         info!(
             ledger_id = %ledger_id,
+            request_id,
+            trace_id,
+            trigger_operation,
             current_index_t,
             commit_t = record.commit_t,
             commit_gap,
@@ -946,6 +1048,9 @@ where
                 {
                     warn!(
                     ledger_id = %ledger_id,
+                            request_id,
+                            trace_id,
+                            trigger_operation,
                             error = %e,
                             "Failed to publish index, will retry"
                         );
@@ -953,6 +1058,9 @@ where
                 } else {
                     info!(
                     ledger_id = %ledger_id,
+                            request_id,
+                            trace_id,
+                            trigger_operation,
                             index_t = index_result.index_t,
                             "Successfully indexed ledger"
                         );
@@ -1006,6 +1114,9 @@ where
             Err(e) => {
                 warn!(
                 ledger_id = %ledger_id,
+                        request_id,
+                        trace_id,
+                        trigger_operation,
                         error = %e,
                         "Indexing failed, will retry"
                     );
@@ -1022,6 +1133,7 @@ where
             if state.cancelled {
                 state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                 state.pending_min_t = None;
+                state.request_correlation = None;
                 state.phase = IndexPhase::Idle;
                 return;
             }
@@ -1800,6 +1912,33 @@ mod tests {
             assert!(state.next_retry_at.is_none());
             assert_eq!(state.retry_count, 0);
         }
+    }
+
+    #[tokio::test]
+    async fn test_handle_trigger_captures_request_correlation() {
+        let storage = MemoryStorage::new();
+        let ns = Arc::new(MemoryNameService::new());
+        let (_worker, handle) = BackgroundIndexerWorker::new(storage, ns, IndexerConfig::small());
+        let correlation =
+            IndexRequestCorrelation::new(Some("req-123"), Some("trace-456"), Some("insert"));
+
+        with_index_request_correlation(correlation.clone(), async {
+            let _completion = handle.trigger("test:main", 1).await;
+        })
+        .await;
+
+        {
+            let states = handle.states.lock().await;
+            let state = states.get("test:main").expect("state exists");
+            assert_eq!(state.request_correlation, Some(correlation.clone()));
+        }
+
+        // A trigger without correlation should not erase the last concrete metadata
+        // while the ledger still has queued work.
+        let _completion = handle.trigger("test:main", 2).await;
+        let states = handle.states.lock().await;
+        let state = states.get("test:main").expect("state exists");
+        assert_eq!(state.request_correlation, Some(correlation));
     }
 
     #[tokio::test]

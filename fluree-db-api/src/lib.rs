@@ -175,7 +175,8 @@ pub use search::EmbeddedBm25SearchProvider;
 
 // Re-export indexer types for background indexing setup
 pub use fluree_db_indexer::{
-    BackgroundIndexerWorker, IndexCompletion, IndexOutcome, IndexPhase, IndexStatusSnapshot,
+    current_index_request_correlation, with_index_request_correlation, BackgroundIndexerWorker,
+    IndexCompletion, IndexOutcome, IndexPhase, IndexRequestCorrelation, IndexStatusSnapshot,
     IndexerConfig, IndexerHandle,
 };
 
