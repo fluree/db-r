@@ -371,6 +371,13 @@ where
             commit_opts = commit_opts.with_graph_delta(source_data.graph_delta);
         }
 
+        // Copy source commit chain to target namespace so the target is
+        // self-contained for DAG walking. This must happen before the merge
+        // commit is published.
+        let commits_copied = self
+            .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
+            .await?;
+
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
@@ -380,12 +387,6 @@ where
             commit_opts,
         )
         .await?;
-
-        // Copy source commit chain to target namespace so the target is
-        // self-contained for DAG walking.
-        let commits_copied = self
-            .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
-            .await?;
 
         // Copy source's index to target (best-effort).
         if let Some(ref index_cid) = source_record.index_head_id {
