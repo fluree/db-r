@@ -242,6 +242,13 @@ pub struct IdStatsHook {
     /// When disabled, class counts + class→property presence still work, but
     /// `finalize_with_aggregate_properties()` will return an empty `class_ref_targets`.
     track_ref_targets: bool,
+    /// When true, skip all per-subject map accumulation (subject_class_deltas,
+    /// subject_props, subject_prop_dts, subject_prop_langs, subject_ref_history).
+    ///
+    /// HLL sketches, per-property stats, and class_counts are still tracked.
+    /// Use this for the full rebuild path where class stats are computed via
+    /// disk-backed streaming over sorted commit files instead.
+    hll_only: bool,
     /// Class membership counts: (g_id, class_sid64) → signed delta count.
     /// Graph-scoped so per-graph ClassStatEntry can be derived.
     class_counts: HashMap<(GraphId, u64), i64>,
@@ -289,6 +296,22 @@ impl IdStatsHook {
     /// Enables incremental refresh: load prior sketches from a CAS blob,
     /// then process only novelty commits. The hook's `on_record()` will
     /// merge new observations into the existing registers.
+    /// Create an HLL-only hook that skips all per-subject map accumulation.
+    ///
+    /// HLL sketches, per-property stats, and class_counts are still tracked.
+    /// Per-subject maps (subject_class_deltas, subject_props, subject_prop_dts,
+    /// subject_prop_langs, subject_ref_history) remain empty.
+    ///
+    /// Use for the full rebuild path where class stats are computed via
+    /// disk-backed streaming over sorted commit files.
+    pub fn new_hll_only() -> Self {
+        Self {
+            hll_only: true,
+            track_ref_targets: false,
+            ..Self::default()
+        }
+    }
+
     pub fn with_prior_properties(properties: HashMap<GraphPropertyKey, IdPropertyHll>) -> Self {
         Self {
             properties,
@@ -348,15 +371,19 @@ impl IdStatsHook {
         // Track class membership and class→property attribution (graph-scoped).
         if let Some(rdf_type_pid) = self.rdf_type_p_id {
             if rec.p_id == rdf_type_pid && rec.o_kind == 0x05 {
-                // ObjKind::REF_ID == 0x05: this is an rdf:type assertion/retraction
+                // ObjKind::REF_ID == 0x05: this is an rdf:type assertion/retraction.
+                // class_counts is always tracked (tiny: bounded by distinct classes).
                 *self.class_counts.entry((rec.g_id, rec.o_key)).or_insert(0) += delta;
-                *self
-                    .subject_class_deltas
-                    .entry((rec.g_id, rec.s_id))
-                    .or_default()
-                    .entry(rec.o_key)
-                    .or_insert(0) += delta;
-            } else if rec.op {
+
+                if !self.hll_only {
+                    *self
+                        .subject_class_deltas
+                        .entry((rec.g_id, rec.s_id))
+                        .or_default()
+                        .entry(rec.o_key)
+                        .or_insert(0) += delta;
+                }
+            } else if !self.hll_only && rec.op {
                 // Non-rdf:type property assertion: track per-subject and per-class
                 self.subject_props
                     .entry((rec.g_id, rec.s_id))
@@ -364,8 +391,8 @@ impl IdStatsHook {
                     .insert(rec.p_id);
             }
 
-            // Track per-subject datatype usage for class→property→datatype attribution.
-            if rec.p_id != rdf_type_pid {
+            if !self.hll_only && rec.p_id != rdf_type_pid {
+                // Track per-subject datatype usage for class→property→datatype attribution.
                 *self
                     .subject_prop_dts
                     .entry((rec.g_id, rec.s_id))
@@ -392,7 +419,11 @@ impl IdStatsHook {
             //
             // We track both assertions and retractions via signed deltas.
             // Only applies to ref objects (ObjKind::REF_ID).
-            if self.track_ref_targets && rec.p_id != rdf_type_pid && rec.o_kind == 0x05 {
+            if self.track_ref_targets
+                && !self.hll_only
+                && rec.p_id != rdf_type_pid
+                && rec.o_kind == 0x05
+            {
                 // Record per-subject ref history (for retroactive attribution on rdf:type)
                 *self
                     .subject_ref_history
@@ -433,17 +464,19 @@ impl IdStatsHook {
         for (key, delta) in other.class_counts {
             *self.class_counts.entry(key).or_insert(0) += delta;
         }
-        for (key, class_map) in other.subject_class_deltas {
-            let entry = self.subject_class_deltas.entry(key).or_default();
-            for (class_sid64, delta) in class_map {
-                *entry.entry(class_sid64).or_insert(0) += delta;
+        if !self.hll_only {
+            for (key, class_map) in other.subject_class_deltas {
+                let entry = self.subject_class_deltas.entry(key).or_default();
+                for (class_sid64, delta) in class_map {
+                    *entry.entry(class_sid64).or_insert(0) += delta;
+                }
+            }
+            for (key, props) in other.subject_props {
+                self.subject_props.entry(key).or_default().extend(props);
             }
         }
-        for (key, props) in other.subject_props {
-            self.subject_props.entry(key).or_default().extend(props);
-        }
         // Merge per-subject ref history.
-        if self.track_ref_targets {
+        if self.track_ref_targets && !self.hll_only {
             for (key, per_prop) in other.subject_ref_history {
                 let entry = self.subject_ref_history.entry(key).or_default();
                 for (p_id, objs) in per_prop {
@@ -602,6 +635,42 @@ impl IdStatsHook {
             graphs,
             total_flakes,
         }
+    }
+
+    /// Like [`finalize`], but also moves out the per-subject tracking maps
+    /// instead of requiring the caller to `.clone()` them beforehand.
+    ///
+    /// This avoids temporarily doubling memory by cloning large maps before
+    /// `finalize()` consumes the hook. The maps are moved out via
+    /// `std::mem::take()`, then `finalize()` runs on the emptied struct.
+    #[allow(clippy::type_complexity)]
+    pub fn finalize_into_parts(
+        mut self,
+    ) -> (
+        IdStatsResult,
+        HashMap<(GraphId, u64), i64>,               // class_count_deltas
+        HashMap<(GraphId, u64), HashMap<u64, i64>>, // subject_class_deltas
+        HashMap<(GraphId, u64), HashSet<u32>>,      // subject_props
+        HashMap<(GraphId, u64), HashMap<u32, HashMap<u8, i64>>>, // subject_prop_dts
+        HashMap<(GraphId, u64), HashMap<u32, HashMap<u16, i64>>>, // subject_prop_langs
+        HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>>, // subject_ref_history
+    ) {
+        let class_count_deltas = std::mem::take(&mut self.class_counts);
+        let subject_class_deltas = std::mem::take(&mut self.subject_class_deltas);
+        let subject_props = std::mem::take(&mut self.subject_props);
+        let subject_prop_dts = std::mem::take(&mut self.subject_prop_dts);
+        let subject_prop_langs = std::mem::take(&mut self.subject_prop_langs);
+        let subject_ref_history = std::mem::take(&mut self.subject_ref_history);
+        let result = self.finalize();
+        (
+            result,
+            class_count_deltas,
+            subject_class_deltas,
+            subject_props,
+            subject_prop_dts,
+            subject_prop_langs,
+            subject_ref_history,
+        )
     }
 
     /// Finalize into per-graph stats plus a ledger-wide aggregate property view

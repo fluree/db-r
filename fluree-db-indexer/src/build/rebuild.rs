@@ -11,6 +11,7 @@ use crate::error::{IndexerError, Result};
 use crate::run_index;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
+use super::mem_profile as mp;
 use super::upload::cid_from_write;
 use super::upload_dicts::upload_dicts_from_disk;
 
@@ -108,6 +109,8 @@ where
             // Phase spans below use .entered() — safe because block_on inside
             // spawn_blocking pins this async task to a single OS thread.
 
+            mp::log_rss("BASELINE — before Phase A");
+
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
             let (commit_cids, ledger_split_mode) = {
@@ -168,6 +171,14 @@ where
                 (cids, split_mode)
             };
             drop(_span_a);
+
+            mp::log_rss("Phase A complete — commit chain collected");
+            tracing::info!(
+                commit_cids_count = commit_cids.len(),
+                commit_cids_bytes = mp::vec_heap_bytes(&commit_cids),
+                commit_cids_human = %mp::human(mp::vec_heap_bytes(&commit_cids)),
+                "MEM_PROFILE: Phase A data structures"
+            );
 
             // ---- Phase B: Resolve commits into batched chunks ----
             let _span_b =
@@ -280,6 +291,40 @@ where
                 graphs = shared.graphs.len(),
                 "Phase B complete: all commits resolved into chunks"
             );
+
+            // ---- MEM_PROFILE: Phase B data structures ----
+            {
+                mp::log_rss("Phase B complete — all chunks resolved");
+                let mut total_records = 0usize;
+                let mut total_record_bytes = 0u64;
+                for (ci, chunk) in chunks.iter().enumerate() {
+                    let rec_bytes = mp::vec_heap_bytes(&chunk.records);
+                    total_records += chunk.records.len();
+                    total_record_bytes += rec_bytes;
+                    tracing::info!(
+                        chunk_idx = ci,
+                        subjects = chunk.subjects.len(),
+                        strings = chunk.strings.len(),
+                        records = chunk.records.len(),
+                        records_bytes = rec_bytes,
+                        records_human = %mp::human(rec_bytes),
+                        flake_count = chunk.flake_count,
+                        "MEM_PROFILE: Phase B chunk detail"
+                    );
+                }
+                let spatial_count = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
+                let fulltext_count = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                tracing::info!(
+                    total_chunks = chunks.len(),
+                    total_records,
+                    total_record_bytes,
+                    total_record_human = %mp::human(total_record_bytes),
+                    spatial_entries = spatial_count,
+                    fulltext_entries = fulltext_count,
+                    "MEM_PROFILE: Phase B totals"
+                );
+            }
+
             drop(_span_b);
 
             // Finalize schema extraction from rebuild ops.
@@ -301,10 +346,21 @@ where
                 chunk_records.push(chunk.records);
             }
 
+            mp::log_rss("Phase C start — before dict merge");
+            tracing::info!(
+                chunk_records_count = chunk_records.len(),
+                chunk_records_total = chunk_records.iter().map(|v| v.len()).sum::<usize>(),
+                chunk_records_bytes = chunk_records.iter().map(|v| mp::vec_heap_bytes(v)).sum::<u64>(),
+                chunk_records_human = %mp::human(chunk_records.iter().map(|v| mp::vec_heap_bytes(v)).sum::<u64>()),
+                "MEM_PROFILE: Phase C chunk_records before merge"
+            );
+
             let (subject_merge, subject_remaps) =
                 run_index::dict_merge::merge_subject_dicts(&subject_dicts);
             let (string_merge, string_remaps) =
                 run_index::dict_merge::merge_string_dicts(&string_dicts);
+
+            mp::log_rss("Phase C — after dict merge, before remap");
 
             // Remap spatial entries' chunk-local subject IDs → global sid64.
             // The spatial hook accumulated entries with chunk-local s_id values;
@@ -470,6 +526,15 @@ where
                 });
             }
 
+            // Records are persisted to .fsc files on disk — free the in-memory
+            // copies immediately. For large datasets (e.g. 60M flakes) this
+            // reclaims ~2-6 GB of heap before the index build phase.
+            drop(chunk_records);
+            drop(subject_remaps);
+            drop(string_remaps);
+            drop(subject_dicts);
+            drop(string_dicts);
+
             // Persist global dicts to disk for index-store loading + CAS upload.
             {
                 use run_index::dict_io::{write_language_dict, write_predicate_dict};
@@ -609,6 +674,7 @@ where
             let mut total_build_ms = 0u128;
 
             for &g_id in &all_g_ids {
+                mp::log_rss(&format!("Phase D-V3 — before building graph g_id={g_id}"));
                 let v3_run_dir = run_dir.join(format!("v3_runs_g{g_id}"));
                 std::fs::create_dir_all(&v3_run_dir)
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
@@ -676,6 +742,7 @@ where
                 graphs = all_g_ids.len(),
                 "Phase D-V3 complete: all graph indexes built"
             );
+            mp::log_rss("Phase D-V3 complete — before stats collection");
 
             // Phase D-V3 stats: collect per-(g_id, p_id) HLL sketches
             // by reading all sorted commit files and feeding IdStatsHook.
@@ -706,6 +773,31 @@ where
                 }
             }
 
+            // ---- MEM_PROFILE: IdStatsHook accumulation complete ----
+            {
+                mp::log_rss("Phase D stats — IdStatsHook fully populated");
+                tracing::info!(
+                    properties_count = stats_hook.properties().len(),
+                    class_counts_entries = stats_hook.class_count_deltas().len(),
+                    subject_class_deltas_entries = stats_hook.subject_class_deltas().len(),
+                    subject_class_deltas_deep_bytes = mp::deep_size_subject_class_deltas(stats_hook.subject_class_deltas()),
+                    subject_class_deltas_human = %mp::human(mp::deep_size_subject_class_deltas(stats_hook.subject_class_deltas())),
+                    subject_props_entries = stats_hook.subject_props().len(),
+                    subject_props_deep_bytes = mp::deep_size_subject_props(stats_hook.subject_props()),
+                    subject_props_human = %mp::human(mp::deep_size_subject_props(stats_hook.subject_props())),
+                    subject_prop_dts_entries = stats_hook.subject_prop_dts().len(),
+                    subject_prop_dts_deep_bytes = mp::deep_size_3level_u8(stats_hook.subject_prop_dts()),
+                    subject_prop_dts_human = %mp::human(mp::deep_size_3level_u8(stats_hook.subject_prop_dts())),
+                    subject_prop_langs_entries = stats_hook.subject_prop_langs().len(),
+                    subject_prop_langs_deep_bytes = mp::deep_size_3level_u16(stats_hook.subject_prop_langs()),
+                    subject_prop_langs_human = %mp::human(mp::deep_size_3level_u16(stats_hook.subject_prop_langs())),
+                    subject_ref_history_entries = stats_hook.subject_ref_history().len(),
+                    subject_ref_history_deep_bytes = mp::deep_size_ref_history(stats_hook.subject_ref_history()),
+                    subject_ref_history_human = %mp::human(mp::deep_size_ref_history(stats_hook.subject_ref_history())),
+                    "MEM_PROFILE: IdStatsHook sizes (BEFORE clone)"
+                );
+            }
+
             // Upload HLL sketches to CAS (must happen before finalize
             // consumes the hook).
             let sketch_ref = {
@@ -732,15 +824,18 @@ where
                 }
             };
 
-            // Capture class tracking state before finalize consumes the hook.
-            let class_count_deltas = stats_hook.class_count_deltas().clone();
-            let subject_class_deltas = stats_hook.subject_class_deltas().clone();
-            let subject_props = stats_hook.subject_props().clone();
-            let subject_prop_dts = stats_hook.subject_prop_dts().clone();
-            let subject_prop_langs = stats_hook.subject_prop_langs().clone();
-            let subject_ref_history = stats_hook.subject_ref_history().clone();
-
-            let id_stats_result = stats_hook.finalize();
+            // Move per-subject maps out of the hook (avoids cloning ~15 GB
+            // of nested HashMaps for large datasets). finalize() runs on the
+            // emptied struct to produce the IdStatsResult.
+            let (
+                id_stats_result,
+                class_count_deltas,
+                subject_class_deltas,
+                subject_props,
+                subject_prop_dts,
+                subject_prop_langs,
+                subject_ref_history,
+            ) = stats_hook.finalize_into_parts();
 
             // Build the full IndexStats for the FIR6 root.
             let trie_for_stats =
@@ -830,6 +925,8 @@ where
                     fluree_db_core::Sid::new(ns_code, suffix)
                 };
 
+                mp::log_rss("Phase D class stats — before building subject_classes");
+
                 // subject_classes: (g_id, subject_sid64) -> set of class_sid64
                 let mut subject_classes: std::collections::HashMap<
                     (u16, u64),
@@ -849,6 +946,19 @@ where
                         subject_classes.insert((g_id, s_id), set);
                     }
                 }
+
+                mp::log_rss("Phase D class stats — after subject_classes built");
+                tracing::info!(
+                    subject_classes_entries = subject_classes.len(),
+                    subject_classes_deep_bytes = {
+                        let mut total = mp::hashmap_shallow_bytes(&subject_classes);
+                        for v in subject_classes.values() {
+                            total += mp::hashset_shallow_bytes(v);
+                        }
+                        total
+                    },
+                    "MEM_PROFILE: subject_classes size"
+                );
 
                 // class -> properties, datatype/lang usage, ref target edges
                 let mut class_properties: std::collections::HashMap<
@@ -937,6 +1047,17 @@ where
                         }
                     }
                 }
+
+                mp::log_rss("Phase D class stats — after class_properties + ref_edges built");
+                tracing::info!(
+                    class_properties_entries = class_properties.len(),
+                    class_prop_dts_entries = class_prop_dts.len(),
+                    class_prop_langs_entries = class_prop_langs.len(),
+                    ref_edges_entries = ref_edges.len(),
+                    ref_edges_deep_bytes = mp::deep_size_ref_history(&ref_edges),
+                    ref_edges_human = %mp::human(mp::deep_size_ref_history(&ref_edges)),
+                    "MEM_PROFILE: class-level derived structures"
+                );
 
                 // Build graph-scoped class entries.
                 let mut per_graph_classes: std::collections::HashMap<u16, Vec<ClassStatEntry>> =
@@ -1070,11 +1191,15 @@ where
                 "Phase D-V3 stats: collected"
             );
 
+            mp::log_rss("Phase D stats complete — before Phase E upload");
+
             // Phase E-V3: Upload V3 artifacts to CAS.
             let v3_uploaded =
                 super::upload::upload_indexes_to_cas(&storage, &ledger_id, &v3_result)
                     .instrument(tracing::debug_span!("upload_v3_indexes"))
                     .await?;
+
+            mp::log_rss("Phase E complete — before Phase F");
 
             // Phase F-V3: Upload dicts + assemble FIR6 root.
             let uploaded_dicts =
@@ -1194,6 +1319,8 @@ where
             .await?;
 
             drop(_span_v3);
+
+            mp::log_rss("Phase F complete — FIR6 root written");
 
             // Clean up ephemeral tmp_import session directory.
             if let Err(e) = std::fs::remove_dir_all(&run_dir) {
