@@ -1472,12 +1472,19 @@ impl BinaryIndexStore {
         lang_id: u16,
         g_id: GraphId,
     ) -> io::Result<FlakeValue> {
+        let obj_kind = ObjKind::from_u8(o_kind);
         let registry = OTypeRegistry::builtin_only();
-        let o_type = registry.resolve(
-            ObjKind::from_u8(o_kind),
-            DatatypeDictId::from_u16(dt_id),
-            lang_id,
-        );
+        let o_type = registry.resolve(obj_kind, DatatypeDictId::from_u16(dt_id), lang_id);
+
+        // Handle legacy data where integral doubles were stored as NUM_INT but
+        // the property's datatype is float/double. The OType resolves to F64
+        // decode, but the key was encoded with encode_i64. Decode as integer
+        // and convert to f64 to avoid bit-reinterpretation corruption. (fluree/db-r#142)
+        if obj_kind == ObjKind::NUM_INT && o_type.decode_kind() == DecodeKind::F64 {
+            let int_val = ObjKey::from_u64(o_key).decode_i64();
+            return Ok(FlakeValue::Double(int_val as f64));
+        }
+
         self.decode_value_v3(o_type.as_u16(), o_key, p_id, g_id)
     }
 }
@@ -1874,8 +1881,15 @@ async fn build_dictionary_set(
     }
 
     // Subject reverse tree.
-    let subject_reverse_tree =
-        Some(DictTreeReader::from_refs(&cs, &root.dict_refs.subject_reverse, leaflet_cache).await?);
+    let subject_reverse_tree = Some(
+        DictTreeReader::from_refs(
+            &cs,
+            &root.dict_refs.subject_reverse,
+            leaflet_cache,
+            Some(cache_dir),
+        )
+        .await?,
+    );
 
     // String forward packs.
     let string_forward_packs = ForwardPackReader::from_pack_refs(
@@ -1888,8 +1902,15 @@ async fn build_dictionary_set(
     .await?;
 
     // String reverse tree.
-    let string_reverse_tree =
-        Some(DictTreeReader::from_refs(&cs, &root.dict_refs.string_reverse, leaflet_cache).await?);
+    let string_reverse_tree = Some(
+        DictTreeReader::from_refs(
+            &cs,
+            &root.dict_refs.string_reverse,
+            leaflet_cache,
+            Some(cache_dir),
+        )
+        .await?,
+    );
 
     // Namespace codes.
     let namespace_codes: HashMap<u16, String> = root
@@ -2447,5 +2468,59 @@ mod tests {
             store.find_subject_sid(full_iri).unwrap(),
             Some(Sid::new(namespaces::OVERFLOW, full_iri))
         );
+    }
+
+    /// Regression test for fluree/db-r#142: legacy data where integral doubles
+    /// were stored as NUM_INT but the property datatype is xsd:double/float.
+    /// decode_value_from_kind must detect the mismatch and convert i64 → f64
+    /// instead of reinterpreting integer bits as IEEE 754.
+    #[test]
+    fn decode_value_from_kind_num_int_with_float_datatype() {
+        use fluree_db_core::ids::DatatypeDictId;
+
+        let cache_dir = temp_cache_dir();
+        let cs: Arc<dyn ContentStore> = Arc::new(CountingContentStore::new());
+        let store = empty_store(cs, cache_dir);
+
+        let int_key = ObjKey::encode_i64(1_350_000).as_u64();
+
+        // NUM_INT + dt=DOUBLE → should return Double(1350000.0), not garbage.
+        let val = store
+            .decode_value_from_kind(
+                ObjKind::NUM_INT.as_u8(),
+                int_key,
+                0, // p_id
+                DatatypeDictId::DOUBLE.as_u16(),
+                0, // lang_id
+                0, // g_id
+            )
+            .unwrap();
+        assert_eq!(val, FlakeValue::Double(1_350_000.0));
+
+        // NUM_INT + dt=FLOAT → same fix applies.
+        let val = store
+            .decode_value_from_kind(
+                ObjKind::NUM_INT.as_u8(),
+                int_key,
+                0,
+                DatatypeDictId::FLOAT.as_u16(),
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(val, FlakeValue::Double(1_350_000.0));
+
+        // NUM_INT + dt=INTEGER → should still decode as Long (no mismatch).
+        let val = store
+            .decode_value_from_kind(
+                ObjKind::NUM_INT.as_u8(),
+                int_key,
+                0,
+                DatatypeDictId::INTEGER.as_u16(),
+                0,
+                0,
+            )
+            .unwrap();
+        assert_eq!(val, FlakeValue::Long(1_350_000));
     }
 }

@@ -41,12 +41,12 @@ cargo install cargo-watch cargo-nextest cargo-flamegraph
 
 ```bash
 # Clone main repository
-git clone https://github.com/fluree/db-rust.git
-cd db-rust
+git clone https://github.com/fluree/db.git
+cd db
 
 # Or clone your fork
-git clone https://github.com/YOUR-USERNAME/db-rust.git
-cd db-rust
+git clone https://github.com/YOUR-USERNAME/db.git
+cd db
 ```
 
 ## Build from Source

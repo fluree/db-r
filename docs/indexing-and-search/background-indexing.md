@@ -190,6 +190,12 @@ At `INFO`, background indexing now emits coarse-grained progress logs that make 
 
 At `DEBUG`, the same wait and commit-walk paths emit more frequent progress updates for incident debugging without changing behavior.
 
+When you call indexing through the Rust API with `trigger_index()`, wait timeout
+is optional and should generally be chosen by the caller. Leave
+`TriggerIndexOptions.timeout_ms` unset to wait until completion, or set it
+explicitly for bounded environments such as Lambda jobs, HTTP gateways, or
+other workers with a fixed maximum runtime.
+
 ### Health Indicators
 
 **Healthy:**

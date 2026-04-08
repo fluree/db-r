@@ -1701,3 +1701,38 @@ mem:fact-01kmth3vjk05yrpfpmcjq5nfjz a mem:Fact ;
     mem:artifactRef "fluree-db-connection/tests/aws_testcontainers_test.rs" ;
     mem:createdAt "2026-03-28T15:31:00.819186+00:00"^^xsd:dateTime ;
     mem:factKind "configuration" .
+
+mem:fact-01kn6wpk6vgvv0hh2nrz9fczbt a mem:Fact ;
+    mem:content "cargo-dist 0.31.0 plan for the current release setup produces app/artifact names based on the package name `fluree-db-cli`: shell installer `fluree-db-cli-installer.sh`, PowerShell installer `fluree-db-cli-installer.ps1`, Homebrew formula/install hint `brew install fluree/tap/fluree-db-cli`, and Linux/macOS archives named `fluree-db-cli-<target>.tar.xz` (not simplified `fluree-*` names and not `.tar.gz`). Any docs or Docker extraction steps should match those exact names/extensions unless dist metadata is changed to rename the app/formula." ;
+    mem:tag "artifact-names" ;
+    mem:tag "cargo-dist" ;
+    mem:tag "docker" ;
+    mem:tag "fluree-db-cli" ;
+    mem:tag "homebrew" ;
+    mem:tag "installer" ;
+    mem:tag "release" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef ".github/workflows/release.yml" ;
+    mem:artifactRef "dist-workspace.toml" ;
+    mem:artifactRef "docs/getting-started/quickstart-server.md" ;
+    mem:artifactRef "fluree-db-cli/Cargo.toml" ;
+    mem:createdAt "2026-04-02T10:44:22.363912+00:00"^^xsd:dateTime ;
+    mem:factKind "configuration" .
+
+mem:fact-01kn800ps56as4xe2kycr10yq1 a mem:Fact ;
+    mem:content "AWS Lambda indexing timeout investigation (2026-04-02): repeated 15-minute timeouts were not first blocked in rebuild stats. Full rebuild path reached and completed Phase D-V3 stats quickly, but bad incremental runs consistently stopped after 'V6 incremental resolve: subject reconciliation starting' in fluree-db-indexer/src/run_index/build/incremental_resolve.rs. Successful incremental runs with 47-59 subject entries finished reconciliation in ~174-216ms; later runs with 377-1998 subject entries often logged no further progress and eventually timed out. The reconciliation loop does per-subject DictTreeReader::reverse_lookup() calls; progress logs only emit every 1000 items at DEBUG / 5000 at INFO, so moderate-size hangs can look silent. Most likely suspect surface is incremental subject/string reconciliation or DictTreeReader reverse leaf loading, not the rebuild stats hook." ;
+    mem:tag "aws" ;
+    mem:tag "incremental-resolve" ;
+    mem:tag "indexing" ;
+    mem:tag "lambda" ;
+    mem:tag "stats" ;
+    mem:tag "subject-reconciliation" ;
+    mem:tag "timeout" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-binary-index/src/dict/reader.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/build/rebuild.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/run_index/build/incremental_resolve.rs" ;
+    mem:createdAt "2026-04-02T21:01:33.861145+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

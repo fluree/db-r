@@ -706,7 +706,7 @@ impl CommitResolver {
     ///
     /// Numeric routing:
     /// - Integers -> NumInt (full i64 range, order-preserving)
-    /// - Finite floats: integer-valued that fit i64 -> NumInt; otherwise -> NumF64 (inline)
+    /// - Finite floats -> NumF64 (inline); see fluree/db-r#142
     /// - NaN / Inf -> REJECT (error)
     /// - Overflow BigInt / BigDecimal -> NumBig (per-predicate equality-only arena)
     fn resolve_object(
@@ -720,14 +720,9 @@ impl CommitResolver {
         match obj {
             RawObject::Long(v) => Ok((ObjKind::NUM_INT, ObjKey::encode_i64(*v))),
             RawObject::Double(v) => {
-                // Integer-valued doubles that fit i64 -> NumInt fast path
-                if v.is_finite() && v.fract() == 0.0 {
-                    let as_i64 = *v as i64;
-                    if (as_i64 as f64) == *v {
-                        return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(as_i64)));
-                    }
-                }
-                // Reject NaN and Inf
+                // NOTE: Do not optimize integral doubles to NUM_INT here.
+                // The decode path uses the property's datatype to select
+                // DecodeKind, and F64→I64 mismatch corrupts values. (fluree/db-r#142)
                 let key = ObjKey::encode_f64(*v)
                     .map_err(|e| format!("f64 encode for p_id={}: {}", p_id, e))?;
                 Ok((ObjKind::NUM_F64, key))
@@ -1380,12 +1375,9 @@ impl SharedResolverState {
         match obj {
             RawObject::Long(v) => Ok((ObjKind::NUM_INT, ObjKey::encode_i64(*v))),
             RawObject::Double(v) => {
-                if v.is_finite() && v.fract() == 0.0 {
-                    let as_i64 = *v as i64;
-                    if (as_i64 as f64) == *v {
-                        return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(as_i64)));
-                    }
-                }
+                // NOTE: Do not optimize integral doubles to NUM_INT here.
+                // The decode path uses the property's datatype to select
+                // DecodeKind, and F64→I64 mismatch corrupts values. (fluree/db-r#142)
                 let key = ObjKey::encode_f64(*v)
                     .map_err(|e| format!("f64 encode for p_id={}: {}", p_id, e))?;
                 Ok((ObjKind::NUM_F64, key))

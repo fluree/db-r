@@ -345,14 +345,9 @@ where
             .resolve_merge_flakes(&source_data.flakes, &conflicts, strategy, &target_state)
             .await?;
 
-        if resolved_flakes.is_empty() {
-            // Nothing to merge after conflict resolution — all flakes were dropped.
-            return Err(ApiError::InvalidBranch(
-                "Merge produced no flakes after conflict resolution".to_string(),
-            ));
-        }
-
-        // Stage resolved flakes onto target state.
+        // Stage resolved flakes onto target state. An empty flake set is valid
+        // (e.g., TakeBranch drops all source flakes) — we still create the merge
+        // commit to record the parent relationship and prevent future re-merges.
         let reverse_graph = target_state.snapshot.build_reverse_graph().map_err(|e| {
             ApiError::internal(format!("Failed to build reverse graph during merge: {e}"))
         })?;
@@ -372,8 +367,16 @@ where
             commit_opts = commit_opts.with_graph_delta(source_data.graph_delta);
         }
 
+        // Copy source commit chain to target namespace so the target is
+        // self-contained for DAG walking. This must happen before the merge
+        // commit is published.
+        let commits_copied = self
+            .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
+            .await?;
+
         let content_store =
             fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
@@ -383,12 +386,6 @@ where
             commit_opts,
         )
         .await?;
-
-        // Copy source commit chain to target namespace so the target is
-        // self-contained for DAG walking.
-        let commits_copied = self
-            .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
-            .await?;
 
         // Copy source's index to target (best-effort).
         if let Some(ref index_cid) = source_record.index_head_id {

@@ -48,7 +48,7 @@ use fluree_db_core::Storage;
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, Notify};
 use tracing::{debug, info, warn};
 
@@ -607,9 +607,17 @@ where
                     .collect()
             };
 
+            debug!(
+                ledger_count = ledgers_to_process.len(),
+                has_retry_deadline = retry_deadline.is_some(),
+                "Background indexer worker tick"
+            );
+
             // Process each ledger
             for ledger_id in ledgers_to_process {
+                debug!(ledger_id = %ledger_id, "Dispatching queued ledger to process_ledger");
                 self.process_ledger(&ledger_id).await;
+                debug!(ledger_id = %ledger_id, "process_ledger returned");
             }
 
             // Handle cancelled ledgers
@@ -632,24 +640,56 @@ where
 
     /// Process a single ledger
     async fn process_ledger(&self, ledger_id: &str) {
+        let process_started = Instant::now();
+
         let (pending_min_t, waiter_count, retry_count) = {
+            let lock_started = Instant::now();
             let states = self.states.lock().await;
+            debug!(
+                ledger_id = %ledger_id,
+                lock_wait_ms = lock_started.elapsed().as_millis(),
+                "Acquired state lock for queued indexing snapshot"
+            );
             if let Some(state) = states.get(ledger_id) {
                 (state.pending_min_t, state.waiters.len(), state.retry_count)
             } else {
+                debug!(
+                    ledger_id = %ledger_id,
+                    "Ledger disappeared before queued indexing snapshot"
+                );
                 return;
             }
         };
 
         // Mark as in-progress
         {
+            let lock_started = Instant::now();
             let mut states = self.states.lock().await;
+            debug!(
+                ledger_id = %ledger_id,
+                lock_wait_ms = lock_started.elapsed().as_millis(),
+                "Acquired state lock to mark queued indexing in progress"
+            );
             if let Some(state) = states.get_mut(ledger_id) {
                 if state.cancelled {
+                    debug!(
+                        ledger_id = %ledger_id,
+                        "Queued indexing cancelled before marking in progress"
+                    );
                     return;
                 }
                 state.phase = IndexPhase::InProgress;
+                debug!(
+                    ledger_id = %ledger_id,
+                    pending_min_t = ?state.pending_min_t,
+                    waiter_count = state.waiters.len(),
+                    "Marked queued indexing work in progress"
+                );
             } else {
+                debug!(
+                    ledger_id = %ledger_id,
+                    "Ledger disappeared before marking queued indexing in progress"
+                );
                 return;
             }
         }
@@ -663,6 +703,7 @@ where
         );
 
         // Re-check nameservice for current state
+        debug!(ledger_id = %ledger_id, "Looking up nameservice record for queued indexing work");
         let record = match self.nameservice.lookup(ledger_id).await {
             Ok(Some(r)) => r,
             Ok(None) => {
@@ -703,12 +744,46 @@ where
 
         // Check if index already satisfies all waiters
         {
+            let lock_started = Instant::now();
+            debug!(
+                ledger_id = %ledger_id,
+                current_index_t,
+                commit_t = record.commit_t,
+                "Waiting for state lock before queued indexing gate"
+            );
             let mut states = self.states.lock().await;
+            debug!(
+                ledger_id = %ledger_id,
+                lock_wait_ms = lock_started.elapsed().as_millis(),
+                "Acquired state lock for queued indexing gate"
+            );
             if let Some(state) = states.get_mut(ledger_id) {
                 state.last_index_t = current_index_t;
+                debug!(
+                    ledger_id = %ledger_id,
+                    state_pending_min_t = ?state.pending_min_t,
+                    state_waiter_count = state.waiters.len(),
+                    state_cancelled = state.cancelled,
+                    state_retry_count = state.retry_count,
+                    state_last_error = ?state.last_error,
+                    "Entered queued indexing gate"
+                );
 
                 if let Some(pending_min) = state.pending_min_t {
+                    debug!(
+                        ledger_id = %ledger_id,
+                        pending_min,
+                        current_index_t,
+                        "Evaluating queued indexing satisfaction gate"
+                    );
                     if current_index_t >= pending_min {
+                        debug!(
+                            ledger_id = %ledger_id,
+                            pending_min,
+                            current_index_t,
+                            has_index_head = record.index_head_id.is_some(),
+                            "Current index already satisfies queued waiters"
+                        );
                         // Already satisfied - resolve waiters
                         if let Some(root_id) = record.index_head_id.clone() {
                             let outcome = IndexOutcome::Completed {
@@ -720,9 +795,20 @@ where
                             state.retry_count = 0;
                             state.next_retry_at = None;
                             state.last_error = None;
+                            debug!(
+                                ledger_id = %ledger_id,
+                                remaining_pending_min_t = ?state.pending_min_t,
+                                remaining_waiter_count = state.waiters.len(),
+                                "Resolved satisfied queued waiters with existing index root"
+                            );
 
                             // If no more work, we're done
                             if state.pending_min_t.is_none() {
+                                debug!(
+                                    ledger_id = %ledger_id,
+                                    process_elapsed_ms = process_started.elapsed().as_millis(),
+                                    "Queued indexing fully satisfied before build"
+                                );
                                 return;
                             }
                         } else if current_index_t == 0 && pending_min <= 0 {
@@ -737,8 +823,19 @@ where
                             state.retry_count = 0;
                             state.next_retry_at = None;
                             state.last_error = None;
+                            debug!(
+                                ledger_id = %ledger_id,
+                                remaining_pending_min_t = ?state.pending_min_t,
+                                remaining_waiter_count = state.waiters.len(),
+                                "Resolved queued waiters in genesis-ish no-root case"
+                            );
 
                             if state.pending_min_t.is_none() {
+                                debug!(
+                                    ledger_id = %ledger_id,
+                                    process_elapsed_ms = process_started.elapsed().as_millis(),
+                                    "Queued indexing fully satisfied without build"
+                                );
                                 return;
                             }
                         } else {
@@ -750,6 +847,12 @@ where
                             state.next_retry_at =
                                 Some(tokio::time::Instant::now() + Duration::from_millis(250));
                             state.retry_count = state.retry_count.saturating_add(1);
+                            warn!(
+                                ledger_id = %ledger_id,
+                                current_index_t,
+                                pending_min,
+                                "Queued indexing gate found index_t without index_head_id; retrying"
+                            );
                             return;
                         }
                     }
@@ -758,8 +861,22 @@ where
                 // Check if cancelled during lookup
                 if state.cancelled {
                     state.phase = IndexPhase::Idle;
+                    debug!(
+                        ledger_id = %ledger_id,
+                        "Queued indexing cancelled after nameservice lookup"
+                    );
                     return;
                 }
+                debug!(
+                    ledger_id = %ledger_id,
+                    process_elapsed_ms = process_started.elapsed().as_millis(),
+                    "Queued indexing gate passed; proceeding to build checks"
+                );
+            } else {
+                debug!(
+                    ledger_id = %ledger_id,
+                    "Ledger disappeared during queued indexing gate"
+                );
             }
         }
 
@@ -804,6 +921,11 @@ where
             return;
         }
 
+        debug!(
+            ledger_id = %ledger_id,
+            process_elapsed_ms = process_started.elapsed().as_millis(),
+            "Queued indexing is about to call build_index_for_record"
+        );
         // Execute refresh-first indexing to CURRENT commit_t
         info!(
             ledger_id = %ledger_id,
@@ -813,13 +935,8 @@ where
             pending_min_t = ?pending_min_t,
             "Starting index build for queued work"
         );
-        let result = crate::build_index_for_ledger(
-            &self.storage,
-            self.nameservice.as_ref(),
-            ledger_id,
-            self.config.clone(),
-        )
-        .await;
+        let result =
+            crate::build_index_for_record(&self.storage, &record, self.config.clone()).await;
 
         match result {
             Ok(index_result) => {
@@ -964,6 +1081,21 @@ pub struct PostCommitIndexResult {
 /// - Never fails the commit path; returns status + error string for logging.
 /// - **Applies index even if publish fails** for local correctness.
 #[cfg(feature = "embedded-orchestrator")]
+fn current_ns_record(ledger: &LedgerState) -> Option<&fluree_db_nameservice::NsRecord> {
+    let record = ledger.ns_record.as_ref()?;
+    let commit_matches =
+        record.commit_t == ledger.t() && record.commit_head_id == ledger.head_commit_id;
+    let index_matches =
+        record.index_t == ledger.index_t() && record.index_head_id == ledger.head_index_id;
+
+    if record.ledger_id == ledger.ledger_id() && commit_matches && index_matches {
+        Some(record)
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "embedded-orchestrator")]
 pub async fn maybe_refresh_after_commit<S, N>(
     storage: &S,
     nameservice: &N,
@@ -1014,7 +1146,21 @@ where
         storage.storage_method(),
     );
 
-    match crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await {
+    // Use the ledger's reindex_max_bytes as the commit-walk byte budget
+    // so incremental indexing falls back to a full rebuild when the
+    // commit chain would exceed the novelty threshold.
+    let mut indexer_config = indexer_config;
+    if indexer_config.incremental_max_commit_bytes.is_none() {
+        indexer_config.incremental_max_commit_bytes = Some(index_config.reindex_max_bytes);
+    }
+
+    let build_result = if let Some(record) = current_ns_record(&ledger) {
+        crate::build_index_for_record(storage, record, indexer_config).await
+    } else {
+        crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await
+    };
+
+    match build_result {
         Ok(result) => {
             // Track publish result but continue regardless
             let publish_result = nameservice
@@ -1088,8 +1234,11 @@ where
         storage.storage_method(),
     );
 
-    let result =
-        crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await?;
+    let result = if let Some(record) = current_ns_record(&ledger) {
+        crate::build_index_for_record(storage, record, indexer_config).await?
+    } else {
+        crate::build_index_for_ledger(storage, nameservice, &ledger_addr, indexer_config).await?
+    };
 
     nameservice
         .publish_index(&ledger_addr, result.index_t, &result.root_id)

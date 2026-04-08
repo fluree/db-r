@@ -253,8 +253,10 @@ where
     async move {
         let commit_span = tracing::Span::current();
 
-        // 2. Check for empty transaction
-        if flakes.is_empty() {
+        // 2. Check for empty transaction — merge commits with no data flakes are
+        //    valid (e.g., TakeBranch strategy drops all source flakes) because
+        //    the commit still records the merge-parent relationship in the DAG.
+        if flakes.is_empty() && merge_parents.is_empty() {
             return Err(TransactError::EmptyTransaction);
         }
 

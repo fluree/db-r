@@ -47,7 +47,7 @@ exclude = [
 version = "4.0.0"
 edition = "2021"
 license = "BUSL-1.1"
-repository = "https://github.com/fluree/db-rust"
+repository = "https://github.com/fluree/db"
 
 [workspace.dependencies]
 # Core dependencies (runtime-agnostic)
@@ -83,11 +83,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 
 # AWS SDK dependencies (for fluree-db-storage-aws)
-aws-config = "1.6"
-aws-sdk-s3 = "1.120"
-aws-sdk-dynamodb = "1.70"
+aws-config = "1.8.15"
+aws-sdk-s3 = "1.124.0"
+aws-sdk-dynamodb = "1.109.0"
 aws-credential-types = "1.2"
-aws-smithy-types = "1.3"
+aws-smithy-types = "1.4.7"
 once_cell = "1.19"
 smallvec = "1.13"
 chrono = { version = "0.4", features = ["serde"] }
@@ -179,3 +179,7 @@ lto = false
 strip = false
 codegen-units = 16
 opt-level = 2
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
