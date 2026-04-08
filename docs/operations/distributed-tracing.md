@@ -216,6 +216,12 @@ W3C trace context propagation requires:
 
 Without the `otel` feature, the `traceparent` header is still parsed and the trace ID is recorded as a log field for text-based correlation, but the span is not linked as a child in the OTEL trace.
 
+For background indexing triggered by a transaction request, note the distinction between logs and traces:
+
+- The later indexing work still runs in its own background task and appears as a separate trace/span tree.
+- Fluree copies the triggering request's `request_id` and `trace_id` into the queued indexing job, so the background worker's log lines can still be correlated back to the originating request.
+- If multiple requests coalesce onto one queued indexing job, the latest queued request metadata is the one retained on the worker logs.
+
 ### `X-Request-ID` header (non-OTEL correlation)
 
 For simpler log correlation without full distributed tracing, send an `X-Request-ID` header:
@@ -233,7 +239,7 @@ The server logs and echoes back this ID in the response headers. All log lines f
 grep '"request_id":"abc-123-def-456"' /var/log/fluree/server.log
 ```
 
-This works without the `otel` feature and is useful for text-based log correlation.
+This works without the `otel` feature and is useful for text-based log correlation. The same `request_id` is also copied onto background indexing logs when that request queues an index build, which helps connect the foreground transaction and later worker activity in plain log search.
 
 ### Client examples
 

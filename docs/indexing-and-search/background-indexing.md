@@ -188,6 +188,8 @@ At `INFO`, background indexing now emits coarse-grained progress logs that make 
 - commit-chain walking progress
 - commit resolution progress and phase completion
 
+When background indexing is queued by an HTTP transaction request, the worker logs also include copied `request_id` and `trace_id` fields from the triggering request. This provides log-level correlation between the foreground request and the later background build without making the index build part of the original request trace.
+
 At `DEBUG`, the same wait and commit-walk paths emit more frequent progress updates for incident debugging without changing behavior.
 
 When you call indexing through the Rust API with `trigger_index()`, wait timeout

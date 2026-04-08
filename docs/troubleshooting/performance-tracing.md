@@ -193,6 +193,8 @@ Here the bottleneck is I/O during commit: `commit_write_raw_txn` (85ms) and `com
 
 Indexing runs as a **separate trace** (not nested under an HTTP request). Search Jaeger for operation name `index_build`:
 
+If the index build was queued by an HTTP transaction request, use logs to bridge the two views: the background worker now copies the triggering `request_id` and `trace_id` onto its log lines, but the OTEL/Jaeger indexing trace remains separate by design.
+
 ```
 index_build (debug)                         ─────────────────── 12.5s
   commit_chain_walk (debug)                 ── 50ms
