@@ -16,7 +16,7 @@ name = "fluree_db_cli"
 path = "src/lib.rs"
 
 [features]
-default = ["server"]
+default = ["server", "iceberg"]
 server = ["dep:fluree-db-server"]
 iceberg = ["fluree-db-api/iceberg"]
 otel = [

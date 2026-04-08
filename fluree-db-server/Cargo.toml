@@ -22,7 +22,7 @@ name = "fluree_db_server"
 path = "src/lib.rs"
 
 [features]
-default = ["native", "credential"]
+default = ["native", "credential", "iceberg"]
 native = ["fluree-db-api/native"]
 # DID/JWS/VerifiableCredential support for signed requests
 # When disabled, signed requests pass through as regular JSON bodies
