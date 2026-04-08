@@ -119,7 +119,7 @@ where
     pub fn transact(&self) -> GraphTransactBuilder<'a, '_, S, N>
     where
         S: fluree_db_core::ContentAddressedWrite,
-        N: Publisher,
+        N: Publisher + fluree_db_nameservice::RefPublisher,
     {
         GraphTransactBuilder::new(self)
     }

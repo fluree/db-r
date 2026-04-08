@@ -1259,7 +1259,7 @@ mod tests {
     use fluree_db_core::{
         ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid,
     };
-    use fluree_db_nameservice::memory::MemoryNameService;
+    use fluree_db_nameservice::{memory::MemoryNameService, CasResult, RefPublisher, RefValue};
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;
 
@@ -1385,6 +1385,21 @@ mod tests {
         ContentId::from_hex_digest(ContentKind::Commit.to_codec(), &content_hash_hex).unwrap()
     }
 
+    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+        let new = RefValue {
+            id: Some(cid.clone()),
+            t,
+        };
+        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                    panic!("unexpected commit publish conflict: {actual:?}");
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_orchestrator_needs_indexing_no_commits() {
         let storage = MemoryStorage::new();
@@ -1419,7 +1434,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
 
         let orchestrator = IndexerOrchestrator::new(storage, ns.clone(), IndexerConfig::small());
 
@@ -1449,7 +1464,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-current"));
@@ -1485,7 +1500,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid1 = store_commit(&storage, &commit1).await;
-        ns.publish_commit("test:main", 1, &cid1).await.unwrap();
+        publish_commit(ns.as_ref(), "test:main", 1, &cid1).await;
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-behind"));
@@ -1508,7 +1523,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid2 = store_commit(&storage, &commit2).await;
-        ns.publish_commit("test:main", 2, &cid2).await.unwrap();
+        publish_commit(ns.as_ref(), "test:main", 2, &cid2).await;
 
         // Index is now behind - needs indexing
         let needs = orchestrator.needs_indexing("test:main").await.unwrap();
@@ -1536,7 +1551,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-ledger"));
@@ -1568,7 +1583,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-publish"));
@@ -1604,7 +1619,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-existing"));
@@ -1867,7 +1882,7 @@ mod embedded_tests {
         MemoryStorage, Sid,
     };
     use fluree_db_ledger::LedgerState;
-    use fluree_db_nameservice::memory::MemoryNameService;
+    use fluree_db_nameservice::{memory::MemoryNameService, CasResult, RefPublisher, RefValue};
     use fluree_db_novelty::{Commit, Novelty};
     use std::collections::HashMap;
 
@@ -2005,6 +2020,21 @@ mod embedded_tests {
         ContentId::from_hex_digest(ContentKind::Commit.to_codec(), &content_hash_hex).unwrap()
     }
 
+    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+        let new = RefValue {
+            id: Some(cid.clone()),
+            t,
+        };
+        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                    panic!("unexpected commit publish conflict: {actual:?}");
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_maybe_refresh_below_threshold_returns_not_attempted() {
         let storage = MemoryStorage::new();
@@ -2073,7 +2103,7 @@ mod embedded_tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "test:main", 1, &cid).await;
 
         // Create a LedgerState with enough novelty to trigger threshold
         let db = LedgerSnapshot::genesis("test:main");
@@ -2126,7 +2156,7 @@ mod embedded_tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "test:main", 1, &cid).await;
 
         let db = LedgerSnapshot::genesis("test:main");
         let mut novelty = Novelty::new(0);

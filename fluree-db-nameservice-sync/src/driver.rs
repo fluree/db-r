@@ -443,7 +443,7 @@ mod tests {
     use crate::config::{MemorySyncConfigStore, UpstreamConfig};
     use fluree_db_core::{ContentId, ContentKind};
     use fluree_db_nameservice::memory::MemoryNameService;
-    use fluree_db_nameservice::{MemoryTrackingStore, NsRecord, Publisher};
+    use fluree_db_nameservice::{CasResult, MemoryTrackingStore, NsRecord, RefPublisher, RefValue};
 
     fn origin() -> RemoteName {
         RemoteName::new("origin")
@@ -451,6 +451,21 @@ mod tests {
 
     fn test_commit_id(label: &str) -> ContentId {
         ContentId::new(ContentKind::Commit, label.as_bytes())
+    }
+
+    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+        let new = RefValue {
+            id: Some(cid.clone()),
+            t,
+        };
+        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                    panic!("unexpected commit publish conflict: {actual:?}");
+                }
+            }
+        }
     }
 
     /// Mock remote client backed by an in-memory nameservice
@@ -538,11 +553,7 @@ mod tests {
         let (_local, remote, driver, _config) = setup_driver().await;
 
         // Publish something on the remote
-        remote
-            .ns
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&remote.ns, "mydb:main", 5, &test_commit_id("commit-1")).await;
 
         let result = driver.fetch_remote(&origin()).await.unwrap();
         assert_eq!(result.updated.len(), 1);
@@ -555,11 +566,7 @@ mod tests {
     async fn test_fetch_idempotent() {
         let (_local, remote, driver, _config) = setup_driver().await;
 
-        remote
-            .ns
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&remote.ns, "mydb:main", 5, &test_commit_id("commit-1")).await;
 
         driver.fetch_remote(&origin()).await.unwrap();
         let result = driver.fetch_remote(&origin()).await.unwrap();
@@ -585,17 +592,10 @@ mod tests {
             .unwrap();
 
         // Create local at t=1
-        local
-            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(local.as_ref(), "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         // Remote at t=5
-        remote
-            .ns
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
-            .await
-            .unwrap();
+        publish_commit(&remote.ns, "mydb:main", 5, &test_commit_id("commit-5")).await;
 
         // Fetch first
         driver.fetch_remote(&origin()).await.unwrap();
@@ -633,15 +633,8 @@ mod tests {
             .unwrap();
 
         // Both at t=5 with same address
-        local
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
-            .await
-            .unwrap();
-        remote
-            .ns
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
-            .await
-            .unwrap();
+        publish_commit(local.as_ref(), "mydb:main", 5, &test_commit_id("commit-5")).await;
+        publish_commit(&remote.ns, "mydb:main", 5, &test_commit_id("commit-5")).await;
 
         driver.fetch_remote(&origin()).await.unwrap();
 
@@ -666,17 +659,16 @@ mod tests {
             .unwrap();
 
         // Local ahead at t=10
-        local
-            .publish_commit("mydb:main", 10, &test_commit_id("commit-10"))
-            .await
-            .unwrap();
+        publish_commit(
+            local.as_ref(),
+            "mydb:main",
+            10,
+            &test_commit_id("commit-10"),
+        )
+        .await;
 
         // Remote at t=5
-        remote
-            .ns
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
-            .await
-            .unwrap();
+        publish_commit(&remote.ns, "mydb:main", 5, &test_commit_id("commit-5")).await;
 
         driver.fetch_remote(&origin()).await.unwrap();
 
@@ -717,10 +709,7 @@ mod tests {
             .await
             .unwrap();
 
-        local
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
-            .await
-            .unwrap();
+        publish_commit(local.as_ref(), "mydb:main", 5, &test_commit_id("commit-5")).await;
 
         match driver.push_tracked("mydb:main").await.unwrap() {
             PushResult::Pushed { value, .. } => {
@@ -745,17 +734,10 @@ mod tests {
             .unwrap();
 
         // Remote has data already
-        remote
-            .ns
-            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&remote.ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         // Local has different data
-        local
-            .publish_commit("mydb:main", 5, &test_commit_id("commit-5"))
-            .await
-            .unwrap();
+        publish_commit(local.as_ref(), "mydb:main", 5, &test_commit_id("commit-5")).await;
 
         // Push without fetch first — expected=None but remote has data
         match driver.push_tracked("mydb:main").await.unwrap() {
@@ -775,10 +757,7 @@ mod tests {
     async fn test_push_no_upstream() {
         let (local, _remote, driver, _config) = setup_driver().await;
 
-        local
-            .publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(local.as_ref(), "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         match driver.push_tracked("mydb:main").await.unwrap() {
             PushResult::NoUpstream { .. } => {}

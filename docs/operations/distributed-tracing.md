@@ -51,13 +51,20 @@ async fn main() -> Result<()> {
 }
 ```
 
-With `RUST_LOG=info,fluree_db_query=debug`, the output shows Fluree's internal spans nested under yours:
+At the default `RUST_LOG=info`, Fluree's info-level log events appear within your span's context:
 
 ```
-INFO handle_request{user_id=42}: my_app: handling request
+INFO handle_request{user_id=42}: fluree_db_api::view::query: parse_ms=0.12 plan_ms=0.45 exec_ms=3.21 query phases
+```
+
+With `RUST_LOG=info,fluree_db_query=debug`, you additionally see Fluree's operation spans nested under yours:
+
+```
+INFO  handle_request{user_id=42}: my_app: handling request
 DEBUG handle_request{user_id=42}:query_execute: fluree_db_query: ...
 DEBUG handle_request{user_id=42}:query_execute:query_prepare: fluree_db_query: ...
 DEBUG handle_request{user_id=42}:query_execute:query_run: fluree_db_query: ...
+INFO  handle_request{user_id=42}:query_execute: fluree_db_api: parse_ms=0.12 plan_ms=0.45 exec_ms=3.21 query phases
 ```
 
 ### With OpenTelemetry export
@@ -96,17 +103,29 @@ fn init_tracing() {
 
 In Jaeger/Tempo, you'll see a single trace containing both your application spans and Fluree's internal spans (`query_execute`, `query_prepare`, `query_run`, `scan`, `join`, etc.).
 
-### Controlling Fluree's span visibility
+### Three tiers of visibility
 
-Fluree's operation spans use `debug_span!`, so they only appear when the log level for Fluree crates is set to `debug` or lower. At `RUST_LOG=info`, Fluree produces zero span overhead.
+Fluree uses a tiered logging strategy. At every tier, events and spans are correlated to your application's active span.
 
-| `RUST_LOG` pattern | What you see from Fluree |
-|-------------------|-------------------------|
-| `info` | Nothing (zero overhead) |
-| `info,fluree_db_query=debug` | Query operation spans |
-| `info,fluree_db_transact=debug` | Transaction operation spans |
-| `info,fluree_db_query=debug,fluree_db_transact=debug` | Both query and transaction spans |
-| `debug` | All Fluree spans plus third-party crate noise |
+| Tier | `RUST_LOG` pattern | What you see from Fluree |
+|------|-------------------|-------------------------|
+| **Logs** | `info` (default) | Info-level log events: phase timings (`parse_ms`, `plan_ms`, `exec_ms`), commit summaries, errors. Zero span overhead. |
+| **Operation spans** | `info,fluree_db_query=debug` | + `query_execute`, `query_prepare`, `query_run`, operator spans — timing waterfall in Jaeger/Tempo |
+| **Deep tracing** | `info,fluree_db_query=trace` | + per-leaf, per-iteration detail (`binary_cursor_next_leaf`, `group_by`, etc.) |
+
+At the default **INFO** level, you get Fluree's summary log events (timings, counts, errors) correlated inside your spans. This is sufficient for most production correlation needs.
+
+At **DEBUG**, you additionally get the structured span hierarchy that produces the timing waterfall in OTEL backends. This is useful for performance investigation.
+
+Useful `RUST_LOG` patterns:
+
+| Pattern | Use case |
+|---------|----------|
+| `info` | Production: correlatable log events, zero span overhead |
+| `info,fluree_db_query=debug` | Investigate slow queries |
+| `info,fluree_db_transact=debug` | Investigate slow transactions |
+| `info,fluree_db_query=debug,fluree_db_transact=debug` | Full operation visibility |
+| `debug` | Everything, but includes third-party crate noise |
 
 See [Telemetry and Logging](telemetry.md#span-hierarchy) for the full span hierarchy.
 

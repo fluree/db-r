@@ -15,13 +15,15 @@ use crate::run_index;
 use super::types::UploadedDicts;
 use super::upload::{cid_from_write, upload_dict_file};
 
+type ReverseLeafChunk = (Vec<u8>, Vec<u8>, Vec<u8>, u32);
+
 fn flush_reverse_leaf<F>(
     leaf_offsets: &mut Vec<u32>,
     leaf_data: &mut Vec<u8>,
     first_key: &mut Option<Vec<u8>>,
     chunk_bytes: &mut usize,
     mut last_key: F,
-) -> Option<(Vec<u8>, Vec<u8>, Vec<u8>, u32)>
+) -> Option<ReverseLeafChunk>
 where
     F: FnMut() -> Vec<u8>,
 {

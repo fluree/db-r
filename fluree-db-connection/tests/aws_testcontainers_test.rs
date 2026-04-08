@@ -30,6 +30,21 @@ fn test_index_id(label: &str) -> ContentId {
     ContentId::new(ContentKind::IndexRoot, label.as_bytes())
 }
 
+async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+    let new = RefValue {
+        id: Some(cid.clone()),
+        t,
+    };
+    match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+        CasResult::Updated => {}
+        CasResult::Conflict { actual } => {
+            if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                panic!("unexpected commit publish conflict: {actual:?}");
+            }
+        }
+    }
+}
+
 const LOCALSTACK_EDGE_PORT: u16 = 4566;
 const REGION: &str = "us-east-1";
 
@@ -212,9 +227,7 @@ async fn localstack_s3_and_dynamodb_smoke() {
 
     // Publish commit head
     let commit_id = test_commit_id("commit:1");
-    aws.publish_commit(alias, 1, &commit_id)
-        .await
-        .expect("publish_commit should succeed");
+    publish_commit(aws.nameservice(), alias, 1, &commit_id).await;
 
     // Publish index head
     let index_id = test_index_id("index:1");
@@ -233,9 +246,7 @@ async fn localstack_s3_and_dynamodb_smoke() {
     assert_eq!(record.index_t, 1);
 
     // Monotonic: older t should be silently ignored
-    aws.publish_commit(alias, 0, &test_commit_id("old-commit"))
-        .await
-        .expect("stale commit publish should succeed (no-op)");
+    publish_commit(aws.nameservice(), alias, 0, &test_commit_id("old-commit")).await;
     let record2 = aws.lookup(alias).await.expect("lookup").expect("exists");
     assert_eq!(
         record2.commit_head_id.as_ref(),
@@ -310,18 +321,28 @@ async fn nameservice_ledger_lifecycle() {
     let (_lock, _container, ns) = setup_localstack_ns().await;
 
     let alias = "lifecycle-test:main";
+    let direct_alias = "lifecycle-direct:main";
 
     // ── lookup before init → None ──────────────────────────────────────────
     assert!(ns.lookup(alias).await.unwrap().is_none());
 
-    // ── publish_commit on uninitialized alias → error ──────────────────────
-    let err = ns
-        .publish_commit(alias, 1, &test_commit_id("commit:1"))
-        .await;
-    assert!(
-        err.is_err(),
-        "publish_commit on uninitialized alias should fail"
-    );
+    // ── direct ref publish can create a commit head without prior init ─────
+    let direct_commit = test_commit_id("commit:direct");
+    let result = ns
+        .fast_forward_commit(
+            direct_alias,
+            &RefValue {
+                id: Some(direct_commit.clone()),
+                t: 1,
+            },
+            3,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(result, CasResult::Updated));
+    let direct_record = ns.lookup(direct_alias).await.unwrap().expect("direct head");
+    assert_eq!(direct_record.commit_head_id.as_ref(), Some(&direct_commit));
+    assert_eq!(direct_record.commit_t, 1);
 
     let err = ns.publish_index(alias, 1, &test_index_id("index:1")).await;
     assert!(
@@ -356,7 +377,7 @@ async fn nameservice_ledger_lifecycle() {
     // ── publish_commit + publish_index ─────────────────────────────────────
     let commit_id_1 = test_commit_id("commit:1");
     let index_id_1 = test_index_id("index:1");
-    ns.publish_commit(alias, 1, &commit_id_1).await.unwrap();
+    publish_commit(&ns, alias, 1, &commit_id_1).await;
     ns.publish_index(alias, 1, &index_id_1).await.unwrap();
 
     let rec = ns.lookup(alias).await.unwrap().unwrap();
@@ -365,9 +386,7 @@ async fn nameservice_ledger_lifecycle() {
     assert_eq!(rec.index_t, 1);
 
     // Monotonic: stale commit/index silently ignored
-    ns.publish_commit(alias, 0, &test_commit_id("stale:0"))
-        .await
-        .unwrap();
+    publish_commit(&ns, alias, 0, &test_commit_id("stale:0")).await;
     ns.publish_index(alias, 0, &test_index_id("stale:0"))
         .await
         .unwrap();
@@ -378,7 +397,7 @@ async fn nameservice_ledger_lifecycle() {
     // Advance
     let commit_id_2 = test_commit_id("commit:2");
     let index_id_2 = test_index_id("index:2");
-    ns.publish_commit(alias, 2, &commit_id_2).await.unwrap();
+    publish_commit(&ns, alias, 2, &commit_id_2).await;
     ns.publish_index(alias, 2, &index_id_2).await.unwrap();
     let rec = ns.lookup(alias).await.unwrap().unwrap();
     assert_eq!(rec.commit_head_id.as_ref(), Some(&commit_id_2));

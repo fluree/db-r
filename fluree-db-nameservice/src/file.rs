@@ -664,81 +664,6 @@ impl Publisher for FileNameService {
         Ok(())
     }
 
-    async fn publish_commit(
-        &self,
-        ledger_id: &str,
-        commit_t: i64,
-        commit_id: &ContentId,
-    ) -> Result<()> {
-        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let address = Self::ns_address(&ledger_name, &branch);
-        let commit_id_for_event = commit_id.clone();
-        let ledger_name_c = ledger_name.clone();
-        let branch_c = branch.clone();
-        let cid_str = commit_id.to_string();
-
-        let outcome = self
-            .storage
-            .compare_and_swap(&address, |bytes| {
-                let cid_val = Some(cid_str.clone());
-
-                match bytes {
-                    Some(data) => {
-                        let mut file: NsFileV2 = deserialize_json(data)?;
-                        // Strictly monotonic update
-                        if commit_t > file.t {
-                            file.commit_cid = cid_val;
-                            file.t = commit_t;
-                            let new_bytes = serialize_json(&file)?;
-                            Ok(CasAction::Write(new_bytes))
-                        } else {
-                            Ok(CasAction::Abort(()))
-                        }
-                    }
-                    None => {
-                        // Create new record (always write)
-                        let file = NsFileV2 {
-                            context: ns_context(),
-                            id: format_ledger_id(&ledger_name_c, &branch_c),
-                            record_type: vec!["f:LedgerSource".to_string()],
-                            ledger: LedgerRef {
-                                id: ledger_name_c.clone(),
-                            },
-                            branch: branch_c.clone(),
-                            commit_cid: cid_val,
-                            config_cid: None,
-                            t: commit_t,
-                            index: None,
-                            status: "ready".to_string(),
-                            default_context_cid: None,
-                            // v2 extension fields - initialize with defaults
-                            status_v: Some(1),
-                            status_meta: None,
-                            config_v: Some(0),
-                            config_meta: None,
-                            source_branch: None,
-                            branch_point: None,
-                            branches: 0,
-                        };
-                        let new_bytes = serialize_json(&file)?;
-                        Ok(CasAction::Write(new_bytes))
-                    }
-                }
-            })
-            .await?;
-
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::LedgerCommitPublished {
-                ledger_id: format_ledger_id(&ledger_name, &branch),
-                commit_id: commit_id_for_event,
-                commit_t,
-            },
-        );
-
-        Ok(())
-    }
-
     async fn publish_index(
         &self,
         ledger_id: &str,
@@ -1579,6 +1504,7 @@ impl ConfigPublisher for FileNameService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{CasResult, RefPublisher, RefValue};
     use fluree_db_core::ContentKind;
     use tempfile::TempDir;
     use tokio::sync::broadcast::error::TryRecvError;
@@ -1594,6 +1520,21 @@ mod tests {
         (temp_dir, ns)
     }
 
+    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+        let new = RefValue {
+            id: Some(cid.clone()),
+            t,
+        };
+        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                    panic!("unexpected commit publish conflict: {actual:?}");
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_file_ns_emits_events_on_publish_commit_monotonic() {
         let (_temp, ns) = setup().await;
@@ -1603,7 +1544,7 @@ mod tests {
             .unwrap();
 
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid1).await;
         let evt = sub.receiver.recv().await.unwrap();
         assert_eq!(
             evt,
@@ -1616,7 +1557,7 @@ mod tests {
 
         // Lower t should not emit a new event.
         let cid_old = test_cid("commit-old");
-        ns.publish_commit("mydb:main", 0, &cid_old).await.unwrap();
+        publish_commit(&ns, "mydb:main", 0, &cid_old).await;
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
@@ -1629,21 +1570,21 @@ mod tests {
         let cid_old = test_cid("commit-old");
 
         // First publish
-        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid1).await;
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(cid1.clone()));
         assert_eq!(record.commit_t, 1);
 
         // Higher t should update
-        ns.publish_commit("mydb:main", 5, &cid2).await.unwrap();
+        publish_commit(&ns, "mydb:main", 5, &cid2).await;
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(cid2.clone()));
         assert_eq!(record.commit_t, 5);
 
         // Lower t should be ignored
-        ns.publish_commit("mydb:main", 3, &cid_old).await.unwrap();
+        publish_commit(&ns, "mydb:main", 3, &cid_old).await;
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(cid2.clone()));
@@ -1658,9 +1599,7 @@ mod tests {
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
 
         // Publish commit
-        ns.publish_commit("mydb:main", 10, &commit_cid)
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 10, &commit_cid).await;
 
         // Publish index (written to separate file)
         ns.publish_index("mydb:main", 5, &index_cid).await.unwrap();
@@ -1680,9 +1619,7 @@ mod tests {
         let index_new_cid = ContentId::new(ContentKind::IndexRoot, b"index-new");
 
         // Publish commit with embedded index
-        ns.publish_commit("mydb:main", 10, &commit_cid)
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 10, &commit_cid).await;
 
         // Manually add index to main file
         let main_path = temp.path().join("ns@v2/mydb/main.json");
@@ -1712,15 +1649,9 @@ mod tests {
     async fn test_file_ns_all_records() {
         let (_temp, ns) = setup().await;
 
-        ns.publish_commit("db1:main", 1, &test_cid("commit-1"))
-            .await
-            .unwrap();
-        ns.publish_commit("db2:main", 1, &test_cid("commit-2"))
-            .await
-            .unwrap();
-        ns.publish_commit("db3:dev", 1, &test_cid("commit-3"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "db1:main", 1, &test_cid("commit-1")).await;
+        publish_commit(&ns, "db2:main", 1, &test_cid("commit-2")).await;
+        publish_commit(&ns, "db3:dev", 1, &test_cid("commit-3")).await;
 
         let records = ns.all_records().await.unwrap();
         assert_eq!(records.len(), 3);
@@ -1730,9 +1661,7 @@ mod tests {
     async fn test_file_ns_ledger_with_slash() {
         let (_temp, ns) = setup().await;
 
-        ns.publish_commit("tenant/customers:main", 1, &test_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "tenant/customers:main", 1, &test_cid("commit-1")).await;
 
         let record = ns.lookup("tenant/customers:main").await.unwrap().unwrap();
         assert_eq!(record.name, "tenant/customers");
@@ -1860,9 +1789,7 @@ mod tests {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
-        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "ledger:main", 1, &test_cid("commit-1")).await;
 
         // Create a graph source
         ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
@@ -1892,9 +1819,7 @@ mod tests {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
-        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "ledger:main", 1, &test_cid("commit-1")).await;
 
         // lookup_graph_source should return None for a ledger
         let result = ns.lookup_graph_source("ledger:main").await.unwrap();
@@ -2004,7 +1929,7 @@ mod tests {
     async fn test_file_ref_get_ref_after_publish() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 5, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 5, &cid1).await;
 
         let commit = ns
             .get_ref("mydb:main", RefKind::CommitHead)
@@ -2039,7 +1964,7 @@ mod tests {
     async fn test_file_ref_cas_conflict_already_exists() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid1).await;
 
         let new_ref = RefValue { id: None, t: 2 };
         let result = ns
@@ -2059,7 +1984,7 @@ mod tests {
     async fn test_file_ref_cas_cid_mismatch() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid1).await;
 
         let wrong_cid = test_cid("wrong");
         let expected = RefValue {
@@ -2084,7 +2009,7 @@ mod tests {
     async fn test_file_ref_cas_success() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid1).await;
 
         // Expected must match what's stored: id from CID
         let expected = RefValue {
@@ -2115,7 +2040,7 @@ mod tests {
     async fn test_file_ref_cas_commit_strict_monotonic() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 5, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 5, &cid1).await;
 
         let expected = RefValue {
             id: Some(cid1),
@@ -2140,9 +2065,7 @@ mod tests {
         let (_dir, ns) = setup().await;
         let commit_cid = test_cid("commit-1");
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
-        ns.publish_commit("mydb:main", 5, &commit_cid)
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &commit_cid).await;
         ns.publish_index("mydb:main", 5, &index_cid).await.unwrap();
 
         // Expected must match stored: id from CID
@@ -2166,7 +2089,7 @@ mod tests {
     async fn test_file_ref_fast_forward_commit() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid1).await;
 
         let new_ref = RefValue {
             id: Some(test_cid("commit-5")),
@@ -2190,7 +2113,7 @@ mod tests {
     async fn test_file_ref_fast_forward_rejected_stale() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 10, &cid1).await.unwrap();
+        publish_commit(&ns, "mydb:main", 10, &cid1).await;
 
         let new_ref = RefValue {
             id: Some(test_cid("old")),
@@ -2213,9 +2136,7 @@ mod tests {
         let (_dir, ns) = setup().await;
         let commit_cid = test_cid("commit-1");
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
-        ns.publish_commit("mydb:main", 5, &commit_cid)
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &commit_cid).await;
         ns.publish_index("mydb:main", 3, &index_cid).await.unwrap();
 
         let index = ns
@@ -2396,7 +2317,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-5");
-        ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 5, &cid).await;
 
         ns.create_branch("mydb", "feature-x", "main").await.unwrap();
 
@@ -2413,7 +2334,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid).await;
 
         ns.create_branch("mydb", "dev", "main").await.unwrap();
 
@@ -2426,7 +2347,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-3");
-        ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 3, &cid).await;
 
         ns.create_branch("mydb", "dev", "main").await.unwrap();
         ns.create_branch("mydb", "staging", "main").await.unwrap();
@@ -2446,7 +2367,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid).await;
 
         ns.create_branch("mydb", "release/v1.0", "main")
             .await
@@ -2474,7 +2395,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid).await;
 
         ns.create_branch("mydb", "dead", "main").await.unwrap();
         ns.retract("mydb:dead").await.unwrap();
@@ -2489,7 +2410,7 @@ mod tests {
         let (temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-2");
-        ns.publish_commit("mydb:main", 2, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 2, &cid).await;
 
         ns.create_branch("mydb", "persisted", "main").await.unwrap();
 

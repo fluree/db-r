@@ -155,10 +155,10 @@ let record = nameservice.lookup("mydb:main").await?;
 
 Record new commits and indexes:
 
-- **`publish_commit(ledger_id, commit_id, commit_t)`**: Update commit state (monotonic: only if `new_t > existing_t`)
+- **`RefPublisher::compare_and_set_ref()` / `fast_forward_commit()`**: Advance the commit head with explicit CAS conflict handling
 - **`publish_index(ledger_id, index_id, index_t)`**: Update index state (monotonic: only if `new_t > existing_t`)
 
-Publishing is **monotonic**—the nameservice only accepts updates that advance time forward, ensuring consistency.
+Commit-head publishing is **CAS-based** so concurrent writers get an explicit conflict result instead of a silent no-op. Index publishing remains monotonic and only accepts updates that advance time forward.
 
 #### Branching
 
@@ -636,11 +636,11 @@ This architecture provides:
 
 The nameservice ensures consistency through several mechanisms:
 
-#### Monotonic Publishing
+#### Ref Publishing
 
-- **Commits**: Only accept `publish_commit()` if `new_commit_t > existing_commit_t`
-- **Indexes**: Only accept `publish_index()` if `new_index_t > existing_index_t`
-- **Guarantee**: Time always moves forward, preventing inconsistencies
+- **Commits**: `RefPublisher` uses compare-and-set semantics on the current head identity plus a monotonic `t` guard
+- **Indexes**: `publish_index()` only accepts `new_index_t > existing_index_t`
+- **Guarantee**: Writers either advance the head or receive an explicit conflict outcome
 
 #### Optimistic Concurrency
 
@@ -687,7 +687,7 @@ Understanding how records evolve:
 
 2. First Transaction
    - Transaction committed at t=1
-   - publish_commit("mydb:main", commit_cid_1, 1)
+   - Commit head advanced via `RefPublisher` CAS to `(commit_cid_1, 1)`
    - Record: commit_t=1, index_t=0
 
 3. Indexing Completes
@@ -697,7 +697,7 @@ Understanding how records evolve:
 
 4. More Transactions
    - Transactions at t=2, t=3, t=4
-   - publish_commit() called for each
+   - Commit head advanced via CAS for each
    - Record: commit_t=4, index_t=1 (novelty: t=2,3,4)
 
 5. Next Index

@@ -257,7 +257,7 @@ pub struct OwnedTransactBuilder<'a, S: Storage + 'static, N> {
 impl<'a, S, N> OwnedTransactBuilder<'a, S, N>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
-    N: NameService + Publisher,
+    N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
 {
     /// Create a new builder (called by `Fluree::stage_owned()`).
     pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger: LedgerState) -> Self {
@@ -607,7 +607,13 @@ pub struct RefTransactBuilder<'a, S: Storage + 'static, N> {
 impl<'a, S, N> RefTransactBuilder<'a, S, N>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
-    N: NameService + Publisher + Clone + Send + Sync + 'static,
+    N: NameService
+        + Publisher
+        + fluree_db_nameservice::RefPublisher
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     /// Create a new builder (called by `Fluree::stage()`).
     pub(crate) fn new(fluree: &'a Fluree<S, N>, handle: &'a LedgerHandle) -> Self {
@@ -721,7 +727,13 @@ pub(crate) async fn commit_with_handle<S, N>(
 ) -> Result<TransactResultRef>
 where
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + Clone + Send + Sync + 'static,
+    N: NameService
+        + Publisher
+        + fluree_db_nameservice::RefPublisher
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     core.validate().map_err(ApiError::Builder)?;
 

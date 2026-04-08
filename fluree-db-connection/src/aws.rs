@@ -131,18 +131,6 @@ impl Publisher for AwsNameService {
         }
     }
 
-    async fn publish_commit(
-        &self,
-        ledger_id: &str,
-        commit_t: i64,
-        commit_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.publish_commit(ledger_id, commit_t, commit_id).await,
-            Self::Storage(ns) => ns.publish_commit(ledger_id, commit_t, commit_id).await,
-        }
-    }
-
     async fn publish_index(
         &self,
         ledger_id: &str,
@@ -469,21 +457,6 @@ impl AwsConnectionHandle {
             .lookup(ledger_id)
             .await
             .map_err(|e| ConnectionError::storage(format!("Nameservice lookup failed: {}", e)))
-    }
-
-    /// Publish a new commit to the nameservice
-    ///
-    /// This is typically called by the transactor after a successful commit.
-    pub async fn publish_commit(
-        &self,
-        ledger_id: &str,
-        commit_t: i64,
-        commit_id: &fluree_db_core::ContentId,
-    ) -> Result<()> {
-        self.nameservice
-            .publish_commit(ledger_id, commit_t, commit_id)
-            .await
-            .map_err(|e| ConnectionError::storage(format!("Publish commit failed: {}", e)))
     }
 
     /// Publish a new index to the nameservice

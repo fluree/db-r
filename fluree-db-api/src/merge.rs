@@ -9,7 +9,9 @@ use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{ContentId, ContentStore, Storage};
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{NameService, NsRecordSnapshot, Publisher};
+use fluree_db_nameservice::{
+    CasResult, NameService, NsRecordSnapshot, Publisher, RefKind, RefPublisher, RefValue,
+};
 use fluree_db_novelty::commit_v2::read_commit_envelope;
 use serde::Serialize;
 use tracing::Instrument;
@@ -34,7 +36,7 @@ pub struct MergeReport {
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + Publisher + 'static,
+    N: NameService + Publisher + RefPublisher + 'static,
 {
     /// Merge a source branch into a target branch.
     ///
@@ -142,6 +144,25 @@ where
         // Snapshot target nameservice state before mutations.
         // If any step fails after publish_commit, we roll back.
         let target_snapshot = NsRecordSnapshot::from_record(&target_record);
+        let expected_target_head = RefValue {
+            id: target_record.commit_head_id.clone(),
+            t: target_record.commit_t,
+        };
+
+        // Already merged: source and target point at the same head, so this is a
+        // successful no-op rather than a concurrent advancement conflict.
+        if expected_target_head.t == source_head_t
+            && expected_target_head.id.as_ref() == Some(&source_head_id)
+        {
+            return Ok(MergeReport {
+                source: source_branch.to_string(),
+                target: resolved_target.to_string(),
+                fast_forward: true,
+                commits_copied: 0,
+                new_head_t: source_head_t,
+                new_head_id: source_head_id,
+            });
+        }
 
         // Disconnect target from ledger manager to prevent stale reads.
         if let Some(ref lm) = self.ledger_manager {
@@ -160,9 +181,39 @@ where
                 .await?;
 
             // Advance target's HEAD to source's HEAD.
-            self.nameservice
-                .publish_commit(&target_id, source_head_t, &source_head_id)
-                .await?;
+            match self
+                .nameservice
+                .compare_and_set_ref(
+                    &target_id,
+                    RefKind::CommitHead,
+                    Some(&expected_target_head),
+                    &RefValue {
+                        id: Some(source_head_id.clone()),
+                        t: source_head_t,
+                    },
+                )
+                .await?
+            {
+                CasResult::Updated => {}
+                CasResult::Conflict { actual } => {
+                    let actual_t = actual.as_ref().map(|r| r.t).unwrap_or(0);
+                    let actual_id = actual
+                        .and_then(|r| r.id)
+                        .map(|cid| cid.to_string())
+                        .unwrap_or_else(|| "None".to_string());
+                    return Err(ApiError::BranchConflict(format!(
+                        "Merge aborted: target branch advanced concurrently (expected head t={} id={}, found t={} id={})",
+                        expected_target_head.t,
+                        expected_target_head
+                            .id
+                            .as_ref()
+                            .map(|cid| cid.to_string())
+                            .unwrap_or_else(|| "None".to_string()),
+                        actual_t,
+                        actual_id
+                    )));
+                }
+            }
 
             // Copy source's index to target namespace.
             if let Some(ref index_cid) = source_record.index_head_id {

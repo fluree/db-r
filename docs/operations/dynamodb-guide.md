@@ -276,7 +276,7 @@ Only `meta` items carry the `kind` attribute and project into the GSI.
 - `publish_ledger_init` creates all 5 items (`meta`, `head`, `index`, `config`, `status`) via `TransactWriteItems`
 - `publish_graph_source` creates all 4 items (`meta`, `config`, `index`, `status`) via `TransactWriteItems`
 
-All subsequent writes (`publish_commit`, `publish_index`, `push_status`, `push_config`) are plain `UpdateItem` operations — they never create new items, only update existing ones. This eliminates orphan-item problems and simplifies conditional logic.
+Subsequent writes usually use `UpdateItem` operations (`compare_and_set_ref`, `publish_index`, `push_status`, `push_config`). The one exception is commit-head CAS on an unknown ledger ID with `expected=None`, where the backend bootstraps the ledger atomically via `TransactWriteItems`.
 
 ### How Updates Work
 
@@ -338,7 +338,7 @@ The DynamoDB nameservice implements all seven nameservice traits:
 | Trait | Description |
 |-------|-------------|
 | `NameService` | Lookup, ledger ID resolution, list all records |
-| `Publisher` | Initialize ledgers, publish commits/indexes, retract |
+| `Publisher` | Initialize ledgers, publish indexes, retract |
 | `AdminPublisher` | Admin index publishing (allows equal-t overwrites) |
 | `RefPublisher` | Compare-and-set on commit/index refs |
 | `StatusPublisher` | CAS-based status updates |
@@ -646,7 +646,7 @@ aws dynamodb create-backup \
 
 **Symptoms**: High rate of ConditionalCheckFailedException in logs
 
-**Note**: This is usually normal and indicates the system is working correctly. The conditional check prevents overwriting newer data with older data. For `publish_commit` and `publish_index`, stale writes are silently accepted (the newer value is preserved). For CAS operations (`push_status`, `push_config`, `compare_and_set_ref`), the current value is returned so the caller can retry.
+**Note**: This is usually normal and indicates the system is working correctly. The conditional check prevents overwriting newer data with older data. `publish_index` stale writes are silently ignored (the newer value is preserved). CAS operations (`compare_and_set_ref`, `push_status`, `push_config`) return the current value so the caller can retry or report a conflict.
 
 ### Unprocessed Keys (BatchGetItem)
 
@@ -660,9 +660,9 @@ aws dynamodb create-backup \
 
 **Symptoms**: Publish operations fail with "not found" or storage errors
 
-**Cause**: Attempting to `publish_commit` or `publish_index` on a ledger ID that was never initialized with `publish_ledger_init`.
+**Cause**: Attempting to `publish_index` or other non-bootstrap writes on a ledger ID that was never initialized with `publish_ledger_init`.
 
-**Solution**: Ensure ledger initialization happens before any publish operations. This is normally handled automatically by the Fluree transaction pipeline.
+**Solution**: Ensure ledger initialization happens before index/status/config writes. Normal Fluree transaction commit-head publication uses `RefPublisher` CAS and can bootstrap an unknown ledger ID when `expected=None`.
 
 ## Related Documentation
 

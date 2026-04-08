@@ -806,7 +806,7 @@ fn convert_named_graphs_to_templates(
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
-    N: NameService + Publisher,
+    N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
 {
     /// Stage a transaction against a ledger (no persistence).
     ///
@@ -1917,7 +1917,7 @@ where
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
-    N: NameService + Publisher,
+    N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
 {
     /// Update data using a transaction that specifies the ledger ID.
     ///

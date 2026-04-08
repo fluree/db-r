@@ -443,15 +443,6 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         self.0.publish_ledger_init(alias).await
     }
 
-    async fn publish_commit(
-        &self,
-        alias: &str,
-        commit_t: i64,
-        commit_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_commit(alias, commit_t, commit_id).await
-    }
-
     async fn publish_index(
         &self,
         alias: &str,
@@ -654,15 +645,6 @@ where
         alias: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
         self.inner.publish_ledger_init(alias).await
-    }
-
-    async fn publish_commit(
-        &self,
-        alias: &str,
-        commit_t: i64,
-        commit_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner.publish_commit(alias, commit_t, commit_id).await
     }
 
     async fn publish_index(
@@ -2641,7 +2623,7 @@ where
     pub fn stage<'a>(&'a self, handle: &'a LedgerHandle) -> RefTransactBuilder<'a, S, N>
     where
         S: ContentAddressedWrite,
-        N: Publisher,
+        N: Publisher + fluree_db_nameservice::RefPublisher,
     {
         RefTransactBuilder::new(self, handle)
     }
@@ -2666,7 +2648,7 @@ where
     pub fn stage_owned(&self, ledger: LedgerState) -> OwnedTransactBuilder<'_, S, N>
     where
         S: ContentAddressedWrite,
-        N: Publisher,
+        N: Publisher + fluree_db_nameservice::RefPublisher,
     {
         OwnedTransactBuilder::new(self, ledger)
     }
@@ -3306,17 +3288,28 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_noop_when_not_cached() {
         use fluree_db_core::{ContentId, ContentKind};
-        use fluree_db_nameservice::Publisher;
+        use fluree_db_nameservice::{CasResult, RefPublisher, RefValue};
+
+        async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+            let new = RefValue {
+                id: Some(cid.clone()),
+                t,
+            };
+            match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+                CasResult::Updated => {}
+                CasResult::Conflict { actual } => {
+                    if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                        panic!("unexpected commit publish conflict: {actual:?}");
+                    }
+                }
+            }
+        }
 
         let fluree = FlureeBuilder::memory().build_memory();
         let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish a record to nameservice directly (without caching the ledger)
-        fluree
-            .nameservice()
-            .publish_commit("mydb:main", 5, &cid)
-            .await
-            .unwrap();
+        publish_commit(fluree.nameservice(), "mydb:main", 5, &cid).await;
 
         // Refresh should return NotLoaded (record exists but not cached)
         let result = fluree
@@ -3344,17 +3337,28 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_with_alias_resolution() {
         use fluree_db_core::{ContentId, ContentKind};
-        use fluree_db_nameservice::Publisher;
+        use fluree_db_nameservice::{CasResult, RefPublisher, RefValue};
+
+        async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+            let new = RefValue {
+                id: Some(cid.clone()),
+                t,
+            };
+            match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+                CasResult::Updated => {}
+                CasResult::Conflict { actual } => {
+                    if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                        panic!("unexpected commit publish conflict: {actual:?}");
+                    }
+                }
+            }
+        }
 
         let fluree = FlureeBuilder::memory().build_memory();
         let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish with canonical alias
-        fluree
-            .nameservice()
-            .publish_commit("mydb:main", 5, &cid)
-            .await
-            .unwrap();
+        publish_commit(fluree.nameservice(), "mydb:main", 5, &cid).await;
 
         // Refresh with short alias should resolve to canonical
         let result = fluree.refresh("mydb", Default::default()).await.unwrap();

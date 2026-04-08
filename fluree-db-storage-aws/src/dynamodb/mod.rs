@@ -978,50 +978,6 @@ impl Publisher for DynamoDbNameService {
         }
     }
 
-    async fn publish_commit(
-        &self,
-        ledger_id: &str,
-        commit_t: i64,
-        commit_id: &ContentId,
-    ) -> std::result::Result<(), NameServiceError> {
-        let pk = Self::normalize(ledger_id);
-        let now = Self::now_epoch_ms().to_string();
-
-        let result = self
-            .client
-            .update_item()
-            .table_name(&self.table_name)
-            .key(ATTR_PK, AttributeValue::S(pk.clone()))
-            .key(ATTR_SK, AttributeValue::S(SK_HEAD.to_string()))
-            .update_expression("SET #ci = :cid, #ct = :t, #ua = :now")
-            .condition_expression("attribute_exists(#pk) AND #ct < :t")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#ci", ATTR_COMMIT_ID)
-            .expression_attribute_names("#ct", ATTR_COMMIT_T)
-            .expression_attribute_names("#ua", ATTR_UPDATED_AT_MS)
-            .expression_attribute_values(":cid", AttributeValue::S(commit_id.to_string()))
-            .expression_attribute_values(":t", AttributeValue::N(commit_t.to_string()))
-            .expression_attribute_values(":now", AttributeValue::N(now))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if Self::is_conditional_check_failed(&e) => {
-                // Distinguish stale (item exists, t >= new) from missing (not initialized).
-                if !self.meta_exists(&pk).await? {
-                    return Err(NameServiceError::not_found(format!(
-                        "Ledger not initialized: {pk}"
-                    )));
-                }
-                Ok(()) // Stale — silently ignored.
-            }
-            Err(e) => Err(NameServiceError::storage(format!(
-                "DynamoDB UpdateItem failed: {e}"
-            ))),
-        }
-    }
-
     async fn publish_index(
         &self,
         ledger_id: &str,

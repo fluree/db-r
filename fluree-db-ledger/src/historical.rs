@@ -494,7 +494,6 @@ mod tests {
         content_store_for, ContentKind, ContentStore, FlakeValue, MemoryStorage, Sid,
     };
     use fluree_db_nameservice::memory::MemoryNameService;
-    use fluree_db_nameservice::Publisher;
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
@@ -585,10 +584,23 @@ mod tests {
         ledger_id: &str,
         commit: &fluree_db_novelty::Commit,
     ) -> ContentId {
+        use fluree_db_nameservice::{CasResult, RefPublisher, RefValue};
+
         let store = content_store_for(storage.clone(), ledger_id);
         let blob = fluree_db_novelty::commit_v2::write_commit(commit, false, None).unwrap();
         let cid = store.put(ContentKind::Commit, &blob.bytes).await.unwrap();
-        ns.publish_commit(ledger_id, commit.t, &cid).await.unwrap();
+        let new = RefValue {
+            id: Some(cid.clone()),
+            t: commit.t,
+        };
+        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                if actual.as_ref().map(|r| r.t).unwrap_or(0) < commit.t {
+                    panic!("unexpected commit publish conflict: {actual:?}");
+                }
+            }
+        }
         cid
     }
 

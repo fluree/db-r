@@ -54,7 +54,13 @@ pub struct GraphTransactBuilder<'a, 'g, S: Storage + 'static, N> {
 impl<'a, 'g, S, N> GraphTransactBuilder<'a, 'g, S, N>
 where
     S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + Clone + Send + Sync + 'static,
+    N: NameService
+        + Publisher
+        + fluree_db_nameservice::RefPublisher
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     /// Create a new builder (called by `Graph::transact()`).
     pub(crate) fn new(graph: &'g Graph<'a, S, N>) -> Self {

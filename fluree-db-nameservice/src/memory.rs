@@ -220,44 +220,6 @@ impl Publisher for MemoryNameService {
         Ok(())
     }
 
-    async fn publish_commit(
-        &self,
-        ledger_id: &str,
-        commit_t: i64,
-        commit_id: &ContentId,
-    ) -> Result<()> {
-        let key = self.normalize_ledger_id(ledger_id);
-        let mut records = self.records.write();
-        let mut did_update = false;
-
-        if let Some(record) = records.get_mut(&key) {
-            // Only update if new_t > existing_t (strictly monotonic)
-            if commit_t > record.commit_t {
-                record.commit_head_id = Some(commit_id.clone());
-                record.commit_t = commit_t;
-                did_update = true;
-            }
-            // If commit_t <= existing, silently ignore (monotonic guarantee)
-        } else {
-            // Create new record
-            let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
-            let mut record = NsRecord::new(ledger_name, branch);
-            record.commit_head_id = Some(commit_id.clone());
-            record.commit_t = commit_t;
-            records.insert(key, record);
-            did_update = true;
-        }
-
-        if did_update {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                ledger_id: self.normalize_ledger_id(ledger_id),
-                commit_id: commit_id.clone(),
-                commit_t,
-            });
-        }
-        Ok(())
-    }
-
     async fn publish_index(
         &self,
         ledger_id: &str,
@@ -818,7 +780,7 @@ impl ConfigPublisher for MemoryNameService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ConfigPayload, StatusPayload};
+    use crate::{CasResult, ConfigPayload, RefPublisher, RefValue, StatusPayload};
     use fluree_db_core::ContentKind;
     use tokio::sync::broadcast::error::TryRecvError;
 
@@ -830,32 +792,41 @@ mod tests {
         ContentId::new(ContentKind::IndexRoot, label.as_bytes())
     }
 
+    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+        let new = RefValue {
+            id: Some(cid.clone()),
+            t,
+        };
+        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                    panic!("unexpected commit publish conflict: {actual:?}");
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_memory_ns_publish_commit() {
         let ns = MemoryNameService::new();
 
         // First publish
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(test_commit_id("commit-1")));
         assert_eq!(record.commit_t, 1);
 
         // Higher t should update
-        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-2"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &test_commit_id("commit-2")).await;
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(test_commit_id("commit-2")));
         assert_eq!(record.commit_t, 5);
 
         // Lower t should be ignored (monotonic)
-        ns.publish_commit("mydb:main", 3, &test_commit_id("commit-old"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 3, &test_commit_id("commit-old")).await;
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(test_commit_id("commit-2")));
@@ -867,9 +838,7 @@ mod tests {
         let ns = MemoryNameService::new();
 
         // Publish commit first
-        ns.publish_commit("mydb:main", 10, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 10, &test_commit_id("commit-1")).await;
 
         // Publish index (can lag behind commit)
         ns.publish_index("mydb:main", 5, &test_index_id("index-1"))
@@ -886,9 +855,7 @@ mod tests {
     async fn test_memory_ns_lookup_default_branch() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         // Lookup without branch should find default
         let record = ns.lookup("mydb").await.unwrap();
@@ -903,9 +870,7 @@ mod tests {
     async fn test_memory_ns_retract() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert!(!record.retracted);
@@ -920,15 +885,9 @@ mod tests {
     async fn test_memory_ns_all_records() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("db1:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
-        ns.publish_commit("db2:main", 1, &test_commit_id("commit-2"))
-            .await
-            .unwrap();
-        ns.publish_commit("db3:dev", 1, &test_commit_id("commit-3"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "db1:main", 1, &test_commit_id("commit-1")).await;
+        publish_commit(&ns, "db2:main", 1, &test_commit_id("commit-2")).await;
+        publish_commit(&ns, "db3:dev", 1, &test_commit_id("commit-3")).await;
 
         let records = ns.all_records().await.unwrap();
         assert_eq!(records.len(), 3);
@@ -956,9 +915,7 @@ mod tests {
             .await
             .unwrap();
 
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
         let evt = sub.receiver.recv().await.unwrap();
         assert_eq!(
             evt,
@@ -970,9 +927,7 @@ mod tests {
         );
 
         // Lower t should not emit a new event.
-        ns.publish_commit("mydb:main", 0, &test_commit_id("commit-old"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 0, &test_commit_id("commit-old")).await;
         assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
@@ -1056,9 +1011,7 @@ mod tests {
     async fn test_memory_graph_source_lookup_any() {
         let ns = MemoryNameService::new();
 
-        ns.publish_commit("ledger:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "ledger:main", 1, &test_commit_id("commit-1")).await;
         ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
             .await
             .unwrap();
@@ -1096,9 +1049,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_get_ref_after_publish() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &test_commit_id("commit-1")).await;
 
         let commit = ns
             .get_ref("mydb:main", RefKind::CommitHead)
@@ -1144,9 +1095,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_conflict_already_exists() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-2")),
@@ -1170,9 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_conflict_id_mismatch() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         let expected = RefValue {
             id: Some(test_commit_id("wrong-id")),
@@ -1197,9 +1144,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_success_id_matches() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         let expected = RefValue {
             id: Some(test_commit_id("commit-1")),
@@ -1227,9 +1172,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_commit_strict_monotonic() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &test_commit_id("commit-1")).await;
 
         let expected = RefValue {
             id: Some(test_commit_id("commit-1")),
@@ -1267,9 +1210,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_index_allows_equal_t() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &test_commit_id("commit-1")).await;
         ns.publish_index("mydb:main", 5, &test_index_id("index-1"))
             .await
             .unwrap();
@@ -1293,9 +1234,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_fast_forward_commit_success() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &test_commit_id("commit-1")).await;
 
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-5")),
@@ -1318,9 +1257,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_fast_forward_commit_rejected_stale() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 10, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 10, &test_commit_id("commit-1")).await;
 
         let new_ref = RefValue {
             id: Some(test_commit_id("commit-old")),
@@ -1394,9 +1331,7 @@ mod tests {
     #[tokio::test]
     async fn test_ref_cas_emits_index_event() {
         let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &test_commit_id("commit-1")).await;
         let mut sub = ns
             .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
             .await
@@ -1718,7 +1653,7 @@ mod tests {
         let ns = MemoryNameService::new();
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_commit_id("commit-5");
-        ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 5, &cid).await;
 
         ns.create_branch("mydb", "feature-x", "main").await.unwrap();
 
@@ -1735,7 +1670,7 @@ mod tests {
         let ns = MemoryNameService::new();
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_commit_id("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid).await;
 
         ns.create_branch("mydb", "dev", "main").await.unwrap();
 
@@ -1748,7 +1683,7 @@ mod tests {
         let ns = MemoryNameService::new();
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_commit_id("commit-3");
-        ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 3, &cid).await;
 
         ns.create_branch("mydb", "dev", "main").await.unwrap();
         ns.create_branch("mydb", "staging", "main").await.unwrap();
@@ -1775,7 +1710,7 @@ mod tests {
         let ns = MemoryNameService::new();
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_commit_id("commit-1");
-        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "mydb:main", 1, &cid).await;
 
         ns.create_branch("mydb", "dead", "main").await.unwrap();
         ns.retract("mydb:dead").await.unwrap();

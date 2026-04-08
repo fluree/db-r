@@ -139,6 +139,7 @@ where
     S: fluree_db_core::storage::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_nameservice::NameService
         + fluree_db_nameservice::Publisher
+        + fluree_db_nameservice::RefPublisher
         + fluree_db_nameservice::ConfigPublisher
         + Clone
         + Send

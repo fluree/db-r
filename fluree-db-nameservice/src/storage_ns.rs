@@ -762,45 +762,6 @@ where
         }
     }
 
-    async fn publish_commit(
-        &self,
-        ledger_id: &str,
-        commit_t: i64,
-        commit_id: &ContentId,
-    ) -> Result<()> {
-        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
-        let key = self.ns_key(&ledger_name, &branch);
-
-        let ledger_name_clone = ledger_name.clone();
-        let branch_clone = branch.clone();
-        let cid_str = commit_id.to_string();
-
-        self.cas_update::<NsFileV2, _>(&key, move |existing| {
-            match existing {
-                Some(mut file) => {
-                    // Only update if strictly newer
-                    if commit_t > file.t {
-                        file.commit_cid = Some(cid_str.clone());
-                        file.t = commit_t;
-                        Some(file)
-                    } else {
-                        None // No update needed
-                    }
-                }
-                None => {
-                    // Create new record
-                    Some(Self::new_main_file(
-                        &ledger_name_clone,
-                        &branch_clone,
-                        Some(&cid_str),
-                        commit_t,
-                    ))
-                }
-            }
-        })
-        .await
-    }
-
     async fn publish_index(
         &self,
         ledger_id: &str,
@@ -1592,8 +1553,23 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ConfigPayload, StatusPayload};
+    use crate::{CasResult, ConfigPayload, RefPublisher, RefValue, StatusPayload};
     use fluree_db_core::StorageExtError;
+
+    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+        let new = RefValue {
+            id: Some(cid.clone()),
+            t,
+        };
+        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                    panic!("unexpected commit publish conflict: {actual:?}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_ns_key_with_prefix() {
@@ -1927,9 +1903,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_status_push_retries_on_etag_mismatch() {
         let ns = make_flaky_storage_ns();
-        ns.publish_commit("mydb:main", 1, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &dummy_cid("commit-1")).await;
 
         let expected = ns.get_status("mydb:main").await.unwrap().unwrap();
         let new_status = StatusValue::new(2, StatusPayload::new("indexing"));
@@ -1948,9 +1922,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_config_push_retries_on_etag_mismatch() {
         let ns = make_flaky_storage_ns();
-        ns.publish_commit("mydb:main", 1, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &dummy_cid("commit-1")).await;
 
         let expected = ns.get_config("mydb:main").await.unwrap().unwrap();
         assert_eq!(expected.v, 0);
@@ -1976,9 +1948,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_get_ref_after_publish() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 5, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &dummy_cid("commit-1")).await;
 
         let commit = ns
             .get_ref("mydb:main", RefKind::CommitHead)
@@ -2015,9 +1985,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_cas_conflict_already_exists() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 1, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &dummy_cid("commit-1")).await;
 
         let new_ref = RefValue {
             id: Some(dummy_cid("commit-2")),
@@ -2039,9 +2007,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_cas_id_mismatch() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 1, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &dummy_cid("commit-1")).await;
 
         let expected = RefValue {
             id: Some(dummy_cid("wrong")),
@@ -2064,9 +2030,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_cas_success() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 1, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &dummy_cid("commit-1")).await;
 
         let expected = RefValue {
             id: Some(dummy_cid("commit-1")),
@@ -2094,9 +2058,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_cas_commit_strict_monotonic() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 5, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &dummy_cid("commit-1")).await;
 
         let expected = RefValue {
             id: Some(dummy_cid("commit-1")),
@@ -2142,9 +2104,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_fast_forward_commit() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 1, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 1, &dummy_cid("commit-1")).await;
 
         let new_ref = RefValue {
             id: Some(dummy_cid("commit-5")),
@@ -2167,9 +2127,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_fast_forward_rejected_stale() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 10, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 10, &dummy_cid("commit-1")).await;
 
         let new_ref = RefValue {
             id: Some(dummy_cid("old")),
@@ -2190,9 +2148,7 @@ mod tests {
     #[tokio::test]
     async fn test_storage_ref_get_index_after_publish() {
         let ns = make_storage_ns();
-        ns.publish_commit("mydb:main", 5, &dummy_cid("commit-1"))
-            .await
-            .unwrap();
+        publish_commit(&ns, "mydb:main", 5, &dummy_cid("commit-1")).await;
         ns.publish_index("mydb:main", 3, &dummy_cid("index-1"))
             .await
             .unwrap();

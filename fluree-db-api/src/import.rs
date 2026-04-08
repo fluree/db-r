@@ -32,7 +32,7 @@
 
 use crate::error::ApiError;
 use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
-use fluree_db_nameservice::{NameService, Publisher};
+use fluree_db_nameservice::{CasResult, NameService, Publisher, RefKind, RefPublisher, RefValue};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -661,6 +661,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
+        + RefPublisher
         + fluree_db_nameservice::ConfigPublisher
         + Clone
         + Send
@@ -818,6 +819,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
+        + RefPublisher
         + fluree_db_nameservice::ConfigPublisher
         + Clone
         + Send
@@ -934,6 +936,44 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
 // Import pipeline
 // ============================================================================
 
+async fn publish_commit_head_checked<N: RefPublisher>(
+    nameservice: &N,
+    ledger_id: &str,
+    published_ref: &mut Option<RefValue>,
+    commit_t: i64,
+    commit_id: &ContentId,
+) -> std::result::Result<(), ImportError> {
+    let new_ref = RefValue {
+        id: Some(commit_id.clone()),
+        t: commit_t,
+    };
+    let result = nameservice
+        .compare_and_set_ref(
+            ledger_id,
+            RefKind::CommitHead,
+            published_ref.as_ref(),
+            &new_ref,
+        )
+        .await
+        .map_err(|e| ImportError::Storage(e.to_string()))?;
+    match result {
+        CasResult::Updated => {
+            *published_ref = Some(new_ref);
+            Ok(())
+        }
+        CasResult::Conflict { actual } => Err(ImportError::Storage(format!(
+            "commit head publish race for {ledger_id}: attempted t={} id={}, current head is t={} id={}",
+            commit_t,
+            commit_id,
+            actual.as_ref().map(|r| r.t).unwrap_or(0),
+            actual
+                .and_then(|r| r.id)
+                .map(|cid| cid.to_string())
+                .unwrap_or_else(|| "None".to_string())
+        ))),
+    }
+}
+
 /// Core import pipeline. Orchestrates all phases.
 async fn run_import_pipeline<S, N>(
     storage: &S,
@@ -944,7 +984,7 @@ async fn run_import_pipeline<S, N>(
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
+    N: NameService + Publisher + RefPublisher + fluree_db_nameservice::ConfigPublisher,
 {
     let pipeline_start = Instant::now();
     let span = tracing::debug_span!("bulk_import", alias = %alias);
@@ -1142,7 +1182,7 @@ async fn run_pipeline_phases<S, N>(
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
+    N: NameService + Publisher + RefPublisher + fluree_db_nameservice::ConfigPublisher,
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
     let import_result = run_import_chunks(
@@ -1299,7 +1339,7 @@ async fn run_import_chunks<S, N>(
 ) -> std::result::Result<ChunkImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher,
+    N: NameService + Publisher + RefPublisher,
 {
     use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_transact::import::{
@@ -1407,6 +1447,7 @@ where
         result_rx: std::sync::mpsc::Receiver<std::result::Result<(usize, ParsedChunk), String>>,
         env: &CommitPipelineEnv<'_, S, N>,
         state: &mut ImportState,
+        published_ref: &mut Option<RefValue>,
         published_codes: &mut rustc_hash::FxHashSet<u16>,
         compute_ns_delta: impl Fn(
             &rustc_hash::FxHashSet<u16>,
@@ -1422,7 +1463,7 @@ where
     ) -> std::result::Result<usize, ImportError>
     where
         S: Storage + Clone + Send + Sync + 'static,
-        N: NameService + Publisher,
+        N: NameService + Publisher + RefPublisher,
     {
         // Serial commit loop: receive parsed chunks, reorder, finalize in order.
         // Parsed chunks arrive out of order from parallel workers.
@@ -1493,10 +1534,14 @@ where
                 if env.config.publish_every > 0
                     && (next_expected + 1).is_multiple_of(env.config.publish_every)
                 {
-                    env.nameservice
-                        .publish_commit(env.alias, result.t, &result.commit_id)
-                        .await
-                        .map_err(|e| ImportError::Storage(e.to_string()))?;
+                    publish_commit_head_checked(
+                        env.nameservice,
+                        env.alias,
+                        published_ref,
+                        result.t,
+                        &result.commit_id,
+                    )
+                    .await?;
                     tracing::info!(
                         t = result.t,
                         chunk = next_expected + 1,
@@ -1516,6 +1561,10 @@ where
     let compress = config.compress_commits;
     let num_threads = config.parse_threads;
     let mut state = ImportState::new();
+    let mut published_ref = nameservice
+        .get_ref(alias, RefKind::CommitHead)
+        .await
+        .map_err(|e| ImportError::Storage(e.to_string()))?;
     let run_start = Instant::now();
 
     // ---- Inflight permit channel (memory budget enforcement) ----
@@ -1881,6 +1930,7 @@ where
             result_rx,
             &commit_env,
             &mut state,
+            &mut published_ref,
             &mut published_codes,
             compute_ns_delta,
             &mut sort_write_handles,
@@ -1991,6 +2041,7 @@ where
                 result_rx,
                 &commit_env,
                 &mut state,
+                &mut published_ref,
                 &mut published_codes,
                 compute_ns_delta,
                 &mut sort_write_handles,
@@ -2107,10 +2158,14 @@ where
                     elapsed_secs: run_start.elapsed().as_secs_f64(),
                 });
                 if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
-                    nameservice
-                        .publish_commit(alias, result.t, &result.commit_id)
-                        .await
-                        .map_err(|e| ImportError::Storage(e.to_string()))?;
+                    publish_commit_head_checked(
+                        nameservice,
+                        alias,
+                        &mut published_ref,
+                        result.t,
+                        &result.commit_id,
+                    )
+                    .await?;
                 }
             }
         }
@@ -2123,10 +2178,14 @@ where
         .map(|r| r.id.clone())
         .ok_or_else(|| ImportError::Storage("no commit head after import".to_string()))?;
 
-    nameservice
-        .publish_commit(alias, state.t, &commit_head_id)
-        .await
-        .map_err(|e| ImportError::Storage(e.to_string()))?;
+    publish_commit_head_checked(
+        nameservice,
+        alias,
+        &mut published_ref,
+        state.t,
+        &commit_head_id,
+    )
+    .await?;
     tracing::info!(t = state.t, "published final commit head");
 
     // ---- Spawn txn-meta "meta chunk" build in background ----

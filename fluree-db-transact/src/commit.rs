@@ -12,7 +12,7 @@ use fluree_db_core::{
     CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN, TXN_META_GRAPH_ID,
 };
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
-use fluree_db_nameservice::{NameService, Publisher};
+use fluree_db_nameservice::{CasResult, NameService, RefKind, RefPublisher, RefValue};
 use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};
 use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
 use fluree_db_query::BinaryRangeProvider;
@@ -197,7 +197,7 @@ pub async fn commit<S, N>(
 ) -> Result<(CommitReceipt, LedgerState)>
 where
     S: Storage + ContentAddressedWrite + Clone + 'static,
-    N: NameService + Publisher,
+    N: NameService + RefPublisher,
 {
     // 1. Extract flakes from view
     let (mut base, flakes) = view.into_parts();
@@ -256,7 +256,7 @@ where
         }
 
         // 5. Verify sequencing (skipped during rebase replay)
-        if !skip_sequencing {
+        let expected_head_ref = if !skip_sequencing {
             let current = nameservice
                 .lookup(base.ledger_id())
                 .instrument(tracing::debug_span!("commit_nameservice_lookup"))
@@ -266,7 +266,10 @@ where
                 let _g = span.enter();
                 verify_sequencing(&base, current.as_ref())?;
             }
-        }
+            current.as_ref().map(commit_head_ref)
+        } else {
+            None
+        };
 
         // 6. Build commit record
         let new_t = base.t() + 1;
@@ -382,12 +385,43 @@ where
         // Update in-memory commit with its ContentId
         commit_record.id = Some(commit_cid.clone());
 
-        // 8. Publish to nameservice
-        nameservice
-            .publish_commit(base.ledger_id(), new_t, &commit_cid)
-            .instrument(tracing::debug_span!("commit_publish_nameservice"))
-            .await?;
-        verify_published_head(nameservice, base.ledger_id(), new_t, &commit_cid).await?;
+        // 8. Publish to nameservice through the explicit ref-CAS API so
+        // callers get a real conflict if another writer wins the race.
+        let new_head_ref = RefValue {
+            id: Some(commit_cid.clone()),
+            t: new_t,
+        };
+        let publish_result = if skip_sequencing {
+            nameservice
+                .fast_forward_commit(base.ledger_id(), &new_head_ref, 3)
+                .instrument(tracing::debug_span!("commit_publish_nameservice"))
+                .await?
+        } else {
+            nameservice
+                .compare_and_set_ref(
+                    base.ledger_id(),
+                    RefKind::CommitHead,
+                    expected_head_ref.as_ref(),
+                    &new_head_ref,
+                )
+                .instrument(tracing::debug_span!("commit_publish_nameservice"))
+                .await?
+        };
+        match publish_result {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                return Err(TransactError::PublishLostRace {
+                    ledger_id: base.ledger_id().to_string(),
+                    attempted_t: new_t,
+                    attempted_commit_id: commit_cid.to_string(),
+                    published_t: actual.as_ref().map(|r| r.t).unwrap_or(0),
+                    published_commit_id: actual
+                        .and_then(|r| r.id)
+                        .map(|cid| cid.to_string())
+                        .unwrap_or_else(|| "None".to_string()),
+                });
+            }
+        }
 
         // 9. Generate commit metadata flakes
         // Note: We merge these into novelty only, not into commit_record.flakes
@@ -493,6 +527,13 @@ where
     .await
 }
 
+fn commit_head_ref(record: &fluree_db_nameservice::NsRecord) -> RefValue {
+    RefValue {
+        id: record.commit_head_id.clone(),
+        t: record.commit_t,
+    }
+}
+
 /// Populate DictNovelty with subjects and strings from committed flakes.
 ///
 /// Scans each flake for:
@@ -585,38 +626,6 @@ fn verify_sequencing(
     }
 }
 
-async fn verify_published_head<N: NameService>(
-    nameservice: &N,
-    ledger_id: &str,
-    attempted_t: i64,
-    attempted_commit_id: &ContentId,
-) -> Result<()> {
-    let published = nameservice.lookup(ledger_id).await?;
-    match published {
-        Some(record)
-            if record.commit_t == attempted_t
-                && record.commit_head_id.as_ref() == Some(attempted_commit_id) =>
-        {
-            Ok(())
-        }
-        Some(record) => Err(TransactError::PublishLostRace {
-            ledger_id: ledger_id.to_string(),
-            attempted_t,
-            attempted_commit_id: attempted_commit_id.to_string(),
-            published_t: record.commit_t,
-            published_commit_id: record
-                .commit_head_id
-                .map(|cid| cid.to_string())
-                .unwrap_or_else(|| "None".to_string()),
-        }),
-        None => Err(TransactError::Nameservice(
-            fluree_db_nameservice::NameServiceError::NotFound(format!(
-                "ledger {ledger_id} missing after commit publish"
-            )),
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -626,7 +635,7 @@ mod tests {
     use fluree_db_nameservice::memory::MemoryNameService;
     use fluree_db_nameservice::{
         GraphSourceLookup, GraphSourceRecord, NameService, NsLookupResult, NsRecord,
-        NsRecordSnapshot,
+        NsRecordSnapshot, RefPublisher,
     };
     use fluree_db_novelty::Novelty;
     use std::fmt;
@@ -701,23 +710,42 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl Publisher for LosePublishRaceNameService {
-        async fn publish_ledger_init(&self, ledger_id: &str) -> fluree_db_nameservice::Result<()> {
-            self.inner.publish_ledger_init(ledger_id).await
-        }
-
-        async fn publish_commit(
+    impl RefPublisher for LosePublishRaceNameService {
+        async fn get_ref(
             &self,
             ledger_id: &str,
-            commit_t: i64,
-            commit_id: &ContentId,
-        ) -> fluree_db_nameservice::Result<()> {
-            self.inner
-                .publish_commit(ledger_id, commit_t, &self.winner_commit_id)
-                .await?;
-            self.inner
-                .publish_commit(ledger_id, commit_t, commit_id)
-                .await
+            kind: RefKind,
+        ) -> fluree_db_nameservice::Result<Option<RefValue>> {
+            self.inner.get_ref(ledger_id, kind).await
+        }
+
+        async fn compare_and_set_ref(
+            &self,
+            ledger_id: &str,
+            kind: RefKind,
+            _expected: Option<&RefValue>,
+            new: &RefValue,
+        ) -> fluree_db_nameservice::Result<CasResult> {
+            match kind {
+                RefKind::CommitHead => Ok(CasResult::Conflict {
+                    actual: Some(RefValue {
+                        id: Some(self.winner_commit_id.clone()),
+                        t: new.t,
+                    }),
+                }),
+                RefKind::IndexHead => {
+                    self.inner
+                        .compare_and_set_ref(ledger_id, kind, None, new)
+                        .await
+                }
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl fluree_db_nameservice::Publisher for LosePublishRaceNameService {
+        async fn publish_ledger_init(&self, ledger_id: &str) -> fluree_db_nameservice::Result<()> {
+            self.inner.publish_ledger_init(ledger_id).await
         }
 
         async fn publish_index(

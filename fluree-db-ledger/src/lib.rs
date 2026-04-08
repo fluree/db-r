@@ -952,7 +952,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_ledger_state_load_genesis() {
-        use fluree_db_nameservice::Publisher;
+        use fluree_db_nameservice::{CasResult, RefPublisher, RefValue};
+
+        async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+            let new = RefValue {
+                id: Some(cid.clone()),
+                t,
+            };
+            match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
+                CasResult::Updated => {}
+                CasResult::Conflict { actual } => {
+                    if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
+                        panic!("unexpected commit publish conflict: {actual:?}");
+                    }
+                }
+            }
+        }
 
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
@@ -962,7 +977,7 @@ mod tests {
         let cid = store_commit(&storage, "test:main", &commit).await;
 
         // Publish to nameservice (no index)
-        ns.publish_commit("test:main", 1, &cid).await.unwrap();
+        publish_commit(&ns, "test:main", 1, &cid).await;
 
         // Load ledger - should use genesis since no index exists
         let state = LedgerState::load(&ns, "test:main", storage).await.unwrap();

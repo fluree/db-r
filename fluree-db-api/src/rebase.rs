@@ -11,7 +11,9 @@ use fluree_db_core::{
     RangeTest, Storage,
 };
 use fluree_db_ledger::{LedgerState, LedgerView};
-use fluree_db_nameservice::{NameService, NsRecordSnapshot, Publisher};
+use fluree_db_nameservice::{
+    CasResult, NameService, NsRecordSnapshot, Publisher, RefKind, RefPublisher, RefValue,
+};
 use fluree_db_novelty::{compute_delta_keys, trace_commits_by_id, Commit};
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use futures::TryStreamExt;
@@ -101,7 +103,7 @@ pub struct RebaseReport {
 impl<S, N> crate::Fluree<S, N>
 where
     S: Storage + Clone + 'static,
-    N: NameService + Publisher + 'static,
+    N: NameService + Publisher + RefPublisher + 'static,
 {
     /// Rebase a branch onto its source branch's current HEAD.
     ///
@@ -195,6 +197,10 @@ where
                 .fast_forward_rebase(
                     &branch_id,
                     &source_id,
+                    RefValue {
+                        id: branch_record.commit_head_id.clone(),
+                        t: branch_record.commit_t,
+                    },
                     &source_record,
                     source_head_id,
                     source_head_t,
@@ -250,6 +256,13 @@ where
         // novelty grows too large mid-rebase.
         self.copy_source_index(&source_id, &branch_id, &source_record)
             .await;
+
+        // Rebase replay creates a new branch-local commit chain on top of the
+        // source head. Reset the branch head to the source snapshot first so
+        // replayed commits advance from the correct expected ref.
+        self.nameservice
+            .reset_head(&branch_id, NsRecordSnapshot::from_record(&source_record))
+            .await?;
 
         // Run replay and finalization; roll back on any error.
         let ctx = ReplayContext {
@@ -376,13 +389,44 @@ where
         &self,
         branch_id: &str,
         source_id: &str,
+        expected_branch_head: RefValue,
         source_record: &fluree_db_nameservice::NsRecord,
         source_head_id: ContentId,
         source_head_t: i64,
     ) -> Result<RebaseReport> {
-        self.nameservice
-            .publish_commit(branch_id, source_head_t, &source_head_id)
-            .await?;
+        match self
+            .nameservice
+            .compare_and_set_ref(
+                branch_id,
+                RefKind::CommitHead,
+                Some(&expected_branch_head),
+                &RefValue {
+                    id: Some(source_head_id.clone()),
+                    t: source_head_t,
+                },
+            )
+            .await?
+        {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                let actual_t = actual.as_ref().map(|r| r.t).unwrap_or(0);
+                let actual_id = actual
+                    .and_then(|r| r.id)
+                    .map(|cid| cid.to_string())
+                    .unwrap_or_else(|| "None".to_string());
+                return Err(ApiError::BranchConflict(format!(
+                    "Rebase aborted: branch advanced concurrently (expected head t={} id={}, found t={} id={})",
+                    expected_branch_head.t,
+                    expected_branch_head
+                        .id
+                        .as_ref()
+                        .map(|cid| cid.to_string())
+                        .unwrap_or_else(|| "None".to_string()),
+                    actual_t,
+                    actual_id
+                )));
+            }
+        }
 
         self.copy_source_index(source_id, branch_id, source_record)
             .await;
