@@ -203,6 +203,8 @@ struct LedgerIndexState {
     next_retry_at: Option<tokio::time::Instant>,
     /// Latest concrete request metadata associated with queued work.
     request_correlation: Option<IndexRequestCorrelation>,
+    /// Best-effort fallback span context for direct/manual trigger calls.
+    request_context_span: Option<tracing::Span>,
 }
 
 impl Default for LedgerIndexState {
@@ -217,6 +219,7 @@ impl Default for LedgerIndexState {
             retry_count: 0,
             next_retry_at: None,
             request_correlation: None,
+            request_context_span: None,
         }
     }
 }
@@ -252,6 +255,7 @@ impl LedgerIndexState {
         if self.pending_min_t.is_none() {
             self.phase = IndexPhase::Idle;
             self.request_correlation = None;
+            self.request_context_span = None;
         }
     }
 
@@ -412,6 +416,12 @@ impl IndexerHandle {
         correlation: Option<IndexRequestCorrelation>,
     ) -> IndexCompletion {
         let ledger_id = ledger_id.into();
+        let request_context_span = if correlation.is_none() {
+            let current_span = tracing::Span::current();
+            current_span.id().map(|_| current_span)
+        } else {
+            None
+        };
         let (tx, rx) = oneshot::channel();
         let (phase, pending_min_t, waiter_count);
 
@@ -434,6 +444,9 @@ impl IndexerHandle {
             // request metadata over leaving stale or absent fields behind.
             if correlation.is_some() {
                 state.request_correlation = correlation.clone();
+                state.request_context_span = None;
+            } else if request_context_span.is_some() {
+                state.request_context_span = request_context_span.clone();
             }
 
             // Update coalesced min_t
@@ -489,6 +502,7 @@ impl IndexerHandle {
                 state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                 state.pending_min_t = None;
                 state.request_correlation = None;
+                state.request_context_span = None;
                 if state.phase == IndexPhase::Pending {
                     state.phase = IndexPhase::Idle;
                 }
@@ -514,6 +528,7 @@ impl IndexerHandle {
             state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
             state.pending_min_t = None;
             state.request_correlation = None;
+            state.request_context_span = None;
             if state.phase == IndexPhase::Pending {
                 state.phase = IndexPhase::Idle;
             }
@@ -704,6 +719,7 @@ where
                         state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                         state.pending_min_t = None;
                         state.request_correlation = None;
+                        state.request_context_span = None;
                         state.phase = IndexPhase::Idle;
                         state.cancelled = false;
                     }
@@ -719,7 +735,7 @@ where
     async fn process_ledger(&self, ledger_id: &str) {
         let process_started = Instant::now();
 
-        let (pending_min_t, waiter_count, retry_count, correlation) = {
+        let (pending_min_t, waiter_count, retry_count, correlation, context_span) = {
             let lock_started = Instant::now();
             let states = self.states.lock().await;
             debug!(
@@ -733,6 +749,7 @@ where
                     state.waiters.len(),
                     state.retry_count,
                     state.request_correlation.clone(),
+                    state.request_context_span.clone(),
                 )
             } else {
                 debug!(
@@ -783,16 +800,31 @@ where
             }
         }
 
-        info!(
-            ledger_id = %ledger_id,
-            request_id,
-            trace_id,
-            trigger_operation,
-            pending_min_t = ?pending_min_t,
-            waiter_count,
-            retry_count,
-            "Starting queued indexing work"
-        );
+        if let Some(span) = context_span.as_ref() {
+            span.in_scope(|| {
+                info!(
+                    ledger_id = %ledger_id,
+                    request_id,
+                    trace_id,
+                    trigger_operation,
+                    pending_min_t = ?pending_min_t,
+                    waiter_count,
+                    retry_count,
+                    "Starting queued indexing work"
+                );
+            });
+        } else {
+            info!(
+                ledger_id = %ledger_id,
+                request_id,
+                trace_id,
+                trigger_operation,
+                pending_min_t = ?pending_min_t,
+                waiter_count,
+                retry_count,
+                "Starting queued indexing work"
+            );
+        }
 
         // Re-check nameservice for current state
         debug!(ledger_id = %ledger_id, "Looking up nameservice record for queued indexing work");
@@ -808,19 +840,33 @@ where
                     );
                     state.pending_min_t = None;
                     state.request_correlation = None;
+                    state.request_context_span = None;
                     state.phase = IndexPhase::Idle;
                 }
                 return;
             }
             Err(e) => {
-                warn!(
-                ledger_id = %ledger_id,
+                if let Some(span) = context_span.as_ref() {
+                    span.in_scope(|| {
+                        warn!(
+                            ledger_id = %ledger_id,
+                            request_id,
+                            trace_id,
+                            trigger_operation,
+                            error = %e,
+                            "Nameservice lookup failed, will retry"
+                        );
+                    });
+                } else {
+                    warn!(
+                        ledger_id = %ledger_id,
                         request_id,
                         trace_id,
                         trigger_operation,
                         error = %e,
                         "Nameservice lookup failed, will retry"
                     );
+                }
                 self.schedule_retry(ledger_id, &e.to_string()).await;
                 return;
             }
@@ -828,18 +874,35 @@ where
 
         let current_index_t = record.index_t;
         let commit_gap = record.commit_t - current_index_t;
-        info!(
-            ledger_id = %ledger_id,
-            request_id,
-            trace_id,
-            trigger_operation,
-            current_index_t,
-            commit_t = record.commit_t,
-            commit_gap,
-            pending_min_t = ?pending_min_t,
-            has_index = record.index_head_id.is_some(),
-            "Loaded ledger state for queued indexing work"
-        );
+        if let Some(span) = context_span.as_ref() {
+            span.in_scope(|| {
+                info!(
+                    ledger_id = %ledger_id,
+                    request_id,
+                    trace_id,
+                    trigger_operation,
+                    current_index_t,
+                    commit_t = record.commit_t,
+                    commit_gap,
+                    pending_min_t = ?pending_min_t,
+                    has_index = record.index_head_id.is_some(),
+                    "Loaded ledger state for queued indexing work"
+                );
+            });
+        } else {
+            info!(
+                ledger_id = %ledger_id,
+                request_id,
+                trace_id,
+                trigger_operation,
+                current_index_t,
+                commit_t = record.commit_t,
+                commit_gap,
+                pending_min_t = ?pending_min_t,
+                has_index = record.index_head_id.is_some(),
+                "Loaded ledger state for queued indexing work"
+            );
+        }
 
         // Check if index already satisfies all waiters
         {
@@ -1026,17 +1089,33 @@ where
             "Queued indexing is about to call build_index_for_record"
         );
         // Execute refresh-first indexing to CURRENT commit_t
-        info!(
-            ledger_id = %ledger_id,
-            request_id,
-            trace_id,
-            trigger_operation,
-            current_index_t,
-            commit_t = record.commit_t,
-            commit_gap,
-            pending_min_t = ?pending_min_t,
-            "Starting index build for queued work"
-        );
+        if let Some(span) = context_span.as_ref() {
+            span.in_scope(|| {
+                info!(
+                    ledger_id = %ledger_id,
+                    request_id,
+                    trace_id,
+                    trigger_operation,
+                    current_index_t,
+                    commit_t = record.commit_t,
+                    commit_gap,
+                    pending_min_t = ?pending_min_t,
+                    "Starting index build for queued work"
+                );
+            });
+        } else {
+            info!(
+                ledger_id = %ledger_id,
+                request_id,
+                trace_id,
+                trigger_operation,
+                current_index_t,
+                commit_t = record.commit_t,
+                commit_gap,
+                pending_min_t = ?pending_min_t,
+                "Starting index build for queued work"
+            );
+        }
         let result =
             crate::build_index_for_record(&self.storage, &record, self.config.clone()).await;
 
@@ -1046,24 +1125,50 @@ where
                 if let Err(e) =
                     crate::publish_index_result(self.nameservice.as_ref(), &index_result).await
                 {
-                    warn!(
-                    ledger_id = %ledger_id,
+                    if let Some(span) = context_span.as_ref() {
+                        span.in_scope(|| {
+                            warn!(
+                                ledger_id = %ledger_id,
+                                request_id,
+                                trace_id,
+                                trigger_operation,
+                                error = %e,
+                                "Failed to publish index, will retry"
+                            );
+                        });
+                    } else {
+                        warn!(
+                            ledger_id = %ledger_id,
                             request_id,
                             trace_id,
                             trigger_operation,
                             error = %e,
                             "Failed to publish index, will retry"
                         );
+                    }
                     self.schedule_retry(ledger_id, &e.to_string()).await;
                 } else {
-                    info!(
-                    ledger_id = %ledger_id,
+                    if let Some(span) = context_span.as_ref() {
+                        span.in_scope(|| {
+                            info!(
+                                ledger_id = %ledger_id,
+                                request_id,
+                                trace_id,
+                                trigger_operation,
+                                index_t = index_result.index_t,
+                                "Successfully indexed ledger"
+                            );
+                        });
+                    } else {
+                        info!(
+                            ledger_id = %ledger_id,
                             request_id,
                             trace_id,
                             trigger_operation,
                             index_t = index_result.index_t,
                             "Successfully indexed ledger"
                         );
+                    }
 
                     // Spawn garbage collection (fire-and-forget, non-fatal)
                     let gc_storage = self.storage.clone();
@@ -1112,14 +1217,27 @@ where
                 }
             }
             Err(e) => {
-                warn!(
-                ledger_id = %ledger_id,
+                if let Some(span) = context_span.as_ref() {
+                    span.in_scope(|| {
+                        warn!(
+                            ledger_id = %ledger_id,
+                            request_id,
+                            trace_id,
+                            trigger_operation,
+                            error = %e,
+                            "Indexing failed, will retry"
+                        );
+                    });
+                } else {
+                    warn!(
+                        ledger_id = %ledger_id,
                         request_id,
                         trace_id,
                         trigger_operation,
                         error = %e,
                         "Indexing failed, will retry"
                     );
+                }
                 self.schedule_retry(ledger_id, &e.to_string()).await;
             }
         }
@@ -1134,6 +1252,7 @@ where
                 state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                 state.pending_min_t = None;
                 state.request_correlation = None;
+                state.request_context_span = None;
                 state.phase = IndexPhase::Idle;
                 return;
             }

@@ -179,7 +179,7 @@ Client-supplied request ID for tracing:
 X-Request-ID: abc-123-def-456
 ```
 
-The server will include this in logs and response headers for correlation.
+The server will include this in logs and response headers for correlation. When a request queues background indexing work, the copied `X-Request-ID` also appears on the background indexer worker logs so you can connect the foreground request and later indexing activity in plain log search.
 
 ## Response Headers
 

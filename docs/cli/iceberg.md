@@ -7,6 +7,9 @@ Manage Apache Iceberg table connections.
 | Subcommand | Description |
 |------------|-------------|
 | `map` | Map an Iceberg table as a graph source |
+| `list` | List Iceberg-family graph sources (`Iceberg` and `R2RML`) |
+| `info` | Show details for an Iceberg-family graph source |
+| `drop` | Drop an Iceberg-family graph source |
 
 ## fluree iceberg map
 
@@ -174,3 +177,63 @@ error: Iceberg support not compiled. Rebuild with `--features iceberg`.
 - [list](list.md) - List ledgers and graph sources
 - [info](info.md) - Show graph source details
 - [drop](drop.md) - Remove a graph source
+
+## fluree iceberg list
+
+List Iceberg-family graph sources (`Iceberg` and `R2RML` types).
+
+### Usage
+
+```bash
+fluree iceberg list [--remote <NAME>]
+```
+
+### Examples
+
+```bash
+# Local
+fluree iceberg list
+
+# Remote
+fluree iceberg list --remote origin
+```
+
+## fluree iceberg info
+
+Show details for an Iceberg-family graph source.
+
+### Usage
+
+```bash
+fluree iceberg info <NAME> [--remote <NAME>]
+```
+
+### Examples
+
+```bash
+# Local
+fluree iceberg info warehouse-orders
+
+# Remote
+fluree iceberg info warehouse-orders --remote origin
+```
+
+## fluree iceberg drop
+
+Drop an Iceberg-family graph source. This command only targets Iceberg/R2RML graph sources; it does not fall back to dropping ledgers of the same name.
+
+### Usage
+
+```bash
+fluree iceberg drop <NAME> --force [--remote <NAME>]
+```
+
+### Examples
+
+```bash
+# Local
+fluree iceberg drop warehouse-orders --force
+
+# Remote
+fluree iceberg drop warehouse-orders --force --remote origin
+```

@@ -836,6 +836,29 @@ impl RemoteLedgerClient {
         .await
     }
 
+    /// Drop a ledger or graph source on the remote server.
+    ///
+    /// Calls `POST {base_url}/drop` with `{"ledger": "<name>", "hard": true|false}`.
+    /// The server resolves the name as a ledger first, then as a graph source.
+    pub async fn drop_resource(
+        &self,
+        name: &str,
+        hard: bool,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.op_url_root("drop");
+        let body = serde_json::json!({
+            "ledger": name,
+            "hard": hard,
+        });
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
     // =========================================================================
     // List ledgers
     // =========================================================================

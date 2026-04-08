@@ -1446,6 +1446,73 @@ fn iceberg_map_remote_uses_remote_client() {
         .stderr(predicate::str::contains("connection failed"));
 }
 
+#[test]
+fn iceberg_list_remote_uses_remote_client() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://127.0.0.1:19999"])
+        .assert()
+        .success();
+
+    fluree_cmd(&tmp)
+        .args(["iceberg", "list", "--remote", "origin"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "failed to list Iceberg graph sources on 'origin'",
+        ))
+        .stderr(predicate::str::contains("connection failed"));
+}
+
+#[test]
+fn iceberg_info_remote_uses_remote_client() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://127.0.0.1:19999"])
+        .assert()
+        .success();
+
+    fluree_cmd(&tmp)
+        .args(["iceberg", "info", "warehouse-orders", "--remote", "origin"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "failed to load Iceberg graph source info from 'origin'",
+        ))
+        .stderr(predicate::str::contains("connection failed"));
+}
+
+#[test]
+fn iceberg_drop_remote_uses_remote_client() {
+    let tmp = TempDir::new().unwrap();
+    fluree_cmd(&tmp).arg("init").assert().success();
+
+    fluree_cmd(&tmp)
+        .args(["remote", "add", "origin", "http://127.0.0.1:19999"])
+        .assert()
+        .success();
+
+    fluree_cmd(&tmp)
+        .args([
+            "iceberg",
+            "drop",
+            "warehouse-orders",
+            "--force",
+            "--remote",
+            "origin",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "failed to validate Iceberg graph source on 'origin'",
+        ))
+        .stderr(predicate::str::contains("connection failed"));
+}
+
 // ============================================================================
 // Directory --from support
 // ============================================================================

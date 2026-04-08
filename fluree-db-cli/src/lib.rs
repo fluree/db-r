@@ -430,6 +430,33 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                 cli::IcebergAction::Map(args) => {
                     commands::iceberg::run_iceberg_map(*args, &fluree_dir, direct).await
                 }
+                cli::IcebergAction::List { remote } => {
+                    commands::iceberg::run_iceberg_list(&fluree_dir, remote.as_deref(), direct)
+                        .await
+                }
+                cli::IcebergAction::Info { name, remote } => {
+                    commands::iceberg::run_iceberg_info(
+                        &name,
+                        &fluree_dir,
+                        remote.as_deref(),
+                        direct,
+                    )
+                    .await
+                }
+                cli::IcebergAction::Drop {
+                    name,
+                    force,
+                    remote,
+                } => {
+                    commands::iceberg::run_iceberg_drop(
+                        &name,
+                        force,
+                        &fluree_dir,
+                        remote.as_deref(),
+                        direct,
+                    )
+                    .await
+                }
             }
         }
 

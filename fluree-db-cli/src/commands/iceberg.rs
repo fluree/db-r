@@ -1,6 +1,9 @@
 use crate::cli::IcebergMapArgs;
+use crate::context;
 use crate::error::{CliError, CliResult};
+use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::server_defaults::FlureeDir;
+use fluree_db_nameservice::GraphSourceLookup;
 
 // =============================================================================
 // fluree iceberg map
@@ -34,6 +37,222 @@ pub async fn run_iceberg_map(
 
     // Local execution
     run_iceberg_map_local(args, dirs).await
+}
+
+// =============================================================================
+// fluree iceberg list
+// =============================================================================
+
+pub async fn run_iceberg_list(
+    dirs: &FlureeDir,
+    remote_flag: Option<&str>,
+    direct: bool,
+) -> CliResult<()> {
+    if let Some(remote_name) = remote_flag {
+        let client = context::build_remote_client(remote_name, dirs).await?;
+        let result = client.list_ledgers().await.map_err(|e| {
+            CliError::Remote(format!(
+                "failed to list Iceberg graph sources on '{}': {}",
+                remote_name, e
+            ))
+        })?;
+        context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+        return print_iceberg_list_remote(&result, Some(remote_name));
+    }
+
+    if !direct {
+        if let Some(client) = context::try_server_route_client(dirs) {
+            let result = client.list_ledgers().await.map_err(|e| {
+                CliError::Remote(format!("failed to list Iceberg graph sources: {}", e))
+            })?;
+            return print_iceberg_list_remote(&result, None);
+        }
+    }
+
+    let fluree = context::build_fluree(dirs)?;
+    let gs_records = fluree.nameservice().all_graph_source_records().await?;
+    let mut entries: Vec<_> = gs_records
+        .into_iter()
+        .filter(|gs| !gs.retracted && is_iceberg_family_source_type(&gs.source_type))
+        .collect();
+    entries.sort_by(|a, b| a.graph_source_id.cmp(&b.graph_source_id));
+
+    if entries.is_empty() {
+        println!("No Iceberg graph sources found.");
+        return Ok(());
+    }
+
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["NAME", "BRANCH", "TYPE", "T"]);
+
+    for gs in entries {
+        let t_str = if gs.index_t > 0 {
+            gs.index_t.to_string()
+        } else {
+            "-".to_string()
+        };
+        table.add_row(vec![
+            gs.name,
+            gs.branch,
+            format_source_type(&gs.source_type),
+            t_str,
+        ]);
+    }
+
+    println!("{table}");
+    Ok(())
+}
+
+// =============================================================================
+// fluree iceberg info
+// =============================================================================
+
+pub async fn run_iceberg_info(
+    name: &str,
+    dirs: &FlureeDir,
+    remote_flag: Option<&str>,
+    direct: bool,
+) -> CliResult<()> {
+    if let Some(remote_name) = remote_flag {
+        let client = context::build_remote_client(remote_name, dirs).await?;
+        let info = client.ledger_info(name).await.map_err(|e| {
+            CliError::Remote(format!(
+                "failed to load Iceberg graph source info from '{}': {}",
+                remote_name, e
+            ))
+        })?;
+        context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+        return print_iceberg_info_remote(name, &info);
+    }
+
+    if !direct {
+        if let Some(client) = context::try_server_route_client(dirs) {
+            let info = client.ledger_info(name).await.map_err(|e| {
+                CliError::Remote(format!("failed to load Iceberg graph source info: {}", e))
+            })?;
+            return print_iceberg_info_remote(name, &info);
+        }
+    }
+
+    let fluree = context::build_fluree(dirs)?;
+    let gs_id = context::to_ledger_id(name);
+    let gs = fluree
+        .nameservice()
+        .lookup_graph_source(&gs_id)
+        .await?
+        .ok_or_else(|| {
+            CliError::NotFound(format!("'{}' not found as an Iceberg graph source", name))
+        })?;
+
+    if !is_iceberg_family_source_type(&gs.source_type) {
+        return Err(CliError::NotFound(format!(
+            "'{}' is not an Iceberg graph source",
+            name
+        )));
+    }
+
+    print_graph_source_info(&gs);
+    Ok(())
+}
+
+// =============================================================================
+// fluree iceberg drop
+// =============================================================================
+
+pub async fn run_iceberg_drop(
+    name: &str,
+    force: bool,
+    dirs: &FlureeDir,
+    remote_flag: Option<&str>,
+    direct: bool,
+) -> CliResult<()> {
+    if !force {
+        return Err(CliError::Usage(format!(
+            "use --force to confirm deletion of '{name}'"
+        )));
+    }
+
+    if let Some(remote_name) = remote_flag {
+        let client = context::build_remote_client(remote_name, dirs).await?;
+        let info = client.ledger_info(name).await.map_err(|e| {
+            CliError::Remote(format!(
+                "failed to validate Iceberg graph source on '{}': {}",
+                remote_name, e
+            ))
+        })?;
+        ensure_remote_iceberg_info(name, &info)?;
+
+        let response = client.drop_resource(name, true).await.map_err(|e| {
+            CliError::Remote(format!(
+                "failed to drop Iceberg graph source on '{}': {}",
+                remote_name, e
+            ))
+        })?;
+        context::persist_refreshed_tokens(&client, remote_name, dirs).await;
+        return print_remote_drop_response(&response);
+    }
+
+    if !direct {
+        if let Some(client) = context::try_server_route_client(dirs) {
+            let info = client.ledger_info(name).await.map_err(|e| {
+                CliError::Remote(format!("failed to validate Iceberg graph source: {}", e))
+            })?;
+            ensure_remote_iceberg_info(name, &info)?;
+
+            let response = client.drop_resource(name, true).await.map_err(|e| {
+                CliError::Remote(format!("failed to drop Iceberg graph source: {}", e))
+            })?;
+            return print_remote_drop_response(&response);
+        }
+    }
+
+    let fluree = context::build_fluree(dirs)?;
+    let gs_id = context::to_ledger_id(name);
+    let gs = fluree
+        .nameservice()
+        .lookup_graph_source(&gs_id)
+        .await?
+        .ok_or_else(|| {
+            CliError::NotFound(format!("'{}' not found as an Iceberg graph source", name))
+        })?;
+
+    if !is_iceberg_family_source_type(&gs.source_type) {
+        return Err(CliError::NotFound(format!(
+            "'{}' is not an Iceberg graph source",
+            name
+        )));
+    }
+
+    let gs_report = fluree
+        .drop_graph_source(name, None, fluree_db_api::DropMode::Hard)
+        .await?;
+
+    match gs_report.status {
+        fluree_db_api::admin::DropStatus::Dropped => {
+            println!(
+                "Dropped Iceberg graph source '{}:{}'",
+                gs_report.name, gs_report.branch
+            );
+            for w in &gs_report.warnings {
+                eprintln!("  warning: {w}");
+            }
+        }
+        fluree_db_api::admin::DropStatus::AlreadyRetracted => {
+            println!(
+                "Iceberg graph source '{}:{}' was already dropped",
+                gs_report.name, gs_report.branch
+            );
+        }
+        fluree_db_api::admin::DropStatus::NotFound => {
+            return Err(CliError::NotFound(format!(
+                "'{}' not found as an Iceberg graph source",
+                name
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_iceberg_map_remote(
@@ -161,6 +380,190 @@ fn args_to_json(args: &IcebergMapArgs) -> CliResult<serde_json::Value> {
     }
 
     Ok(body)
+}
+
+fn print_iceberg_list_remote(
+    result: &serde_json::Value,
+    remote_label: Option<&str>,
+) -> CliResult<()> {
+    let entries = result.as_array().ok_or_else(|| {
+        CliError::Remote("unexpected response format: expected JSON array".into())
+    })?;
+
+    let filtered: Vec<&serde_json::Value> = entries
+        .iter()
+        .filter(|entry| {
+            entry
+                .get("type")
+                .and_then(|v| v.as_str())
+                .is_some_and(is_iceberg_family_type_str)
+        })
+        .collect();
+
+    if filtered.is_empty() {
+        match remote_label {
+            Some(name) => println!("No Iceberg graph sources on remote '{}'.", name),
+            None => println!("No Iceberg graph sources found."),
+        }
+        return Ok(());
+    }
+
+    let mut table = Table::new();
+    table.set_content_arrangement(ContentArrangement::Dynamic);
+    table.set_header(vec!["NAME", "BRANCH", "TYPE", "T"]);
+
+    for entry in filtered {
+        let name = entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("(unknown)");
+        let branch = entry
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .unwrap_or("main");
+        let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+        let t = entry
+            .get("t")
+            .and_then(|v| v.as_i64())
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        table.add_row(vec![
+            name.to_string(),
+            branch.to_string(),
+            entry_type.to_string(),
+            t,
+        ]);
+    }
+
+    println!("{table}");
+    Ok(())
+}
+
+fn print_iceberg_info_remote(name: &str, info: &serde_json::Value) -> CliResult<()> {
+    ensure_remote_iceberg_info(name, info)?;
+    print_remote_graph_source_info(info);
+    Ok(())
+}
+
+fn ensure_remote_iceberg_info(name: &str, info: &serde_json::Value) -> CliResult<()> {
+    let info_type = info.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
+        CliError::NotFound(format!("'{}' not found as an Iceberg graph source", name))
+    })?;
+
+    if !is_iceberg_family_type_str(info_type) || info.get("graph_source_id").is_none() {
+        return Err(CliError::NotFound(format!(
+            "'{}' is not an Iceberg graph source",
+            name
+        )));
+    }
+
+    Ok(())
+}
+
+fn print_remote_drop_response(response: &serde_json::Value) -> CliResult<()> {
+    let status = response
+        .get("status")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| CliError::Remote("unexpected drop response: missing status".into()))?;
+    let ledger_id = response
+        .get("ledger_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+
+    match status {
+        "dropped" => println!("Dropped Iceberg graph source '{ledger_id}'"),
+        "already_retracted" => {
+            println!("Iceberg graph source '{ledger_id}' was already dropped")
+        }
+        "not_found" => {
+            return Err(CliError::NotFound(format!(
+                "'{}' not found as an Iceberg graph source",
+                ledger_id
+            )))
+        }
+        other => {
+            return Err(CliError::Remote(format!(
+                "unexpected drop status '{}'",
+                other
+            )))
+        }
+    }
+
+    if let Some(warnings) = response.get("warnings").and_then(|v| v.as_array()) {
+        for warning in warnings.iter().filter_map(|v| v.as_str()) {
+            eprintln!("  warning: {warning}");
+        }
+    }
+
+    Ok(())
+}
+
+fn print_remote_graph_source_info(info: &serde_json::Value) {
+    let name = info.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+    let branch = info.get("branch").and_then(|v| v.as_str()).unwrap_or("?");
+    let gs_type = info.get("type").and_then(|v| v.as_str()).unwrap_or("?");
+    let gs_id = info
+        .get("graph_source_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
+
+    println!("Name:           {name}");
+    println!("Branch:         {branch}");
+    println!("Type:           {gs_type}");
+    println!("ID:             {gs_id}");
+
+    if let Some(t) = info.get("index_t").and_then(|v| v.as_i64()) {
+        println!("Index t:        {t}");
+    }
+    if let Some(id) = info.get("index_id").and_then(|v| v.as_str()) {
+        println!("Index ID:       {id}");
+    }
+    if let Some(deps) = info.get("dependencies").and_then(|v| v.as_array()) {
+        let dep_strs: Vec<&str> = deps.iter().filter_map(|v| v.as_str()).collect();
+        if !dep_strs.is_empty() {
+            println!("Dependencies:   {}", dep_strs.join(", "));
+        }
+    }
+    if let Some(config) = info.get("config") {
+        println!();
+        println!("Configuration:");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(config).unwrap_or_default()
+        );
+    }
+}
+
+fn print_graph_source_info(gs: &fluree_db_nameservice::GraphSourceRecord) {
+    println!("Name:           {}", gs.name);
+    println!("Branch:         {}", gs.branch);
+    println!("Type:           {}", format_source_type(&gs.source_type));
+    println!("ID:             {}", gs.graph_source_id);
+    println!("Retracted:      {}", gs.retracted);
+    println!("Index t:        {}", gs.index_t);
+    println!(
+        "Index ID:       {}",
+        gs.index_id
+            .as_ref()
+            .map(|id| id.to_string())
+            .as_deref()
+            .unwrap_or("(none)")
+    );
+
+    if !gs.dependencies.is_empty() {
+        println!("Dependencies:   {}", gs.dependencies.join(", "));
+    }
+
+    if !gs.config.is_empty() && gs.config != "{}" {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&gs.config) {
+            println!();
+            println!("Configuration:");
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&parsed).unwrap_or_else(|_| gs.config.clone())
+            );
+        }
+    }
 }
 
 // =============================================================================
@@ -314,4 +717,27 @@ fn build_iceberg_config(args: &IcebergMapArgs) -> CliResult<fluree_db_api::Icebe
     }
 
     Ok(config)
+}
+
+fn is_iceberg_family_source_type(st: &fluree_db_nameservice::GraphSourceType) -> bool {
+    matches!(
+        st,
+        fluree_db_nameservice::GraphSourceType::Iceberg
+            | fluree_db_nameservice::GraphSourceType::R2rml
+    )
+}
+
+fn is_iceberg_family_type_str(s: &str) -> bool {
+    matches!(s, "Iceberg" | "R2RML")
+}
+
+fn format_source_type(st: &fluree_db_nameservice::GraphSourceType) -> String {
+    match st {
+        fluree_db_nameservice::GraphSourceType::Bm25 => "BM25".to_string(),
+        fluree_db_nameservice::GraphSourceType::Vector => "Vector".to_string(),
+        fluree_db_nameservice::GraphSourceType::Geo => "Geo".to_string(),
+        fluree_db_nameservice::GraphSourceType::R2rml => "R2RML".to_string(),
+        fluree_db_nameservice::GraphSourceType::Iceberg => "Iceberg".to_string(),
+        fluree_db_nameservice::GraphSourceType::Unknown(s) => format!("Unknown({s})"),
+    }
 }

@@ -1276,6 +1276,37 @@ pub enum IcebergAction {
     ///   fluree iceberg map my-gs --catalog-uri https://... --r2rml mappings/airlines.ttl
     ///   fluree iceberg map my-gs --mode direct --table-location s3://bucket/warehouse/ns/table
     Map(Box<IcebergMapArgs>),
+
+    /// List Iceberg-family graph sources (Iceberg and R2RML mappings)
+    List {
+        /// List graph sources on a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Show details for an Iceberg-family graph source
+    Info {
+        /// Graph source name
+        name: String,
+
+        /// Query a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
+
+    /// Drop an Iceberg-family graph source
+    Drop {
+        /// Graph source name
+        name: String,
+
+        /// Required flag to confirm deletion
+        #[arg(long)]
+        force: bool,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+    },
 }
 
 /// Arguments for mapping an Iceberg table as a graph source.
