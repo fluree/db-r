@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "HTTP server for Fluree DB search service"
 
+[package.metadata.dist]
+dist = false
+
 [[bin]]
 name = "fluree-search-httpd"
 path = "src/main.rs"

@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[package.metadata.dist]
+dist = false
+
 [[bin]]
 name = "fluree-server"
 path = "src/main.rs"

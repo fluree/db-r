@@ -109,6 +109,16 @@ pub struct IndexerConfig {
     ///
     /// Default: 10.
     pub leaflets_per_leaf: usize,
+
+    /// Maximum cumulative commit bytes to load during an incremental
+    /// commit-chain walk. If the walk exceeds this budget, incremental
+    /// indexing aborts and the caller falls back to a full rebuild.
+    ///
+    /// Typically set to the ledger's `reindex_max_bytes` so that the
+    /// in-memory commit buffer never grows beyond the novelty threshold.
+    ///
+    /// `None` means no limit (backwards-compatible default).
+    pub incremental_max_commit_bytes: Option<usize>,
 }
 
 /// Default run-sort budget: 256 MB.
@@ -136,6 +146,7 @@ impl Default for IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            incremental_max_commit_bytes: None,
         }
     }
 }
@@ -162,6 +173,7 @@ impl IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            incremental_max_commit_bytes: None,
         }
     }
 
@@ -181,6 +193,7 @@ impl IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            incremental_max_commit_bytes: None,
         }
     }
 
@@ -200,6 +213,7 @@ impl IndexerConfig {
             incremental_max_concurrency: DEFAULT_INCREMENTAL_MAX_CONCURRENCY,
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
+            incremental_max_commit_bytes: None,
         }
     }
 

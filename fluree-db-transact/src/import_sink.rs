@@ -293,15 +293,10 @@ mod inner {
                 }
                 FlakeValue::Long(v) => (ObjKind::NUM_INT.as_u8(), ObjKey::encode_i64(*v).as_u64()),
                 FlakeValue::Double(v) => {
-                    if v.is_finite() && v.fract() == 0.0 {
-                        let int_val = *v as i64;
-                        if int_val as f64 == *v {
-                            return Some((
-                                ObjKind::NUM_INT.as_u8(),
-                                ObjKey::encode_i64(int_val).as_u64(),
-                            ));
-                        }
-                    }
+                    // NOTE: Do not optimize integral doubles to NUM_INT here.
+                    // The decode path uses the property's datatype to select
+                    // DecodeKind::F64, which would reinterpret integer-encoded
+                    // bits as IEEE 754 floats, producing garbage. (fluree/db-r#142)
                     match ObjKey::encode_f64(*v) {
                         Ok(key) => (ObjKind::NUM_F64.as_u8(), key.as_u64()),
                         Err(_) => {
