@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 /// Metadata for creating a database from its index root.
 ///
-/// Bundles all the metadata fields extracted from a v2 BinaryIndexRoot
+/// Bundles all the metadata fields extracted from a BinaryIndexRoot
 /// for constructing a metadata-only `LedgerSnapshot`.
 pub struct LedgerSnapshotMetadata {
     /// Ledger ID (e.g., "mydb:main")

@@ -5,15 +5,13 @@
 //!
 //! ## Verification
 //!
-//! Commit-v2 blobs use sub-range SHA-256 (excluding trailing hash+sig), handled
-//! by `verify_object_integrity`. All other content kinds use full-bytes SHA-256
-//! via `ContentId::verify()`.
+//! Commit blobs (v4) use full-blob SHA-256 via `verify_commit_blob`. All other
+//! content kinds use full-bytes SHA-256 via `ContentId::verify()`.
 //!
 //! ## Write path
 //!
 //! Objects are written via `content_write_bytes_with_hash()`, which lets storage
-//! control layout while the client controls hash derivation (critical for
-//! commit-v2 where the CID hash differs from full-bytes hash).
+//! control layout while the client controls hash derivation.
 
 use crate::error::{Result, SyncError};
 use crate::origin::verify_object_integrity;
@@ -478,12 +476,11 @@ pub async fn ingest_pack_frame<S: ContentAddressedWrite>(
     Ok(())
 }
 
-/// Derive the canonical SHA-256 hex digest for a commit-v2 blob.
+/// Derive the canonical SHA-256 hex digest for a commit blob.
 ///
-/// This must match the hash derivation in `verify_commit_v2_blob`. The digest
-/// covers `bytes[0..hash_offset]` — the payload before the trailing hash+sig.
+/// This must match the hash derivation in `verify_commit_blob`.
 fn derive_commit_digest_hex(bytes: &[u8]) -> Result<String> {
-    match fluree_db_novelty::verify_commit_v2_blob(bytes) {
+    match fluree_db_core::commit::codec::verify_commit_blob(bytes) {
         Ok(derived_id) => Ok(derived_id.digest_hex()),
         Err(e) => Err(SyncError::PackProtocol(format!(
             "failed to derive commit digest: {}",

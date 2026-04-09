@@ -181,6 +181,7 @@ pub use fluree_db_indexer::{
 
 // Re-export commonly used types from child crates
 pub use fluree_db_connection::{ConnectionConfig, StorageType};
+pub use fluree_db_core::commit::codec::verify_commit_blob;
 #[cfg(feature = "native")]
 pub use fluree_db_core::FileStorage;
 pub use fluree_db_core::{
@@ -194,7 +195,7 @@ pub use fluree_db_nameservice::{
     ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, GraphSourceLookup,
     GraphSourcePublisher, NameService, NsRecord, Publisher,
 };
-pub use fluree_db_novelty::{verify_commit_v2_blob, Novelty};
+pub use fluree_db_novelty::Novelty;
 pub use fluree_db_query::{
     execute_pattern, execute_pattern_with_overlay, execute_pattern_with_overlay_at,
     execute_with_dataset_and_bm25, execute_with_dataset_and_policy_and_bm25,

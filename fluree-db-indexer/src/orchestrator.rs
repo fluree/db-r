@@ -1276,12 +1276,11 @@ mod tests {
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> ContentId {
-        use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
-        use fluree_db_novelty::commit_v2::format::{
-            self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
+        use fluree_db_core::commit::codec::envelope::{encode_envelope_fields, CodecEnvelope};
+        use fluree_db_core::commit::codec::format::{
+            self, CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN,
         };
-        use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
-        use sha2::{Digest, Sha256};
+        use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
         use std::collections::HashMap;
 
         let mut dicts = CommitDicts::new();
@@ -1290,7 +1289,7 @@ mod tests {
             encode_op(f, &mut dicts, &mut ops_buf).unwrap();
         }
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: commit.t,
             previous_refs: commit.previous_refs.clone(),
             namespace_delta: commit
@@ -1329,11 +1328,11 @@ mod tests {
             offset += d.len() as u64;
         }
 
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: dict_locations,
             ops_section_len,
         };
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: format::VERSION,
             flags: 0,
             t: commit.t,
@@ -1342,12 +1341,12 @@ mod tests {
             sig_block_len: 0,
         };
 
+        // V4: no embedded hash
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
             + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN
-            + HASH_LEN;
+            + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 
         let mut pos = 0;
@@ -1362,27 +1361,14 @@ mod tests {
             pos += d.len();
         }
         footer.write_to(&mut blob[pos..]);
-        pos += FOOTER_LEN;
 
-        let hash: [u8; 32] = Sha256::digest(&blob[..pos]).into();
-        blob[pos..pos + HASH_LEN].copy_from_slice(&hash);
-
-        // Content hash is SHA-256 of payload (excluding trailing hash)
-        let content_hash_hex = hex::encode(hash);
-
-        // Write at the address the content store bridge will resolve to
+        // Write via content_write_bytes (CID = SHA-256 of full blob)
         storage
-            .content_write_bytes_with_hash(
-                ContentKind::Commit,
-                "test:main",
-                &content_hash_hex,
-                &blob,
-            )
+            .content_write_bytes(ContentKind::Commit, "test:main", &blob)
             .await
             .unwrap();
 
-        // Derive CID from content hash
-        ContentId::from_hex_digest(ContentKind::Commit.to_codec(), &content_hash_hex).unwrap()
+        ContentId::new(ContentKind::Commit, &blob)
     }
 
     #[tokio::test]
@@ -1897,12 +1883,11 @@ mod embedded_tests {
     }
 
     async fn store_commit(storage: &MemoryStorage, commit: &Commit) -> ContentId {
-        use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
-        use fluree_db_novelty::commit_v2::format::{
-            self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
+        use fluree_db_core::commit::codec::envelope::{encode_envelope_fields, CodecEnvelope};
+        use fluree_db_core::commit::codec::format::{
+            self, CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN,
         };
-        use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
-        use sha2::{Digest, Sha256};
+        use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
 
         let mut dicts = CommitDicts::new();
         let mut ops_buf = Vec::new();
@@ -1910,7 +1895,7 @@ mod embedded_tests {
             encode_op(f, &mut dicts, &mut ops_buf).unwrap();
         }
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: commit.t,
             previous_refs: commit.previous_refs.clone(),
             namespace_delta: commit
@@ -1949,11 +1934,11 @@ mod embedded_tests {
             offset += d.len() as u64;
         }
 
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: dict_locations,
             ops_section_len,
         };
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: format::VERSION,
             flags: 0,
             t: commit.t,
@@ -1962,12 +1947,12 @@ mod embedded_tests {
             sig_block_len: 0,
         };
 
+        // V4: no embedded hash
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
             + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN
-            + HASH_LEN;
+            + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 
         let mut pos = 0;
@@ -1982,27 +1967,14 @@ mod embedded_tests {
             pos += d.len();
         }
         footer.write_to(&mut blob[pos..]);
-        pos += FOOTER_LEN;
 
-        let hash: [u8; 32] = Sha256::digest(&blob[..pos]).into();
-        blob[pos..pos + HASH_LEN].copy_from_slice(&hash);
-
-        // Content hash is SHA-256 of payload (excluding trailing hash)
-        let content_hash_hex = hex::encode(hash);
-
-        // Write at the address the content store bridge will resolve to
+        // Write via content_write_bytes (CID = SHA-256 of full blob)
         storage
-            .content_write_bytes_with_hash(
-                ContentKind::Commit,
-                "test:main",
-                &content_hash_hex,
-                &blob,
-            )
+            .content_write_bytes(ContentKind::Commit, "test:main", &blob)
             .await
             .unwrap();
 
-        // Derive CID from content hash
-        ContentId::from_hex_digest(ContentKind::Commit.to_codec(), &content_hash_hex).unwrap()
+        ContentId::new(ContentKind::Commit, &blob)
     }
 
     #[tokio::test]

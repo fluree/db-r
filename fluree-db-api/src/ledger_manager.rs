@@ -29,12 +29,13 @@ use std::path::PathBuf;
 use fluree_db_binary_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_core::db::{LedgerSnapshot, LedgerSnapshotMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
+use fluree_db_core::trace_commits_by_id;
 use fluree_db_core::{
     content_store_for, ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage,
 };
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
-use fluree_db_novelty::{trace_commits_by_id, Novelty};
+use fluree_db_novelty::Novelty;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::error::{ApiError, Result};

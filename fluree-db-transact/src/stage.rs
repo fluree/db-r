@@ -1734,6 +1734,7 @@ mod tests {
     #[tokio::test]
     async fn test_upsert_replaces_existing_values() {
         use crate::commit::{commit, CommitOpts};
+        use fluree_db_core::content_store_for;
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
@@ -1743,6 +1744,7 @@ mod tests {
 
         let nameservice = MemoryNameService::new();
         let config = IndexConfig::default();
+        let cs = content_store_for(storage.clone(), "test:main");
 
         // First: insert ex:alice with name="Alice"
         let txn1 = Txn::insert().with_insert(TripleTemplate::new(
@@ -1758,7 +1760,7 @@ mod tests {
         let (_receipt, state1) = commit(
             view1,
             ns_registry1,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -1829,6 +1831,7 @@ mod tests {
         // Test that WHERE patterns see data in novelty (committed but not indexed),
         // not just data in the indexed db. This is the "time boundary" correctness test.
         use crate::commit::{commit, CommitOpts};
+        use fluree_db_core::content_store_for;
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
@@ -1838,6 +1841,7 @@ mod tests {
 
         let nameservice = MemoryNameService::new();
         let config = IndexConfig::default();
+        let cs = content_store_for(storage.clone(), "test:main");
 
         // Commit 1: Insert schema:alice with schema:name="Alice"
         // Do NOT rely on pre-registered SCHEMA_ORG codes — this build intentionally keeps
@@ -1857,7 +1861,7 @@ mod tests {
         let (_r1, state1) = commit(
             view1,
             ns1,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -1931,6 +1935,7 @@ mod tests {
         // Test that multiple WHERE patterns are joined correctly.
         // This verifies that execute_where_with_overlay_at handles joins.
         use crate::commit::{commit, CommitOpts};
+        use fluree_db_core::content_store_for;
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
@@ -1940,6 +1945,7 @@ mod tests {
 
         let nameservice = MemoryNameService::new();
         let config = IndexConfig::default();
+        let cs = content_store_for(storage.clone(), "test:main");
 
         // Commit 1: Insert schema:alice with name="Alice" and age=30
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
@@ -1964,7 +1970,7 @@ mod tests {
         let (_r1, state1) = commit(
             view1,
             ns1,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -1988,7 +1994,7 @@ mod tests {
         let (_r2, state2) = commit(
             view2,
             ns2,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),
@@ -2146,6 +2152,7 @@ mod tests {
         // This verifies that VALUES can constrain which subjects are matched.
         use crate::commit::{commit, CommitOpts};
         use crate::ir::InlineValues;
+        use fluree_db_core::content_store_for;
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
@@ -2155,6 +2162,7 @@ mod tests {
 
         let nameservice = MemoryNameService::new();
         let config = IndexConfig::default();
+        let cs = content_store_for(storage.clone(), "test:main");
 
         // Insert data: alice has age 30, bob has age 25
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
@@ -2179,7 +2187,7 @@ mod tests {
         let (_r1, state1) = commit(
             view1,
             ns1,
-            &storage,
+            &cs,
             &nameservice,
             &config,
             CommitOpts::default(),

@@ -5,8 +5,8 @@
 //!
 //! Wire format: `[count: varint][len: varint, utf8_bytes...]*`
 
-use super::error::CommitV2Error;
-use super::varint::{decode_varint, encode_varint};
+use super::error::CommitCodecError;
+use super::varint::{decode_varint, encode_varint, read_exact};
 use rustc_hash::FxHashMap;
 
 // =============================================================================
@@ -91,37 +91,37 @@ pub struct StringDict {
 
 impl StringDict {
     /// Deserialize from bytes produced by `StringDictBuilder::serialize()`.
-    pub fn deserialize(data: &[u8]) -> Result<Self, CommitV2Error> {
+    pub fn deserialize(data: &[u8]) -> Result<Self, CommitCodecError> {
         let mut pos = 0;
         let count = decode_varint(data, &mut pos)? as usize;
         let mut entries = Vec::with_capacity(count);
 
         for _ in 0..count {
             let len = decode_varint(data, &mut pos)? as usize;
-            if pos + len > data.len() {
-                return Err(CommitV2Error::InvalidDictionary(
+            let bytes = read_exact(data, &mut pos, len).map_err(|_| {
+                CommitCodecError::InvalidDictionary(
                     "string bytes extend past dictionary end".into(),
-                ));
-            }
-            let s = std::str::from_utf8(&data[pos..pos + len])
-                .map_err(|e| CommitV2Error::InvalidDictionary(format!("invalid UTF-8: {}", e)))?;
+                )
+            })?;
+            let s = std::str::from_utf8(bytes).map_err(|e| {
+                CommitCodecError::InvalidDictionary(format!("invalid UTF-8: {}", e))
+            })?;
             entries.push(s.to_string());
-            pos += len;
         }
 
         Ok(Self { entries })
     }
 
     /// Look up a string by local_id. Returns error for local_id 0 (reserved).
-    pub fn get(&self, local_id: u32) -> Result<&str, CommitV2Error> {
+    pub fn get(&self, local_id: u32) -> Result<&str, CommitCodecError> {
         if local_id == 0 {
-            return Err(CommitV2Error::InvalidDictionary(
+            return Err(CommitCodecError::InvalidDictionary(
                 "local_id 0 is reserved".into(),
             ));
         }
         let idx = (local_id - 1) as usize;
         self.entries.get(idx).map(|s| s.as_str()).ok_or_else(|| {
-            CommitV2Error::InvalidDictionary(format!(
+            CommitCodecError::InvalidDictionary(format!(
                 "local_id {} out of range (dict has {} entries)",
                 local_id,
                 self.entries.len()

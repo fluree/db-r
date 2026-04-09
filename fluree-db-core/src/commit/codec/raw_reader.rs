@@ -1,4 +1,4 @@
-//! Zero-allocation raw op reader for commit-v2 blobs.
+//! Zero-allocation raw op reader for commit blobs.
 //!
 //! Decodes ops directly into borrowed field references (`&str`) without
 //! constructing `Flake`, `Sid`, or `FlakeValue`. Designed for the dictionary
@@ -15,16 +15,15 @@
 //! })?;
 //! ```
 
-use super::error::CommitV2Error;
+use super::error::CommitCodecError;
 use super::format::{
-    CommitV2Footer, CommitV2Header, OTag, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN,
+    CommitFooter, CommitHeader, OTag, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN, HEADER_LEN,
     MIN_COMMIT_LEN, OP_FLAG_ASSERT, OP_FLAG_HAS_I, OP_FLAG_HAS_LANG,
 };
 use super::op_codec::ReadDicts;
 use super::reader::load_dicts;
-use super::varint::{decode_varint, zigzag_decode};
-use super::CommitV2Envelope;
-use sha2::{Digest, Sha256};
+use super::varint::{decode_varint, read_exact, read_u8, zigzag_decode};
+use super::CodecEnvelope;
 
 // ============================================================================
 // CommitOps
@@ -34,7 +33,7 @@ use sha2::{Digest, Sha256};
 /// Provides zero-allocation iteration over raw decoded ops.
 pub struct CommitOps {
     /// Parsed envelope (non-flake metadata: previous, namespace_delta, etc.)
-    pub envelope: CommitV2Envelope,
+    pub envelope: CodecEnvelope,
     /// Transaction number from the header.
     pub t: i64,
     /// Number of ops in this commit.
@@ -50,9 +49,9 @@ impl CommitOps {
     ///
     /// The callback receives a `RawOp` with borrowed `&str` fields from
     /// the commit's string dictionaries and ops buffer.
-    pub fn for_each_op<F>(&self, mut f: F) -> Result<(), CommitV2Error>
+    pub fn for_each_op<F>(&self, mut f: F) -> Result<(), CommitCodecError>
     where
-        F: FnMut(RawOp<'_>) -> Result<(), CommitV2Error>,
+        F: FnMut(RawOp<'_>) -> Result<(), CommitCodecError>,
     {
         let data = &self.ops_data;
         let mut pos = 0;
@@ -156,62 +155,139 @@ pub enum RawObject<'a> {
     Vector(Vec<f64>),
 }
 
+impl<'a> TryFrom<RawObject<'a>> for crate::FlakeValue {
+    type Error = crate::error::Error;
+
+    fn try_from(raw: RawObject<'a>) -> Result<Self, Self::Error> {
+        use crate::temporal::{
+            Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth,
+            Time, YearMonthDuration,
+        };
+        use crate::{FlakeValue, GeoPointBits, Sid};
+
+        macro_rules! parse_err {
+            ($kind:expr, $e:expr) => {
+                crate::error::Error::InvalidCommit(format!("bad {}: {}", $kind, $e))
+            };
+        }
+
+        match raw {
+            RawObject::Ref { ns_code, name } => Ok(FlakeValue::Ref(Sid::new(ns_code, name))),
+            RawObject::Long(n) => Ok(FlakeValue::Long(n)),
+            RawObject::Double(n) => Ok(FlakeValue::Double(n)),
+            RawObject::Str(s) => Ok(FlakeValue::String(s.to_string())),
+            RawObject::Boolean(b) => Ok(FlakeValue::Boolean(b)),
+            RawObject::Null => Ok(FlakeValue::Null),
+            RawObject::JsonStr(s) => Ok(FlakeValue::Json(s.to_string())),
+            RawObject::DateTimeStr(s) => DateTime::parse(s)
+                .map(|v| FlakeValue::DateTime(Box::new(v)))
+                .map_err(|e| parse_err!("datetime", e)),
+            RawObject::DateStr(s) => Date::parse(s)
+                .map(|v| FlakeValue::Date(Box::new(v)))
+                .map_err(|e| parse_err!("date", e)),
+            RawObject::TimeStr(s) => Time::parse(s)
+                .map(|v| FlakeValue::Time(Box::new(v)))
+                .map_err(|e| parse_err!("time", e)),
+            RawObject::BigIntStr(s) => s
+                .parse::<num_bigint::BigInt>()
+                .map(|v| FlakeValue::BigInt(Box::new(v)))
+                .map_err(|e| parse_err!("bigint", e)),
+            RawObject::DecimalStr(s) => s
+                .parse::<bigdecimal::BigDecimal>()
+                .map(|v| FlakeValue::Decimal(Box::new(v)))
+                .map_err(|e| parse_err!("decimal", e)),
+            RawObject::GYearStr(s) => GYear::parse(s)
+                .map(|v| FlakeValue::GYear(Box::new(v)))
+                .map_err(|e| parse_err!("gYear", e)),
+            RawObject::GYearMonthStr(s) => GYearMonth::parse(s)
+                .map(|v| FlakeValue::GYearMonth(Box::new(v)))
+                .map_err(|e| parse_err!("gYearMonth", e)),
+            RawObject::GMonthStr(s) => GMonth::parse(s)
+                .map(|v| FlakeValue::GMonth(Box::new(v)))
+                .map_err(|e| parse_err!("gMonth", e)),
+            RawObject::GDayStr(s) => GDay::parse(s)
+                .map(|v| FlakeValue::GDay(Box::new(v)))
+                .map_err(|e| parse_err!("gDay", e)),
+            RawObject::GMonthDayStr(s) => GMonthDay::parse(s)
+                .map(|v| FlakeValue::GMonthDay(Box::new(v)))
+                .map_err(|e| parse_err!("gMonthDay", e)),
+            RawObject::YearMonthDurationStr(s) => YearMonthDuration::parse(s)
+                .map(|v| FlakeValue::YearMonthDuration(Box::new(v)))
+                .map_err(|e| parse_err!("yearMonthDuration", e)),
+            RawObject::DayTimeDurationStr(s) => DayTimeDuration::parse(s)
+                .map(|v| FlakeValue::DayTimeDuration(Box::new(v)))
+                .map_err(|e| parse_err!("dayTimeDuration", e)),
+            RawObject::DurationStr(s) => Duration::parse(s)
+                .map(|v| FlakeValue::Duration(Box::new(v)))
+                .map_err(|e| parse_err!("duration", e)),
+            RawObject::GeoPoint { lat, lng } => GeoPointBits::new(lat, lng)
+                .map(FlakeValue::GeoPoint)
+                .ok_or_else(|| parse_err!("geo point", format!("({lat}, {lng})"))),
+            RawObject::Vector(vec) => Ok(FlakeValue::Vector(vec)),
+        }
+    }
+}
+
 // ============================================================================
 // Load + decode
 // ============================================================================
 
 /// Load a commit blob into CommitOps.
 ///
-/// Validates the blob, verifies SHA-256, decompresses ops, and loads dicts.
+/// Validates the blob, decompresses ops, and loads dicts.
 /// Does NOT decode individual ops — call `for_each_op()` for that.
-pub fn load_commit_ops(bytes: &[u8]) -> Result<CommitOps, CommitV2Error> {
+///
+/// V4 format: no embedded hash. Integrity is guaranteed by the
+/// content-addressed store. CID = SHA-256(full blob).
+pub fn load_commit_ops(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
     let blob_len = bytes.len();
 
     // 1. Validate minimum size
     if blob_len < MIN_COMMIT_LEN {
-        return Err(CommitV2Error::TooSmall {
+        return Err(CommitCodecError::TooSmall {
             got: blob_len,
             min: MIN_COMMIT_LEN,
         });
     }
 
     // 2. Parse header
-    let header = CommitV2Header::read_from(bytes)?;
+    let header = CommitHeader::read_from(bytes)?;
 
-    // 3. Verify hash
-    {
-        let hash_offset = blob_len - HASH_LEN;
-        let expected_hash: [u8; 32] = bytes[hash_offset..].try_into().unwrap();
-        let actual_hash: [u8; 32] = Sha256::digest(&bytes[..hash_offset]).into();
-        if expected_hash != actual_hash {
-            return Err(CommitV2Error::HashMismatch {
-                expected: expected_hash,
-                actual: actual_hash,
+    // 3. Determine body_end (before optional signature block)
+    let sig_block_len = header.sig_block_len as usize;
+    let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
+    let body_end = if has_sig_block {
+        if blob_len < sig_block_len {
+            return Err(CommitCodecError::TooSmall {
+                got: blob_len,
+                min: sig_block_len,
             });
         }
-    }
+        blob_len - sig_block_len
+    } else {
+        blob_len
+    };
 
     // 4. Decode envelope
     let envelope_start = HEADER_LEN;
     let envelope_end = envelope_start + header.envelope_len as usize;
     if envelope_end > blob_len {
-        return Err(CommitV2Error::TooSmall {
+        return Err(CommitCodecError::TooSmall {
             got: blob_len,
             min: envelope_end,
         });
     }
     let envelope = super::envelope::decode_envelope(&bytes[envelope_start..envelope_end])?;
 
-    // 5. Parse footer
-    let hash_offset = blob_len - HASH_LEN;
-    let footer_start = hash_offset - FOOTER_LEN;
-    let footer = CommitV2Footer::read_from(&bytes[footer_start..hash_offset])?;
+    // 5. Parse footer (located at end of body, before optional sig block)
+    let footer_start = body_end - FOOTER_LEN;
+    let footer = CommitFooter::read_from(&bytes[footer_start..body_end])?;
 
     // 6. Ops section bounds
     let ops_start = envelope_end;
     let ops_end = ops_start + footer.ops_section_len as usize;
     if ops_end > footer_start {
-        return Err(CommitV2Error::InvalidOp(
+        return Err(CommitCodecError::InvalidOp(
             "ops section extends into footer".into(),
         ));
     }
@@ -222,7 +298,7 @@ pub fn load_commit_ops(bytes: &[u8]) -> Result<CommitOps, CommitV2Error> {
     // 8. Decompress ops into owned buffer
     let ops_bytes = &bytes[ops_start..ops_end];
     let ops_data = if header.flags & FLAG_ZSTD != 0 {
-        zstd::decode_all(ops_bytes).map_err(CommitV2Error::DecompressionFailed)?
+        zstd::decode_all(ops_bytes).map_err(CommitCodecError::DecompressionFailed)?
     } else {
         ops_bytes.to_vec()
     };
@@ -249,7 +325,7 @@ fn decode_raw_op<'a>(
     data: &'a [u8],
     pos: &mut usize,
     dicts: &'a ReadDicts,
-) -> Result<RawOp<'a>, CommitV2Error> {
+) -> Result<RawOp<'a>, CommitCodecError> {
     // Graph
     let g_ns_code = decode_varint(data, pos)? as u16;
     let g_name_id = decode_varint(data, pos)? as u32;
@@ -275,19 +351,11 @@ fn decode_raw_op<'a>(
     let dt_name = dicts.datatype.get(dt_name_id)?;
 
     // Object tag
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let o_tag = OTag::from_u8(data[*pos])?;
-    *pos += 1;
+    let o_tag = OTag::from_u8(read_u8(data, pos)?)?;
     let o = decode_raw_object(o_tag, data, pos, dicts)?;
 
     // Flags
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let flags = data[*pos];
-    *pos += 1;
+    let flags = read_u8(data, pos)?;
     let op = flags & OP_FLAG_ASSERT != 0;
 
     // Optional lang (borrowed from ops buffer)
@@ -301,7 +369,7 @@ fn decode_raw_op<'a>(
     let i = if flags & OP_FLAG_HAS_I != 0 {
         let raw = decode_varint(data, pos)?;
         if raw > i32::MAX as u64 {
-            return Err(CommitV2Error::InvalidOp(format!(
+            return Err(CommitCodecError::InvalidOp(format!(
                 "list index {} exceeds i32::MAX",
                 raw
             )));
@@ -329,12 +397,12 @@ fn decode_raw_op<'a>(
 
 /// Decode an object value without allocation. String-like values borrow
 /// from the ops data buffer.
-fn decode_raw_object<'a>(
+pub(super) fn decode_raw_object<'a>(
     tag: OTag,
     data: &'a [u8],
     pos: &mut usize,
     dicts: &'a ReadDicts,
-) -> Result<RawObject<'a>, CommitV2Error> {
+) -> Result<RawObject<'a>, CommitCodecError> {
     match tag {
         OTag::Ref => {
             let ns_code = decode_varint(data, pos)? as u16;
@@ -347,11 +415,7 @@ fn decode_raw_object<'a>(
             Ok(RawObject::Long(zigzag_decode(raw)))
         }
         OTag::Double => {
-            if *pos + 8 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
-            *pos += 8;
+            let bytes: [u8; 8] = read_exact(data, pos, 8)?.try_into().unwrap();
             Ok(RawObject::Double(f64::from_le_bytes(bytes)))
         }
         OTag::String => {
@@ -359,11 +423,7 @@ fn decode_raw_object<'a>(
             Ok(RawObject::Str(s))
         }
         OTag::Boolean => {
-            if *pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let b = data[*pos] != 0;
-            *pos += 1;
+            let b = read_u8(data, pos)? != 0;
             Ok(RawObject::Boolean(b))
         }
         OTag::DateTime => {
@@ -424,24 +484,19 @@ fn decode_raw_object<'a>(
             Ok(RawObject::DurationStr(s))
         }
         OTag::GeoPoint => {
-            if *pos + 16 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let lat = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-            let lng = f64::from_le_bytes(data[*pos + 8..*pos + 16].try_into().unwrap());
-            *pos += 16;
+            let coord_bytes = read_exact(data, pos, 16)?;
+            let lat = f64::from_le_bytes(coord_bytes[..8].try_into().unwrap());
+            let lng = f64::from_le_bytes(coord_bytes[8..].try_into().unwrap());
             Ok(RawObject::GeoPoint { lat, lng })
         }
         OTag::Vector => {
             let len = decode_varint(data, pos)? as usize;
-            let byte_len = len.checked_mul(8).ok_or(CommitV2Error::UnexpectedEof)?;
-            if *pos + byte_len > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
+            let byte_len = len.checked_mul(8).ok_or(CommitCodecError::UnexpectedEof)?;
+            let vec_bytes = read_exact(data, pos, byte_len)?;
             let mut vec = Vec::with_capacity(len);
-            for _ in 0..len {
-                let element = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-                *pos += 8;
+            for i in 0..len {
+                let start = i * 8;
+                let element = f64::from_le_bytes(vec_bytes[start..start + 8].try_into().unwrap());
                 vec.push(element);
             }
             Ok(RawObject::Vector(vec))
@@ -454,14 +509,11 @@ fn decode_raw_object<'a>(
 /// This is the zero-allocation equivalent of `decode_len_prefixed_str` in op_codec.rs,
 /// which returns an owned `String`.
 #[inline]
-fn decode_inline_str<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a str, CommitV2Error> {
+fn decode_inline_str<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a str, CommitCodecError> {
     let len = decode_varint(data, pos)? as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
-        .map_err(|e| CommitV2Error::InvalidOp(format!("invalid UTF-8: {}", e)))?;
-    *pos += len;
+    let bytes = read_exact(data, pos, len)?;
+    let s = std::str::from_utf8(bytes)
+        .map_err(|e| CommitCodecError::InvalidOp(format!("invalid UTF-8: {}", e)))?;
     Ok(s)
 }
 
@@ -472,14 +524,11 @@ fn decode_inline_str<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a str, Com
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commit_v2::envelope::encode_envelope_fields;
-    use crate::commit_v2::format;
-    use crate::commit_v2::format::{
-        CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
-    };
-    use crate::commit_v2::op_codec::{encode_op, CommitDicts};
-    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
-    use sha2::{Digest, Sha256};
+    use crate::commit::codec::envelope::encode_envelope_fields;
+    use crate::commit::codec::format;
+    use crate::commit::codec::format::{CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN};
+    use crate::commit::codec::op_codec::{encode_op, CommitDicts};
+    use crate::{Flake, FlakeMeta, FlakeValue, Sid};
     use std::collections::HashMap;
 
     /// Build a minimal commit blob from flakes for testing.
@@ -492,7 +541,7 @@ mod tests {
         }
 
         // Encode envelope (minimal: just v=0, no previous, no namespace_delta)
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t,
             previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
@@ -515,7 +564,7 @@ mod tests {
             dicts.object_ref.serialize(),
         ];
 
-        // Assemble blob: header + envelope + ops + dicts + footer + hash
+        // Assemble blob: header + envelope + ops + dicts + footer (v4: no embedded hash)
         let ops_section_len = ops_buf.len() as u32;
         let envelope_len = envelope_bytes.len() as u32;
 
@@ -531,12 +580,12 @@ mod tests {
             offset += d.len() as u64;
         }
 
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: dict_locations,
             ops_section_len,
         };
 
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: format::VERSION,
             flags: 0, // no compression for test simplicity
             t,
@@ -545,13 +594,12 @@ mod tests {
             sig_block_len: 0,
         };
 
-        // Assemble
+        // Assemble (v4: no trailing hash)
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
             + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN
-            + HASH_LEN;
+            + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 
         let mut pos = 0;
@@ -566,11 +614,6 @@ mod tests {
             pos += d.len();
         }
         footer.write_to(&mut blob[pos..]);
-        pos += FOOTER_LEN;
-
-        // Write SHA-256 hash
-        let hash: [u8; 32] = Sha256::digest(&blob[..pos]).into();
-        blob[pos..pos + HASH_LEN].copy_from_slice(&hash);
 
         blob
     }
@@ -682,7 +725,7 @@ mod tests {
                 Sid::new(101, "x"),
                 Sid::new(101, "dt_val"),
                 FlakeValue::DateTime(Box::new(
-                    fluree_db_core::DateTime::parse("2024-01-15T10:30:00Z").unwrap(),
+                    crate::DateTime::parse("2024-01-15T10:30:00Z").unwrap(),
                 )),
                 Sid::new(2, "dateTime"),
                 1,
@@ -693,7 +736,7 @@ mod tests {
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "date_val"),
-                FlakeValue::Date(Box::new(fluree_db_core::Date::parse("2024-01-15").unwrap())),
+                FlakeValue::Date(Box::new(crate::Date::parse("2024-01-15").unwrap())),
                 Sid::new(2, "date"),
                 1,
                 true,
@@ -703,7 +746,7 @@ mod tests {
             Flake::new(
                 Sid::new(101, "x"),
                 Sid::new(101, "time_val"),
-                FlakeValue::Time(Box::new(fluree_db_core::Time::parse("10:30:00").unwrap())),
+                FlakeValue::Time(Box::new(crate::Time::parse("10:30:00").unwrap())),
                 Sid::new(2, "time"),
                 1,
                 true,

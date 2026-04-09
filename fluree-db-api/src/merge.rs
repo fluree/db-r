@@ -6,13 +6,14 @@
 
 use crate::error::{ApiError, Result};
 use crate::rebase::ConflictStrategy;
+use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
+use fluree_db_core::{collect_dag_cids, load_commit_by_id, CommonAncestor};
 use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake, Storage};
 use fluree_db_ledger::{LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, NsRecord, NsRecordSnapshot, Publisher};
-use fluree_db_novelty::commit_v2::read_commit_envelope;
-use fluree_db_novelty::{collect_dag_cids, compute_delta_keys, load_commit_by_id, CommonAncestor};
+use fluree_db_novelty::compute_delta_keys;
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use rustc_hash::FxHashSet;
 use serde::Serialize;
@@ -124,7 +125,7 @@ where
         let target_head = target_record.commit_head_id.as_ref();
         let ancestor = match target_head {
             Some(target_head_id) => Some(
-                fluree_db_novelty::find_common_ancestor(
+                fluree_db_core::find_common_ancestor(
                     &source_store,
                     &source_head_id,
                     target_head_id,
@@ -373,10 +374,13 @@ where
             .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
             .await?;
 
+        let content_store =
+            fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
-            self.connection.storage(),
+            &content_store,
             &self.nameservice,
             &self.index_config,
             commit_opts,

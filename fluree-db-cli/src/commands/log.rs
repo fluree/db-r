@@ -42,8 +42,8 @@ pub async fn run(
     let prefix = ledger_id.clone();
     let store = fluree_db_core::bridge_content_store(storage, &prefix, "file");
     let stream: std::pin::Pin<
-        Box<dyn futures::Stream<Item = fluree_db_novelty::Result<fluree_db_novelty::Commit>>>,
-    > = Box::pin(fluree_db_novelty::trace_commits_by_id(
+        Box<dyn futures::Stream<Item = fluree_db_core::Result<fluree_db_core::Commit>>>,
+    > = Box::pin(fluree_db_core::trace_commits_by_id(
         store,
         commit_head_id,
         0,

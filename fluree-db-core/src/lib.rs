@@ -27,6 +27,7 @@
 pub mod address;
 pub mod address_path;
 pub mod coerce;
+pub mod commit;
 pub mod comparator;
 pub mod conflict_key;
 pub mod content_id;
@@ -76,6 +77,12 @@ pub use address::{
     ParsedFlureeAddress,
 };
 pub use coerce::{coerce_json_value, coerce_value, CoercionError, CoercionResult};
+pub use commit::{
+    collect_dag_cids, find_common_ancestor, load_commit_by_id, load_commit_envelope_by_id,
+    trace_commit_envelopes_by_id, trace_commits_by_id, Commit, CommitEnvelope, CommitRef,
+    CommonAncestor, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_BYTES,
+    MAX_TXN_META_ENTRIES,
+};
 pub use comparator::IndexType;
 pub use conflict_key::ConflictKey;
 pub use content_id::{CommitId, ContentId, IndexRootId, TxnId};
