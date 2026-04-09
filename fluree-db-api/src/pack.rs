@@ -82,12 +82,13 @@ pub async fn compute_missing_commits<C: ContentStore>(
     let mut seen = HashSet::new();
 
     for want_head in sorted_wants {
+        // BFS walk from want_head, collecting all missing commits.
+        let mut frontier = vec![want_head.clone()];
         let mut chain = Vec::new();
-        let mut current_id = want_head.clone();
 
-        loop {
+        while let Some(current_id) = frontier.pop() {
             if have.contains(&current_id) || seen.contains(&current_id) {
-                break;
+                continue;
             }
             seen.insert(current_id.clone());
 
@@ -115,11 +116,10 @@ pub async fn compute_missing_commits<C: ContentStore>(
                 ))
             })?;
 
-            chain.push(current_id.clone());
+            chain.push(current_id);
 
-            match env.previous_ref {
-                Some(prev) => current_id = prev.id,
-                None => break, // genesis
+            for parent in env.previous_refs {
+                frontier.push(parent.id);
             }
         }
 

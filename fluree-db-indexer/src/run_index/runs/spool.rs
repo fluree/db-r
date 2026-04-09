@@ -645,6 +645,77 @@ impl Iterator for SpoolReader {
 }
 
 // ============================================================================
+// V1 spool → V2 merge adapter (for rebuild stats pass)
+// ============================================================================
+
+/// Adapts a V1 `SpoolReader` (reading `.fsc` files) into a `MergeSource`
+/// that emits `RunRecordV2` values for use with `KWayMerge`.
+///
+/// Each `.fsc` file is sorted by `cmp_g_spot` (V1). After conversion to V2
+/// via `RunRecordV2::from_v1()`, the sort order corresponds to `cmp_v2_g_spot`.
+///
+/// The V1 `op` byte (assert=1, retract=0) is preserved separately since
+/// `RunRecordV2` has no `op` field.
+pub struct V1SpoolMergeAdapter {
+    reader: SpoolReader,
+    registry: std::sync::Arc<fluree_db_core::o_type_registry::OTypeRegistry>,
+    current: Option<RunRecordV2>,
+    current_op: u8,
+}
+
+impl V1SpoolMergeAdapter {
+    /// Open an `.fsc` file and prime the first record.
+    pub fn open(
+        path: &std::path::Path,
+        record_count: u64,
+        registry: std::sync::Arc<fluree_db_core::o_type_registry::OTypeRegistry>,
+    ) -> io::Result<Self> {
+        let mut reader = SpoolReader::open(path, record_count)?;
+        let (current, current_op) = match reader.next_record()? {
+            Some(v1) => {
+                let op = v1.op;
+                let v2 = RunRecordV2::from_v1(&v1, &registry);
+                (Some(v2), op)
+            }
+            None => (None, 1),
+        };
+        Ok(Self {
+            reader,
+            registry,
+            current,
+            current_op,
+        })
+    }
+}
+
+impl super::streaming_reader::MergeSource for V1SpoolMergeAdapter {
+    fn peek(&self) -> Option<&RunRecordV2> {
+        self.current.as_ref()
+    }
+
+    fn advance(&mut self) -> io::Result<()> {
+        match self.reader.next_record()? {
+            Some(v1) => {
+                self.current_op = v1.op;
+                self.current = Some(RunRecordV2::from_v1(&v1, &self.registry));
+            }
+            None => {
+                self.current = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.current.is_none()
+    }
+
+    fn peek_op(&self) -> u8 {
+        self.current_op
+    }
+}
+
+// ============================================================================
 // Import sorted-commit V2 files
 // ============================================================================
 
@@ -2440,5 +2511,125 @@ mod tests {
         assert_eq!(result.total_flakes, 2);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn v1_spool_merge_adapter_peek_advance_op() {
+        use crate::run_index::runs::streaming_reader::MergeSource;
+        use fluree_db_core::o_type_registry::OTypeRegistry;
+        use fluree_db_core::subject_id::SubjectId;
+        use fluree_db_core::value_id::{ObjKey, ObjKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let fsc_path = dir.path().join("test.fsc");
+
+        // Write two V1 records: an assert and a retract.
+        let r1 = RunRecord::new(
+            0,
+            SubjectId(100),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(42),
+            1,
+            true,
+            3,
+            0,
+            None,
+        );
+        let r2 = RunRecord::new(
+            0,
+            SubjectId(200),
+            5,
+            ObjKind::NUM_INT,
+            ObjKey::encode_i64(99),
+            2,
+            false,
+            3,
+            0,
+            None,
+        );
+
+        let mut writer = SpoolWriter::new(&fsc_path, 0).unwrap();
+        writer.push(&r1).unwrap();
+        writer.push(&r2).unwrap();
+        let info = writer.finish().unwrap();
+        assert_eq!(info.record_count, 2);
+
+        let registry = std::sync::Arc::new(OTypeRegistry::builtin_only());
+        let mut adapter = V1SpoolMergeAdapter::open(&fsc_path, 2, registry).unwrap();
+
+        // First record: assert
+        assert!(!adapter.is_exhausted());
+        let peeked = adapter.peek().unwrap();
+        assert_eq!(peeked.s_id, SubjectId(100));
+        assert_eq!(peeked.p_id, 5);
+        assert_eq!(adapter.peek_op(), 1); // assert
+
+        // Advance to second record: retract
+        adapter.advance().unwrap();
+        assert!(!adapter.is_exhausted());
+        let peeked = adapter.peek().unwrap();
+        assert_eq!(peeked.s_id, SubjectId(200));
+        assert_eq!(adapter.peek_op(), 0); // retract
+
+        // Advance past end
+        adapter.advance().unwrap();
+        assert!(adapter.is_exhausted());
+        assert!(adapter.peek().is_none());
+    }
+
+    #[test]
+    fn v1_spool_merge_adapter_empty_file() {
+        use crate::run_index::runs::streaming_reader::MergeSource;
+        use fluree_db_core::o_type_registry::OTypeRegistry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fsc_path = dir.path().join("empty.fsc");
+
+        let writer = SpoolWriter::new(&fsc_path, 0).unwrap();
+        writer.finish().unwrap();
+
+        let registry = std::sync::Arc::new(OTypeRegistry::builtin_only());
+        let adapter = V1SpoolMergeAdapter::open(&fsc_path, 0, registry).unwrap();
+        assert!(adapter.is_exhausted());
+        assert!(adapter.peek().is_none());
+    }
+
+    #[test]
+    fn v1_spool_merge_adapter_v1_to_v2_conversion() {
+        use crate::run_index::runs::streaming_reader::MergeSource;
+        use fluree_db_core::o_type::OType;
+        use fluree_db_core::o_type_registry::OTypeRegistry;
+        use fluree_db_core::subject_id::SubjectId;
+        use fluree_db_core::value_id::{ObjKey, ObjKind};
+
+        let dir = tempfile::tempdir().unwrap();
+        let fsc_path = dir.path().join("conv.fsc");
+
+        // Write a REF_ID record — should convert to OType::IRI_REF in V2.
+        let rec = RunRecord::new(
+            0,
+            SubjectId(300),
+            10,
+            ObjKind::REF_ID,
+            ObjKey::from_u64(500),
+            1,
+            true,
+            0,
+            0,
+            None,
+        );
+
+        let mut writer = SpoolWriter::new(&fsc_path, 0).unwrap();
+        writer.push(&rec).unwrap();
+        writer.finish().unwrap();
+
+        let registry = std::sync::Arc::new(OTypeRegistry::builtin_only());
+        let adapter = V1SpoolMergeAdapter::open(&fsc_path, 1, registry).unwrap();
+
+        let v2 = adapter.peek().unwrap();
+        assert_eq!(v2.s_id, SubjectId(300));
+        assert_eq!(v2.o_key, 500);
+        assert_eq!(OType::from_u16(v2.o_type), OType::IRI_REF);
     }
 }

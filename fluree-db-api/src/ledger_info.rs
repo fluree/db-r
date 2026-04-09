@@ -550,12 +550,18 @@ async fn build_commit_jsonld<S: Storage + Clone>(
         obj["time"] = json!(time);
     }
 
-    if let Some(prev_ref) = &commit.previous_ref {
-        let prev_obj = json!({
-            "type": ["Commit"],
-            "id": prev_ref.id.to_string(),
-        });
-        obj["previous"] = prev_obj;
+    if !commit.previous_refs.is_empty() {
+        let parents: Vec<_> = commit
+            .previous_refs
+            .iter()
+            .map(|r| {
+                json!({
+                    "type": ["Commit"],
+                    "id": r.id.to_string(),
+                })
+            })
+            .collect();
+        obj["parents"] = json!(parents);
     }
 
     obj["data"] = json!({

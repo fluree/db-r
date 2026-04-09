@@ -123,6 +123,15 @@ where
                 }
 
                 let arc_store = Arc::new(binary_index_store);
+                state.binary_store = Some(TypeErasedStore(arc_store.clone()));
+
+                // Reseed runtime small dicts from the binary index store BEFORE
+                // creating the BinaryRangeProvider. The dicts built during
+                // `load_with_store` are unseeded (IDs start at 0) and would
+                // collide with persisted predicate/datatype IDs in the binary
+                // index. Reseeding first ensures novelty-only entries get IDs
+                // above the persisted range.
+                crate::runtime_dicts::reseed_runtime_small_dicts(&mut state, &arc_store);
 
                 // Attach range provider for policy/SHACL/reasoner/property paths.
                 if state.snapshot.range_provider.is_none() {
@@ -135,9 +144,6 @@ where
                     );
                     state.snapshot.range_provider = Some(Arc::new(provider));
                 }
-
-                state.binary_store = Some(TypeErasedStore(arc_store.clone()));
-                crate::runtime_dicts::reseed_runtime_small_dicts(&mut state, &arc_store);
                 tracing::info!("loaded binary index store");
             }
         }

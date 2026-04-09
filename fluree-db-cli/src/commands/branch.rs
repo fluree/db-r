@@ -50,12 +50,14 @@ pub async fn run(action: BranchAction, dirs: &FlureeDir, direct: bool) -> CliRes
         BranchAction::Merge {
             source,
             target,
+            strategy,
             ledger,
             remote,
         } => {
             run_merge(
                 &source,
                 target.as_deref(),
+                &strategy,
                 ledger.as_deref(),
                 dirs,
                 remote.as_deref(),
@@ -450,6 +452,7 @@ fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
 async fn run_merge(
     source: &str,
     target: Option<&str>,
+    strategy: &str,
     ledger: Option<&str>,
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
@@ -459,7 +462,9 @@ async fn run_merge(
         let alias = context::resolve_ledger(ledger, dirs)?;
         let (ledger_name, _) = split_ledger_id(&alias)?;
         let client = context::build_remote_client(remote_name, dirs).await?;
-        let result = client.merge_branch(&ledger_name, source, target).await?;
+        let result = client
+            .merge_branch(&ledger_name, source, target, Some(strategy))
+            .await?;
 
         context::persist_refreshed_tokens(&client, remote_name, dirs).await;
 
@@ -476,6 +481,9 @@ async fn run_merge(
         }
     };
 
+    let conflict_strategy = fluree_db_api::ConflictStrategy::from_str_name(strategy)
+        .ok_or_else(|| CliError::Config(format!("Unknown conflict strategy: {}", strategy)))?;
+
     match mode {
         LedgerMode::Tracked {
             client,
@@ -484,7 +492,9 @@ async fn run_merge(
             ..
         } => {
             let (ledger_name, _) = split_ledger_id(&remote_alias)?;
-            let result = client.merge_branch(&ledger_name, source, target).await?;
+            let result = client
+                .merge_branch(&ledger_name, source, target, Some(strategy))
+                .await?;
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
@@ -493,12 +503,25 @@ async fn run_merge(
         LedgerMode::Local { fluree, alias } => {
             let (ledger_name, _) = split_ledger_id(&alias)?;
 
-            let report = fluree.merge_branch(&ledger_name, source, target).await?;
+            let report = fluree
+                .merge_branch(&ledger_name, source, target, conflict_strategy)
+                .await?;
 
-            println!(
-                "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
-                report.source, report.target, report.new_head_t, report.commits_copied,
-            );
+            if report.fast_forward {
+                println!(
+                    "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
+                    report.source, report.target, report.new_head_t, report.commits_copied,
+                );
+            } else {
+                println!(
+                    "Merged '{}' into '{}' (t={}, {} commits copied, {} conflicts).",
+                    report.source,
+                    report.target,
+                    report.new_head_t,
+                    report.commits_copied,
+                    report.conflict_count,
+                );
+            }
         }
     }
 
@@ -522,11 +545,26 @@ fn print_merge_result(result: &serde_json::Value) -> CliResult<()> {
         .get("commits_copied")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let fast_forward = result
+        .get("fast_forward")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let conflict_count = result
+        .get("conflict_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
 
-    println!(
-        "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
-        source, target, new_t, commits_copied,
-    );
+    if fast_forward {
+        println!(
+            "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
+            source, target, new_t, commits_copied,
+        );
+    } else {
+        println!(
+            "Merged '{}' into '{}' (t={}, {} commits copied, {} conflicts).",
+            source, target, new_t, commits_copied, conflict_count,
+        );
+    }
     Ok(())
 }
 

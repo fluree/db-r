@@ -189,7 +189,7 @@ mod inner {
 
             let envelope = CommitV2Envelope {
                 t: new_t,
-                previous_ref: state.previous_ref.clone(),
+                previous_refs: state.previous_ref.clone().into_iter().collect(),
                 namespace_delta: ns_delta,
                 txn: None,
                 time: Some(state.import_time.clone()),
@@ -331,7 +331,7 @@ mod inner {
 
             let envelope = CommitV2Envelope {
                 t: new_t,
-                previous_ref: state.previous_ref.clone(),
+                previous_refs: state.previous_ref.clone().into_iter().collect(),
                 namespace_delta: ns_delta,
                 txn: None,
                 time: Some(state.import_time.clone()),
@@ -556,7 +556,7 @@ mod inner {
 
         let envelope = CommitV2Envelope {
             t: new_t,
-            previous_ref: state.previous_ref.clone(),
+            previous_refs: state.previous_ref.clone().into_iter().collect(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),
@@ -1005,7 +1005,7 @@ mod inner {
 
         let envelope = CommitV2Envelope {
             t: new_t,
-            previous_ref: state.previous_ref.clone(),
+            previous_refs: state.previous_ref.clone().into_iter().collect(),
             namespace_delta: ns_delta,
             txn: None,
             time: Some(state.import_time.clone()),

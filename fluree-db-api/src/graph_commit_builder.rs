@@ -137,9 +137,9 @@ pub struct CommitDetail {
     pub time: Option<String>,
     /// Blob size in bytes
     pub size: usize,
-    /// Previous commit CID
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
+    /// Parent commit CIDs
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parents: Vec<String>,
     /// Transaction signer
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signer: Option<String>,
@@ -592,7 +592,11 @@ fn build_commit_detail(
         t: commit.t,
         time: commit.time.clone(),
         size: blob_size,
-        previous: commit.previous_ref.as_ref().map(|r| r.id.to_string()),
+        parents: commit
+            .previous_refs
+            .iter()
+            .map(|r| r.id.to_string())
+            .collect(),
         signer: commit.txn_signature.as_ref().map(|s| s.signer.clone()),
         asserts,
         retracts,

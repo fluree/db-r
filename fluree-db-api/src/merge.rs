@@ -1,18 +1,22 @@
 //! Branch merge support.
 //!
-//! Merges a source branch into a target branch. Currently supports
-//! fast-forward merges only: the target's HEAD must be the common
-//! ancestor of both branches.
+//! Merges a source branch into a target branch. Supports both fast-forward
+//! merges (target HEAD is the common ancestor) and general merges with
+//! conflict resolution strategies.
 
 use crate::error::{ApiError, Result};
+use crate::rebase::ConflictStrategy;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
-use fluree_db_core::{ContentId, ContentStore, Storage};
-use fluree_db_ledger::LedgerState;
+use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake, Storage};
+use fluree_db_ledger::{LedgerState, LedgerView};
 use fluree_db_nameservice::{
-    CasResult, NameService, NsRecordSnapshot, Publisher, RefKind, RefPublisher, RefValue,
+    CasResult, NameService, NsRecord, NsRecordSnapshot, Publisher, RefKind, RefPublisher, RefValue,
 };
 use fluree_db_novelty::commit_v2::read_commit_envelope;
+use fluree_db_novelty::{collect_dag_cids, compute_delta_keys, load_commit_by_id, CommonAncestor};
+use fluree_db_transact::{CommitOpts, NamespaceRegistry};
+use rustc_hash::FxHashSet;
 use serde::Serialize;
 use tracing::Instrument;
 
@@ -31,6 +35,10 @@ pub struct MergeReport {
     pub new_head_id: ContentId,
     /// Number of commit blobs copied to the target namespace.
     pub commits_copied: usize,
+    /// Number of conflicts detected and resolved during merge.
+    pub conflict_count: usize,
+    /// Conflict resolution strategy used, if applicable.
+    pub strategy: Option<String>,
 }
 
 impl<S, N> crate::Fluree<S, N>
@@ -40,9 +48,8 @@ where
 {
     /// Merge a source branch into a target branch.
     ///
-    /// Currently only fast-forward merges are supported: the target branch
-    /// must not have any new commits since the source branch was created
-    /// from it. If the target has diverged, this returns an error.
+    /// Supports fast-forward merges (when the target has not diverged) and
+    /// general merges with conflict resolution via the given `strategy`.
     ///
     /// If `target_branch` is `None`, the source's parent branch (from its
     /// branch point) is used as the target.
@@ -51,10 +58,11 @@ where
         ledger_name: &str,
         source_branch: &str,
         target_branch: Option<&str>,
+        strategy: ConflictStrategy,
     ) -> Result<MergeReport> {
         let span = tracing::debug_span!("merge_branch", ledger_name, source_branch, ?target_branch);
         async move {
-            self.merge_branch_inner(ledger_name, source_branch, target_branch)
+            self.merge_branch_inner(ledger_name, source_branch, target_branch, strategy)
                 .await
         }
         .instrument(span)
@@ -66,6 +74,7 @@ where
         ledger_name: &str,
         source_branch: &str,
         target_branch: Option<&str>,
+        strategy: ConflictStrategy,
     ) -> Result<MergeReport> {
         let source_id = format_ledger_id(ledger_name, source_branch);
         let source_record = self
@@ -134,116 +143,46 @@ where
             _ => false,
         };
 
-        if !is_fast_forward {
-            return Err(ApiError::BranchConflict(format!(
-                "Cannot fast-forward merge: {resolved_target} has diverged since \
-                 {source_branch} was created. Rebase the source branch first."
-            )));
-        }
-
         // Snapshot target nameservice state before mutations.
         // If any step fails after publish_commit, we roll back.
         let target_snapshot = NsRecordSnapshot::from_record(&target_record);
-        let expected_target_head = RefValue {
-            id: target_record.commit_head_id.clone(),
-            t: target_record.commit_t,
-        };
-
-        // Already merged: source and target point at the same head, so this is a
-        // successful no-op rather than a concurrent advancement conflict.
-        if expected_target_head.t == source_head_t
-            && expected_target_head.id.as_ref() == Some(&source_head_id)
-        {
-            return Ok(MergeReport {
-                source: source_branch.to_string(),
-                target: resolved_target.to_string(),
-                fast_forward: true,
-                commits_copied: 0,
-                new_head_t: source_head_t,
-                new_head_id: source_head_id,
-            });
-        }
 
         // Disconnect target from ledger manager to prevent stale reads.
         if let Some(ref lm) = self.ledger_manager {
             lm.disconnect(&target_id).await;
         }
 
-        let stop_at_t = ancestor.map(|a| a.t).unwrap_or(0);
-
-        let result: Result<MergeReport> = async {
-            // Copy commit and txn blobs from the source namespace into the target
-            // namespace so the target is self-contained (no fallback reads needed).
-            let copy_store =
-                fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
-            let commits_copied = self
-                .copy_commit_chain(&copy_store, &source_head_id, stop_at_t, &target_id)
-                .await?;
-
-            // Advance target's HEAD to source's HEAD.
-            match self
-                .nameservice
-                .compare_and_set_ref(
-                    &target_id,
-                    RefKind::CommitHead,
-                    Some(&expected_target_head),
-                    &RefValue {
-                        id: Some(source_head_id.clone()),
-                        t: source_head_t,
-                    },
-                )
-                .await?
-            {
-                CasResult::Updated => {}
-                CasResult::Conflict { actual } => {
-                    let actual_t = actual.as_ref().map(|r| r.t).unwrap_or(0);
-                    let actual_id = actual
-                        .and_then(|r| r.id)
-                        .map(|cid| cid.to_string())
-                        .unwrap_or_else(|| "None".to_string());
-                    return Err(ApiError::BranchConflict(format!(
-                        "Merge aborted: target branch advanced concurrently (expected head t={} id={}, found t={} id={})",
-                        expected_target_head.t,
-                        expected_target_head
-                            .id
-                            .as_ref()
-                            .map(|cid| cid.to_string())
-                            .unwrap_or_else(|| "None".to_string()),
-                        actual_t,
-                        actual_id
-                    )));
-                }
-            }
-
-            // Copy source's index to target namespace.
-            if let Some(ref index_cid) = source_record.index_head_id {
-                if let Err(e) = self
-                    .copy_index_to_branch(&source_id, &target_id, index_cid)
-                    .await
-                {
-                    tracing::warn!(
-                        %e, source = %source_id, target = %target_id,
-                        "failed to copy index during merge; target will rebuild from commits"
-                    );
-                } else if let Err(e) = self
-                    .nameservice
-                    .publish_index(&target_id, source_record.index_t, index_cid)
-                    .await
-                {
-                    tracing::warn!(%e, "failed to publish index for merged target");
-                }
-            }
-
-            Ok(MergeReport {
-                target: resolved_target.to_string(),
-                source: source_branch.to_string(),
-                fast_forward: true,
-                new_head_t: source_head_t,
-                new_head_id: source_head_id,
-                commits_copied,
-            })
-        }
-        .await;
+        let result: Result<MergeReport> = if is_fast_forward {
+            let stop_at_t = ancestor.map(|a| a.t).unwrap_or(0);
+            self.fast_forward_merge(
+                source_branch,
+                &source_record,
+                &source_head_id,
+                source_head_t,
+                resolved_target,
+                &target_id,
+                &target_record,
+                stop_at_t,
+                &source_store,
+            )
+            .await
+        } else {
+            // General merge: branches have diverged.
+            let ancestor = ancestor.expect("ancestor must exist when both heads are Some");
+            self.general_merge(
+                &source_id,
+                &source_record,
+                &source_head_id,
+                source_branch,
+                resolved_target,
+                &target_id,
+                &target_record,
+                &ancestor,
+                &source_store,
+                &strategy,
+            )
+            .await
+        };
 
         match result {
             Ok(report) => Ok(report),
@@ -270,18 +209,300 @@ where
         }
     }
 
+    /// Fast-forward merge: copy commits from source to target and advance HEAD.
+    #[allow(clippy::too_many_arguments)]
+    async fn fast_forward_merge(
+        &self,
+        source_branch: &str,
+        source_record: &NsRecord,
+        source_head_id: &ContentId,
+        source_head_t: i64,
+        resolved_target: &str,
+        target_id: &str,
+        target_record: &NsRecord,
+        stop_at_t: i64,
+        source_store: &impl ContentStore,
+    ) -> Result<MergeReport> {
+        let expected_target_head = RefValue {
+            id: target_record.commit_head_id.clone(),
+            t: target_record.commit_t,
+        };
+
+        // Copy commit and txn blobs from the source namespace into the target
+        // namespace so the target is self-contained (no fallback reads needed).
+        // We use the branched content store so that collect_dag_cids can read
+        // parent commits from ancestor namespaces when checking stop_at_t.
+        let commits_copied = self
+            .copy_commit_chain(source_store, source_head_id, stop_at_t, target_id)
+            .await?;
+
+        // Advance target's HEAD to source's HEAD via compare-and-set.
+        match self
+            .nameservice
+            .compare_and_set_ref(
+                target_id,
+                RefKind::CommitHead,
+                Some(&expected_target_head),
+                &RefValue {
+                    id: Some(source_head_id.clone()),
+                    t: source_head_t,
+                },
+            )
+            .await?
+        {
+            CasResult::Updated => {}
+            CasResult::Conflict { actual } => {
+                let actual_t = actual.as_ref().map(|r| r.t).unwrap_or(0);
+                let actual_id = actual
+                    .and_then(|r| r.id)
+                    .map(|cid| cid.to_string())
+                    .unwrap_or_else(|| "None".to_string());
+                return Err(ApiError::BranchConflict(format!(
+                    "Merge aborted: target branch advanced concurrently (expected head t={} id={}, found t={} id={})",
+                    expected_target_head.t,
+                    expected_target_head
+                        .id
+                        .as_ref()
+                        .map(|cid| cid.to_string())
+                        .unwrap_or_else(|| "None".to_string()),
+                    actual_t,
+                    actual_id
+                )));
+            }
+        }
+
+        // Copy source's index to target namespace.
+        let source_id = &source_record.ledger_id;
+        if let Some(ref index_cid) = source_record.index_head_id {
+            if let Err(e) = self
+                .copy_index_to_branch(source_id, target_id, index_cid)
+                .await
+            {
+                tracing::warn!(
+                    %e, source = %source_id, target = %target_id,
+                    "failed to copy index during merge; target will rebuild from commits"
+                );
+            } else if let Err(e) = self
+                .nameservice
+                .publish_index(target_id, source_record.index_t, index_cid)
+                .await
+            {
+                tracing::warn!(%e, "failed to publish index for merged target");
+            }
+        }
+
+        Ok(MergeReport {
+            target: resolved_target.to_string(),
+            source: source_branch.to_string(),
+            fast_forward: true,
+            new_head_t: source_head_t,
+            new_head_id: source_head_id.clone(),
+            commits_copied,
+            conflict_count: 0,
+            strategy: None,
+        })
+    }
+
+    /// General (non-fast-forward) merge: compute deltas, detect conflicts,
+    /// resolve them, and create a merge commit on the target branch.
+    #[allow(clippy::too_many_arguments)]
+    async fn general_merge<C: ContentStore + Clone + 'static>(
+        &self,
+        source_id: &str,
+        source_record: &NsRecord,
+        source_head_id: &ContentId,
+        source_branch: &str,
+        resolved_target: &str,
+        target_id: &str,
+        target_record: &NsRecord,
+        ancestor: &CommonAncestor,
+        source_store: &C,
+        strategy: &ConflictStrategy,
+    ) -> Result<MergeReport> {
+        // Skip is not supported for merge (it only makes sense for per-commit rebase).
+        if *strategy == ConflictStrategy::Skip {
+            return Err(ApiError::InvalidBranch(
+                "Skip strategy is not supported for merge".to_string(),
+            ));
+        }
+
+        let target_head_id = target_record
+            .commit_head_id
+            .as_ref()
+            .expect("target must have head for non-fast-forward merge");
+
+        // Compute source delta: all (s,p,g) tuples modified on source since ancestor.
+        let source_delta =
+            compute_delta_keys(source_store.clone(), source_head_id.clone(), ancestor.t).await?;
+
+        // Compute target delta. Build a branched store if target is also a branch.
+        let target_delta = if target_record.source_branch.is_some() {
+            let target_store = LedgerState::build_branched_store(
+                &self.nameservice,
+                target_record,
+                self.connection.storage(),
+            )
+            .await?;
+            compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
+        } else {
+            let target_store =
+                fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+            compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
+        };
+
+        // Find conflicts: intersection of source and target delta sets.
+        let conflicts: Vec<ConflictKey> =
+            source_delta.intersection(&target_delta).cloned().collect();
+
+        let conflict_count = conflicts.len();
+
+        // Abort if conflicts exist and strategy is Abort.
+        if *strategy == ConflictStrategy::Abort && !conflicts.is_empty() {
+            return Err(ApiError::BranchConflict(format!(
+                "Merge aborted: {} conflict(s) between {} and {} with abort strategy",
+                conflicts.len(),
+                source_branch,
+                resolved_target,
+            )));
+        }
+
+        // Load target state for staging the merge commit.
+        let target_state = LedgerState::load(
+            &self.nameservice,
+            target_id,
+            self.connection.storage().clone(),
+        )
+        .await?;
+
+        // Collect source flakes and metadata: walk source commits from HEAD
+        // to ancestor, gathering flakes, namespace deltas, and graph deltas.
+        let source_data = collect_commit_data(source_store, source_head_id, ancestor.t).await?;
+
+        // Resolve conflicts.
+        let resolved_flakes = self
+            .resolve_merge_flakes(&source_data.flakes, &conflicts, strategy, &target_state)
+            .await?;
+
+        // Stage resolved flakes onto target state. An empty flake set is valid
+        // (e.g., TakeBranch drops all source flakes) — we still create the merge
+        // commit to record the parent relationship and prevent future re-merges.
+        let reverse_graph = target_state.snapshot.build_reverse_graph().map_err(|e| {
+            ApiError::internal(format!("Failed to build reverse graph during merge: {e}"))
+        })?;
+
+        let view = LedgerView::stage(target_state, resolved_flakes, &reverse_graph)
+            .map_err(|e| ApiError::internal(format!("Failed to stage flakes during merge: {e}")))?;
+
+        // Create merge commit with the source head as an additional parent,
+        // propagating namespace and graph deltas from the source branch.
+        let ns_registry = NamespaceRegistry::from_db(view.db());
+        let mut commit_opts =
+            CommitOpts::default().with_merge_parents(vec![source_head_id.clone()]);
+        if !source_data.namespace_delta.is_empty() {
+            commit_opts = commit_opts.with_namespace_delta(source_data.namespace_delta);
+        }
+        if !source_data.graph_delta.is_empty() {
+            commit_opts = commit_opts.with_graph_delta(source_data.graph_delta);
+        }
+
+        // Copy source commit chain to target namespace so the target is
+        // self-contained for DAG walking. This must happen before the merge
+        // commit is published.
+        let commits_copied = self
+            .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
+            .await?;
+
+        let (receipt, _new_state) = fluree_db_transact::commit(
+            view,
+            ns_registry,
+            self.connection.storage(),
+            &self.nameservice,
+            &self.index_config,
+            commit_opts,
+        )
+        .await?;
+
+        // Copy source's index to target (best-effort).
+        if let Some(ref index_cid) = source_record.index_head_id {
+            if let Err(e) = self
+                .copy_index_to_branch(source_id, target_id, index_cid)
+                .await
+            {
+                tracing::warn!(
+                    %e, source = %source_id, target = %target_id,
+                    "failed to copy source index during merge; target will rebuild"
+                );
+            }
+        }
+
+        Ok(MergeReport {
+            target: resolved_target.to_string(),
+            source: source_branch.to_string(),
+            fast_forward: false,
+            new_head_t: receipt.t,
+            new_head_id: receipt.commit_id,
+            commits_copied,
+            conflict_count,
+            strategy: Some(strategy.as_str().to_string()),
+        })
+    }
+
+    /// Resolve flakes for a merge operation.
+    ///
+    /// In merge context the semantics are:
+    /// - `TakeBoth`: keep all source flakes as-is (both values coexist).
+    /// - `TakeSource` (incoming branch wins): keep source flakes + retract
+    ///   target's conflicting values.
+    /// - `TakeBranch` (target wins): drop source's conflicting flakes.
+    /// - `Abort`/`Skip`: handled before this method is called.
+    async fn resolve_merge_flakes(
+        &self,
+        flakes: &[Flake],
+        conflicting_keys: &[ConflictKey],
+        strategy: &ConflictStrategy,
+        target_state: &LedgerState,
+    ) -> Result<Vec<Flake>> {
+        if conflicting_keys.is_empty() {
+            return Ok(flakes.to_vec());
+        }
+
+        let conflict_set: FxHashSet<&ConflictKey> = conflicting_keys.iter().collect();
+
+        match strategy {
+            ConflictStrategy::TakeSource => {
+                // Incoming branch wins: keep source flakes + retract target's values.
+                // In rebase terms, this is like TakeBranch — we query the target
+                // state (the "other side") for retractions.
+                let retractions = self
+                    .build_source_retractions(conflicting_keys, target_state)
+                    .await?;
+                let mut result = flakes.to_vec();
+                result.extend(retractions);
+                Ok(result)
+            }
+            ConflictStrategy::TakeBranch => {
+                // Target wins: drop source's conflicting flakes.
+                Ok(flakes
+                    .iter()
+                    .filter(|f| {
+                        let key = ConflictKey::new(f.s.clone(), f.p.clone(), f.g.clone());
+                        !conflict_set.contains(&key)
+                    })
+                    .cloned()
+                    .collect())
+            }
+            // TakeBoth: keep all source flakes, both values coexist.
+            // Abort/Skip: handled before this method is called.
+            _ => Ok(flakes.to_vec()),
+        }
+    }
+
     /// Copy commit blobs (and their referenced txn blobs) from a source
     /// content store into the target's storage namespace.
     ///
-    /// Walks the commit chain from `head_id` backwards, stopping at
-    /// `stop_at_t` (the branch point). Each commit blob is read once,
-    /// the envelope is parsed from the raw bytes to find the previous
-    /// commit and any txn reference, and then the blob is written to
-    /// the target namespace.
-    ///
-    /// Within each iteration the txn blob copy (read + write) runs
-    /// concurrently with the next commit blob read, since neither
-    /// depends on the other.
+    /// Collects the commit DAG from `head_id` backwards to `stop_at_t`,
+    /// then iterates the resulting CIDs to copy each commit and its txn
+    /// blob into the target namespace.
     async fn copy_commit_chain(
         &self,
         source_store: &impl ContentStore,
@@ -290,38 +511,26 @@ where
         target_ledger_id: &str,
     ) -> Result<usize> {
         let storage = self.connection.storage();
+
+        let dag = collect_dag_cids(source_store, head_id, stop_at_t).await?;
         let mut copied = 0;
 
-        /// Read a blob from the source store, treating `NotFound` as `Ok(None)`
-        /// (the commit lives in the parent namespace — we've reached the
-        /// branch boundary).
-        async fn try_get(store: &impl ContentStore, cid: &ContentId) -> Result<Option<Vec<u8>>> {
-            match store.get(cid).await {
-                Ok(b) => Ok(Some(b)),
-                Err(fluree_db_core::error::Error::NotFound(_)) => Ok(None),
-                Err(e) => Err(e.into()),
-            }
-        }
+        for (_, cid) in &dag {
+            let bytes = source_store.get(cid).await?;
 
-        // Bootstrap: read the first commit before entering the loop.
-        let mut pending_bytes = try_get(source_store, head_id).await?;
-        let mut current_cid = head_id.clone();
-
-        while let Some(bytes) = pending_bytes.take() {
+            // Parse envelope to extract txn CID reference. The bytes were already
+            // loaded by collect_dag_cids for parent discovery; this is a re-parse
+            // of the same data, not a second storage read.
             let envelope = read_commit_envelope(&bytes).map_err(|e| {
-                ApiError::internal(format!("failed to read commit envelope {current_cid}: {e}"))
+                ApiError::internal(format!("failed to read commit envelope {cid}: {e}"))
             })?;
-
-            if envelope.t <= stop_at_t {
-                break;
-            }
 
             // Write commit blob to target namespace.
             storage
                 .content_write_bytes_with_hash(
                     ContentKind::Commit,
                     target_ledger_id,
-                    &current_cid.digest_hex(),
+                    &cid.digest_hex(),
                     &bytes,
                 )
                 .await?;
@@ -344,22 +553,51 @@ where
                 Ok::<_, crate::error::ApiError>(())
             };
 
-            let next_commit_fut = async {
-                let Some(prev_cid) = envelope.previous_id() else {
-                    return Ok::<_, crate::error::ApiError>((current_cid.clone(), None));
-                };
-                Ok((prev_cid.clone(), try_get(source_store, prev_cid).await?))
-            };
+            txn_fut.await?;
 
-            let (txn_result, next_result) = tokio::join!(txn_fut, next_commit_fut);
-            txn_result?;
-            let (next_cid, next_bytes) = next_result?;
-            current_cid = next_cid;
-            pending_bytes = next_bytes;
             copied += 1;
         }
 
         tracing::debug!(commits = copied, "copied commit chain to target namespace");
         Ok(copied)
     }
+}
+
+/// Collected flakes and metadata from a range of commits.
+struct CollectedCommitData {
+    flakes: Vec<Flake>,
+    namespace_delta: std::collections::HashMap<u16, String>,
+    graph_delta: std::collections::HashMap<u16, String>,
+}
+
+/// Collect all flakes, namespace deltas, and graph deltas from commits
+/// between `head_id` and `stop_at_t` (exclusive).
+async fn collect_commit_data(
+    store: &impl ContentStore,
+    head_id: &ContentId,
+    stop_at_t: i64,
+) -> Result<CollectedCommitData> {
+    let dag = collect_dag_cids(store, head_id, stop_at_t).await?;
+    let mut all_flakes = Vec::new();
+    let mut namespace_delta = std::collections::HashMap::new();
+    let mut graph_delta = std::collections::HashMap::new();
+
+    // dag is in newest-first order; we want oldest-first for correct ordering.
+    for (_, cid) in dag.iter().rev() {
+        let commit = load_commit_by_id(store, cid).await?;
+        all_flakes.extend(commit.flakes);
+        // Accumulate deltas: earlier commits take precedence (oldest-first).
+        for (code, prefix) in commit.namespace_delta {
+            namespace_delta.entry(code).or_insert(prefix);
+        }
+        for (g_id, iri) in commit.graph_delta {
+            graph_delta.entry(g_id).or_insert(iri);
+        }
+    }
+
+    Ok(CollectedCommitData {
+        flakes: all_flakes,
+        namespace_delta,
+        graph_delta,
+    })
 }

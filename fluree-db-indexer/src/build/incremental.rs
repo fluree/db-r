@@ -1484,16 +1484,16 @@ where
             }
         };
 
-        // Capture class tracking data before finalize consumes the hook.
-        let class_count_deltas = stats_hook.class_count_deltas().clone();
-        let novelty_subject_class_deltas = stats_hook.subject_class_deltas().clone();
-        let novelty_subject_props = stats_hook.subject_props().clone();
-        let novelty_subject_prop_dts = stats_hook.subject_prop_dts().clone();
-        let novelty_subject_prop_langs = stats_hook.subject_prop_langs().clone();
-        let subject_ref_history = stats_hook.subject_ref_history().clone();
-
-        // Finalize stats.
-        let id_stats_result = stats_hook.finalize();
+        // Move per-subject maps out of the hook (avoids cloning).
+        let (
+            id_stats_result,
+            class_count_deltas,
+            novelty_subject_class_deltas,
+            novelty_subject_props,
+            novelty_subject_prop_dts,
+            novelty_subject_prop_langs,
+            subject_ref_history,
+        ) = stats_hook.finalize_into_parts();
 
         // Build IndexStats with per-graph and aggregate properties.
         let trie = fluree_db_core::PrefixTrie::from_namespace_codes(&novelty.shared.ns_prefixes);

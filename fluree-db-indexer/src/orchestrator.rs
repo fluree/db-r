@@ -1537,7 +1537,7 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t: commit.t,
-            previous_ref: commit.previous_ref.clone(),
+            previous_refs: commit.previous_refs.clone(),
             namespace_delta: commit
                 .namespace_delta
                 .iter()
@@ -1669,7 +1669,7 @@ mod tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1699,7 +1699,7 @@ mod tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1735,7 +1735,7 @@ mod tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1758,7 +1758,7 @@ mod tests {
             t: 2,
             time: None,
             flakes: vec![make_flake(1, "ex:bob", 1, "ex:age", 25, 2)],
-            previous_ref: Some(CommitRef::new(cid1.clone())),
+            previous_refs: vec![CommitRef::new(cid1.clone())],
             txn: None,
             namespace_delta: HashMap::new(),
             txn_signature: None,
@@ -1786,7 +1786,7 @@ mod tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1818,7 +1818,7 @@ mod tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -1854,7 +1854,7 @@ mod tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -2199,7 +2199,7 @@ mod embedded_tests {
 
         let envelope = CommitV2Envelope {
             t: commit.t,
-            previous_ref: commit.previous_ref.clone(),
+            previous_refs: commit.previous_refs.clone(),
             namespace_delta: commit
                 .namespace_delta
                 .iter()
@@ -2365,7 +2365,7 @@ mod embedded_tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
@@ -2418,7 +2418,7 @@ mod embedded_tests {
             t: 1,
             time: None,
             flakes: vec![make_flake(1, "ex:alice", 1, "ex:age", 30, 1)],
-            previous_ref: None,
+            previous_refs: Vec::new(),
             txn: None,
             namespace_delta: HashMap::from([(1, "ex:".to_string())]),
             txn_signature: None,
