@@ -11,7 +11,6 @@ use crate::error::{IndexerError, Result};
 use crate::run_index;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
-use super::mem_profile as mp;
 use super::upload::cid_from_write;
 use super::upload_dicts::upload_dicts_from_disk;
 
@@ -109,8 +108,6 @@ where
             // Phase spans below use .entered() — safe because block_on inside
             // spawn_blocking pins this async task to a single OS thread.
 
-            mp::log_rss("BASELINE — before Phase A");
-
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
             let (commit_cids, ledger_split_mode) = {
@@ -171,14 +168,6 @@ where
                 (cids, split_mode)
             };
             drop(_span_a);
-
-            mp::log_rss("Phase A complete — commit chain collected");
-            tracing::info!(
-                commit_cids_count = commit_cids.len(),
-                commit_cids_bytes = mp::vec_heap_bytes(&commit_cids),
-                commit_cids_human = %mp::human(mp::vec_heap_bytes(&commit_cids)),
-                "MEM_PROFILE: Phase A data structures"
-            );
 
             // ---- Phase B: Resolve commits into batched chunks ----
             let _span_b =
@@ -292,39 +281,6 @@ where
                 "Phase B complete: all commits resolved into chunks"
             );
 
-            // ---- MEM_PROFILE: Phase B data structures ----
-            {
-                mp::log_rss("Phase B complete — all chunks resolved");
-                let mut total_records = 0usize;
-                let mut total_record_bytes = 0u64;
-                for (ci, chunk) in chunks.iter().enumerate() {
-                    let rec_bytes = mp::vec_heap_bytes(&chunk.records);
-                    total_records += chunk.records.len();
-                    total_record_bytes += rec_bytes;
-                    tracing::info!(
-                        chunk_idx = ci,
-                        subjects = chunk.subjects.len(),
-                        strings = chunk.strings.len(),
-                        records = chunk.records.len(),
-                        records_bytes = rec_bytes,
-                        records_human = %mp::human(rec_bytes),
-                        flake_count = chunk.flake_count,
-                        "MEM_PROFILE: Phase B chunk detail"
-                    );
-                }
-                let spatial_count = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
-                let fulltext_count = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
-                tracing::info!(
-                    total_chunks = chunks.len(),
-                    total_records,
-                    total_record_bytes,
-                    total_record_human = %mp::human(total_record_bytes),
-                    spatial_entries = spatial_count,
-                    fulltext_entries = fulltext_count,
-                    "MEM_PROFILE: Phase B totals"
-                );
-            }
-
             drop(_span_b);
 
             // Finalize schema extraction from rebuild ops.
@@ -346,21 +302,10 @@ where
                 chunk_records.push(chunk.records);
             }
 
-            mp::log_rss("Phase C start — before dict merge");
-            tracing::info!(
-                chunk_records_count = chunk_records.len(),
-                chunk_records_total = chunk_records.iter().map(|v| v.len()).sum::<usize>(),
-                chunk_records_bytes = chunk_records.iter().map(|v| mp::vec_heap_bytes(v)).sum::<u64>(),
-                chunk_records_human = %mp::human(chunk_records.iter().map(|v| mp::vec_heap_bytes(v)).sum::<u64>()),
-                "MEM_PROFILE: Phase C chunk_records before merge"
-            );
-
             let (subject_merge, subject_remaps) =
                 run_index::dict_merge::merge_subject_dicts(&subject_dicts);
             let (string_merge, string_remaps) =
                 run_index::dict_merge::merge_string_dicts(&string_dicts);
-
-            mp::log_rss("Phase C — after dict merge, before remap");
 
             // Remap spatial entries' chunk-local subject IDs → global sid64.
             // The spatial hook accumulated entries with chunk-local s_id values;
@@ -674,7 +619,6 @@ where
             let mut total_build_ms = 0u128;
 
             for &g_id in &all_g_ids {
-                mp::log_rss(&format!("Phase D-V3 — before building graph g_id={g_id}"));
                 let v3_run_dir = run_dir.join(format!("v3_runs_g{g_id}"));
                 std::fs::create_dir_all(&v3_run_dir)
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
@@ -742,8 +686,6 @@ where
                 graphs = all_g_ids.len(),
                 "Phase D-V3 complete: all graph indexes built"
             );
-            mp::log_rss("Phase D-V3 complete — before stats collection");
-
             // ---- Phase D-V3 stats: Streaming HLL + class stats ----
             //
             // Uses two separate passes over the .fsc files:
@@ -777,13 +719,6 @@ where
                     stats_hook.on_record(&sr);
                 }
             }
-
-            mp::log_rss("Phase D stats — HLL pass complete (hll_only mode)");
-            tracing::info!(
-                properties_count = stats_hook.properties().len(),
-                class_counts_entries = stats_hook.class_count_deltas().len(),
-                "MEM_PROFILE: IdStatsHook HLL-only sizes"
-            );
 
             // Upload HLL sketches to CAS.
             let sketch_ref = {
@@ -827,8 +762,6 @@ where
                 crate::run_index::build::ClassBitsetTable::build_from_global_types(&types_paths)
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-            mp::log_rss("Phase D stats — before streaming class stats pass");
-
             let spot_class_stats = {
                 use crate::run_index::build::SpotClassStatsCollector;
                 use crate::run_index::runs::spool::V1SpoolMergeAdapter;
@@ -837,14 +770,12 @@ where
                 let mut collector = SpotClassStatsCollector::new(rdf_type_p_id, class_bitset);
 
                 // Open V1 spool merge adapters for all .fsc files.
-                let mut streams: Vec<V1SpoolMergeAdapter> = Vec::with_capacity(sorted_commit_infos.len());
+                let mut streams: Vec<V1SpoolMergeAdapter> =
+                    Vec::with_capacity(sorted_commit_infos.len());
                 for info in &sorted_commit_infos {
-                    let adapter = V1SpoolMergeAdapter::open(
-                        &info.path,
-                        info.record_count,
-                        registry.clone(),
-                    )
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    let adapter =
+                        V1SpoolMergeAdapter::open(&info.path, info.record_count, registry.clone())
+                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                     streams.push(adapter);
                 }
 
@@ -865,14 +796,6 @@ where
 
                 collector.finish()
             };
-
-            mp::log_rss("Phase D stats — streaming class stats complete");
-            tracing::info!(
-                class_counts = spot_class_stats.class_counts.len(),
-                class_prop_dts = spot_class_stats.class_prop_dts.len(),
-                class_prop_refs = spot_class_stats.class_prop_refs.len(),
-                "MEM_PROFILE: SpotClassStats sizes"
-            );
 
             // ---- Build IndexStats for FIR6 root ----
             let trie_for_stats =
@@ -918,8 +841,6 @@ where
                 )
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
-                mp::log_rss("Phase D stats — after build_class_stat_entries");
-
                 // Attach class stats onto per-graph stats entries.
                 let mut final_graphs = id_stats_result.graphs;
                 for g in &mut final_graphs {
@@ -948,15 +869,11 @@ where
                 "Phase D-V3 stats: collected"
             );
 
-            mp::log_rss("Phase D stats complete — before Phase E upload");
-
             // Phase E-V3: Upload V3 artifacts to CAS.
             let v3_uploaded =
                 super::upload::upload_indexes_to_cas(&storage, &ledger_id, &v3_result)
                     .instrument(tracing::debug_span!("upload_v3_indexes"))
                     .await?;
-
-            mp::log_rss("Phase E complete — before Phase F");
 
             // Phase F-V3: Upload dicts + assemble FIR6 root.
             let uploaded_dicts =
@@ -1076,8 +993,6 @@ where
             .await?;
 
             drop(_span_v3);
-
-            mp::log_rss("Phase F complete — FIR6 root written");
 
             // Clean up ephemeral tmp_import session directory.
             if let Err(e) = std::fs::remove_dir_all(&run_dir) {
