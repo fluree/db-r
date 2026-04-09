@@ -111,60 +111,29 @@ where
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
             let _span_a = tracing::debug_span!("commit_chain_walk").entered();
             let (commit_cids, ledger_split_mode) = {
-                const INFO_PROGRESS_EVERY: usize = 500;
-                const DEBUG_PROGRESS_EVERY: usize = 100;
+                // stop_at_t=0 collects all commits (t starts at 1).
+                let dag =
+                    fluree_db_novelty::collect_dag_cids(&content_store, &head_commit_id, 0).await?;
 
-                let mut cids = Vec::new();
-                let mut current = Some(head_commit_id.clone());
+                // collect_dag_cids returns (t, cid) sorted by t descending.
+                // Reverse for chronological (genesis-first) order.
+                let cids: Vec<ContentId> = dag.into_iter().rev().map(|(_, cid)| cid).collect();
+
+                // Extract ns_split_mode by scanning envelopes.
+                // The last seen value (closest to genesis) is authoritative.
                 let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
-                let walk_started = std::time::Instant::now();
-                let mut head_t: Option<i64> = None;
-                let mut genesis_t: Option<i64> = None;
-
-                while let Some(cid) = current {
+                for cid in &cids {
                     let bytes = content_store
-                        .get(&cid)
+                        .get(cid)
                         .await
                         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
                     let envelope = read_commit_envelope(&bytes)
                         .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-                    // Extract ns_split_mode (last seen = genesis = authoritative).
                     if let Some(mode) = envelope.ns_split_mode {
                         split_mode = mode;
                     }
-                    if head_t.is_none() {
-                        head_t = Some(envelope.t);
-                    }
-                    genesis_t = Some(envelope.t);
-                    current = envelope.previous_id().cloned();
-                    cids.push(cid);
-
-                    let walked = cids.len();
-                    if walked % INFO_PROGRESS_EVERY == 0 {
-                        tracing::info!(
-                            commits_walked = walked,
-                            current_t = envelope.t,
-                            elapsed_ms = walk_started.elapsed().as_millis() as u64,
-                            "Phase A progress: walked commit chain"
-                        );
-                    } else if walked % DEBUG_PROGRESS_EVERY == 0 {
-                        tracing::debug!(
-                            commits_walked = walked,
-                            current_t = envelope.t,
-                            elapsed_ms = walk_started.elapsed().as_millis() as u64,
-                            "Phase A progress: walked commit chain"
-                        );
-                    }
                 }
 
-                cids.reverse(); // chronological order (genesis first)
-                tracing::info!(
-                    commits = cids.len(),
-                    genesis_t = ?genesis_t,
-                    head_t = ?head_t,
-                    elapsed_ms = walk_started.elapsed().as_millis() as u64,
-                    "Phase A complete: commit chain collected"
-                );
                 (cids, split_mode)
             };
             drop(_span_a);

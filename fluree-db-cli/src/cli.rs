@@ -638,7 +638,7 @@ pub enum BranchAction {
         remote: Option<String>,
     },
 
-    /// Merge a branch into its parent (fast-forward only)
+    /// Merge a branch into another branch
     Merge {
         /// Source branch name to merge from (e.g., "dev", "feature-x")
         source: String,
@@ -646,6 +646,11 @@ pub enum BranchAction {
         /// Target branch to merge into (defaults to source's parent branch)
         #[arg(long)]
         target: Option<String>,
+
+        /// Conflict resolution strategy (default: "take-both")
+        /// Options: take-both, abort, take-source, take-branch
+        #[arg(long, default_value = "take-both")]
+        strategy: String,
 
         /// Ledger name (defaults to active ledger)
         #[arg(long)]

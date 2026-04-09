@@ -549,14 +549,19 @@ async fn walk_commit_chain_since(
     from_t: i64,
     max_commit_bytes: Option<usize>,
 ) -> Result<Vec<WalkedCommit>, IncrementalResolveError> {
-    let mut commits = Vec::new();
-    let mut current = Some(head_id.clone());
-    let mut cumulative_bytes: usize = 0;
     let walk_started = Instant::now();
 
-    while let Some(cid) = current {
-        // Check budget *before* fetching the next commit — if we've already
-        // exceeded the limit (the previous commit pushed us over), stop here.
+    // Use DAG-aware traversal to handle merge commits with multiple parents.
+    let dag = fluree_db_novelty::collect_dag_cids(cs, head_id, from_t)
+        .await
+        .map_err(|e| IncrementalResolveError::CommitChain(e.to_string()))?;
+
+    // collect_dag_cids returns (t, cid) sorted by t descending; reverse for chronological order.
+    let mut commits = Vec::with_capacity(dag.len());
+    let mut cumulative_bytes: usize = 0;
+
+    for (t, cid) in dag.into_iter().rev() {
+        // Check byte budget before loading the next commit.
         if let Some(budget) = max_commit_bytes {
             if cumulative_bytes >= budget {
                 tracing::info!(
@@ -575,27 +580,10 @@ async fn walk_commit_chain_since(
         let bytes = cs.get(&cid).await.map_err(|e| {
             IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
         })?;
-        let envelope = fluree_db_novelty::commit_v2::read_commit_envelope(&bytes).map_err(|e| {
-            IncrementalResolveError::CommitChain(format!(
-                "failed to decode envelope for {}: {}",
-                cid, e
-            ))
-        })?;
-
-        if envelope.t <= from_t {
-            break;
-        }
-
         cumulative_bytes += bytes.len();
-        current = envelope.previous_ref.map(|r| r.id);
-        commits.push(WalkedCommit {
-            cid,
-            t: envelope.t,
-            bytes,
-        });
+        commits.push(WalkedCommit { cid, t, bytes });
     }
 
-    commits.reverse();
     tracing::debug!(
         commits = commits.len(),
         cumulative_bytes,

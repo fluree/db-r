@@ -163,15 +163,15 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_id: &str, t: i64) -> Vec<F
         None,
     ));
 
-    // 8. db#previous (optional: reference to previous commit)
-    if let Some(prev_id) = commit.previous_id() {
+    // 8. db#previous (reference to parent commits — one per parent)
+    for prev_id in commit.parent_ids() {
         let prev_hex = prev_id.digest_hex();
         let prev_sid = Sid::new(FLUREE_COMMIT, &prev_hex);
         flakes.push(Flake::new(
             commit_sid.clone(),
             Sid::new(FLUREE_DB, db::PREVIOUS),
             FlakeValue::Ref(prev_sid),
-            ref_dt,
+            ref_dt.clone(),
             t,
             true,
             None,
@@ -225,7 +225,7 @@ mod tests {
 
         if with_previous {
             let prev_id = make_test_content_id(ContentKind::Commit, "prev-commit-bytes");
-            commit.previous_ref = Some(CommitRef::new(prev_id));
+            commit.previous_refs = vec![CommitRef::new(prev_id)];
         }
 
         commit

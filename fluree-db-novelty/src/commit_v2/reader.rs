@@ -207,7 +207,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         t: header.t,
         time: envelope.time,
         flakes,
-        previous_ref: envelope.previous_ref,
+        previous_refs: envelope.previous_refs,
         txn: envelope.txn,
         namespace_delta: envelope.namespace_delta,
         txn_signature: envelope.txn_signature,
@@ -247,7 +247,7 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
 
     Ok(CommitEnvelope {
         t: header.t,
-        previous_ref: env.previous_ref,
+        previous_refs: env.previous_refs,
         txn: env.txn,
         namespace_delta: env.namespace_delta,
         txn_meta: env.txn_meta,

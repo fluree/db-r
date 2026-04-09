@@ -72,6 +72,12 @@ pub struct CommitOpts {
     /// but we commit to the target branch namespace. The sequencing check
     /// would fail because the nameservice head doesn't match the base state.
     pub skip_sequencing: bool,
+    /// Additional parent commit IDs for merge commits.
+    ///
+    /// When non-empty, these are appended as extra `previous_refs` on the
+    /// commit record, producing a multi-parent (merge) commit. The primary
+    /// parent is still derived from `base.head_commit_id`.
+    pub merge_parents: Vec<ContentId>,
 }
 
 impl std::fmt::Debug for CommitOpts {
@@ -93,6 +99,7 @@ impl std::fmt::Debug for CommitOpts {
             )
             .field("skip_backpressure", &self.skip_backpressure)
             .field("skip_sequencing", &self.skip_sequencing)
+            .field("merge_parents", &self.merge_parents.len())
             .finish()
     }
 }
@@ -162,6 +169,12 @@ impl CommitOpts {
         self.skip_sequencing = true;
         self
     }
+
+    /// Set additional parent commit IDs for merge commits.
+    pub fn with_merge_parents(mut self, parents: Vec<ContentId>) -> Self {
+        self.merge_parents = parents;
+        self
+    }
 }
 
 /// Commit a staged transaction
@@ -215,6 +228,7 @@ where
         namespace_delta: override_ns_delta,
         skip_backpressure,
         skip_sequencing,
+        merge_parents,
     } = opts;
 
     let commit_span = tracing::debug_span!(
@@ -230,8 +244,10 @@ where
     async move {
         let commit_span = tracing::Span::current();
 
-        // 2. Check for empty transaction
-        if flakes.is_empty() {
+        // 2. Check for empty transaction — merge commits with no data flakes are
+        //    valid (e.g., TakeBranch strategy drops all source flakes) because
+        //    the commit still records the merge-parent relationship in the DAG.
+        if flakes.is_empty() && merge_parents.is_empty() {
             return Err(TransactError::EmptyTransaction);
         }
 
@@ -348,6 +364,10 @@ where
         // Build previous commit reference from the head commit's ContentId.
         if let Some(cid) = base.head_commit_id.clone() {
             commit_record = commit_record.with_previous_ref(CommitRef::new(cid));
+        }
+        // Append additional merge parent references.
+        for merge_parent in &merge_parents {
+            commit_record = commit_record.with_previous_ref(CommitRef::new(merge_parent.clone()));
         }
 
         // 7. Content-address + write (storage-owned)

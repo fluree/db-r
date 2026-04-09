@@ -387,8 +387,8 @@ impl CommitResolver {
             DatatypeDictId::INTEGER.as_u16(),
         )?;
 
-        // ledger:previous (ID) -- ref to previous commit
-        if let Some(prev_ref) = &envelope.previous_ref {
+        // ledger:previous (ID) -- ref to parent commit(s)
+        for prev_ref in &envelope.previous_refs {
             // Use CID digest hex as the subject name in FLUREE_COMMIT namespace
             let prev_digest = prev_ref.id.digest_hex();
             let prev_s_id = dicts
@@ -1636,8 +1636,8 @@ impl SharedResolverState {
             DatatypeDictId::INTEGER.as_u16(),
         );
 
-        // ledger:previous (ID) -- ref to previous commit (chunk-local subject)
-        if let Some(prev_ref) = &envelope.previous_ref {
+        // ledger:previous (ID) -- ref to parent commit(s) (chunk-local subject)
+        for prev_ref in &envelope.previous_refs {
             let prev_digest = prev_ref.id.digest_hex();
             let prev_s_id = chunk.subjects.get_or_insert(
                 fluree_vocab::namespaces::FLUREE_COMMIT,
@@ -1981,7 +1981,7 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t,
-            previous_ref: None,
+            previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
@@ -2312,10 +2312,10 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t: 42,
-            previous_ref: Some(CommitRef::new(ContentId::new(
+            previous_refs: vec![CommitRef::new(ContentId::new(
                 ContentKind::Commit,
                 prev_commit_id.as_bytes(),
-            ))),
+            ))],
             namespace_delta: HashMap::new(),
             txn: None,
             time: Some("2025-06-15T12:00:00Z".into()),
@@ -2420,7 +2420,7 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t: 1,
-            previous_ref: None,
+            previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,
@@ -2459,7 +2459,7 @@ mod tests {
 
         let envelope = CommitV2Envelope {
             t: 5,
-            previous_ref: None,
+            previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
             txn: None,
             time: None,

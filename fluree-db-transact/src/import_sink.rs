@@ -739,7 +739,7 @@ mod inner {
         fn make_envelope(t: i64) -> crate::commit_v2::CommitV2Envelope {
             crate::commit_v2::CommitV2Envelope {
                 t,
-                previous_ref: None,
+                previous_refs: Vec::new(),
                 namespace_delta: HashMap::new(),
                 txn: None,
                 time: None,

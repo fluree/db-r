@@ -936,6 +936,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         source: &str,
         target: Option<&str>,
+        strategy: Option<&str>,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = self.op_url_root("merge");
         let mut body = serde_json::json!({
@@ -944,6 +945,9 @@ impl RemoteLedgerClient {
         });
         if let Some(t) = target {
             body["target"] = serde_json::Value::String(t.to_string());
+        }
+        if let Some(s) = strategy {
+            body["strategy"] = serde_json::Value::String(s.to_string());
         }
         self.send_json(
             reqwest::Method::POST,

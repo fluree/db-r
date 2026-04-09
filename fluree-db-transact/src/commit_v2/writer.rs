@@ -264,14 +264,14 @@ mod tests {
             5,
         );
         let prev_cid = ContentId::new(ContentKind::Commit, b"prev-commit-bytes");
-        commit.previous_ref = Some(CommitRef::new(prev_cid.clone()));
+        commit.previous_refs = vec![CommitRef::new(prev_cid.clone())];
         commit.namespace_delta = HashMap::from([(200, "ex:".to_string())]);
 
         let result = write_commit(&commit, false, None).unwrap();
         let envelope = read_commit_envelope(&result.bytes).unwrap();
 
         assert_eq!(envelope.t, 5);
-        assert_eq!(envelope.previous_ref.as_ref().unwrap().id, prev_cid);
+        assert_eq!(envelope.previous_refs.first().unwrap().id, prev_cid);
         assert_eq!(envelope.namespace_delta.get(&200), Some(&"ex:".to_string()));
     }
 
