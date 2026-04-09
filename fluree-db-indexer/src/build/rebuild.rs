@@ -770,12 +770,16 @@ where
                 let mut collector = SpotClassStatsCollector::new(rdf_type_p_id, class_bitset);
 
                 // Open V1 spool merge adapters for all .fsc files.
+                let registry = std::sync::Arc::new(registry);
                 let mut streams: Vec<V1SpoolMergeAdapter> =
                     Vec::with_capacity(sorted_commit_infos.len());
                 for info in &sorted_commit_infos {
-                    let adapter =
-                        V1SpoolMergeAdapter::open(&info.path, info.record_count, registry.clone())
-                            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+                    let adapter = V1SpoolMergeAdapter::open(
+                        &info.path,
+                        info.record_count,
+                        std::sync::Arc::clone(&registry),
+                    )
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                     streams.push(adapter);
                 }
 

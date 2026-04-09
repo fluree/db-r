@@ -975,4 +975,92 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn class_bitset_build_from_global_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let types_path = dir.path().join("chunk_00000.types");
+
+        // Write .types sidecar entries: (g_id: u16, s_id: u64, class_sid64: u64)
+        // Subject 100 is class A (sid=1000), subject 200 is class A and class B (sid=2000).
+        let class_a: u64 = 1000;
+        let class_b: u64 = 2000;
+        let entries: Vec<(u16, u64, u64)> =
+            vec![(0, 100, class_a), (0, 200, class_a), (0, 200, class_b)];
+
+        {
+            let mut file = std::fs::File::create(&types_path).unwrap();
+            for (g_id, s_id, c_id) in &entries {
+                use std::io::Write;
+                file.write_all(&g_id.to_le_bytes()).unwrap();
+                file.write_all(&s_id.to_le_bytes()).unwrap();
+                file.write_all(&c_id.to_le_bytes()).unwrap();
+            }
+        }
+
+        let table = ClassBitsetTable::build_from_global_types(&[types_path])
+            .unwrap()
+            .expect("should produce a table");
+
+        // Both classes should be mapped.
+        assert_eq!(table.bit_to_class.len(), 2);
+        assert!(table.bit_to_class.contains(&class_a));
+        assert!(table.bit_to_class.contains(&class_b));
+
+        // Subject 100: only class A.
+        let bits_100 = table.get(0, 100);
+        assert_ne!(bits_100, 0);
+        // Exactly one bit set.
+        assert_eq!(bits_100.count_ones(), 1);
+
+        // Subject 200: both class A and class B.
+        let bits_200 = table.get(0, 200);
+        assert_eq!(bits_200.count_ones(), 2);
+
+        // Unknown subject returns 0.
+        assert_eq!(table.get(0, 999), 0);
+        // Unknown graph returns 0.
+        assert_eq!(table.get(5, 100), 0);
+    }
+
+    #[test]
+    fn class_bitset_overflow_at_64_classes() {
+        let dir = tempfile::tempdir().unwrap();
+        let types_path = dir.path().join("overflow.types");
+
+        // Write 65 distinct classes — the 65th should be silently dropped.
+        {
+            let mut file = std::fs::File::create(&types_path).unwrap();
+            for class_idx in 0u64..65 {
+                use std::io::Write;
+                let g_id: u16 = 0;
+                let s_id: u64 = class_idx + 1; // unique subject per class
+                let c_id: u64 = 10_000 + class_idx;
+                file.write_all(&g_id.to_le_bytes()).unwrap();
+                file.write_all(&s_id.to_le_bytes()).unwrap();
+                file.write_all(&c_id.to_le_bytes()).unwrap();
+            }
+        }
+
+        let table = ClassBitsetTable::build_from_global_types(&[types_path])
+            .unwrap()
+            .expect("should produce a table");
+
+        // Only 64 classes should be retained.
+        assert_eq!(table.bit_to_class.len(), 64);
+
+        // First 64 subjects should have a bit set.
+        for s_id in 1u64..=64 {
+            assert_ne!(table.get(0, s_id), 0, "subject {s_id} should be mapped");
+        }
+
+        // Subject 65 has the 65th class which overflowed — no bit set.
+        assert_eq!(table.get(0, 65), 0);
+    }
+
+    #[test]
+    fn class_bitset_no_types_files_returns_none() {
+        let result = ClassBitsetTable::build_from_global_types(&[]).unwrap();
+        assert!(result.is_none());
+    }
 }

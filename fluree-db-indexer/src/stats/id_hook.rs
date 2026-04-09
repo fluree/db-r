@@ -291,16 +291,11 @@ impl IdStatsHook {
         }
     }
 
-    /// Create a hook seeded with prior per-property HLL sketches.
-    ///
-    /// Enables incremental refresh: load prior sketches from a CAS blob,
-    /// then process only novelty commits. The hook's `on_record()` will
-    /// merge new observations into the existing registers.
     /// Create an HLL-only hook that skips all per-subject map accumulation.
     ///
     /// HLL sketches, per-property stats, and class_counts are still tracked.
-    /// Per-subject maps (subject_class_deltas, subject_props, subject_prop_dts,
-    /// subject_prop_langs, subject_ref_history) remain empty.
+    /// Per-subject maps (`subject_class_deltas`, `subject_props`, `subject_prop_dts`,
+    /// `subject_prop_langs`, `subject_ref_history`) remain empty.
     ///
     /// Use for the full rebuild path where class stats are computed via
     /// disk-backed streaming over sorted commit files.
@@ -312,6 +307,11 @@ impl IdStatsHook {
         }
     }
 
+    /// Create a hook seeded with prior per-property HLL sketches.
+    ///
+    /// Enables incremental refresh: load prior sketches from a CAS blob,
+    /// then process only novelty commits. The hook's `on_record()` will
+    /// merge new observations into the existing registers.
     pub fn with_prior_properties(properties: HashMap<GraphPropertyKey, IdPropertyHll>) -> Self {
         Self {
             properties,
