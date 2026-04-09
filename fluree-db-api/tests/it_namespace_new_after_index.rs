@@ -208,6 +208,136 @@ async fn query_subject_and_predicate_vars_in_new_namespace_after_index_preserves
     );
 }
 
+/// Regression test for fluree/db-r#145:
+/// After reindex + new namespace commit, a fresh load from the commit chain
+/// must resolve post-index namespace codes correctly in JSON-LD output.
+///
+/// This is the RELOAD variant of the tests above — it uses `fluree.ledger()`
+/// (fresh nameservice + commit chain load) rather than the in-memory cached
+/// handle. The bug was that `RuntimeSmallDicts` were created un-seeded during
+/// `load_with_store()` and passed to `BinaryRangeProvider` before being
+/// reseeded, causing novelty predicate IDs to collide with persisted p_ids.
+#[tokio::test]
+async fn reload_after_new_namespace_commit_resolves_correctly() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/ns-new-after-index-reload:main";
+
+    // t=1: insert with namespace A
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+    let tx1 = json!({
+        "@context": { "a": "http://example.org/a/" },
+        "@graph": [{ "@id": "a:thing1", "a:name": "hello" }]
+    });
+    let _r1 = fluree.insert(ledger0, &tx1).await.unwrap();
+
+    // Reindex — namespace A is now in the binary index
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex at t=1");
+    let handle = fluree.ledger_cached(ledger_id).await.unwrap();
+    let l_indexed = handle.snapshot().await.to_ledger_state();
+
+    // t=2: insert with NEW namespace B (not in binary index)
+    let tx2 = json!({
+        "@context": { "a": "http://example.org/a/", "b": "http://example.org/b/" },
+        "@graph": [{ "@id": "a:thing1", "b:color": "blue" }]
+    });
+    let _r2 = fluree.insert(l_indexed, &tx2).await.unwrap();
+
+    // Reload fresh from nameservice (bypasses cache — simulates cold start)
+    let reloaded = fluree
+        .ledger(ledger_id)
+        .await
+        .expect("reload from commit chain");
+
+    let query = json!({
+        "@context": { "a": "http://example.org/a/", "b": "http://example.org/b/" },
+        "select": { "a:thing1": ["*"] }
+    });
+    let result = support::query_jsonld(&fluree, &reloaded, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(reloaded.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    let thing = &result[0];
+    assert_eq!(
+        thing["b:color"], "blue",
+        "Post-index namespace data should resolve correctly after reload. Got: {thing}"
+    );
+    assert_eq!(thing["a:name"], "hello");
+}
+
+/// FileStorage variant of the reload test above.
+/// Drops the entire Fluree instance and creates a fresh one from the same
+/// directory — a true cold-start that goes through the full file-backed
+/// nameservice lookup → commit chain walk → binary index load path.
+#[tokio::test]
+async fn reload_file_storage_after_new_namespace_commit_resolves_correctly() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fluree = FlureeBuilder::file(dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build file-backed Fluree");
+
+    let ledger_id = "it/ns-new-after-index-file-reload:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+
+    // t=1: insert with namespace A
+    let tx1 = json!({
+        "@context": { "a": "http://example.org/a/" },
+        "@graph": [{ "@id": "a:thing1", "a:name": "hello" }]
+    });
+    let _r1 = fluree.insert(ledger0, &tx1).await.unwrap();
+
+    // Reindex — namespace A is now in the binary index on disk
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex at t=1");
+    let handle = fluree.ledger_cached(ledger_id).await.unwrap();
+    let l_indexed = handle.snapshot().await.to_ledger_state();
+
+    // t=2: insert with NEW namespace B (not in binary index)
+    let tx2 = json!({
+        "@context": { "a": "http://example.org/a/", "b": "http://example.org/b/" },
+        "@graph": [{ "@id": "a:thing1", "b:color": "blue" }]
+    });
+    let _r2 = fluree.insert(l_indexed, &tx2).await.unwrap();
+
+    // Drop everything — true cold start
+    drop(handle);
+    drop(fluree);
+
+    // Fresh Fluree instance from the same directory
+    let fluree2 = FlureeBuilder::file(dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("rebuild file-backed Fluree");
+    let reloaded = fluree2
+        .ledger(ledger_id)
+        .await
+        .expect("reload from file storage");
+
+    let query = json!({
+        "@context": { "a": "http://example.org/a/", "b": "http://example.org/b/" },
+        "select": { "a:thing1": ["*"] }
+    });
+    let result = support::query_jsonld(&fluree2, &reloaded, &query)
+        .await
+        .unwrap()
+        .to_jsonld_async(reloaded.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    let thing = &result[0];
+    assert_eq!(
+        thing["b:color"], "blue",
+        "Post-index namespace data should resolve correctly after file storage reload. Got: {thing}"
+    );
+    assert_eq!(thing["a:name"], "hello");
+}
+
 fn extract_binary_store_ref(
     binary_store: &Option<TypeErasedStore>,
 ) -> Option<&fluree_db_binary_index::BinaryIndexStore> {
