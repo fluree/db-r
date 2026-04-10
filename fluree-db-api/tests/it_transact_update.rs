@@ -281,8 +281,7 @@ async fn update_where_bound_typed_string_delete_and_insert_use_same_datatype_sid
         .flakes
         .iter()
         .find(|f| {
-            f.op
-                && matches!(&f.o, FlakeValue::String(s) if s == "after")
+            f.op && matches!(&f.o, FlakeValue::String(s) if s == "after")
                 && f.p.name.as_ref() == "p"
         })
         .expect("assert flake for replacement typed string");

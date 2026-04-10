@@ -557,8 +557,8 @@ impl CommitResolver {
                 // Store the value as a string, with custom datatype
                 let str_id = dicts.strings.get_or_insert(value)?;
                 let dt_prefix = self.lookup_prefix(*dt_ns);
-                let (dt_prefix, dt_name) = canonicalize_datatype_curie(dt_prefix, dt_name)
-                    .unwrap_or((dt_prefix, dt_name));
+                let (dt_prefix, dt_name) =
+                    canonicalize_datatype_curie(dt_prefix, dt_name).unwrap_or((dt_prefix, dt_name));
                 let dt_id = dicts.datatypes.get_or_insert_parts(dt_prefix, dt_name);
                 // Match resolve_single_op()'s u8 constraint for format consistency
                 if dt_id > u8::MAX as u32 {
@@ -599,8 +599,8 @@ impl CommitResolver {
 
         // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID)
         let prefix = self.lookup_prefix(op.dt_ns_code);
-        let (prefix, dt_name) = canonicalize_datatype_curie(prefix, op.dt_name)
-            .unwrap_or((prefix, op.dt_name));
+        let (prefix, dt_name) =
+            canonicalize_datatype_curie(prefix, op.dt_name).unwrap_or((prefix, op.dt_name));
         let dt_id = dicts.datatypes.get_or_insert_parts(prefix, dt_name);
         // Bulk import path: enforce u8 dt ids for now (imports are allowed to error here).
         // Operationally, the binary format supports widening dt to u16.
@@ -1185,8 +1185,7 @@ impl SharedResolverState {
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let (prefix, name) = canonicalize_datatype_curie(prefix, name)
-            .unwrap_or((prefix, name));
+        let (prefix, name) = canonicalize_datatype_curie(prefix, name).unwrap_or((prefix, name));
         let dt_id = self.datatypes.get_or_insert_parts(prefix, name);
         // Grow dt_tags if this is a new entry.
         if dt_id as usize >= self.dt_tags.len() {
