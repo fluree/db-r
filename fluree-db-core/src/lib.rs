@@ -149,6 +149,8 @@ pub use storage::{
     ledger_id_prefix_for_path,
     sha256_hex,
     BranchedContentStore,
+    LedgerStore,
+    StorageBackend,
     CasAction,
     CasOutcome,
     ContentAddressedWrite,

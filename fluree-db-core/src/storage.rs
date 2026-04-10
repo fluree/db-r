@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use sha2::Digest;
 use std::fmt::Debug;
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 
 // ============================================================================
@@ -116,7 +117,7 @@ pub trait StorageRead: Debug + Send + Sync {
     /// smaller than `range.end`.
     ///
     /// The default implementation fetches the full object and slices.
-    /// Backends that support native range reads (S3, HTTP) should override
+    /// StorageBackends that support native range reads (S3, HTTP) should override
     /// for efficiency.
     async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         if range.start >= range.end {
@@ -238,6 +239,69 @@ pub trait Storage: StorageRead + ContentAddressedWrite + StorageMethod {}
 impl<T: StorageRead + ContentAddressedWrite + StorageMethod> Storage for T {}
 
 // ============================================================================
+// Arc<dyn Storage> delegation (enables type-erased storage)
+// ============================================================================
+
+#[async_trait]
+impl StorageRead for Arc<dyn Storage> {
+    async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
+        self.as_ref().read_bytes(address).await
+    }
+
+    async fn read_bytes_hint(&self, address: &str, hint: ReadHint) -> Result<Vec<u8>> {
+        self.as_ref().read_bytes_hint(address, hint).await
+    }
+
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        self.as_ref().read_byte_range(address, range).await
+    }
+
+    async fn exists(&self, address: &str) -> Result<bool> {
+        self.as_ref().exists(address).await
+    }
+
+    async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.as_ref().list_prefix(prefix).await
+    }
+
+    fn resolve_local_path(&self, address: &str) -> Option<PathBuf> {
+        self.as_ref().resolve_local_path(address)
+    }
+}
+
+#[async_trait]
+impl StorageWrite for Arc<dyn Storage> {
+    async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
+        self.as_ref().write_bytes(address, bytes).await
+    }
+
+    async fn delete(&self, address: &str) -> Result<()> {
+        self.as_ref().delete(address).await
+    }
+}
+
+#[async_trait]
+impl ContentAddressedWrite for Arc<dyn Storage> {
+    async fn content_write_bytes_with_hash(
+        &self,
+        kind: ContentKind,
+        ledger_id: &str,
+        content_hash_hex: &str,
+        bytes: &[u8],
+    ) -> Result<ContentWriteResult> {
+        self.as_ref()
+            .content_write_bytes_with_hash(kind, ledger_id, content_hash_hex, bytes)
+            .await
+    }
+}
+
+impl StorageMethod for Arc<dyn Storage> {
+    fn storage_method(&self) -> &str {
+        self.as_ref().storage_method()
+    }
+}
+
+// ============================================================================
 // ContentStore Trait (CID-first storage abstraction)
 // ============================================================================
 
@@ -288,7 +352,7 @@ pub trait ContentStore: Debug + Send + Sync {
     /// smaller than `range.end`.
     ///
     /// The default implementation fetches the full object and slices.
-    /// Backends that support native range reads (S3, HTTP) should override
+    /// StorageBackends that support native range reads (S3, HTTP) should override
     /// for efficiency.
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let full = self.get(id).await?;
@@ -498,6 +562,158 @@ pub fn bridge_content_store<S: Storage>(
 pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageContentStore<S> {
     let method = storage.storage_method().to_string();
     StorageContentStore::new(storage, namespace_id, method)
+}
+
+// ============================================================================
+// StorageBackend (unified storage backend abstraction)
+// ============================================================================
+
+/// Unified storage backend.
+///
+/// Represents the two kinds of storage backends Fluree supports:
+///
+/// - **Managed**: Address-based backends (file, S3, memory) where Fluree
+///   controls the full data lifecycle including deletion. These implement
+///   the [`Storage`] trait and get content-addressing via
+///   [`StorageContentStore`].
+///
+/// - **Permanent**: Natively content-addressed backends (IPFS) where data
+///   is append-only and cannot be deleted. These implement [`ContentStore`]
+///   directly.
+///
+/// # Content store access
+///
+/// Both variants can produce a [`LedgerStore`] scoped to a ledger
+/// via [`content_store`]. For `Managed`, this constructs a
+/// [`StorageContentStore`] bridge; for `Permanent`, it returns the inner
+/// store directly (the `namespace_id` is ignored since the backend handles
+/// its own addressing).
+///
+/// # Admin operations
+///
+/// Only `Managed` backends support admin operations (deletion, listing).
+/// Use [`admin_storage`] to get the underlying raw storage, if available.
+///
+/// [`content_store`]: StorageBackend::content_store
+/// [`admin_storage`]: StorageBackend::admin_storage
+pub enum StorageBackend {
+    /// Storage with full lifecycle control including deletion (file, S3, memory).
+    Managed(Arc<dyn Storage>),
+    /// Append-only content-addressed storage (IPFS).
+    Permanent(Arc<dyn ContentStore>),
+}
+
+impl StorageBackend {
+    /// Create a [`LedgerStore`] scoped to the given namespace
+    /// (typically a ledger ID).
+    ///
+    /// For `Managed` backends, this constructs a [`StorageContentStore`] that
+    /// maps CIDs to physical addresses under the namespace. For `Permanent`
+    /// backends, the inner store is returned directly.
+    pub fn content_store(&self, namespace_id: &str) -> LedgerStore {
+        match self {
+            StorageBackend::Managed(storage) => {
+                LedgerStore::Managed(content_store_for(storage.clone(), namespace_id))
+            }
+            StorageBackend::Permanent(store) => {
+                LedgerStore::Permanent(Arc::clone(store))
+            }
+        }
+    }
+
+    /// Get the underlying raw storage for admin operations (delete, list).
+    ///
+    /// Returns `Some` for `Managed` backends, `None` for `Permanent`.
+    pub fn admin_storage(&self) -> Option<&dyn Storage> {
+        match self {
+            StorageBackend::Managed(storage) => Some(storage.as_ref()),
+            StorageBackend::Permanent(_) => None,
+        }
+    }
+}
+
+impl Debug for StorageBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageBackend::Managed(s) => f.debug_tuple("Managed").field(s).finish(),
+            StorageBackend::Permanent(s) => f.debug_tuple("Permanent").field(s).finish(),
+        }
+    }
+}
+
+impl Clone for StorageBackend {
+    fn clone(&self) -> Self {
+        match self {
+            StorageBackend::Managed(s) => StorageBackend::Managed(Arc::clone(s)),
+            StorageBackend::Permanent(s) => StorageBackend::Permanent(Arc::clone(s)),
+        }
+    }
+}
+
+/// Content store produced by [`StorageBackend::content_store`].
+///
+/// This is a concrete enum that implements [`ContentStore`] via dispatch
+/// over the two backend kinds, avoiding heap allocation and trait object
+/// indirection.
+pub enum LedgerStore {
+    /// Bridge from address-based storage to content-addressed access.
+    Managed(StorageContentStore<Arc<dyn Storage>>),
+    /// Natively content-addressed store (IPFS).
+    Permanent(Arc<dyn ContentStore>),
+}
+
+#[async_trait]
+impl ContentStore for LedgerStore {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        match self {
+            Self::Managed(s) => s.has(id).await,
+            Self::Permanent(s) => s.has(id).await,
+        }
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        match self {
+            Self::Managed(s) => s.get(id).await,
+            Self::Permanent(s) => s.get(id).await,
+        }
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        match self {
+            Self::Managed(s) => s.put(kind, bytes).await,
+            Self::Permanent(s) => s.put(kind, bytes).await,
+        }
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        match self {
+            Self::Managed(s) => s.put_with_id(id, bytes).await,
+            Self::Permanent(s) => s.put_with_id(id, bytes).await,
+        }
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<PathBuf> {
+        match self {
+            Self::Managed(s) => s.resolve_local_path(id),
+            Self::Permanent(s) => s.resolve_local_path(id),
+        }
+    }
+
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        match self {
+            Self::Managed(s) => s.get_range(id, range).await,
+            Self::Permanent(s) => s.get_range(id, range).await,
+        }
+    }
+}
+
+impl Debug for LedgerStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Managed(s) => f.debug_tuple("Managed").field(s).finish(),
+            Self::Permanent(s) => f.debug_tuple("Permanent").field(s).finish(),
+        }
+    }
 }
 
 // ============================================================================
