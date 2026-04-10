@@ -187,9 +187,21 @@ fn resolve_iri_to_otype(iri: &str, dt_id: u16) -> OType {
 
             _ => OType::customer_datatype(dt_id),
         }
+    } else if let Some(local) = iri.strip_prefix("xsd:") {
+        // Legacy CURIE form: un-expanded "xsd:string" etc. in datatype dict.
+        resolve_iri_to_otype(
+            &format!("http://www.w3.org/2001/XMLSchema#{}", local),
+            dt_id,
+        )
     } else {
-        // Not an XSD type — customer-defined datatype.
-        OType::customer_datatype(dt_id)
+        // Non-XSD well-known datatypes: canonical IRI, CURIE, or legacy shorthand.
+        match iri {
+            fluree_vocab::rdf::JSON | "rdf:JSON" | "@json" => OType::RDF_JSON,
+            fluree_vocab::rdf::LANG_STRING | "rdf:langString" => OType::RESERVED, // special-cased in resolve()
+            fluree_vocab::fluree::EMBEDDING_VECTOR | "@vector" => OType::VECTOR,
+            fluree_vocab::fluree::FULL_TEXT | "@fulltext" => OType::FULLTEXT,
+            _ => OType::customer_datatype(dt_id),
+        }
     }
 }
 
