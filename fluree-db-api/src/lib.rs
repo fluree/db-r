@@ -248,113 +248,6 @@ pub use fluree_graph_json_ld::ParsedContext;
 // Dynamic runtime wrappers (single JSON-LD "source of truth")
 // ============================================================================
 
-/// A dynamically-dispatched storage backend.
-///
-/// This allows `FlureeBuilder::build_client()` to return a single concrete Fluree type
-/// regardless of whether the config selects memory, filesystem, or S3 storage.
-///
-/// Wraps `Arc<dyn Storage>` where `Storage = StorageRead + ContentAddressedWrite`.
-#[derive(Clone)]
-pub struct AnyStorage(Arc<dyn Storage>);
-
-impl std::fmt::Debug for AnyStorage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("AnyStorage").field(&self.0).finish()
-    }
-}
-
-impl AnyStorage {
-    pub fn new(inner: Arc<dyn Storage>) -> Self {
-        Self(inner)
-    }
-}
-
-#[async_trait]
-impl StorageRead for AnyStorage {
-    async fn read_bytes(
-        &self,
-        address: &str,
-    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
-        self.0.read_bytes(address).await
-    }
-
-    async fn read_bytes_hint(
-        &self,
-        address: &str,
-        hint: fluree_db_core::ReadHint,
-    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
-        self.0.read_bytes_hint(address, hint).await
-    }
-
-    async fn read_byte_range(
-        &self,
-        address: &str,
-        range: std::ops::Range<u64>,
-    ) -> std::result::Result<Vec<u8>, fluree_db_core::Error> {
-        self.0.read_byte_range(address, range).await
-    }
-
-    async fn exists(&self, address: &str) -> std::result::Result<bool, fluree_db_core::Error> {
-        self.0.exists(address).await
-    }
-
-    async fn list_prefix(
-        &self,
-        prefix: &str,
-    ) -> std::result::Result<Vec<String>, fluree_db_core::Error> {
-        self.0.list_prefix(prefix).await
-    }
-
-    fn resolve_local_path(&self, address: &str) -> Option<std::path::PathBuf> {
-        self.0.resolve_local_path(address)
-    }
-}
-
-#[async_trait]
-impl StorageWrite for AnyStorage {
-    async fn write_bytes(
-        &self,
-        address: &str,
-        bytes: &[u8],
-    ) -> std::result::Result<(), fluree_db_core::Error> {
-        self.0.write_bytes(address, bytes).await
-    }
-
-    async fn delete(&self, address: &str) -> std::result::Result<(), fluree_db_core::Error> {
-        self.0.delete(address).await
-    }
-}
-
-#[async_trait]
-impl ContentAddressedWrite for AnyStorage {
-    async fn content_write_bytes_with_hash(
-        &self,
-        kind: ContentKind,
-        ledger_id: &str,
-        content_hash_hex: &str,
-        bytes: &[u8],
-    ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
-        self.0
-            .content_write_bytes_with_hash(kind, ledger_id, content_hash_hex, bytes)
-            .await
-    }
-
-    async fn content_write_bytes(
-        &self,
-        kind: ContentKind,
-        ledger_id: &str,
-        bytes: &[u8],
-    ) -> std::result::Result<ContentWriteResult, fluree_db_core::Error> {
-        self.0.content_write_bytes(kind, ledger_id, bytes).await
-    }
-}
-
-impl StorageMethod for AnyStorage {
-    fn storage_method(&self) -> &str {
-        self.0.storage_method()
-    }
-}
-
 /// A dynamically-dispatched nameservice + publisher.
 pub trait NameServicePublisher:
     fluree_db_nameservice::NameService
@@ -998,9 +891,9 @@ impl<S: StorageMethod> StorageMethod for TieredStorage<S> {
 #[derive(Clone, Debug)]
 pub struct AddressIdentifierResolverStorage {
     /// Default storage for unmatched identifiers and all writes
-    default: AnyStorage,
+    default: Arc<dyn Storage>,
     /// Map of identifier -> storage for routing reads
-    identifier_map: std::sync::Arc<std::collections::HashMap<String, AnyStorage>>,
+    identifier_map: std::sync::Arc<std::collections::HashMap<String, Arc<dyn Storage>>>,
 }
 
 impl AddressIdentifierResolverStorage {
@@ -1010,8 +903,8 @@ impl AddressIdentifierResolverStorage {
     /// - `default`: Storage to use for unmatched identifiers and all writes
     /// - `identifier_map`: Map of identifier string -> storage
     pub fn new(
-        default: AnyStorage,
-        identifier_map: std::collections::HashMap<String, AnyStorage>,
+        default: Arc<dyn Storage>,
+        identifier_map: std::collections::HashMap<String, Arc<dyn Storage>>,
     ) -> Self {
         Self {
             default,
@@ -1020,7 +913,7 @@ impl AddressIdentifierResolverStorage {
     }
 
     /// Route an address to the appropriate storage for reads.
-    fn route(&self, address: &str) -> &AnyStorage {
+    fn route(&self, address: &str) -> &Arc<dyn Storage> {
         if let Some(identifier) = fluree_db_core::extract_identifier(address) {
             if let Some(storage) = self.identifier_map.get(identifier) {
                 return storage;
@@ -2330,21 +2223,19 @@ impl FlureeBuilder {
     }
 
     /// Wrap base storage with address identifier routing for local backends.
-    fn wrap_address_identifiers(&self, base_storage: Arc<dyn Storage>) -> Result<AnyStorage> {
+    fn wrap_address_identifiers(&self, base_storage: Arc<dyn Storage>) -> Result<Arc<dyn Storage>> {
         if let Some(addr_ids) = &self.config.address_identifiers {
             let mut identifier_map = std::collections::HashMap::new();
             for (identifier, storage_config) in addr_ids.iter() {
                 let id_storage = build_local_storage_from_config(storage_config)?;
-                identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
+                identifier_map.insert(identifier.to_string(), id_storage);
             }
-            Ok(AnyStorage::new(Arc::new(
-                AddressIdentifierResolverStorage::new(
-                    AnyStorage::new(base_storage),
-                    identifier_map,
-                ),
+            Ok(Arc::new(AddressIdentifierResolverStorage::new(
+                base_storage,
+                identifier_map,
             )))
         } else {
-            Ok(AnyStorage::new(base_storage))
+            Ok(base_storage)
         }
     }
 
@@ -2354,7 +2245,7 @@ impl FlureeBuilder {
         &self,
         base_storage: Arc<dyn Storage>,
         config: &ConnectionConfig,
-    ) -> Result<AnyStorage> {
+    ) -> Result<Arc<dyn Storage>> {
         if let Some(addr_ids) = &config.address_identifiers {
             let mut identifier_map = std::collections::HashMap::new();
             for (identifier, storage_config) in addr_ids.iter() {
@@ -2362,16 +2253,14 @@ impl FlureeBuilder {
                     StorageType::S3(_) => build_s3_storage_from_config(storage_config).await?,
                     _ => build_local_storage_from_config(storage_config)?,
                 };
-                identifier_map.insert(identifier.to_string(), AnyStorage::new(id_storage));
+                identifier_map.insert(identifier.to_string(), id_storage);
             }
-            Ok(AnyStorage::new(Arc::new(
-                AddressIdentifierResolverStorage::new(
-                    AnyStorage::new(base_storage),
-                    identifier_map,
-                ),
+            Ok(Arc::new(AddressIdentifierResolverStorage::new(
+                base_storage,
+                identifier_map,
             )))
         } else {
-            Ok(AnyStorage::new(base_storage))
+            Ok(base_storage)
         }
     }
 }
@@ -3481,11 +3370,11 @@ mod tests {
         let mut identifier_map = std::collections::HashMap::new();
         identifier_map.insert(
             "commit-store".to_string(),
-            AnyStorage::new(Arc::new(commit_storage)),
+            Arc::new(commit_storage) as Arc<dyn fluree_db_core::Storage>,
         );
 
         let resolver = AddressIdentifierResolverStorage::new(
-            AnyStorage::new(Arc::new(default_storage)),
+            Arc::new(default_storage) as Arc<dyn fluree_db_core::Storage>,
             identifier_map,
         );
 
@@ -3515,7 +3404,7 @@ mod tests {
 
         // Empty identifier map - all reads go to default
         let resolver = AddressIdentifierResolverStorage::new(
-            AnyStorage::new(Arc::new(default_storage)),
+            Arc::new(default_storage) as Arc<dyn fluree_db_core::Storage>,
             std::collections::HashMap::new(),
         );
 
@@ -3535,11 +3424,11 @@ mod tests {
         let mut identifier_map = std::collections::HashMap::new();
         identifier_map.insert(
             "other".to_string(),
-            AnyStorage::new(Arc::new(other_storage.clone())),
+            Arc::new(other_storage.clone()) as Arc<dyn fluree_db_core::Storage>,
         );
 
         let resolver = AddressIdentifierResolverStorage::new(
-            AnyStorage::new(Arc::new(default_storage.clone())),
+            Arc::new(default_storage.clone()) as Arc<dyn fluree_db_core::Storage>,
             identifier_map,
         );
 
@@ -3573,7 +3462,7 @@ mod tests {
             .unwrap();
 
         let resolver = AddressIdentifierResolverStorage::new(
-            AnyStorage::new(Arc::new(default_storage)),
+            Arc::new(default_storage) as Arc<dyn fluree_db_core::Storage>,
             std::collections::HashMap::new(),
         );
 
@@ -3605,11 +3494,11 @@ mod tests {
         let mut identifier_map = std::collections::HashMap::new();
         identifier_map.insert(
             "mapped".to_string(),
-            AnyStorage::new(Arc::new(mapped_storage)),
+            Arc::new(mapped_storage) as Arc<dyn fluree_db_core::Storage>,
         );
 
         let resolver = AddressIdentifierResolverStorage::new(
-            AnyStorage::new(Arc::new(default_storage)),
+            Arc::new(default_storage) as Arc<dyn fluree_db_core::Storage>,
             identifier_map,
         );
 
