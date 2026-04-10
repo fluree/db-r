@@ -197,49 +197,62 @@ fn resolve_iri_to_otype(iri: &str, dt_id: u16) -> OType {
 ///
 /// Same matching as `resolve_iri_to_otype` but without requiring a `dt_id`
 /// fallback. Used by the V3 overlay translator to derive OType from `flake.dt`.
+///
+/// Accepts both canonical IRIs and legacy JSON-LD shorthands (`@json`,
+/// `@vector`, `@fulltext`) so that any IRI form reaching this function
+/// (e.g. from `sid_to_iri` on a novelty flake) resolves correctly.
 pub fn resolve_iri_to_otype_option(iri: &str) -> Option<OType> {
     const XSD_NS: &str = "http://www.w3.org/2001/XMLSchema#";
 
-    let local = iri.strip_prefix(XSD_NS)?;
-    let ot = match local {
-        "int" => OType::XSD_INT,
-        "short" => OType::XSD_SHORT,
-        "byte" => OType::XSD_BYTE,
-        "unsignedLong" => OType::XSD_UNSIGNED_LONG,
-        "unsignedInt" => OType::XSD_UNSIGNED_INT,
-        "unsignedShort" => OType::XSD_UNSIGNED_SHORT,
-        "unsignedByte" => OType::XSD_UNSIGNED_BYTE,
-        "nonNegativeInteger" => OType::XSD_NON_NEGATIVE_INTEGER,
-        "positiveInteger" => OType::XSD_POSITIVE_INTEGER,
-        "nonPositiveInteger" => OType::XSD_NON_POSITIVE_INTEGER,
-        "negativeInteger" => OType::XSD_NEGATIVE_INTEGER,
-        "anyURI" => OType::XSD_ANY_URI,
-        "normalizedString" => OType::XSD_NORMALIZED_STRING,
-        "token" => OType::XSD_TOKEN,
-        "language" => OType::XSD_LANGUAGE,
-        "base64Binary" => OType::XSD_BASE64_BINARY,
-        "hexBinary" => OType::XSD_HEX_BINARY,
-        "duration" => OType::XSD_DURATION,
-        "string" => OType::XSD_STRING,
-        "boolean" => OType::XSD_BOOLEAN,
-        "integer" => OType::XSD_INTEGER,
-        "long" => OType::XSD_LONG,
-        "decimal" => OType::XSD_DECIMAL,
-        "double" => OType::XSD_DOUBLE,
-        "float" => OType::XSD_FLOAT,
-        "dateTime" => OType::XSD_DATE_TIME,
-        "date" => OType::XSD_DATE,
-        "time" => OType::XSD_TIME,
-        "gYear" => OType::XSD_G_YEAR,
-        "gYearMonth" => OType::XSD_G_YEAR_MONTH,
-        "gMonth" => OType::XSD_G_MONTH,
-        "gDay" => OType::XSD_G_DAY,
-        "gMonthDay" => OType::XSD_G_MONTH_DAY,
-        "yearMonthDuration" => OType::XSD_YEAR_MONTH_DURATION,
-        "dayTimeDuration" => OType::XSD_DAY_TIME_DURATION,
-        _ => return None,
-    };
-    Some(ot)
+    if let Some(local) = iri.strip_prefix(XSD_NS) {
+        let ot = match local {
+            "int" => OType::XSD_INT,
+            "short" => OType::XSD_SHORT,
+            "byte" => OType::XSD_BYTE,
+            "unsignedLong" => OType::XSD_UNSIGNED_LONG,
+            "unsignedInt" => OType::XSD_UNSIGNED_INT,
+            "unsignedShort" => OType::XSD_UNSIGNED_SHORT,
+            "unsignedByte" => OType::XSD_UNSIGNED_BYTE,
+            "nonNegativeInteger" => OType::XSD_NON_NEGATIVE_INTEGER,
+            "positiveInteger" => OType::XSD_POSITIVE_INTEGER,
+            "nonPositiveInteger" => OType::XSD_NON_POSITIVE_INTEGER,
+            "negativeInteger" => OType::XSD_NEGATIVE_INTEGER,
+            "anyURI" => OType::XSD_ANY_URI,
+            "normalizedString" => OType::XSD_NORMALIZED_STRING,
+            "token" => OType::XSD_TOKEN,
+            "language" => OType::XSD_LANGUAGE,
+            "base64Binary" => OType::XSD_BASE64_BINARY,
+            "hexBinary" => OType::XSD_HEX_BINARY,
+            "duration" => OType::XSD_DURATION,
+            "string" => OType::XSD_STRING,
+            "boolean" => OType::XSD_BOOLEAN,
+            "integer" => OType::XSD_INTEGER,
+            "long" => OType::XSD_LONG,
+            "decimal" => OType::XSD_DECIMAL,
+            "double" => OType::XSD_DOUBLE,
+            "float" => OType::XSD_FLOAT,
+            "dateTime" => OType::XSD_DATE_TIME,
+            "date" => OType::XSD_DATE,
+            "time" => OType::XSD_TIME,
+            "gYear" => OType::XSD_G_YEAR,
+            "gYearMonth" => OType::XSD_G_YEAR_MONTH,
+            "gMonth" => OType::XSD_G_MONTH,
+            "gDay" => OType::XSD_G_DAY,
+            "gMonthDay" => OType::XSD_G_MONTH_DAY,
+            "yearMonthDuration" => OType::XSD_YEAR_MONTH_DURATION,
+            "dayTimeDuration" => OType::XSD_DAY_TIME_DURATION,
+            _ => return None,
+        };
+        return Some(ot);
+    }
+
+    // Non-XSD well-known datatypes: canonical IRI or legacy JSON-LD shorthand.
+    match iri {
+        fluree_vocab::rdf::JSON | "@json" => Some(OType::RDF_JSON),
+        fluree_vocab::fluree::EMBEDDING_VECTOR | "@vector" => Some(OType::VECTOR),
+        fluree_vocab::fluree::FULL_TEXT | "@fulltext" => Some(OType::FULLTEXT),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

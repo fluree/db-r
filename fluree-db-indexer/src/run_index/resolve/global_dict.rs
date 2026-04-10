@@ -1023,8 +1023,8 @@ pub(crate) fn new_datatype_dict() -> PredicateDict {
     d.get_or_insert(fluree_vocab::xsd::DATE); // 9
     d.get_or_insert(fluree_vocab::xsd::TIME); // 10
     d.get_or_insert(fluree_vocab::rdf::LANG_STRING); // 11
-    d.get_or_insert("@json"); // 12
-    d.get_or_insert("@vector"); // 13
+    d.get_or_insert(fluree_vocab::rdf::JSON); // 12
+    d.get_or_insert(fluree_vocab::fluree::EMBEDDING_VECTOR); // 13
     d.get_or_insert(fluree_vocab::fluree::FULL_TEXT); // 14
     debug_assert_eq!(d.len(), 15);
     d
@@ -1595,9 +1595,12 @@ mod tests {
             d.get(fluree_vocab::rdf::LANG_STRING),
             Some(DatatypeDictId::LANG_STRING.as_u16() as u32)
         );
-        assert_eq!(d.get("@json"), Some(DatatypeDictId::JSON.as_u16() as u32));
         assert_eq!(
-            d.get("@vector"),
+            d.get(fluree_vocab::rdf::JSON),
+            Some(DatatypeDictId::JSON.as_u16() as u32)
+        );
+        assert_eq!(
+            d.get(fluree_vocab::fluree::EMBEDDING_VECTOR),
             Some(DatatypeDictId::VECTOR.as_u16() as u32)
         );
         assert_eq!(
