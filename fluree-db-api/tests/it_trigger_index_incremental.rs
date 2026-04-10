@@ -109,7 +109,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
     let storage = CountingStorage::new();
     let nameservice = MemoryNameService::new();
 
-    let mut fluree: Fluree<CountingStorage, MemoryNameService> =
+    let mut fluree: Fluree<MemoryNameService> =
         Fluree::new(ConnectionConfig::memory(), storage.clone(), nameservice.clone());
 
     // Use tiny leaflets/leaves so we can get multi-leaf indexes with small data.
@@ -152,12 +152,12 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             ledger = r1.ledger;
 
             // First trigger builds the initial full index (no prior root).
-            let before1 = fluree.storage().snapshot_counts();
+            let before1 = storage.snapshot_counts();
             let res1 = fluree
                 .trigger_index(ledger_id, TriggerIndexOptions::default())
                 .await
                 .expect("trigger_index #1");
-            let after1 = fluree.storage().snapshot_counts();
+            let after1 = storage.snapshot_counts();
             let delta1_leaf = after1.0 - before1.0;
             assert!(
                 delta1_leaf >= 8,
@@ -180,12 +180,12 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             let r2 = fluree.insert(ledger, &tx2).await.expect("update insert");
             ledger = r2.ledger;
 
-            let before2 = fluree.storage().snapshot_counts();
+            let before2 = storage.snapshot_counts();
             let res2 = fluree
                 .trigger_index(ledger_id, TriggerIndexOptions::default())
                 .await
                 .expect("trigger_index #2");
-            let after2 = fluree.storage().snapshot_counts();
+            let after2 = storage.snapshot_counts();
             let delta2_leaf = after2.0 - before2.0;
             // Second run should be incremental: it should write *far fewer* index leaves
             // than the initial full build.

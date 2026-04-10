@@ -6,9 +6,8 @@ use crate::{
     ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result, Storage,
 };
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + GraphSourcePublisher + Clone + Send + Sync + 'static,
 {
     /// Create a builder for querying nameservice metadata.
@@ -47,7 +46,7 @@ where
     /// - `f:branch` - Branch name
     /// - `f:graphSourceConfig` - Configuration
     /// - `f:graphSourceDependencies` - Source ledgers
-    pub fn nameservice_query(&self) -> NameserviceQueryBuilder<'_, S, N> {
+    pub fn nameservice_query(&self) -> NameserviceQueryBuilder<'_, N> {
         NameserviceQueryBuilder::new(self)
     }
 

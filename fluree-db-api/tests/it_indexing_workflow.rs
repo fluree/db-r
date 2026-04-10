@@ -401,10 +401,7 @@ fn admin_alias(name: &str) -> String {
 }
 
 async fn seed_some_commits(
-    fluree: &Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree: &Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     ledger_id: &str,
     n: usize,
 ) -> LedgerState {

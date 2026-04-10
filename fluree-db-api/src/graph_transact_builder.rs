@@ -46,18 +46,17 @@ use fluree_db_transact::{CommitOpts, TxnOpts};
 ///     .stage()
 ///     .await?;
 /// ```
-pub struct GraphTransactBuilder<'a, 'g, S: Storage + 'static, N> {
-    graph: &'g Graph<'a, S, N>,
+pub struct GraphTransactBuilder<'a, 'g, N> {
+    graph: &'g Graph<'a, N>,
     core: TransactCore<'g>,
 }
 
-impl<'a, 'g, S, N> GraphTransactBuilder<'a, 'g, S, N>
+impl<'a, 'g, N> GraphTransactBuilder<'a, 'g, N>
 where
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Graph::transact()`).
-    pub(crate) fn new(graph: &'g Graph<'a, S, N>) -> Self {
+    pub(crate) fn new(graph: &'g Graph<'a, N>) -> Self {
         Self {
             graph,
             core: TransactCore::new(),
@@ -177,7 +176,7 @@ where
     ///
     /// let preview = staged.query().jsonld(&q).execute().await?;
     /// ```
-    pub async fn stage(self) -> Result<StagedGraph<'a, S, N>> {
+    pub async fn stage(self) -> Result<StagedGraph<'a, N>> {
         self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
@@ -262,15 +261,14 @@ where
 ///
 /// let preview = staged.query().jsonld(&q).execute().await?;
 /// ```
-pub struct StagedGraph<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct StagedGraph<'a, N> {
+    fluree: &'a Fluree<N>,
     staged: Staged,
     staged_view: GraphDb,
 }
 
-impl<'a, S, N> StagedGraph<'a, S, N>
+impl<'a, N> StagedGraph<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a query builder that sees the staged changes.
@@ -280,7 +278,7 @@ where
     /// ```ignore
     /// let preview = staged.query().jsonld(&q).execute().await?;
     /// ```
-    pub fn query(&self) -> GraphSnapshotQueryBuilder<'a, '_, S, N> {
+    pub fn query(&self) -> GraphSnapshotQueryBuilder<'a, '_, N> {
         GraphSnapshotQueryBuilder::new_from_parts(self.fluree, &self.staged_view)
     }
 

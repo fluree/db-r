@@ -8,9 +8,8 @@ use crate::{
 
 use fluree_db_query::parse::parse_query;
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: crate::NameService
         + crate::Publisher
         + crate::GraphSourcePublisher

@@ -99,9 +99,8 @@ pub struct RebaseReport {
 // Orchestration
 // ---------------------------------------------------------------------------
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + 'static,
 {
     /// Rebase a branch onto its source branch's current HEAD.
@@ -297,7 +296,7 @@ where
 
     /// The actual replay loop + finalization, extracted so the caller can
     /// wrap it in a snapshot/rollback guard.
-    async fn run_replay(&self, ctx: &ReplayContext<'_, S>) -> Result<RebaseReport> {
+    async fn run_replay(&self, ctx: &ReplayContext<'_>) -> Result<RebaseReport> {
         let mut current_state = LedgerState::load(
             &self.nameservice,
             ctx.source_id,
@@ -620,13 +619,13 @@ where
 
 /// Context for the replay loop, bundling references that would otherwise
 /// require 10+ parameters.
-struct ReplayContext<'a, S: Storage> {
+struct ReplayContext<'a> {
     branch_id: &'a str,
     branch_record: &'a fluree_db_nameservice::NsRecord,
     source_id: &'a str,
     source_head_id: &'a ContentId,
     source_head_t: i64,
-    branch_store: &'a fluree_db_core::BranchedContentStore<S>,
+    branch_store: &'a fluree_db_core::BranchedContentStore<std::sync::Arc<dyn Storage>>,
     summaries: &'a [CommitSummary],
     strategy: &'a ConflictStrategy,
     total_commits: usize,

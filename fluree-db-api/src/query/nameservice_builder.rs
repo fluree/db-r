@@ -87,18 +87,17 @@ use serde_json::json;
 /// - `f:graphSourceDependencies` - Source ledger dependencies
 /// - `f:graphSourceIndex` - Index address
 /// - `f:graphSourceIndexT` - Index t value
-pub struct NameserviceQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct NameserviceQueryBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     core: QueryCore<'a>,
 }
 
-impl<'a, S, N> NameserviceQueryBuilder<'a, S, N>
+impl<'a, N> NameserviceQueryBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + GraphSourcePublisher + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::nameservice_query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>) -> Self {
         Self {
             fluree,
             core: QueryCore::new(),
@@ -330,7 +329,7 @@ mod tests {
     use fluree_db_core::{ContentId, ContentKind};
     use fluree_db_nameservice::{memory::MemoryNameService, GraphSourceType, Publisher};
 
-    async fn setup_ns_with_records() -> Fluree<fluree_db_core::MemoryStorage, MemoryNameService> {
+    async fn setup_ns_with_records() -> Fluree<MemoryNameService> {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Create some ledger records

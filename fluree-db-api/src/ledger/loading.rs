@@ -9,9 +9,8 @@ use fluree_db_core::ContentStore;
 use fluree_db_core::DictNovelty;
 use fluree_db_nameservice::{NameServiceError, NsRecord, Publisher};
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Load a ledger by address (e.g., "mydb:main")
@@ -198,9 +197,8 @@ where
 // Ledger Creation
 // =============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher,
 {
     /// Create a new empty ledger with genesis state
@@ -458,9 +456,8 @@ where
     }
 }
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// List all non-retracted branches for a ledger.

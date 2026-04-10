@@ -112,9 +112,8 @@ pub struct PushedHead {
 ///
 /// This acquires the ledger write mutex for the duration of validation + publish,
 /// so pushes are serialized with normal transactions.
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync + 'static,
 {
     pub async fn push_commits_with_handle(
@@ -752,14 +751,15 @@ async fn is_currently_asserted(
     Ok(last_t.is_some() && last_op)
 }
 
-async fn write_required_blobs<
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
->(
+async fn write_required_blobs<S>(
     storage: &S,
     ledger_id: &str,
     provided: &HashMap<String, Base64Bytes>,
     decoded: &[PushCommitDecoded],
-) -> std::result::Result<(), PushError> {
+) -> std::result::Result<(), PushError>
+where
+    S: Storage + Send + Sync,
+{
     // Build required set (txn CID strings, for now).
     let mut required: HashSet<String> = HashSet::new();
     for c in decoded {
@@ -1011,9 +1011,8 @@ pub struct ExportCommitsResponse {
 /// regardless of total ledger size.
 ///
 /// Commits are returned newest → oldest. The client reverses for import.
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync,
 {
     pub async fn export_commit_range(
@@ -1176,9 +1175,8 @@ pub struct CommitImportResult {
     pub indexing: IndexingStatus,
 }
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync,
 {
     /// Bulk-import commit blobs to local CAS (clone path).

@@ -43,9 +43,8 @@ use tracing::{info, warn};
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Create a vector similarity search index.
@@ -309,9 +308,8 @@ where
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + GraphSourcePublisher,
 {
     /// Load a vector index from storage (head snapshot).
@@ -402,9 +400,8 @@ where
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Sync a vector index to catch up with ledger updates.

@@ -248,19 +248,18 @@ impl std::fmt::Debug for Staged {
 ///     .execute().await?;
 /// let ledger = result.ledger;
 /// ```
-pub struct OwnedTransactBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct OwnedTransactBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     ledger: LedgerState,
     core: TransactCore<'a>,
 }
 
-impl<'a, S, N> OwnedTransactBuilder<'a, S, N>
+impl<'a, N> OwnedTransactBuilder<'a, N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
 {
     /// Create a new builder (called by `Fluree::stage_owned()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger: LedgerState) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, ledger: LedgerState) -> Self {
         Self {
             fluree,
             ledger,
@@ -598,19 +597,18 @@ where
 ///     .insert(&data)
 ///     .execute().await?;
 /// ```
-pub struct RefTransactBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct RefTransactBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     handle: &'a LedgerHandle,
     core: TransactCore<'a>,
 }
 
-impl<'a, S, N> RefTransactBuilder<'a, S, N>
+impl<'a, N> RefTransactBuilder<'a, N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::stage()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, handle: &'a LedgerHandle) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, handle: &'a LedgerHandle) -> Self {
         Self {
             fluree,
             handle,
@@ -714,13 +712,12 @@ where
 ///
 /// This is the shared logic for `RefTransactBuilder::execute()` and
 /// `GraphTransactBuilder::commit()`.
-pub(crate) async fn commit_with_handle<S, N>(
-    fluree: &Fluree<S, N>,
+pub(crate) async fn commit_with_handle<N>(
+    fluree: &Fluree<N>,
     handle: &LedgerHandle,
     core: TransactCore<'_>,
 ) -> Result<TransactResultRef>
 where
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + Clone + Send + Sync + 'static,
 {
     core.validate().map_err(ApiError::Builder)?;

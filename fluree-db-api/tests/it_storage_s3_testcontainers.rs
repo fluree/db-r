@@ -136,7 +136,7 @@ async fn start_localstack(
 fn build_fluree(
     storage: S3Storage,
     nameservice: DynamoDbNameService,
-) -> Fluree<S3Storage, DynamoDbNameService> {
+) -> Fluree<DynamoDbNameService> {
     Fluree::new(ConnectionConfig::default(), storage, nameservice)
 }
 

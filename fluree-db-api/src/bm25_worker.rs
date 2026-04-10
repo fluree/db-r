@@ -260,20 +260,19 @@ impl Bm25WorkerHandle {
 ///
 /// Monitors nameservice events and automatically syncs BM25 indexes when their
 /// source ledgers are updated.
-pub struct Bm25MaintenanceWorker<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, N>,
+pub struct Bm25MaintenanceWorker<'a, N> {
+    fluree: &'a crate::Fluree<N>,
     config: Bm25WorkerConfig,
     state: Rc<RefCell<Bm25WorkerState>>,
     stop_requested: Rc<RefCell<bool>>,
 }
 
-impl<'a, S, N> Bm25MaintenanceWorker<'a, S, N>
+impl<'a, N> Bm25MaintenanceWorker<'a, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher + Publication,
 {
     /// Create a new maintenance worker.
-    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
         Self {
             fluree,
             config: Bm25WorkerConfig::default(),
@@ -283,7 +282,7 @@ where
     }
 
     /// Create a new maintenance worker with custom config.
-    pub fn with_config(fluree: &'a crate::Fluree<S, N>, config: Bm25WorkerConfig) -> Self {
+    pub fn with_config(fluree: &'a crate::Fluree<N>, config: Bm25WorkerConfig) -> Self {
         Self {
             fluree,
             config,

@@ -32,9 +32,8 @@ enum GraphRef {
     Named(String),
 }
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Split a graph reference like `ledger:main#txn-meta` into (ledger_id, graph_ref).
@@ -502,9 +501,8 @@ where
 // Graph Source Resolution (requires GraphSourcePublisher)
 // ============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + fluree_db_nameservice::GraphSourcePublisher + Clone + Send + Sync + 'static,
 {
     /// Load a graph view, falling back to graph source resolution.
@@ -545,9 +543,8 @@ where
 // Policy Wrapping
 // ============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Build policy from options and wrap a view.
@@ -621,9 +618,8 @@ where
 // Reasoning Wrapping
 // ============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Wrap a view with default reasoning modes.

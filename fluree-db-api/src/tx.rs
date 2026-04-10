@@ -803,9 +803,8 @@ fn convert_named_graphs_to_templates(
     Ok((templates, graph_delta))
 }
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
 {
     /// Stage a transaction against a ledger (no persistence).
@@ -1918,9 +1917,8 @@ where
     }
 }
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher,
 {
     /// Update data using a transaction that specifies the ledger ID.

@@ -56,18 +56,18 @@ use fluree_db_query::vector::{VectorIndexProvider, VectorSearchHit, VectorSearch
 /// let mut ctx = ExecutionContext::new(&db, &vars);
 /// ctx.bm25_provider = Some(&provider);
 /// ```
-pub struct FlureeIndexProvider<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, N>,
+pub struct FlureeIndexProvider<'a, N> {
+    fluree: &'a crate::Fluree<N>,
 }
 
-impl<'a, S: Storage + 'static, N> FlureeIndexProvider<'a, S, N> {
+impl<'a, N> FlureeIndexProvider<'a, N> {
     /// Create a new index provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
         Self { fluree }
     }
 }
 
-impl<S: Storage + 'static, N> std::fmt::Debug for FlureeIndexProvider<'_, S, N> {
+impl<N> std::fmt::Debug for FlureeIndexProvider<'_, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeIndexProvider")
             .finish_non_exhaustive()
@@ -75,9 +75,8 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeIndexProvider<'_, S, N> 
 }
 
 #[async_trait]
-impl<S, N> Bm25IndexProvider for FlureeIndexProvider<'_, S, N>
+impl<N> Bm25IndexProvider for FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Load a BM25 index for query execution with time-travel support.
@@ -214,9 +213,8 @@ where
 }
 
 #[async_trait]
-impl<S, N> Bm25SearchProvider for FlureeIndexProvider<'_, S, N>
+impl<N> Bm25SearchProvider for FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Execute a BM25 search with time-travel support.
@@ -292,9 +290,8 @@ where
     }
 }
 
-impl<'a, S, N> FlureeIndexProvider<'a, S, N>
+impl<'a, N> FlureeIndexProvider<'a, N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Get deployment configuration for a graph source.
@@ -325,9 +322,8 @@ where
     }
 }
 
-impl<S, N> FlureeIndexProvider<'_, S, N>
+impl<N> FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Selective search for v4 chunked snapshots.
@@ -436,9 +432,8 @@ fn parse_deployment_from_gs_config(config_json: &str) -> QueryResult<SearchDeplo
 
 #[cfg(feature = "vector")]
 #[async_trait]
-impl<S, N> VectorIndexProvider for FlureeIndexProvider<'_, S, N>
+impl<N> VectorIndexProvider for FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
 {
     /// Execute a vector similarity search with deployment routing and time-travel support.
@@ -506,9 +501,8 @@ where
 }
 
 #[cfg(feature = "vector")]
-impl<'a, S, N> FlureeIndexProvider<'a, S, N>
+impl<'a, N> FlureeIndexProvider<'a, N>
 where
-    S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
 {
     /// Embedded vector search implementation (head-only).

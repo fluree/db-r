@@ -31,7 +31,7 @@
 //! even though chunk parsing is parallel.
 
 use crate::error::ApiError;
-use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
+use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind, ContentStore, Storage};
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -649,16 +649,15 @@ fn resolve_chunk_source(
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct ImportBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a super::Fluree<S, N>,
+pub struct ImportBuilder<'a, N> {
+    fluree: &'a super::Fluree<N>,
     ledger_id: String,
     import_path: PathBuf,
     config: ImportConfig,
 }
 
-impl<'a, S, N> ImportBuilder<'a, S, N>
+impl<'a, N> ImportBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
         + fluree_db_nameservice::ConfigPublisher
@@ -668,7 +667,7 @@ where
         + 'static,
 {
     pub(crate) fn new(
-        fluree: &'a super::Fluree<S, N>,
+        fluree: &'a super::Fluree<N>,
         ledger_id: String,
         import_path: PathBuf,
     ) -> Self {
@@ -798,24 +797,22 @@ where
 /// Intermediate builder returned by `fluree.create("mydb")`.
 ///
 /// Supports `.import(path)` for bulk import, or `.execute()` for empty ledger creation.
-pub struct CreateBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a super::Fluree<S, N>,
+pub struct CreateBuilder<'a, N> {
+    fluree: &'a super::Fluree<N>,
     ledger_id: String,
 }
 
-impl<'a, S, N> CreateBuilder<'a, S, N>
+impl<'a, N> CreateBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(fluree: &'a super::Fluree<S, N>, ledger_id: String) -> Self {
+    pub(crate) fn new(fluree: &'a super::Fluree<N>, ledger_id: String) -> Self {
         Self { fluree, ledger_id }
     }
 }
 
-impl<'a, S, N> CreateBuilder<'a, S, N>
+impl<'a, N> CreateBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
         + fluree_db_nameservice::ConfigPublisher
@@ -828,7 +825,7 @@ where
     ///
     /// `path` can be a directory containing `.ttl`/`.trig`/`.jsonld` files
     /// (sorted lexicographically), or a single `.ttl`/`.jsonld` file.
-    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, S, N> {
+    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, N> {
         ImportBuilder::new(self.fluree, self.ledger_id, path.as_ref().to_path_buf())
     }
 }
@@ -1421,7 +1418,7 @@ where
         commit_metas: &mut Vec<CommitMeta>,
     ) -> std::result::Result<usize, ImportError>
     where
-        S: Storage + Clone + Send + Sync + 'static,
+        S: Storage + ContentAddressedWrite,
         N: NameService + Publisher,
     {
         // Serial commit loop: receive parsed chunks, reorder, finalize in order.

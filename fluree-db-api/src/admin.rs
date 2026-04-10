@@ -208,10 +208,9 @@ fn normalize_ledger_id(ledger_id: &str) -> String {
 // Fluree Drop Implementation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
     // NOTE: Storage trait provides full read/write/delete capabilities.
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + Send + Sync + 'static,
 {
     /// Drop a ledger
@@ -595,9 +594,8 @@ where
 // Graph Source Drop Implementation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Drop a graph source
@@ -691,9 +689,8 @@ where
 // Index Status and Trigger (minimal bounds - not native-only)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Get current indexing status for a ledger
@@ -964,9 +961,8 @@ where
 // Reindex (requires AdminPublisher for allow-equal publish)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + AdminPublisher,
 {
     /// Full offline reindex from commit history
@@ -1083,9 +1079,8 @@ where
 // Ledger Config
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + fluree_db_nameservice::ConfigPublisher,
 {
     /// Store a `LedgerConfig` blob in CAS and update the config_id on the

@@ -29,10 +29,10 @@ use fluree_db_api::FileStorage;
 use fluree_db_nameservice::file::FileNameService;
 
 /// File-backed Fluree instance type (transaction server or peer with shared storage)
-pub type FileFluree = Fluree<FileStorage, FileNameService>;
+pub type FileFluree = Fluree<FileNameService>;
 
 /// Proxy-backed Fluree instance type (peer with proxy storage access)
-pub type ProxyFluree = Fluree<ProxyStorage, ProxyNameService>;
+pub type ProxyFluree = Fluree<ProxyNameService>;
 
 /// Unified Fluree instance wrapper
 ///
@@ -512,11 +512,10 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn spawn_leaflet_cache_stats_logger<S, N>(
-        fluree: Arc<Fluree<S, N>>,
+    fn spawn_leaflet_cache_stats_logger<N>(
+        fluree: Arc<Fluree<N>>,
     ) -> tokio::task::JoinHandle<()>
     where
-        S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
         N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
     {
         // Keep logging lightweight and periodic: one line per minute.
@@ -659,7 +658,7 @@ impl AppState {
         }
 
         let fluree = Arc::new(builder.build()?);
-        let handle = Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
+        let handle = Self::spawn_leaflet_cache_stats_logger::<_>(Arc::clone(&fluree));
         Ok((FlureeInstance::File(fluree), handle))
     }
 
@@ -683,7 +682,7 @@ impl AppState {
 
         tracing::info!("Initialized peer with proxy storage mode");
         let fluree = Arc::new(fluree);
-        let handle = Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
+        let handle = Self::spawn_leaflet_cache_stats_logger::<_>(Arc::clone(&fluree));
         Ok((FlureeInstance::Proxy(fluree), handle))
     }
 

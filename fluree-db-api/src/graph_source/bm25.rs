@@ -55,9 +55,8 @@ fn snapshot_retention() -> usize {
 // BM25 Index Creation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Create a BM25 full-text search index.
@@ -430,9 +429,8 @@ where
 // BM25 Manifest Loading (read-only helpers)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + GraphSourcePublisher,
 {
     /// Load the current BM25 manifest from CAS, or create a new empty one.
@@ -487,9 +485,8 @@ where
 // BM25 Index Loading (for queries)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + GraphSourcePublisher,
 {
     /// Select the best BM25 snapshot for a given `as_of_t`.
@@ -837,9 +834,8 @@ where
 // BM25 Index Sync (Maintenance)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Sync a BM25 index to catch up with ledger updates.
@@ -1364,7 +1360,6 @@ where
     /// 2. Deletes all snapshot files from storage
     pub async fn drop_full_text_index(&self, graph_source_id: &str) -> Result<Bm25DropResult>
     where
-        S: StorageWrite,
     {
         info!(graph_source_id = %graph_source_id, "Dropping BM25 full-text index");
 

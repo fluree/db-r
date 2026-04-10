@@ -126,8 +126,8 @@ pub async fn run(
 /// Prints effective import settings (memory budget, parallelism, chunk size,
 /// run budget) to stderr so the user can cancel if the values look excessive.
 /// Shows a live progress bar unless `quiet` is set.
-async fn run_bulk_import<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+async fn run_bulk_import<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &str,
     path: &Path,
     fluree_dir: &Path,
@@ -136,7 +136,6 @@ async fn run_bulk_import<S, N>(
     import_opts: &ImportOpts,
 ) -> CliResult<()>
 where
-    S: fluree_db_core::storage::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_nameservice::NameService
         + fluree_db_nameservice::Publisher
         + fluree_db_nameservice::ConfigPublisher
@@ -502,19 +501,13 @@ fn is_flpack_path(path: &Path) -> bool {
 /// Reads the pack stream from a local file, writes all CAS objects into the
 /// local storage under the given `ledger` name, then sets the commit and index
 /// heads from the embedded nameservice manifest.
-async fn run_flpack_import<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+async fn run_flpack_import<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &str,
     path: &Path,
     dirs: &FlureeDir,
 ) -> CliResult<()>
 where
-    S: fluree_db_core::storage::Storage
-        + fluree_db_core::storage::ContentAddressedWrite
-        + Clone
-        + Send
-        + Sync
-        + 'static,
     N: fluree_db_nameservice::NameService
         + fluree_db_nameservice::Publisher
         + fluree_db_nameservice::ConfigPublisher

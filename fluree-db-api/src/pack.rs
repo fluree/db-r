@@ -282,14 +282,13 @@ pub fn validate_pack_request(request: &PackRequest) -> std::result::Result<(), S
 /// frame before returning.
 ///
 /// This function is meant to be `tokio::spawn`ed by the HTTP handler.
-pub async fn stream_pack<S, N>(
-    fluree: &crate::Fluree<S, N>,
+pub async fn stream_pack<N>(
+    fluree: &crate::Fluree<N>,
     handle: &LedgerHandle,
     request: &PackRequest,
     frame_tx: mpsc::Sender<PackChunk>,
 ) -> PackStreamResult
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync,
 {
     let result = stream_pack_inner(fluree, handle, request, &frame_tx).await;
@@ -318,14 +317,13 @@ where
     }
 }
 
-async fn stream_pack_inner<S, N>(
-    fluree: &crate::Fluree<S, N>,
+async fn stream_pack_inner<N>(
+    fluree: &crate::Fluree<N>,
     handle: &LedgerHandle,
     request: &PackRequest,
     frame_tx: &mpsc::Sender<PackChunk>,
 ) -> std::result::Result<PackStreamResult, String>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync,
 {
     let ledger_id = handle.ledger_id();

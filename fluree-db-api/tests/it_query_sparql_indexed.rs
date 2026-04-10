@@ -21,7 +21,7 @@ use support::{
     normalize_sparql_bindings, start_background_indexer_local, trigger_index_and_wait_outcome,
 };
 
-type MemoryFluree = fluree_db_api::Fluree<MemoryStorage, MemoryNameService>;
+type MemoryFluree = fluree_db_api::Fluree<MemoryNameService>;
 type MemoryLedger = LedgerState;
 
 // =============================================================================

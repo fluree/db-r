@@ -28,7 +28,7 @@ use fluree_db_api::{GraphDb, QueryResult};
 
 /// Type alias for memory-backed Fluree instance.
 pub type MemoryFluree =
-    fluree_db_api::Fluree<MemoryStorage, fluree_db_nameservice::memory::MemoryNameService>;
+    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
 
 /// Type alias for memory-backed ledger state.
 pub type MemoryLedger = LedgerState;
@@ -64,13 +64,12 @@ pub fn graphdb_from_ledger(ledger: &LedgerState) -> GraphDb {
 }
 
 /// Execute a JSON-LD query against a loaded `LedgerState` via the normal `GraphDb` query path.
-pub async fn query_jsonld<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+pub async fn query_jsonld<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &LedgerState,
     query_json: &JsonValue,
 ) -> fluree_db_api::Result<QueryResult>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_api::NameService,
 {
     let db = graphdb_from_ledger(ledger);
@@ -78,13 +77,12 @@ where
 }
 
 /// Execute a SPARQL query against a loaded `LedgerState` via the normal `GraphDb` query path.
-pub async fn query_sparql<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+pub async fn query_sparql<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &LedgerState,
     sparql: &str,
 ) -> fluree_db_api::Result<QueryResult>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_api::NameService,
 {
     let db = graphdb_from_ledger(ledger);
@@ -92,13 +90,12 @@ where
 }
 
 /// Execute a JSON-LD query and return formatted JSON-LD output (async formatting path).
-pub async fn query_jsonld_formatted<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+pub async fn query_jsonld_formatted<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &LedgerState,
     query_json: &JsonValue,
 ) -> fluree_db_api::Result<JsonValue>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_api::NameService,
 {
     let db = graphdb_from_ledger(ledger);
@@ -107,14 +104,13 @@ where
 }
 
 /// Execute a JSON-LD query and format using a provided formatter config (async).
-pub async fn query_jsonld_format<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+pub async fn query_jsonld_format<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &LedgerState,
     query_json: &JsonValue,
     config: &fluree_db_api::FormatterConfig,
 ) -> fluree_db_api::Result<JsonValue>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_api::NameService,
 {
     let db = graphdb_from_ledger(ledger);
@@ -123,14 +119,13 @@ where
 }
 
 /// Execute a JSON-LD query with policy enforcement via view composition.
-pub async fn query_jsonld_with_policy<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+pub async fn query_jsonld_with_policy<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &LedgerState,
     query_json: &JsonValue,
     policy: &fluree_db_policy::PolicyContext,
 ) -> fluree_db_api::Result<QueryResult>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_api::NameService,
 {
     let db = graphdb_from_ledger(ledger).with_policy(Arc::new(policy.clone()));
@@ -141,13 +136,12 @@ where
 ///
 /// This uses the public builder path (`GraphDb::query(...).execute_tracked()`), not
 /// the `Fluree::query_ledger_tracked` convenience.
-pub async fn query_jsonld_tracked<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+pub async fn query_jsonld_tracked<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger: &LedgerState,
     query_json: &JsonValue,
 ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_api::NameService,
 {
     let db = graphdb_from_ledger(ledger);
@@ -167,12 +161,11 @@ pub fn genesis_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
 /// The ledger ID is normalized to canonical `name:branch` form (e.g., `"mydb"` → `"mydb:main"`)
 /// so that the `LedgerSnapshot.ledger_id` matches the canonical form used by the nameservice and
 /// content-addressed storage paths.
-pub fn genesis_ledger_for_fluree<S, N>(
-    _fluree: &fluree_db_api::Fluree<S, N>,
+pub fn genesis_ledger_for_fluree<N>(
+    _fluree: &fluree_db_api::Fluree<N>,
     ledger_id: &str,
 ) -> LedgerState
 where
-    S: fluree_db_core::Storage + Clone,
     N: fluree_db_api::NameService,
 {
     let canonical = fluree_db_core::ledger_id::normalize_ledger_id(ledger_id)

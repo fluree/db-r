@@ -14,10 +14,7 @@ use serde_json::json;
 use support::{graphdb_from_ledger, start_background_indexer_local};
 
 async fn index_and_load_db(
-    fluree: &fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     handle: &fluree_db_indexer::IndexerHandle,
     ledger: LedgerState,
     t: i64,

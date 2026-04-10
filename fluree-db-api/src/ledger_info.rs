@@ -977,20 +977,19 @@ use fluree_db_nameservice::NameService;
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct LedgerInfoBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct LedgerInfoBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     ledger_id: String,
     context: Option<&'a JsonValue>,
     options: LedgerInfoOptions,
 }
 
-impl<'a, S, N> LedgerInfoBuilder<'a, S, N>
+impl<'a, N> LedgerInfoBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::ledger_info()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_id: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, ledger_id: String) -> Self {
         Self {
             fluree,
             ledger_id,

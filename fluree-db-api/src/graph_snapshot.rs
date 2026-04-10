@@ -24,18 +24,17 @@ use crate::{Fluree, NameService, Storage};
 /// // Access the underlying view if needed
 /// let view = snapshot.db();
 /// ```
-pub struct GraphSnapshot<'a, S: Storage + 'static, N> {
-    pub(crate) fluree: &'a Fluree<S, N>,
+pub struct GraphSnapshot<'a, N> {
+    pub(crate) fluree: &'a Fluree<N>,
     pub(crate) view: GraphDb,
 }
 
-impl<'a, S, N> GraphSnapshot<'a, S, N>
+impl<'a, N> GraphSnapshot<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new snapshot (called internally by `Graph::load()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: GraphDb) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, view: GraphDb) -> Self {
         Self { fluree, view }
     }
 
@@ -47,7 +46,7 @@ where
     /// let snapshot = fluree.graph("mydb:main").load().await?;
     /// let result = snapshot.query().jsonld(&q).execute().await?;
     /// ```
-    pub fn query(&self) -> GraphSnapshotQueryBuilder<'a, '_, S, N> {
+    pub fn query(&self) -> GraphSnapshotQueryBuilder<'a, '_, N> {
         GraphSnapshotQueryBuilder::new_from_parts(self.fluree, &self.view)
     }
 

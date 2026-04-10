@@ -32,10 +32,7 @@ async fn seed(
     ledger_id: &str,
     seed_data: JsonValue,
 ) -> (
-    fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     LedgerState,
 ) {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -58,10 +55,7 @@ async fn seed(
 
 /// Helper: query a single entity by @id and return all properties.
 async fn query_entity(
-    fluree: &fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     ledger: &LedgerState,
     entity_id: &str,
 ) -> JsonValue {

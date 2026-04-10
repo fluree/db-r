@@ -20,10 +20,7 @@ use serde_json::{json, Value as JsonValue};
 // Type aliases
 // ============================================================================
 
-type MemoryFluree = fluree_db_api::Fluree<
-    fluree_db_core::MemoryStorage,
-    fluree_db_nameservice::memory::MemoryNameService,
->;
+type MemoryFluree = fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
 
 // ============================================================================
 // Configuration

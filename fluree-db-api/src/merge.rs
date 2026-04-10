@@ -40,9 +40,8 @@ pub struct MergeReport {
     pub strategy: Option<String>,
 }
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + 'static,
 {
     /// Merge a source branch into a target branch.

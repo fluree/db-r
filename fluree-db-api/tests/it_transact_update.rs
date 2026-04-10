@@ -29,10 +29,7 @@ fn ctx_ex() -> JsonValue {
 async fn seed_users(
     ledger_id: &str,
 ) -> (
-    fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     LedgerState,
 ) {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -61,10 +58,7 @@ async fn seed_users(
 }
 
 async fn query_names(
-    fluree: &fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     ledger: &LedgerState,
 ) -> Vec<String> {
     let q = json!({

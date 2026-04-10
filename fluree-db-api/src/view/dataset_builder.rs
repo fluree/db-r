@@ -91,9 +91,8 @@ macro_rules! try_single_view_from_spec {
 // Dataset View Builder
 // ============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Build a `DataSetDb` from a `DatasetSpec`.
@@ -413,7 +412,7 @@ mod tests {
         // No time spec - fast path
         let spec = DatasetSpec::new().with_default(GraphSource::new("testdb:main"));
         assert!(
-            Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(
+            Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(
                 &spec
             )
         );
@@ -422,7 +421,7 @@ mod tests {
         let spec = DatasetSpec::new()
             .with_default(GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(5)));
         assert!(
-            !Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(
+            !Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(
                 &spec
             )
         );
@@ -432,7 +431,7 @@ mod tests {
             .with_default(GraphSource::new("db1:main"))
             .with_default(GraphSource::new("db2:main"));
         assert!(
-            !Fluree::<crate::MemoryStorage, crate::MemoryNameService>::is_single_ledger_fast_path(
+            !Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(
                 &spec
             )
         );

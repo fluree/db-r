@@ -171,8 +171,8 @@ enum CommitRef {
 /// Builder for fetching and decoding a single commit.
 ///
 /// Created via [`Graph::commit()`] or [`Graph::commit_prefix()`].
-pub struct CommitBuilder<'a, 'g, S: Storage + 'static, N> {
-    graph: &'g Graph<'a, S, N>,
+pub struct CommitBuilder<'a, 'g, N> {
+    graph: &'g Graph<'a, N>,
     commit_ref: CommitRef,
     user_context: Option<ParsedContext>,
     /// Authenticated identity IRI for policy filtering.
@@ -181,12 +181,11 @@ pub struct CommitBuilder<'a, 'g, S: Storage + 'static, N> {
     policy_class: Option<String>,
 }
 
-impl<'a, 'g, S, N> CommitBuilder<'a, 'g, S, N>
+impl<'a, 'g, N> CommitBuilder<'a, 'g, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(graph: &'g Graph<'a, S, N>, commit_id: ContentId) -> Self {
+    pub(crate) fn new(graph: &'g Graph<'a, N>, commit_id: ContentId) -> Self {
         Self {
             graph,
             commit_ref: CommitRef::Exact(commit_id),
@@ -196,7 +195,7 @@ where
         }
     }
 
-    pub(crate) fn from_prefix(graph: &'g Graph<'a, S, N>, prefix: String) -> Self {
+    pub(crate) fn from_prefix(graph: &'g Graph<'a, N>, prefix: String) -> Self {
         Self {
             graph,
             commit_ref: CommitRef::Prefix(prefix),
@@ -206,7 +205,7 @@ where
         }
     }
 
-    pub(crate) fn from_t(graph: &'g Graph<'a, S, N>, t: i64) -> Self {
+    pub(crate) fn from_t(graph: &'g Graph<'a, N>, t: i64) -> Self {
         Self {
             graph,
             commit_ref: CommitRef::T(t),

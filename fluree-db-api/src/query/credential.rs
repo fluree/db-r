@@ -7,9 +7,8 @@ use crate::{ApiError, DatasetSpec, Fluree, QueryConnectionOptions, QueryResult, 
 use crate::credential;
 
 #[cfg(feature = "credential")]
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,
 {
     /// Execute a credentialed connection query

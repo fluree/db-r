@@ -48,9 +48,8 @@ pub(crate) fn maybe_wrap_for_graph_source(
 // Query Execution
 // ============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
     /// Execute a query against a GraphDb.
@@ -531,7 +530,7 @@ where
 
     /// Execute against a GraphDb with explicit R2RML provider.
     ///
-    /// Used by callers that have access to the full `Fluree<S, N>` instance
+    /// Used by callers that have access to the full `Fluree<N>` instance
     /// with `N: GraphSourcePublisher` (e.g., server query handlers with iceberg support).
     pub(crate) async fn execute_view_internal_with_r2rml<'b>(
         &self,

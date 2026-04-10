@@ -29,9 +29,8 @@ use tracing::{debug, info, warn};
 // Iceberg/R2RML Graph Source Creation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + fluree_db_core::StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Create an Iceberg graph source.
@@ -291,18 +290,18 @@ where
 /// let ctx = ExecutionContext::new(&db, &vars)
 ///     .with_r2rml_providers(&provider, &provider);
 /// ```
-pub struct FlureeR2rmlProvider<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, N>,
+pub struct FlureeR2rmlProvider<'a, N> {
+    fluree: &'a crate::Fluree<N>,
 }
 
-impl<'a, S: Storage + 'static, N> FlureeR2rmlProvider<'a, S, N> {
+impl<'a, N> FlureeR2rmlProvider<'a, N> {
     /// Create a new R2RML provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
         Self { fluree }
     }
 }
 
-impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> {
+impl<N> std::fmt::Debug for FlureeR2rmlProvider<'_, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeR2rmlProvider")
             .finish_non_exhaustive()
@@ -310,9 +309,8 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> 
 }
 
 #[async_trait]
-impl<S, N> R2rmlProvider for FlureeR2rmlProvider<'_, S, N>
+impl<N> R2rmlProvider for FlureeR2rmlProvider<'_, N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Check if a graph source has an R2RML mapping.
@@ -490,9 +488,8 @@ where
 }
 
 #[async_trait]
-impl<S, N> R2rmlTableProvider for FlureeR2rmlProvider<'_, S, N>
+impl<N> R2rmlTableProvider for FlureeR2rmlProvider<'_, N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Scan an Iceberg table and return column batches.

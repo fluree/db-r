@@ -27,12 +27,11 @@ use serde_json::json;
 use std::collections::HashSet;
 
 /// Export a ledger to an in-memory `.flpack` byte buffer.
-async fn export_ledger_to_bytes<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+async fn export_ledger_to_bytes<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger_id: &str,
 ) -> Vec<u8>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: NameService + Send + Sync,
 {
     let ns_record = fluree
@@ -158,17 +157,11 @@ where
 }
 
 /// Import a `.flpack` byte buffer into a Fluree instance under the given ledger name.
-async fn import_ledger_from_bytes<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+async fn import_ledger_from_bytes<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger_id: &str,
     data: &[u8],
 ) where
-    S: fluree_db_core::Storage
-        + fluree_db_core::storage::ContentAddressedWrite
-        + Clone
-        + Send
-        + Sync
-        + 'static,
     N: NameService
         + fluree_db_nameservice::Publisher
         + fluree_db_nameservice::ConfigPublisher
