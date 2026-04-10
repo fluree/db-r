@@ -15,7 +15,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-fn test_state() -> (TempDir, Arc<AppState>) {
+async fn test_state() -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = ServerConfig {
         cors_enabled: false,
@@ -24,7 +24,7 @@ fn test_state() -> (TempDir, Arc<AppState>) {
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     (tmp, state)
 }
 
@@ -62,7 +62,7 @@ fn make_commit_bytes(t: i64, previous: Option<&ContentId>, flakes: Vec<Flake>) -
 
 #[tokio::test]
 async fn health_check_ok() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state);
 
     let resp = app
@@ -84,7 +84,7 @@ async fn health_check_ok() {
 
 #[tokio::test]
 async fn stats_ok() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state);
 
     let resp = app
@@ -109,7 +109,7 @@ async fn stats_ok() {
 
 #[tokio::test]
 async fn create_ledger_then_ledger_info() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create empty ledger - should return 201 with expected response shape
@@ -171,7 +171,7 @@ async fn create_ledger_then_ledger_info() {
 
 #[tokio::test]
 async fn insert_then_query_finds_value() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create
@@ -255,7 +255,7 @@ async fn insert_then_query_finds_value() {
 
 #[tokio::test]
 async fn ledger_with_slash_works_via_op_prefixed_routes() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger with `/` in name
@@ -323,7 +323,7 @@ async fn ledger_with_slash_works_via_op_prefixed_routes() {
 
 #[tokio::test]
 async fn push_endpoint_accepts_single_commit_and_advances_head() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create empty ledger.
@@ -399,7 +399,7 @@ async fn push_endpoint_accepts_single_commit_and_advances_head() {
 
 #[tokio::test]
 async fn push_rejects_first_commit_t_mismatch_with_409() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     let create_body = serde_json::json!({ "ledger": "push-t:main" });
@@ -445,7 +445,7 @@ async fn push_rejects_first_commit_t_mismatch_with_409() {
 
 #[tokio::test]
 async fn push_rejects_retraction_without_existing_assertion_with_422() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     let create_body = serde_json::json!({ "ledger": "push-ret:main" });
@@ -493,7 +493,7 @@ async fn push_rejects_retraction_without_existing_assertion_with_422() {
 
 #[tokio::test]
 async fn push_rejects_list_retraction_missing_meta_with_422() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create empty ledger.
@@ -578,7 +578,7 @@ async fn push_rejects_list_retraction_missing_meta_with_422() {
 
 #[tokio::test]
 async fn update_endpoint_accepts_jsonld_transactions() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create
@@ -651,7 +651,7 @@ async fn update_endpoint_accepts_jsonld_transactions() {
 
 #[tokio::test]
 async fn ledger_scoped_insert_upsert_history() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -758,7 +758,7 @@ async fn ledger_scoped_insert_upsert_history() {
 
 #[tokio::test]
 async fn sparql_query_connection_from_clause_finds_value() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create
@@ -828,7 +828,7 @@ async fn sparql_query_connection_from_clause_finds_value() {
 
 #[tokio::test]
 async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create
@@ -897,7 +897,7 @@ async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
 
 #[tokio::test]
 async fn sparql_update_on_query_endpoint_returns_bad_request() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state);
 
     // SPARQL UPDATE requests should go to /v1/fluree/update, not /v1/fluree/query.
@@ -932,7 +932,7 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
 
 #[tokio::test]
 async fn sparql_update_supports_subquery_aggregate_and_bind() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1033,7 +1033,7 @@ async fn sparql_update_supports_subquery_aggregate_and_bind() {
 
 #[tokio::test]
 async fn sparql_update_templates_support_graph_iri_blocks() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1082,7 +1082,7 @@ async fn sparql_update_templates_support_graph_iri_blocks() {
     // Named graph reads may depend on indexing; assert by inspecting the committed flakes directly.
     let handle = state
         .fluree
-        .as_file()
+        .as_direct()
         .ledger_cached("test:main")
         .await
         .unwrap();
@@ -1090,7 +1090,7 @@ async fn sparql_update_templates_support_graph_iri_blocks() {
     let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
     let expected_graph_sid = ns.sid_for_iri("http://example.org/g1");
 
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1121,7 +1121,7 @@ async fn sparql_update_templates_support_graph_iri_blocks() {
 
 #[tokio::test]
 async fn sparql_update_with_clause_scopes_default_templates_and_where() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1191,7 +1191,7 @@ async fn sparql_update_with_clause_scopes_default_templates_and_where() {
     // Assert via committed flakes (indexing is disabled in these server tests).
     let handle = state
         .fluree
-        .as_file()
+        .as_direct()
         .ledger_cached("test:main")
         .await
         .unwrap();
@@ -1202,7 +1202,7 @@ async fn sparql_update_with_clause_scopes_default_templates_and_where() {
     let s_sid = ns.sid_for_iri("http://example.org/s");
     let p_sid = ns.sid_for_iri("http://example.org/p");
 
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1231,7 +1231,7 @@ async fn sparql_update_with_clause_scopes_default_templates_and_where() {
 
 #[tokio::test]
 async fn sparql_update_using_clause_scopes_where_default_graph() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1300,7 +1300,7 @@ async fn sparql_update_using_clause_scopes_where_default_graph() {
     // Assert via committed flakes (indexing is disabled in these server tests).
     let handle = state
         .fluree
-        .as_file()
+        .as_direct()
         .ledger_cached("test:main")
         .await
         .unwrap();
@@ -1311,7 +1311,7 @@ async fn sparql_update_using_clause_scopes_where_default_graph() {
     let s_sid = ns.sid_for_iri("http://example.org/s");
     let p_sid = ns.sid_for_iri("http://example.org/p");
 
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1351,7 +1351,7 @@ async fn sparql_update_using_clause_scopes_where_default_graph() {
 
 #[tokio::test]
 async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1428,7 +1428,7 @@ async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
     // Assert via committed flakes (indexing is disabled in these server tests).
     let handle = state
         .fluree
-        .as_file()
+        .as_direct()
         .ledger_cached("test:main")
         .await
         .unwrap();
@@ -1439,7 +1439,7 @@ async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
     let a_sid = ns.sid_for_iri("http://example.org/a");
     let marker_sid = ns.sid_for_iri("http://example.org/marker");
 
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1468,7 +1468,7 @@ async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
 
 #[tokio::test]
 async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1543,7 +1543,7 @@ async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
     // The latest commit should not contain an assertion of "g2-new" in graph g2.
     let handle = state
         .fluree
-        .as_file()
+        .as_direct()
         .ledger_cached("test:main")
         .await
         .unwrap();
@@ -1554,7 +1554,7 @@ async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
     let s_sid = ns.sid_for_iri("http://example.org/s");
     let p_sid = ns.sid_for_iri("http://example.org/p");
 
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1637,7 +1637,7 @@ async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
 
 #[tokio::test]
 async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_in_where() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1717,7 +1717,7 @@ async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_
     // Assert via committed flakes (indexing is disabled in these server tests).
     let handle = state
         .fluree
-        .as_file()
+        .as_direct()
         .ledger_cached("test:main")
         .await
         .unwrap();
@@ -1728,7 +1728,7 @@ async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_
     let a_sid = ns.sid_for_iri("http://example.org/a");
     let marker_sid = ns.sid_for_iri("http://example.org/marker2");
 
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1757,7 +1757,7 @@ async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_
 
 #[tokio::test]
 async fn sparql_update_where_allows_blank_nodes() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1851,7 +1851,7 @@ async fn sparql_update_where_allows_blank_nodes() {
 
 #[tokio::test]
 async fn sparql_delete_where_allows_blank_nodes() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -1943,7 +1943,7 @@ async fn sparql_delete_where_allows_blank_nodes() {
 
 #[tokio::test]
 async fn sparql_query_generic_requires_from_clause_even_with_no_header() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // A SPARQL query without FROM on the generic endpoint should fail.
@@ -1975,7 +1975,7 @@ async fn sparql_query_generic_requires_from_clause_even_with_no_header() {
 
 #[tokio::test]
 async fn soft_drop_blocks_recreate() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create
@@ -2027,7 +2027,7 @@ async fn soft_drop_blocks_recreate() {
 
 #[tokio::test]
 async fn query_missing_ledger_is_400() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state);
 
     let query_body = serde_json::json!({
@@ -2052,7 +2052,7 @@ async fn query_missing_ledger_is_400() {
 
 #[tokio::test]
 async fn query_with_tracking_returns_headers() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -2139,7 +2139,7 @@ async fn query_with_tracking_returns_headers() {
 
 #[tokio::test]
 async fn query_with_max_fuel_returns_fuel_header() {
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state.clone());
 
     // Create ledger
@@ -2225,7 +2225,7 @@ async fn query_with_max_fuel_returns_fuel_header() {
 // Discovery endpoint: /.well-known/fluree.json
 // ============================================================================
 
-fn test_state_with_auth(
+async fn test_state_with_auth(
     events: EventsAuthMode,
     data: DataAuthMode,
     admin: AdminAuthMode,
@@ -2246,7 +2246,7 @@ fn test_state_with_auth(
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     (tmp, state)
 }
 
@@ -2267,7 +2267,7 @@ async fn get_discovery(state: Arc<AppState>) -> (StatusCode, JsonValue) {
 
 #[tokio::test]
 async fn discovery_no_auth_omits_auth_block() {
-    let (_tmp, state) = test_state(); // all auth modes None
+    let (_tmp, state) = test_state().await; // all auth modes None
     let (status, json) = get_discovery(state).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -2284,7 +2284,8 @@ async fn discovery_data_auth_required_returns_token_type() {
         EventsAuthMode::None,
         DataAuthMode::Required,
         AdminAuthMode::None,
-    );
+    )
+    .await;
     let (status, json) = get_discovery(state).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -2298,7 +2299,8 @@ async fn discovery_events_auth_optional_returns_token_type() {
         EventsAuthMode::Optional,
         DataAuthMode::None,
         AdminAuthMode::None,
-    );
+    )
+    .await;
     let (status, json) = get_discovery(state).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -2312,7 +2314,8 @@ async fn discovery_admin_auth_required_returns_token_type() {
         EventsAuthMode::None,
         DataAuthMode::None,
         AdminAuthMode::Required,
-    );
+    )
+    .await;
     let (status, json) = get_discovery(state).await;
 
     assert_eq!(status, StatusCode::OK);
@@ -2383,7 +2386,7 @@ mod storage_auth {
     }
 }
 
-fn test_state_with_storage_proxy() -> (TempDir, Arc<AppState>) {
+async fn test_state_with_storage_proxy() -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = ServerConfig {
         cors_enabled: false,
@@ -2394,7 +2397,7 @@ fn test_state_with_storage_proxy() -> (TempDir, Arc<AppState>) {
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     (tmp, state)
 }
 
@@ -2517,7 +2520,7 @@ async fn fetch_commits(
 
 #[tokio::test]
 async fn commits_endpoint_returns_paginated_commits() {
-    let (_tmp, state) = test_state_with_storage_proxy();
+    let (_tmp, state) = test_state_with_storage_proxy().await;
     let app = build_router(state);
 
     // Push 5 commits.
@@ -2560,7 +2563,7 @@ async fn commits_endpoint_returns_paginated_commits() {
 
 #[tokio::test]
 async fn commits_endpoint_cursor_stability() {
-    let (_tmp, state) = test_state_with_storage_proxy();
+    let (_tmp, state) = test_state_with_storage_proxy().await;
     let app = build_router(state);
 
     // Push 4 commits.
@@ -2619,7 +2622,7 @@ async fn commits_endpoint_cursor_stability() {
 #[tokio::test]
 async fn commits_endpoint_rejects_without_storage_proxy() {
     // Default test state has storage proxy DISABLED.
-    let (_tmp, state) = test_state();
+    let (_tmp, state) = test_state().await;
     let app = build_router(state);
 
     // Create a ledger so there's something to query.
@@ -2670,7 +2673,7 @@ async fn commits_endpoint_rejects_without_storage_proxy() {
 
 #[tokio::test]
 async fn commits_endpoint_returns_effective_limit() {
-    let (_tmp, state) = test_state_with_storage_proxy();
+    let (_tmp, state) = test_state_with_storage_proxy().await;
     let app = build_router(state);
 
     // Push 2 commits.
@@ -2686,7 +2689,7 @@ async fn commits_endpoint_returns_effective_limit() {
 
 #[tokio::test]
 async fn commits_endpoint_without_token_returns_401() {
-    let (_tmp, state) = test_state_with_storage_proxy();
+    let (_tmp, state) = test_state_with_storage_proxy().await;
     let app = build_router(state);
 
     // Storage proxy enabled but no token → 401.

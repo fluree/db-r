@@ -373,17 +373,78 @@ impl<T> NameServicePublisher for T where
 }
 
 #[derive(Clone)]
-pub struct AnyNameService(Arc<dyn NameServicePublisher>);
+pub struct AnyNameService {
+    inner: Arc<dyn NameServicePublisher>,
+    /// Optional reactive subscription capability (e.g., FileNameService supports this;
+    /// DynamoDB does not).
+    publication: Option<Arc<dyn fluree_db_nameservice::Publication>>,
+    /// Optional per-ledger config read/write capability (e.g., FileNameService,
+    /// DynamoDB support this).
+    config_publisher: Option<Arc<dyn fluree_db_nameservice::ConfigPublisher>>,
+    /// Optional admin publisher capability for operations like reindex
+    /// (e.g., FileNameService supports this).
+    admin_publisher: Option<Arc<dyn fluree_db_nameservice::AdminPublisher>>,
+}
 
 impl std::fmt::Debug for AnyNameService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("AnyNameService").field(&self.0).finish()
+        f.debug_struct("AnyNameService")
+            .field("inner", &self.inner)
+            .field("has_publication", &self.publication.is_some())
+            .field("has_config_publisher", &self.config_publisher.is_some())
+            .field("has_admin_publisher", &self.admin_publisher.is_some())
+            .finish()
     }
 }
 
 impl AnyNameService {
+    /// Create a new type-erased nameservice without optional capabilities.
     pub fn new(inner: Arc<dyn NameServicePublisher>) -> Self {
-        Self(inner)
+        Self {
+            inner,
+            publication: None,
+            config_publisher: None,
+            admin_publisher: None,
+        }
+    }
+
+    /// Set the optional `Publication` capability.
+    pub fn with_publication(mut self, p: Arc<dyn fluree_db_nameservice::Publication>) -> Self {
+        self.publication = Some(p);
+        self
+    }
+
+    /// Set the optional `ConfigPublisher` capability.
+    pub fn with_config_publisher(
+        mut self,
+        c: Arc<dyn fluree_db_nameservice::ConfigPublisher>,
+    ) -> Self {
+        self.config_publisher = Some(c);
+        self
+    }
+
+    /// Access the `Publication` capability, if available.
+    pub fn publication(&self) -> Option<&dyn fluree_db_nameservice::Publication> {
+        self.publication.as_deref()
+    }
+
+    /// Access the `ConfigPublisher` capability, if available.
+    pub fn config_publisher(&self) -> Option<&dyn fluree_db_nameservice::ConfigPublisher> {
+        self.config_publisher.as_deref()
+    }
+
+    /// Set the optional `AdminPublisher` capability.
+    pub fn with_admin_publisher(
+        mut self,
+        a: Arc<dyn fluree_db_nameservice::AdminPublisher>,
+    ) -> Self {
+        self.admin_publisher = Some(a);
+        self
+    }
+
+    /// Access the `AdminPublisher` capability, if available.
+    pub fn admin_publisher(&self) -> Option<&dyn fluree_db_nameservice::AdminPublisher> {
+        self.admin_publisher.as_deref()
     }
 }
 
@@ -396,7 +457,7 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         Option<fluree_db_nameservice::NsRecord>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.0.lookup(ledger_id).await
+        self.inner.lookup(ledger_id).await
     }
 
     async fn all_records(
@@ -405,7 +466,7 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         Vec<fluree_db_nameservice::NsRecord>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.0.all_records().await
+        self.inner.all_records().await
     }
 
     async fn create_branch(
@@ -414,7 +475,7 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         new_branch: &str,
         source_branch: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
+        self.inner
             .create_branch(ledger_name, new_branch, source_branch)
             .await
     }
@@ -423,7 +484,7 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         &self,
         ledger_id: &str,
     ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
-        self.0.drop_branch(ledger_id).await
+        self.inner.drop_branch(ledger_id).await
     }
 
     async fn reset_head(
@@ -431,7 +492,7 @@ impl fluree_db_nameservice::NameService for AnyNameService {
         ledger_id: &str,
         snapshot: fluree_db_nameservice::NsRecordSnapshot,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.reset_head(ledger_id, snapshot).await
+        self.inner.reset_head(ledger_id, snapshot).await
     }
 }
 
@@ -441,7 +502,7 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         &self,
         alias: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_ledger_init(alias).await
+        self.inner.publish_ledger_init(alias).await
     }
 
     async fn publish_index(
@@ -450,18 +511,18 @@ impl fluree_db_nameservice::Publisher for AnyNameService {
         index_t: i64,
         index_id: &fluree_db_core::ContentId,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_index(alias, index_t, index_id).await
+        self.inner.publish_index(alias, index_t, index_id).await
     }
 
     async fn retract(
         &self,
         alias: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.retract(alias).await
+        self.inner.retract(alias).await
     }
 
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
-        self.0.publishing_ledger_id(ledger_id)
+        self.inner.publishing_ledger_id(ledger_id)
     }
 }
 
@@ -475,7 +536,7 @@ impl fluree_db_nameservice::RefPublisher for AnyNameService {
         Option<fluree_db_nameservice::RefValue>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.0.get_ref(ledger_id, kind).await
+        self.inner.get_ref(ledger_id, kind).await
     }
 
     async fn compare_and_set_ref(
@@ -488,7 +549,7 @@ impl fluree_db_nameservice::RefPublisher for AnyNameService {
         fluree_db_nameservice::CasResult,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.0
+        self.inner
             .compare_and_set_ref(ledger_id, kind, expected, new)
             .await
     }
@@ -504,7 +565,7 @@ impl fluree_db_nameservice::GraphSourcePublisher for AnyNameService {
         config: &str,
         dependencies: &[String],
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
+        self.inner
             .publish_graph_source(name, branch, source_type, config, dependencies)
             .await
     }
@@ -516,7 +577,7 @@ impl fluree_db_nameservice::GraphSourcePublisher for AnyNameService {
         index_id: &fluree_db_core::ContentId,
         index_t: i64,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
+        self.inner
             .publish_graph_source_index(name, branch, index_id, index_t)
             .await
     }
@@ -526,7 +587,7 @@ impl fluree_db_nameservice::GraphSourcePublisher for AnyNameService {
         name: &str,
         branch: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.retract_graph_source(name, branch).await
+        self.inner.retract_graph_source(name, branch).await
     }
 }
 
@@ -539,7 +600,7 @@ impl fluree_db_nameservice::GraphSourceLookup for AnyNameService {
         Option<fluree_db_nameservice::GraphSourceRecord>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.0.lookup_graph_source(graph_source_id).await
+        self.inner.lookup_graph_source(graph_source_id).await
     }
 
     async fn lookup_any(
@@ -549,7 +610,7 @@ impl fluree_db_nameservice::GraphSourceLookup for AnyNameService {
         fluree_db_nameservice::NsLookupResult,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.0.lookup_any(resource_id).await
+        self.inner.lookup_any(resource_id).await
     }
 
     async fn all_graph_source_records(
@@ -558,7 +619,7 @@ impl fluree_db_nameservice::GraphSourceLookup for AnyNameService {
         Vec<fluree_db_nameservice::GraphSourceRecord>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.0.all_graph_source_records().await
+        self.inner.all_graph_source_records().await
     }
 }
 
@@ -1722,6 +1783,16 @@ impl FlureeBuilder {
         self
     }
 
+    /// Disable background indexing, clearing any config set by prior builder
+    /// methods or `from_json_ld()`.
+    ///
+    /// Use this when the server's `--indexing-enabled=false` should override
+    /// indexing settings that a connection config file may have enabled.
+    pub fn without_indexing(mut self) -> Self {
+        self.indexing_config = None;
+        self
+    }
+
     /// Set novelty backpressure thresholds without enabling background indexing.
     ///
     /// Use this for short-lived processes (CLI, one-shot scripts) that need
@@ -2215,9 +2286,12 @@ impl FlureeBuilder {
         // Wrap with address identifier routing if configured
         let storage = self.wrap_address_identifiers(base_storage)?;
 
-        let nameservice_inner = MemoryNameService::new();
-        let nameservice =
-            AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
+        let nameservice_inner = Arc::new(MemoryNameService::new());
+        let nameservice = AnyNameService::new(Arc::new(DelegatingNameService::new(
+            (*nameservice_inner).clone(),
+        )))
+        .with_publication(nameservice_inner.clone())
+        .with_config_publisher(nameservice_inner);
 
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
@@ -2261,9 +2335,13 @@ impl FlureeBuilder {
             // Wrap with address identifier routing if configured
             let storage = self.wrap_address_identifiers(base_storage)?;
 
-            let nameservice_inner = FileNameService::new(path.as_ref());
-            let nameservice =
-                AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
+            let nameservice_inner = Arc::new(FileNameService::new(path.as_ref()));
+            let nameservice = AnyNameService::new(Arc::new(DelegatingNameService::new(
+                (*nameservice_inner).clone(),
+            )))
+            .with_publication(nameservice_inner.clone())
+            .with_config_publisher(nameservice_inner.clone())
+            .with_admin_publisher(nameservice_inner);
 
             let index_config = self.derive_indexing();
             let indexing_mode = self.start_background_indexing(&storage, &nameservice);
@@ -2305,9 +2383,11 @@ impl FlureeBuilder {
             .wrap_address_identifiers_aws(base_storage, aws_handle.config())
             .await?;
 
-        let nameservice_inner = aws_handle.nameservice().clone();
-        let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
-        let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
+        let nameservice_inner = Arc::new(aws_handle.nameservice().clone());
+        let nameservice_wrapped = DelegatingNameService::new((*nameservice_inner).clone());
+        let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped))
+            .with_config_publisher(nameservice_inner);
+        // Note: AwsNameService does not implement Publication (no broadcast channel).
 
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
@@ -3141,6 +3221,170 @@ where
                 orphan_addr = %addr,
                 "could not GC orphan context blob after conflict"
             );
+        }
+
+        Ok(SetContextResult::Conflict)
+    }
+}
+
+// ============================================================================
+// FlureeClient capability-checked context methods
+// ============================================================================
+
+impl FlureeClient {
+    /// Get the default JSON-LD context for a ledger (capability-checked).
+    ///
+    /// Requires the nameservice to support `ConfigPublisher`. Returns
+    /// `ApiError::Config` if the capability is not available.
+    pub async fn get_default_context_checked(
+        &self,
+        ledger_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let cp = self.nameservice().config_publisher().ok_or_else(|| {
+            ApiError::Config(
+                "get_default_context requires a nameservice that supports ConfigPublisher"
+                    .to_string(),
+            )
+        })?;
+
+        let record = self
+            .nameservice()
+            .lookup(ledger_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(ledger_id.to_string()))?;
+        let canonical_id = &record.ledger_id;
+
+        let config = cp.get_config(canonical_id).await?;
+        let ctx_cid = config
+            .as_ref()
+            .and_then(|c| c.payload.as_ref())
+            .and_then(|p| p.default_context.as_ref());
+
+        let cid = match ctx_cid {
+            Some(cid) => cid,
+            None => return Ok(None),
+        };
+
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), canonical_id);
+        let bytes = cs.get(cid).await.map_err(|e| {
+            ApiError::internal(format!("failed to read default context from CAS: {e}"))
+        })?;
+
+        let ctx: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
+            ApiError::internal(format!("failed to parse default context JSON: {e}"))
+        })?;
+
+        Ok(Some(ctx))
+    }
+
+    /// Set (replace) the default JSON-LD context for a ledger (capability-checked).
+    ///
+    /// Requires the nameservice to support `ConfigPublisher`. Returns
+    /// `ApiError::Config` if the capability is not available.
+    pub async fn set_default_context_checked(
+        &self,
+        ledger_id: &str,
+        context: &serde_json::Value,
+    ) -> Result<SetContextResult> {
+        let cp = self.nameservice().config_publisher().ok_or_else(|| {
+            ApiError::Config(
+                "set_default_context requires a nameservice that supports ConfigPublisher"
+                    .to_string(),
+            )
+        })?;
+
+        if !context.is_object() {
+            return Err(ApiError::Config(
+                "context must be a JSON object mapping prefixes to IRIs".to_string(),
+            ));
+        }
+
+        let record = self
+            .nameservice()
+            .lookup(ledger_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(ledger_id.to_string()))?;
+        let canonical_id = &record.ledger_id;
+
+        let context_bytes = serde_json::to_vec(context)
+            .map_err(|e| ApiError::internal(format!("failed to serialize context: {e}")))?;
+
+        let cs = fluree_db_core::content_store_for(self.storage().clone(), canonical_id);
+        let new_cid = cs
+            .put(ContentKind::LedgerConfig, &context_bytes)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to write context to CAS: {e}")))?;
+
+        for attempt in 0..CONTEXT_CAS_MAX_RETRIES {
+            let current_config = cp.get_config(canonical_id).await?;
+
+            let old_cid = current_config
+                .as_ref()
+                .and_then(|c| c.payload.as_ref())
+                .and_then(|p| p.default_context.clone());
+
+            let mut new_payload = current_config
+                .as_ref()
+                .and_then(|c| c.payload.clone())
+                .unwrap_or_default();
+            new_payload.default_context = Some(new_cid.clone());
+
+            let new_v = current_config.as_ref().map_or(1, |c| c.v + 1);
+            let new_config = ConfigValue::new(new_v, Some(new_payload));
+
+            match cp
+                .push_config(canonical_id, current_config.as_ref(), &new_config)
+                .await?
+            {
+                ConfigCasResult::Updated => {
+                    tracing::info!(cid = %new_cid, ledger = canonical_id, "default context updated");
+
+                    // GC old blob if CID changed
+                    if let Some(old) = old_cid {
+                        if old != new_cid {
+                            let kind = old.content_kind().unwrap_or(ContentKind::LedgerConfig);
+                            let addr = fluree_db_core::content_address(
+                                self.storage().storage_method(),
+                                kind,
+                                canonical_id,
+                                &old.digest_hex(),
+                            );
+                            if let Err(e) = self.storage().delete(&addr).await {
+                                tracing::debug!(
+                                    %e,
+                                    old_addr = %addr,
+                                    "could not GC old default context blob"
+                                );
+                            }
+                        }
+                    }
+
+                    // Invalidate cached ledger so next query reloads with new context
+                    self.disconnect_ledger(canonical_id).await;
+
+                    return Ok(SetContextResult::Updated);
+                }
+                ConfigCasResult::Conflict { .. } => {
+                    tracing::debug!(
+                        attempt,
+                        ledger = canonical_id,
+                        "CAS conflict updating default context, retrying"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        // Retries exhausted — GC orphan blob
+        let kind = new_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
+        let addr = fluree_db_core::content_address(
+            self.storage().storage_method(),
+            kind,
+            canonical_id,
+            &new_cid.digest_hex(),
+        );
+        if let Err(e) = self.storage().delete(&addr).await {
+            tracing::debug!(%e, orphan_addr = %addr, "could not GC orphan context blob after conflict");
         }
 
         Ok(SetContextResult::Conflict)

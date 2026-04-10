@@ -68,7 +68,7 @@ fn identity_token(signing_key: &SigningKey, identity: &str, ledger: &str) -> Str
     create_jws(&claims, signing_key)
 }
 
-fn policy_test_state() -> (TempDir, Arc<AppState>) {
+async fn policy_test_state() -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = ServerConfig {
         cors_enabled: false,
@@ -79,7 +79,7 @@ fn policy_test_state() -> (TempDir, Arc<AppState>) {
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     (tmp, state)
 }
 
@@ -297,7 +297,7 @@ fn names_from_results(results: &JsonValue) -> Vec<&str> {
 /// Public identity can only see documents classified as "public".
 #[tokio::test]
 async fn public_identity_sees_only_public_docs() {
-    let (_tmp, state) = policy_test_state();
+    let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy1:main").await;
 
     let signing_key = SigningKey::from_bytes(&[1u8; 32]);
@@ -331,7 +331,7 @@ async fn public_identity_sees_only_public_docs() {
 /// filtering was applied and all 3 documents were returned.
 #[tokio::test]
 async fn employee_identity_sees_public_and_internal() {
-    let (_tmp, state) = policy_test_state();
+    let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy2:main").await;
 
     let signing_key = SigningKey::from_bytes(&[2u8; 32]);
@@ -371,7 +371,7 @@ async fn employee_identity_sees_public_and_internal() {
 /// Manager identity has `f:allow: true` and should see all documents.
 #[tokio::test]
 async fn manager_identity_sees_all_documents() {
-    let (_tmp, state) = policy_test_state();
+    let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy3:main").await;
 
     let signing_key = SigningKey::from_bytes(&[3u8; 32]);
@@ -400,7 +400,7 @@ async fn manager_identity_sees_all_documents() {
 /// looking up an identity IRI that had no subject node in the ledger.
 #[tokio::test]
 async fn identity_without_policy_class_default_allow_false_denies_all() {
-    let (_tmp, state) = policy_test_state();
+    let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy4:main").await;
 
     let signing_key = SigningKey::from_bytes(&[4u8; 32]);
@@ -433,7 +433,7 @@ async fn identity_without_policy_class_default_allow_false_denies_all() {
 /// deployments. Callers who want open access can simply omit `opts.identity`.
 #[tokio::test]
 async fn unknown_identity_denied_even_with_default_allow_true() {
-    let (_tmp, state) = policy_test_state();
+    let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy5:main").await;
 
     let signing_key = SigningKey::from_bytes(&[5u8; 32]);
@@ -459,7 +459,7 @@ async fn unknown_identity_denied_even_with_default_allow_true() {
 /// filter should still appear, but without the `ex:content` binding.
 #[tokio::test]
 async fn property_level_deny_hides_ex_content_field() {
-    let (_tmp, state) = policy_test_state();
+    let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy6:main").await;
 
     // Add a property-level deny policy for ex:content on the employee class
@@ -603,7 +603,7 @@ async fn property_level_deny_hides_ex_content_field() {
 /// identity that has NO subject node at all (`NotFound` → always fail-closed).
 #[tokio::test]
 async fn known_identity_no_policy_class_default_allow_true_allows_all() {
-    let (_tmp, state) = policy_test_state();
+    let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy7:main").await;
 
     // Insert a registered identity node that EXISTS in the ledger but has no f:policyClass.

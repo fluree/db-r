@@ -62,14 +62,6 @@ async fn push_ledger_local(
         }
     }
 
-    // Load cached ledger handle.
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached(&ledger)
-        .await
-        .map_err(ServerError::Api)?;
-
     // Build policy options.
     //
     let mut opts = QueryConnectionOptions {
@@ -98,11 +90,30 @@ async fn push_ledger_local(
         .map_err(|e| ServerError::bad_request(format!("failed to read request body: {}", e)))?;
     let body: PushCommitsRequest = serde_json::from_slice(&bytes)?;
 
-    let fluree = state.fluree.as_file();
-    let resp = fluree
-        .push_commits_with_handle(&handle, body, &opts, index_config)
-        .await
-        .map_err(ServerError::Api)?;
+    // Load cached ledger handle and push commits.
+    // Macro dispatches across File/Client variants (same API surface).
+    macro_rules! push_commits {
+        ($fluree:expr) => {{
+            let fluree = $fluree;
+            let handle = fluree
+                .ledger_cached(&ledger)
+                .await
+                .map_err(ServerError::Api)?;
+            fluree
+                .push_commits_with_handle(&handle, body, &opts, index_config)
+                .await
+                .map_err(ServerError::Api)?
+        }};
+    }
+
+    let resp = match &state.fluree {
+        crate::state::FlureeInstance::Direct(d) => push_commits!(d),
+        crate::state::FlureeInstance::Proxy(_) => {
+            return Err(ServerError::NotImplemented(
+                "Push is not available in proxy mode".to_string(),
+            ));
+        }
+    };
 
     Ok(axum::Json(resp))
 }

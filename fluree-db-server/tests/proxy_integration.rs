@@ -84,7 +84,7 @@ fn create_storage_proxy_token(signing_key: &SigningKey, storage_all: bool) -> St
 // =============================================================================
 
 /// Create a transaction server state with storage proxy enabled
-fn tx_server_state() -> (TempDir, Arc<AppState>) {
+async fn tx_server_state() -> (TempDir, Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = ServerConfig {
         cors_enabled: false,
@@ -98,7 +98,7 @@ fn tx_server_state() -> (TempDir, Arc<AppState>) {
     };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     (tmp, state)
 }
 
@@ -107,7 +107,10 @@ fn tx_server_state() -> (TempDir, Arc<AppState>) {
 /// Note: This creates a peer that would connect to a tx server for storage.
 /// For this in-process test, we test the proxy components indirectly through
 /// the storage proxy endpoints on the tx server side.
-fn proxy_peer_state(tx_server_url: &str, token: &str) -> Result<(TempDir, Arc<AppState>), String> {
+async fn proxy_peer_state(
+    tx_server_url: &str,
+    token: &str,
+) -> Result<(TempDir, Arc<AppState>), String> {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = ServerConfig {
         cors_enabled: false,
@@ -123,7 +126,7 @@ fn proxy_peer_state(tx_server_url: &str, token: &str) -> Result<(TempDir, Arc<Ap
     };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    match AppState::new(cfg, telemetry) {
+    match AppState::new(cfg, telemetry).await {
         Ok(state) => Ok((tmp, Arc::new(state))),
         Err(e) => Err(format!("Failed to create peer state: {}", e)),
     }
@@ -149,7 +152,7 @@ async fn json_body(resp: http::Response<Body>) -> (StatusCode, JsonValue) {
 /// Test that storage proxy endpoints are accessible when enabled
 #[tokio::test]
 async fn test_storage_proxy_endpoints_enabled() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state);
 
     // Generate a valid token
@@ -179,7 +182,7 @@ async fn test_storage_proxy_endpoints_enabled() {
 /// Test that storage proxy endpoints require Bearer token
 #[tokio::test]
 async fn test_storage_proxy_requires_token() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state);
 
     // Try to access without token
@@ -201,7 +204,7 @@ async fn test_storage_proxy_requires_token() {
 /// Test that storage proxy rejects tokens without storage permissions
 #[tokio::test]
 async fn test_storage_proxy_requires_storage_permissions() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state);
 
     // Generate a token WITHOUT storage permissions
@@ -260,7 +263,7 @@ async fn test_storage_proxy_requires_storage_permissions() {
 /// Test storage proxy block endpoint
 #[tokio::test]
 async fn test_storage_proxy_block_endpoint() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a valid token
@@ -311,7 +314,7 @@ async fn test_storage_proxy_block_endpoint() {
 /// Test that nameservice record is returned for existing ledger
 #[tokio::test]
 async fn test_storage_proxy_ns_record_for_existing_ledger() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a valid token
@@ -363,7 +366,7 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
 /// Test that ledger-specific token scope is enforced
 #[tokio::test]
 async fn test_storage_proxy_ledger_scope_enforcement() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Create two ledgers
@@ -477,7 +480,7 @@ async fn test_peer_proxy_state_creation() {
     let token = create_storage_proxy_token(&signing_key, true);
 
     // Create peer state pointing to a hypothetical tx server
-    let result = proxy_peer_state("http://localhost:8090", &token);
+    let result = proxy_peer_state("http://localhost:8090", &token).await;
     assert!(
         result.is_ok(),
         "Peer proxy state should be created successfully"
@@ -495,14 +498,14 @@ async fn test_fluree_instance_proxy_identification() {
     let signing_key = SigningKey::from_bytes(&secret);
     let token = create_storage_proxy_token(&signing_key, true);
 
-    let result = proxy_peer_state("http://localhost:8090", &token);
+    let result = proxy_peer_state("http://localhost:8090", &token).await;
     assert!(result.is_ok());
 
     let (_tmp, state) = result.unwrap();
 
     // Check FlureeInstance type
     assert!(state.fluree.is_proxy());
-    assert!(!state.fluree.is_file());
+    assert!(!state.fluree.is_direct());
 }
 
 // =============================================================================
@@ -524,7 +527,7 @@ async fn test_storage_proxy_disabled() {
     };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     let app = build_router(state);
 
     // Generate a valid token
@@ -556,7 +559,7 @@ async fn test_storage_proxy_disabled() {
 /// Test block endpoint rejects requests for unauthorized addresses
 #[tokio::test]
 async fn test_storage_proxy_block_authorization() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Create a ledger
@@ -638,7 +641,7 @@ async fn test_storage_proxy_block_authorization() {
 /// Test that graph source snapshot CIDs are rejected by the kind allowlist
 #[tokio::test]
 async fn test_storage_proxy_rejects_graph_source_cids() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state);
 
     // Generate a token with full access
@@ -672,7 +675,7 @@ async fn test_storage_proxy_rejects_graph_source_cids() {
 /// Test that an invalid CID string is rejected with 400
 #[tokio::test]
 async fn test_storage_proxy_rejects_invalid_cid() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state);
 
     // Generate a token with full access
@@ -709,7 +712,7 @@ async fn test_storage_proxy_rejects_invalid_cid() {
 /// Test that expired tokens are rejected
 #[tokio::test]
 async fn test_storage_proxy_rejects_expired_token() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state);
 
     // Generate an expired token
@@ -789,7 +792,7 @@ async fn bytes_body(resp: http::Response<Body>) -> (StatusCode, Vec<u8>) {
 /// application/octet-stream.
 #[tokio::test]
 async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a valid token
@@ -902,7 +905,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
 /// octet-stream format should still return the raw bytes successfully.
 #[tokio::test]
 async fn test_block_content_negotiation_octet_stream_success() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a valid token
@@ -1008,7 +1011,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
 /// Test that the default Accept header (missing) returns octet-stream
 #[tokio::test]
 async fn test_block_content_negotiation_default_accept() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a valid token
@@ -1106,7 +1109,7 @@ async fn test_block_content_negotiation_default_accept() {
 /// Same as the binary flakes test: non-leaf blocks ignore Accept and return raw bytes.
 #[tokio::test]
 async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a valid token
@@ -1262,7 +1265,7 @@ fn create_storage_proxy_token_no_identity(signing_key: &SigningKey, storage_all:
 async fn test_block_content_negotiation_returns_flkb_for_leaf() {
     use fluree_db_api::ReindexOptions;
 
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a token WITHOUT identity claim (avoids policy resolution errors)
@@ -1312,7 +1315,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
     assert_eq!(resp.status(), StatusCode::OK, "Transact should succeed");
 
     // Reindex to build binary leaves (FLI3) + refresh cache so binary_store is present.
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let reindex_result = fluree
         .reindex("leaf:test", ReindexOptions::default())
         .await
@@ -1410,7 +1413,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     use tokio::net::TcpListener;
 
     // Create tx server state with storage proxy enabled
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Start a real HTTP server
@@ -1477,7 +1480,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     // Reindex via tx server state (direct call) and refresh, then fetch DB root JSON over HTTP.
     // (The server is running in-process; state is still available in this test.)
     use fluree_db_api::ReindexOptions;
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let reindex_result = fluree
         .reindex("peer:test", ReindexOptions::default())
         .await
@@ -1563,7 +1566,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     use tokio::net::TcpListener;
 
     // Create tx server state with storage proxy enabled
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Start a real HTTP server
@@ -1622,7 +1625,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
         "Transact should succeed"
     );
 
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let reindex_result = fluree
         .reindex("raw:test", ReindexOptions::default())
         .await
@@ -1691,7 +1694,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
 /// - storage_proxy_enabled = true
 /// - storage_proxy_default_identity = the identity IRI (optional)
 /// - storage_proxy_default_policy_class = the policy class IRI (optional)
-fn tx_server_state_with_policy(
+async fn tx_server_state_with_policy(
     default_identity: Option<&str>,
     default_policy_class: Option<&str>,
 ) -> (TempDir, Arc<AppState>) {
@@ -1711,7 +1714,7 @@ fn tx_server_state_with_policy(
     };
 
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     (tmp, state)
 }
 
@@ -1772,7 +1775,8 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     let (_tmp, state) = tx_server_state_with_policy(
         None, // NO identity - avoids stale-cache issue
         Some(policy_class_iri),
-    );
+    )
+    .await;
     let app = build_router(state.clone());
 
     // Generate a storage proxy token (no identity claim - we use server defaults)
@@ -1865,7 +1869,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
 
     // Step 3: Reindex to build the index
     // This creates real leaf nodes in storage
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let reindex_result = fluree
         .reindex(alias, ReindexOptions::default())
         .await
@@ -1979,7 +1983,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     use fluree_db_api::ReindexOptions;
 
     // Create tx server WITHOUT policy config (defaults)
-    let (_tmp, state) = tx_server_state();
+    let (_tmp, state) = tx_server_state().await;
     let app = build_router(state.clone());
 
     // Generate a storage proxy token
@@ -2032,7 +2036,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Reindex
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let reindex_result = fluree
         .reindex(alias, ReindexOptions::default())
         .await

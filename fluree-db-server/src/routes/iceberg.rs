@@ -113,46 +113,56 @@ async fn iceberg_map_local(state: Arc<AppState>, request: Request) -> Result<imp
     async move {
         tracing::info!(status = "start", name = %req.name, "iceberg map requested");
 
-        let fluree = state.fluree.as_file();
         let iceberg_config = build_iceberg_config(&req)?;
 
-        let response = if let Some(ref r2rml_content) = req.r2rml {
-            // R2RML mode — mapping content provided inline
-            let config = fluree_db_api::R2rmlCreateConfig {
-                iceberg: iceberg_config,
-                mapping: fluree_db_api::R2rmlMappingInput::Content(r2rml_content.clone()),
-                mapping_media_type: req.r2rml_type.clone(),
-            };
+        // Dispatch iceberg map across File/Client variants.
+        // Macro avoids duplicating the R2RML vs raw iceberg branching logic.
+        macro_rules! iceberg_map {
+            ($fluree:expr) => {{
+                let fluree = $fluree;
+                if let Some(ref r2rml_content) = req.r2rml {
+                    let config = fluree_db_api::R2rmlCreateConfig {
+                        iceberg: iceberg_config,
+                        mapping: fluree_db_api::R2rmlMappingInput::Content(r2rml_content.clone()),
+                        mapping_media_type: req.r2rml_type.clone(),
+                    };
+                    let result = fluree
+                        .create_r2rml_graph_source(config)
+                        .await
+                        .map_err(ServerError::Api)?;
+                    IcebergMapResponse {
+                        graph_source_id: result.graph_source_id,
+                        table_identifier: result.table_identifier,
+                        catalog_uri: result.catalog_uri,
+                        connection_tested: result.connection_tested,
+                        mapping_source: Some(result.mapping_source),
+                        triples_map_count: Some(result.triples_map_count),
+                        mapping_validated: Some(result.mapping_validated),
+                    }
+                } else {
+                    let result = fluree
+                        .create_iceberg_graph_source(iceberg_config)
+                        .await
+                        .map_err(ServerError::Api)?;
+                    IcebergMapResponse {
+                        graph_source_id: result.graph_source_id,
+                        table_identifier: result.table_identifier,
+                        catalog_uri: result.catalog_uri,
+                        connection_tested: result.connection_tested,
+                        mapping_source: None,
+                        triples_map_count: None,
+                        mapping_validated: None,
+                    }
+                }
+            }};
+        }
 
-            let result = fluree
-                .create_r2rml_graph_source(config)
-                .await
-                .map_err(ServerError::Api)?;
-
-            IcebergMapResponse {
-                graph_source_id: result.graph_source_id,
-                table_identifier: result.table_identifier,
-                catalog_uri: result.catalog_uri,
-                connection_tested: result.connection_tested,
-                mapping_source: Some(result.mapping_source),
-                triples_map_count: Some(result.triples_map_count),
-                mapping_validated: Some(result.mapping_validated),
-            }
-        } else {
-            // Raw Iceberg mode
-            let result = fluree
-                .create_iceberg_graph_source(iceberg_config)
-                .await
-                .map_err(ServerError::Api)?;
-
-            IcebergMapResponse {
-                graph_source_id: result.graph_source_id,
-                table_identifier: result.table_identifier,
-                catalog_uri: result.catalog_uri,
-                connection_tested: result.connection_tested,
-                mapping_source: None,
-                triples_map_count: None,
-                mapping_validated: None,
+        let response = match &state.fluree {
+            crate::state::FlureeInstance::Direct(d) => iceberg_map!(d),
+            crate::state::FlureeInstance::Proxy(_) => {
+                return Err(ServerError::NotImplemented(
+                    "Iceberg map is not available in proxy mode".to_string(),
+                ));
             }
         };
 

@@ -390,6 +390,18 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_STORAGE_PATH")]
     pub storage_path: Option<PathBuf>,
 
+    /// Path to a JSON-LD connection configuration file.
+    ///
+    /// When provided, the server builds the storage and nameservice backend
+    /// from this config (using `FlureeBuilder::from_json_ld().build_client()`).
+    /// This supports S3, DynamoDB, split commit/index storage, encryption,
+    /// and the full connection config surface.
+    ///
+    /// Overrides `--storage-path` when set. The file format is the same as the
+    /// connection JSON-LD used by the Fluree API (see `FlureeBuilder::from_json_ld`).
+    #[arg(long, env = "FLUREE_CONNECTION_CONFIG")]
+    pub connection_config: Option<PathBuf>,
+
     /// Enable CORS (Cross-Origin Resource Sharing)
     #[arg(long, env = "FLUREE_CORS_ENABLED", default_value_t = server_defaults::DEFAULT_CORS_ENABLED)]
     pub cors_enabled: bool,
@@ -633,6 +645,7 @@ impl Default for ServerConfig {
             profile: None,
             listen_addr: server_defaults::DEFAULT_LISTEN_ADDR.parse().unwrap(),
             storage_path: None,
+            connection_config: None,
             cors_enabled: server_defaults::DEFAULT_CORS_ENABLED,
             indexing_enabled: server_defaults::DEFAULT_INDEXING_ENABLED,
             reindex_min_bytes: server_defaults::DEFAULT_REINDEX_MIN_BYTES,
@@ -697,12 +710,19 @@ impl ServerConfig {
 
     /// Check if using file storage (vs memory)
     pub fn is_file_storage(&self) -> bool {
-        self.storage_path.is_some()
+        self.storage_path.is_some() && self.connection_config.is_none()
+    }
+
+    /// Check if using a connection config file (S3, DynamoDB, etc.)
+    pub fn has_connection_config(&self) -> bool {
+        self.connection_config.is_some()
     }
 
     /// Get storage type string for logging
     pub fn storage_type_str(&self) -> &'static str {
-        if self.is_file_storage() {
+        if self.connection_config.is_some() {
+            "connection-config"
+        } else if self.storage_path.is_some() {
             "file"
         } else {
             "memory"
@@ -831,6 +851,21 @@ impl ServerConfig {
         // Validate admin auth
         self.admin_auth().validate(&events_auth)?;
 
+        // Connection config file must exist if specified
+        if let Some(ref path) = self.connection_config {
+            if !path.exists() {
+                return Err(format!(
+                    "connection config file not found: {}",
+                    path.display()
+                ));
+            }
+        }
+
+        // Warn if both connection_config and storage_path are set
+        if self.connection_config.is_some() && self.storage_path.is_some() {
+            tracing::warn!("--storage-path is ignored when --connection-config is set");
+        }
+
         // Storage proxy is only intended for transaction servers (peers consume from it)
         if self.storage_proxy_enabled && self.server_role == ServerRole::Peer {
             return Err(
@@ -849,10 +884,10 @@ impl ServerConfig {
             // Divergent validation based on storage access mode
             match self.storage_access_mode {
                 StorageAccessMode::Shared => {
-                    // Shared mode: require storage path for direct reads
-                    if self.storage_path.is_none() {
+                    // Shared mode: require either storage path or connection config
+                    if self.storage_path.is_none() && self.connection_config.is_none() {
                         return Err(
-                            "server_role=peer + storage-access-mode=shared requires --storage-path"
+                            "server_role=peer + storage-access-mode=shared requires --storage-path or --connection-config"
                                 .to_string(),
                         );
                     }

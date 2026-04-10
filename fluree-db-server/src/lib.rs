@@ -64,7 +64,7 @@ impl FlureeServer {
     /// Create a new server with the given configuration
     pub async fn new(config: ServerConfig) -> std::result::Result<Self, fluree_db_api::ApiError> {
         let telemetry_config = TelemetryConfig::with_server_config(&config);
-        let state = Arc::new(AppState::new(config, telemetry_config)?);
+        let state = Arc::new(AppState::new(config, telemetry_config).await?);
 
         // Warm JWKS cache (async — fetch keys from configured endpoints)
         #[cfg(feature = "oidc")]
@@ -109,7 +109,7 @@ impl FlureeServer {
         let start = std::time::Instant::now();
 
         let records = match &state.fluree {
-            state::FlureeInstance::File(f) => match f.nameservice().all_records().await {
+            state::FlureeInstance::Direct(d) => match d.nameservice().all_records().await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to enumerate ledgers for preloading");
@@ -135,7 +135,7 @@ impl FlureeServer {
 
         for record in &active {
             let handle = match &state.fluree {
-                state::FlureeInstance::File(f) => f.ledger_cached(&record.ledger_id).await,
+                state::FlureeInstance::Direct(d) => d.ledger_cached(&record.ledger_id).await,
                 state::FlureeInstance::Proxy(p) => p.ledger_cached(&record.ledger_id).await,
             };
 
@@ -209,20 +209,20 @@ impl FlureeServer {
                 .clone()
                 .expect("peer_state should exist in peer mode");
 
-            if self.state.fluree.is_file() {
-                // Shared storage: PeerSyncTask persists refs into local FileNameService
+            if self.state.fluree.is_direct() {
+                // Direct (shared storage): PeerSyncTask persists refs into local nameservice
                 let events_url = peer::build_peer_events_url(&self.state.config);
                 let auth_token = self.state.config.load_peer_events_token().ok().flatten();
                 let watch = fluree_db_nameservice_sync::SseRemoteWatch::new(events_url, auth_token);
                 let task = peer::PeerSyncTask::new(
-                    self.state.fluree.as_file().clone(),
+                    self.state.fluree.as_direct().clone(),
                     peer_state,
                     watch,
                     self.state.config.clone(),
                 );
                 Some(task.spawn())
             } else {
-                // Proxy storage: existing PeerSubscriptionTask (in-memory watermarks only)
+                // Proxy mode: PeerSubscriptionTask (in-memory watermarks only)
                 let task = peer::PeerSubscriptionTask::new(
                     self.state.config.clone(),
                     peer_state,
@@ -275,8 +275,16 @@ impl FlureeServer {
         use fluree_db_nameservice::{Publication, SubscriptionScope};
 
         let subscription = match &self.state.fluree {
-            state::FlureeInstance::File(f) => {
-                f.nameservice().subscribe(SubscriptionScope::All).await
+            state::FlureeInstance::Direct(d) => {
+                let ns = d.nameservice();
+                match ns.publication() {
+                    Some(pub_ns) => pub_ns.subscribe(SubscriptionScope::All).await,
+                    None => {
+                        return Err(fluree_db_api::ApiError::internal(
+                            "Registry maintenance not supported: nameservice does not support publication",
+                        ));
+                    }
+                }
             }
             state::FlureeInstance::Proxy(p) => {
                 p.nameservice().subscribe(SubscriptionScope::All).await

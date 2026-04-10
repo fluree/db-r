@@ -84,7 +84,7 @@ async fn oidc_state(jwks_url: &str, issuer: &str) -> (tempfile::TempDir, std::sy
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
 
     // Warm the JWKS cache
     if let Some(cache) = &state.jwks_cache {
@@ -456,7 +456,7 @@ async fn oidc_unreachable_jwks_at_startup_still_starts() {
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
 
     // Warm should fail silently
     if let Some(cache) = &state.jwks_cache {
@@ -513,7 +513,7 @@ async fn oidc_embedded_jwk_still_works_alongside_jwks() {
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
 
     if let Some(cache) = &state.jwks_cache {
         cache.warm().await;
@@ -641,7 +641,7 @@ async fn oidc_admin_state(
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
 
     if let Some(cache) = &state.jwks_cache {
         cache.warm().await;
@@ -755,7 +755,7 @@ async fn oidc_events_state(
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
 
     if let Some(cache) = &state.jwks_cache {
         cache.warm().await;
@@ -876,7 +876,7 @@ async fn oidc_storage_proxy_state(
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
 
     if let Some(cache) = &state.jwks_cache {
         cache.warm().await;

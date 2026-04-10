@@ -66,19 +66,30 @@ async fn commits_ledger_local(
         return Err(ServerError::not_found("Ledger not found"));
     }
 
-    // Load cached ledger handle.
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached(&ledger)
-        .await
-        .map_err(ServerError::Api)?;
+    // Load cached ledger handle and export commits.
+    // Macro dispatches across File/Client variants (same API surface).
+    macro_rules! export_commits {
+        ($fluree:expr) => {{
+            let fluree = $fluree;
+            let handle = fluree
+                .ledger_cached(&ledger)
+                .await
+                .map_err(ServerError::Api)?;
+            fluree
+                .export_commit_range(&handle, &params)
+                .await
+                .map_err(ServerError::Api)?
+        }};
+    }
 
-    let fluree = state.fluree.as_file();
-    let resp = fluree
-        .export_commit_range(&handle, &params)
-        .await
-        .map_err(ServerError::Api)?;
+    let resp = match &state.fluree {
+        crate::state::FlureeInstance::Direct(d) => export_commits!(d),
+        crate::state::FlureeInstance::Proxy(_) => {
+            return Err(ServerError::NotImplemented(
+                "Commit export is not available in proxy mode".to_string(),
+            ));
+        }
+    };
 
     Ok(axum::Json(resp))
 }

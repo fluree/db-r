@@ -54,7 +54,7 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-fn data_auth_state() -> (tempfile::TempDir, std::sync::Arc<AppState>) {
+async fn data_auth_state() -> (tempfile::TempDir, std::sync::Arc<AppState>) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let cfg = ServerConfig {
         cors_enabled: false,
@@ -66,13 +66,13 @@ fn data_auth_state() -> (tempfile::TempDir, std::sync::Arc<AppState>) {
         ..Default::default()
     };
     let telemetry = TelemetryConfig::with_server_config(&cfg);
-    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).expect("AppState::new"));
+    let state = std::sync::Arc::new(AppState::new(cfg, telemetry).await.expect("AppState::new"));
     (tmp, state)
 }
 
 #[tokio::test]
 async fn data_auth_required_blocks_query_without_auth() {
-    let (_tmp, state) = data_auth_state();
+    let (_tmp, state) = data_auth_state().await;
     let app = build_router(state);
 
     // Create ledger (no data auth on create)
@@ -111,7 +111,7 @@ async fn data_auth_required_blocks_query_without_auth() {
 
 #[tokio::test]
 async fn data_auth_bearer_allows_read_and_write_with_scopes() {
-    let (_tmp, state) = data_auth_state();
+    let (_tmp, state) = data_auth_state().await;
     let app = build_router(state);
 
     // Create ledger
@@ -187,7 +187,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
 
 #[tokio::test]
 async fn data_auth_denies_write_outside_scope_as_not_found() {
-    let (_tmp, state) = data_auth_state();
+    let (_tmp, state) = data_auth_state().await;
     let app = build_router(state);
 
     // Create two ledgers

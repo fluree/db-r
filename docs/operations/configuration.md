@@ -188,6 +188,89 @@ fluree-server --storage-path /var/lib/fluree
 fluree-server
 ```
 
+### Connection Configuration (S3, DynamoDB, etc.)
+
+For storage backends beyond local files — S3, DynamoDB nameservice, split commit/index storage, encryption — use a JSON-LD connection config file:
+
+| Flag                  | Env Var                    | Default |
+| --------------------- | -------------------------- | ------- |
+| `--connection-config` | `FLUREE_CONNECTION_CONFIG`  | None    |
+
+When set, the server builds its storage and nameservice from the connection config file instead of using `--storage-path`. The file uses the same JSON-LD format as the [Fluree API connection config](../reference/connection-config-jsonld.md).
+
+```bash
+# S3 + DynamoDB via connection config
+fluree server run --connection-config /etc/fluree/connection.jsonld
+
+# Or via environment variable
+FLUREE_CONNECTION_CONFIG=/etc/fluree/connection.jsonld fluree server run
+```
+
+Example connection config (`connection.jsonld`):
+
+```json
+{
+  "@context": {
+    "@base": "https://ns.flur.ee/config/connection/",
+    "@vocab": "https://ns.flur.ee/system#"
+  },
+  "@graph": [
+    {
+      "@id": "commitStorage",
+      "@type": "Storage",
+      "s3Bucket": "fluree-commits",
+      "s3Prefix": "fluree-data/"
+    },
+    {
+      "@id": "indexStorage",
+      "@type": "Storage",
+      "s3Bucket": "fluree-indexes--use1-az4--x-s3"
+    },
+    {
+      "@id": "publisher",
+      "@type": "Publisher",
+      "dynamodbTable": "fluree-nameservice",
+      "dynamodbRegion": "us-east-1"
+    },
+    {
+      "@id": "conn",
+      "@type": "Connection",
+      "commitStorage": { "@id": "commitStorage" },
+      "indexStorage": { "@id": "indexStorage" },
+      "primaryPublisher": { "@id": "publisher" }
+    }
+  ]
+}
+```
+
+**Behavior notes:**
+
+- `--connection-config` and `--storage-path` are mutually exclusive. If both are set, `--connection-config` takes precedence (a warning is logged).
+- Server-level settings (`--cache-max-mb`, `--indexing-enabled`, `--reindex-min-bytes`, `--reindex-max-bytes`) override any equivalent values from the connection config.
+- If `--indexing-enabled` is not explicitly set (defaults to `false`), indexing settings from the connection config are cleared. Set `--indexing-enabled` explicitly if your connection config should control indexing.
+- AWS credentials and region are resolved via the standard AWS SDK chain (env vars, instance profile, `~/.aws/config`, etc.) — they are not part of the connection config.
+- The connection config can use `envVar` indirection for sensitive fields like S3 bucket names or encryption keys (see [ConfigurationValue](../reference/connection-config-jsonld.md#configurationvalue-env-var-indirection)).
+
+**Config file equivalent:**
+
+```toml
+[server]
+connection_config = "/etc/fluree/connection.jsonld"
+```
+
+#### Capabilities by Backend
+
+Not all nameservice backends support all features. The server checks capabilities at runtime:
+
+| Feature                 | File (local)   | DynamoDB       | Storage-backed |
+| ----------------------- | -------------- | -------------- | -------------- |
+| Query / transact        | Yes            | Yes            | Yes            |
+| Event subscriptions     | Yes            | No             | No             |
+| Default context (read)  | Yes            | Yes            | Yes            |
+| Default context (write) | Yes            | Yes            | No             |
+
+If a capability is not available, the server returns an appropriate error (e.g., 501 for event subscriptions with DynamoDB).
+
 ### CORS
 
 Enable Cross-Origin Resource Sharing:
@@ -497,7 +580,7 @@ fluree-server \
 
 Options:
 
-- `shared`: Direct storage access (requires `--storage-path`)
+- `shared`: Direct storage access (requires `--storage-path` or `--connection-config`)
 - `proxy`: Proxy reads through transaction server
 
 For proxy mode:
@@ -611,6 +694,45 @@ fluree-server \
   --peer-events-token @/etc/fluree/peer-token.jwt
 ```
 
+### S3 + DynamoDB (Connection Config)
+
+```bash
+fluree server run \
+  --connection-config /etc/fluree/connection.jsonld \
+  --indexing-enabled \
+  --reindex-min-bytes 100000 \
+  --reindex-max-bytes 5000000 \
+  --cache-max-mb 4096
+```
+
+With a config file:
+
+```toml
+[server]
+connection_config = "/etc/fluree/connection.jsonld"
+cache_max_mb = 4096
+
+[server.indexing]
+enabled = true
+reindex_min_bytes = 100000
+reindex_max_bytes = 5000000
+
+[server.auth.data]
+mode = "required"
+trusted_issuers = ["did:key:z6Mk..."]
+```
+
+### S3 Peer (Shared Storage via Connection Config)
+
+```bash
+fluree server run \
+  --server-role peer \
+  --tx-server-url http://tx.internal:8090 \
+  --connection-config /etc/fluree/connection.jsonld \
+  --peer-subscribe-all \
+  --peer-events-token @/etc/fluree/peer-token.jwt
+```
+
 ## Environment Variables Reference
 
 | Variable                                | Description                                     | Default                                                                 |
@@ -620,6 +742,7 @@ fluree-server \
 | `FLUREE_PROFILE`                        | Configuration profile name                      | None                                                                    |
 | `FLUREE_LISTEN_ADDR`                    | Server address:port                             | `0.0.0.0:8090`                                                          |
 | `FLUREE_STORAGE_PATH`                   | File storage path                               | `.fluree/storage`                                                       |
+| `FLUREE_CONNECTION_CONFIG`              | JSON-LD connection config file path             | None                                                                    |
 | `FLUREE_CORS_ENABLED`                   | Enable CORS                                     | `true`                                                                  |
 | `FLUREE_INDEXING_ENABLED`               | Enable background indexing                      | `false`                                                                 |
 | `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes)                  | `100000`                                                                |

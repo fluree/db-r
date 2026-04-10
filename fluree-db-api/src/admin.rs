@@ -1080,6 +1080,128 @@ where
 }
 
 // =============================================================================
+// Reindex for FlureeClient (capability-checked at runtime)
+// =============================================================================
+
+impl crate::Fluree<crate::AnyStorage, crate::AnyNameService> {
+    /// Full offline reindex from commit history (runtime capability check).
+    ///
+    /// Same as the generic `reindex` method, but uses the `admin_publisher()` capability
+    /// on `AnyNameService` instead of requiring `AdminPublisher` at the type level.
+    ///
+    /// # Errors
+    /// - Returns `ApiError::internal` if the nameservice doesn't support `AdminPublisher`
+    /// - Other errors same as the generic `reindex`
+    pub async fn reindex(&self, ledger_id: &str, opts: ReindexOptions) -> Result<ReindexResult> {
+        let ledger_id = normalize_ledger_id(ledger_id);
+        info!(ledger_id = %ledger_id, "Starting reindex");
+
+        let admin = self.nameservice().admin_publisher().ok_or_else(|| {
+            ApiError::internal(
+                "Reindex requires AdminPublisher capability, which is not available on this nameservice backend",
+            )
+        })?;
+
+        // 1. Look up current state and capture commit_t for conflict detection
+        let record = self
+            .nameservice()
+            .lookup(&ledger_id)
+            .await?
+            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_id)))?;
+
+        if record.retracted {
+            return Err(ApiError::NotFound(format!(
+                "Ledger is retracted: {}",
+                ledger_id
+            )));
+        }
+
+        let initial_commit_t = record.commit_t;
+        if record.commit_head_id.is_none() {
+            return Err(ApiError::NotFound("No commits to reindex".to_string()));
+        }
+
+        // 2. Cancel background indexing if active
+        if let crate::tx::IndexingMode::Background(handle) = &self.indexing_mode {
+            info!(ledger_id = %ledger_id, "Cancelling background indexing for reindex");
+            handle.cancel(&ledger_id).await;
+            handle.wait_for_idle(&ledger_id).await;
+        }
+
+        // 3. Build binary index from commit chain
+        let indexer_config = opts.indexer_config.clone().unwrap_or_default();
+        let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
+        let gc_min_time_mins = indexer_config.gc_min_time_mins;
+
+        let index_result =
+            rebuild_index_from_commits(self.storage(), &ledger_id, &record, indexer_config).await?;
+
+        info!(
+            ledger_id = %ledger_id,
+            index_t = index_result.index_t,
+            "Binary index build complete"
+        );
+
+        // 4. Conflict detection: check if ledger advanced during rebuild
+        let final_record = self
+            .nameservice()
+            .lookup(&ledger_id)
+            .await?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Ledger disappeared during reindex: {}", ledger_id))
+            })?;
+
+        if final_record.commit_t != initial_commit_t {
+            return Err(ApiError::ReindexConflict {
+                expected: initial_commit_t,
+                found: final_record.commit_t,
+            });
+        }
+
+        // 5. Publish new index (allows same t for reindex via AdminPublisher)
+        admin
+            .publish_index_allow_equal(&ledger_id, index_result.index_t, &index_result.root_id)
+            .await?;
+
+        info!(
+            ledger_id = %ledger_id,
+            index_t = index_result.index_t,
+            root_id = %index_result.root_id,
+            "Reindex completed"
+        );
+
+        // 6. Spawn async garbage collection (non-blocking)
+        let storage_clone = self.storage().clone();
+        let gc_root_id = index_result.root_id.clone();
+        let gc_ledger_id = ledger_id.clone();
+        let gc_config = CleanGarbageConfig {
+            max_old_indexes: Some(gc_max_old_indexes),
+            min_time_garbage_mins: Some(gc_min_time_mins),
+        };
+        tokio::spawn(async move {
+            if let Err(e) =
+                clean_garbage(&storage_clone, &gc_root_id, &gc_ledger_id, gc_config).await
+            {
+                tracing::warn!(
+                    error = %e,
+                    root_id = %gc_root_id,
+                    "Background garbage collection failed (non-fatal)"
+                );
+            } else {
+                tracing::debug!(root_id = %gc_root_id, "Background garbage collection completed");
+            }
+        });
+
+        Ok(ReindexResult {
+            ledger_id,
+            index_t: index_result.index_t,
+            root_id: index_result.root_id,
+            stats: index_result.stats,
+        })
+    }
+}
+
+// =============================================================================
 // Ledger Config
 // =============================================================================
 

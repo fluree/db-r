@@ -24,6 +24,8 @@ path = "src/lib.rs"
 [features]
 default = ["native", "credential", "iceberg"]
 native = ["fluree-db-api/native"]
+# AWS S3 storage + DynamoDB nameservice (via connection JSON-LD config)
+aws = ["fluree-db-api/aws"]
 # DID/JWS/VerifiableCredential support for signed requests
 # When disabled, signed requests pass through as regular JSON bodies
 credential = ["fluree-db-api/credential"]

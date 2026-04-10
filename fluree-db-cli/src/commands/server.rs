@@ -25,6 +25,8 @@ struct ServerMeta {
     pid: u32,
     listen_addr: String,
     storage_path: String,
+    #[serde(default)]
+    connection_config: Option<String>,
     config_path: Option<String>,
     started_at: String,
     /// The raw args passed to the `_child` process (for `restart`).
@@ -56,6 +58,7 @@ pub async fn run(action: ServerAction, config_override: Option<&Path>) -> CliRes
         ServerAction::Run {
             listen_addr,
             storage_path,
+            connection_config,
             log_level,
             profile,
             extra_args,
@@ -64,6 +67,7 @@ pub async fn run(action: ServerAction, config_override: Option<&Path>) -> CliRes
                 config_override,
                 listen_addr,
                 storage_path,
+                connection_config,
                 log_level,
                 profile,
                 &extra_args,
@@ -74,6 +78,7 @@ pub async fn run(action: ServerAction, config_override: Option<&Path>) -> CliRes
         ServerAction::Start {
             listen_addr,
             storage_path,
+            connection_config,
             log_level,
             profile,
             dry_run,
@@ -83,6 +88,7 @@ pub async fn run(action: ServerAction, config_override: Option<&Path>) -> CliRes
                 config_override,
                 listen_addr,
                 storage_path,
+                connection_config,
                 log_level,
                 profile,
                 dry_run,
@@ -97,6 +103,7 @@ pub async fn run(action: ServerAction, config_override: Option<&Path>) -> CliRes
         ServerAction::Restart {
             listen_addr,
             storage_path,
+            connection_config,
             log_level,
             profile,
             extra_args,
@@ -105,6 +112,7 @@ pub async fn run(action: ServerAction, config_override: Option<&Path>) -> CliRes
                 config_override,
                 listen_addr,
                 storage_path,
+                connection_config,
                 log_level,
                 profile,
                 &extra_args,
@@ -126,6 +134,7 @@ async fn run_foreground(
     config_override: Option<&Path>,
     listen_addr: Option<SocketAddr>,
     storage_path: Option<PathBuf>,
+    connection_config: Option<PathBuf>,
     log_level: Option<String>,
     profile: Option<String>,
     extra_args: &[String],
@@ -137,6 +146,7 @@ async fn run_foreground(
         config_override,
         listen_addr,
         storage_path.clone(),
+        connection_config,
         log_level,
         profile,
         extra_args,
@@ -162,6 +172,10 @@ async fn run_foreground(
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(memory)".into()),
+        connection_config: server_config
+            .connection_config
+            .as_ref()
+            .map(|p| p.display().to_string()),
         config_path: config_override.map(|p| p.display().to_string()),
         started_at: now_iso8601(),
         args: Vec::new(),
@@ -193,10 +207,12 @@ async fn run_foreground(
 // `fluree server start` — background daemon
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 async fn run_start(
     config_override: Option<&Path>,
     listen_addr: Option<SocketAddr>,
     storage_path: Option<PathBuf>,
+    connection_config: Option<PathBuf>,
     log_level: Option<String>,
     profile: Option<String>,
     dry_run: bool,
@@ -207,6 +223,7 @@ async fn run_start(
         config_override,
         listen_addr,
         storage_path.clone(),
+        connection_config,
         log_level.clone(),
         profile.clone(),
         extra_args,
@@ -290,6 +307,10 @@ async fn run_start(
             .as_ref()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "(memory)".into()),
+        connection_config: server_config
+            .connection_config
+            .as_ref()
+            .map(|p| p.display().to_string()),
         config_path: config_override.map(|p| p.display().to_string()),
         started_at: now_iso8601(),
         args: child_args,
@@ -395,6 +416,10 @@ async fn run_start_with_child_args(
             .find(|w| w[0] == "--storage-path")
             .map(|w| w[1].clone())
             .unwrap_or_else(|| "(memory)".into()),
+        connection_config: child_args
+            .windows(2)
+            .find(|w| w[0] == "--connection-config")
+            .map(|w| w[1].clone()),
         config_path: config_override.map(|p| p.display().to_string()),
         started_at: now_iso8601(),
         args: child_args.to_vec(),
@@ -523,7 +548,11 @@ async fn run_status(config_override: Option<&Path>) -> CliResult<()> {
 
     if let Some(ref m) = meta {
         eprintln!("  listen_addr:  {}", m.listen_addr);
-        eprintln!("  storage_path: {}", m.storage_path);
+        if let Some(ref cc) = m.connection_config {
+            eprintln!("  connection:   {cc}");
+        } else {
+            eprintln!("  storage_path: {}", m.storage_path);
+        }
         eprintln!("  started_at:   {}", m.started_at);
         if let Some(uptime) = format_uptime(&m.started_at) {
             eprintln!("  uptime:       {uptime}");
@@ -572,6 +601,7 @@ async fn run_restart(
     config_override: Option<&Path>,
     listen_addr: Option<SocketAddr>,
     storage_path: Option<PathBuf>,
+    connection_config: Option<PathBuf>,
     log_level: Option<String>,
     profile: Option<String>,
     extra_args: &[String],
@@ -598,6 +628,7 @@ async fn run_restart(
             &meta.args,
             listen_addr.as_ref(),
             storage_path.as_deref(),
+            connection_config.as_deref(),
             log_level.as_deref(),
             profile.as_deref(),
             extra_args,
@@ -610,6 +641,7 @@ async fn run_restart(
         config_override,
         listen_addr,
         storage_path,
+        connection_config,
         log_level,
         profile,
         false,
@@ -711,6 +743,7 @@ fn build_server_config(
     config_override: Option<&Path>,
     listen_addr: Option<SocketAddr>,
     storage_path: Option<PathBuf>,
+    connection_config: Option<PathBuf>,
     log_level: Option<String>,
     profile: Option<String>,
     extra_args: &[String],
@@ -726,7 +759,11 @@ fn build_server_config(
         args.push(addr.to_string());
     }
 
-    if let Some(ref path) = storage_path {
+    if let Some(ref path) = connection_config {
+        // Connection config takes precedence — don't set a default storage path
+        args.push("--connection-config".into());
+        args.push(path.display().to_string());
+    } else if let Some(ref path) = storage_path {
         args.push("--storage-path".into());
         args.push(path.display().to_string());
     } else {
@@ -811,6 +848,11 @@ fn build_child_args(
         args.push(path.display().to_string());
     }
 
+    if let Some(ref path) = config.connection_config {
+        args.push("--connection-config".into());
+        args.push(path.display().to_string());
+    }
+
     // Pass through explicit overrides
     if log_level.is_some() {
         args.push("--log-level".into());
@@ -845,16 +887,23 @@ fn build_child_args(
 /// if the user provided a new value on `restart`, replace the old one; otherwise
 /// keep the original. Extra passthrough args (`--` ...) are replaced wholesale
 /// if new ones are provided, otherwise the originals are kept.
+#[allow(clippy::too_many_arguments)]
 fn merge_restart_args(
     old_args: &[String],
     new_listen_addr: Option<&SocketAddr>,
     new_storage_path: Option<&Path>,
+    new_connection_config: Option<&Path>,
     new_log_level: Option<&str>,
     new_profile: Option<&str>,
     new_extra_args: &[String],
 ) -> Vec<String> {
     let mut result = Vec::new();
     let mut i = 0;
+
+    // --storage-path and --connection-config are mutually exclusive modes.
+    // Switching from one to the other on restart must drop the old flag.
+    let switching_to_storage = new_storage_path.is_some();
+    let switching_to_connection = new_connection_config.is_some();
 
     // Walk old args, replacing values for known flags when overrides are present.
     while i < old_args.len() {
@@ -870,6 +919,19 @@ fn merge_restart_args(
                 result.push(new_storage_path.unwrap().display().to_string());
                 i += 2;
             }
+            // Drop old --storage-path when switching to --connection-config
+            "--storage-path" if switching_to_connection => {
+                i += 2;
+            }
+            "--connection-config" if new_connection_config.is_some() => {
+                result.push("--connection-config".into());
+                result.push(new_connection_config.unwrap().display().to_string());
+                i += 2;
+            }
+            // Drop old --connection-config when switching to --storage-path
+            "--connection-config" if switching_to_storage => {
+                i += 2;
+            }
             "--log-level" if new_log_level.is_some() => {
                 result.push("--log-level".into());
                 result.push(new_log_level.unwrap().to_string());
@@ -881,7 +943,12 @@ fn merge_restart_args(
                 i += 2;
             }
             // Known flag with a value argument — copy both
-            "--listen-addr" | "--storage-path" | "--log-level" | "--profile" | "--config-file" => {
+            "--listen-addr"
+            | "--storage-path"
+            | "--connection-config"
+            | "--log-level"
+            | "--profile"
+            | "--config-file" => {
                 result.push(old_args[i].clone());
                 if i + 1 < old_args.len() {
                     result.push(old_args[i + 1].clone());
@@ -907,6 +974,12 @@ fn merge_restart_args(
     if let Some(path) = new_storage_path {
         if !has("--storage-path") {
             result.push("--storage-path".into());
+            result.push(path.display().to_string());
+        }
+    }
+    if let Some(path) = new_connection_config {
+        if !has("--connection-config") {
+            result.push("--connection-config".into());
             result.push(path.display().to_string());
         }
     }
@@ -939,14 +1012,18 @@ fn merge_restart_args(
 fn print_resolved_config(config: &ServerConfig, dirs: &FlureeDir) {
     eprintln!("{}", "Resolved server configuration:".bold());
     eprintln!("  listen_addr:  {}", config.listen_addr);
-    eprintln!(
-        "  storage_path: {}",
-        config
-            .storage_path
-            .as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(memory)".into())
-    );
+    if let Some(ref cc) = config.connection_config {
+        eprintln!("  connection_config: {}", cc.display());
+    } else {
+        eprintln!(
+            "  storage_path: {}",
+            config
+                .storage_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(memory)".into())
+        );
+    }
     eprintln!("  log_level:    {}", config.log_level);
     eprintln!("  cors_enabled: {}", config.cors_enabled);
     eprintln!("  indexing:     {}", config.indexing_enabled);

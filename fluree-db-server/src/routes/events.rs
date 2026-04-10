@@ -23,7 +23,7 @@ use axum::{
 };
 use chrono::Utc;
 use fluree_db_nameservice::{
-    GraphSourcePublisher, GraphSourceRecord, NameService, NameServiceEvent, NsRecord, Publication,
+    GraphSourcePublisher, GraphSourceRecord, NameService, NameServiceEvent, NsRecord,
     SubscriptionScope,
 };
 use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
@@ -410,7 +410,8 @@ pub async fn events(
     State(state): State<Arc<AppState>>,
     Query(params): Query<EventsQuery>,
     MaybeBearer(principal): MaybeBearer,
-) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ServerError> {
+) -> Result<Sse<std::pin::Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>>, ServerError>
+{
     // Peer mode: return 404 - events endpoint not available
     // Peers subscribe to the transaction server's events endpoint instead
     if state.config.server_role == ServerRole::Peer {
@@ -433,80 +434,90 @@ pub async fn events(
         );
     }
 
-    // Clone nameservice for use in async closures
-    // Events endpoint is only available in transaction mode (checked above)
-    let ns = state.fluree.as_file().nameservice().clone();
+    match &state.fluree {
+        crate::state::FlureeInstance::Direct(d) => {
+            let ns = d.nameservice();
+            let pub_ns = ns.publication().ok_or_else(|| {
+                ServerError::NotImplemented(
+                    "Event subscriptions are not supported by this nameservice backend".to_string(),
+                )
+            })?;
 
-    // 1. SUBSCRIBE FIRST (events during snapshot queue in receiver)
-    // This ensures no gap between snapshot and live events
-    let subscription = ns
-        .subscribe(SubscriptionScope::All)
-        .await
-        .map_err(|e| ServerError::internal(format!("Failed to subscribe to events: {}", e)))?;
+            // 1. SUBSCRIBE FIRST via the Publication capability
+            let subscription = pub_ns
+                .subscribe(SubscriptionScope::All)
+                .await
+                .map_err(|e| {
+                    ServerError::internal(format!("Failed to subscribe to events: {}", e))
+                })?;
 
-    // 2. Build initial snapshot using effective params
-    let initial_events = build_initial_snapshot(&ns, &effective_params).await;
-    let initial_stream = stream::iter(initial_events.into_iter().map(Ok));
+            // 2. Build initial snapshot using the NameService + GraphSourcePublisher surface
+            let ns_clone = ns.clone();
+            let initial_events = build_initial_snapshot(&ns_clone, &effective_params).await;
+            let initial_stream = stream::iter(initial_events.into_iter().map(Ok));
 
-    // 3. Create live event stream from broadcast receiver using unfold
-    let ns_for_live = ns.clone();
-    let live_stream = stream::unfold(
-        (subscription.receiver, ns_for_live, effective_params),
-        |(mut rx, ns_inner, params)| async move {
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        // Filter by effective params
-                        let resource_id = event_resource_id(&event);
-                        let kind = event_kind(&event);
+            // 3. Create live event stream from broadcast receiver
+            let ns_for_live = ns_clone.clone();
+            let live_stream = stream::unfold(
+                (subscription.receiver, ns_for_live, effective_params),
+                |(mut rx, ns_inner, params)| async move {
+                    loop {
+                        match rx.recv().await {
+                            Ok(event) => {
+                                let resource_id = event_resource_id(&event);
+                                let kind = event_kind(&event);
 
-                        let matches = if params.all {
-                            true
-                        } else {
-                            match kind {
-                                SSE_KIND_LEDGER => params.ledgers.iter().any(|l| l == resource_id),
-                                SSE_KIND_GRAPH_SOURCE => {
-                                    params.graph_sources.iter().any(|v| v == resource_id)
+                                let matches = if params.all {
+                                    true
+                                } else {
+                                    match kind {
+                                        SSE_KIND_LEDGER => {
+                                            params.ledgers.iter().any(|l| l == resource_id)
+                                        }
+                                        SSE_KIND_GRAPH_SOURCE => {
+                                            params.graph_sources.iter().any(|v| v == resource_id)
+                                        }
+                                        _ => false,
+                                    }
+                                };
+
+                                if !matches {
+                                    continue;
                                 }
-                                _ => false,
+
+                                if let Some(sse_event) = transform_event(&ns_inner, event).await {
+                                    return Some((Ok(sse_event), (rx, ns_inner, params)));
+                                }
+                                continue;
                             }
-                        };
-
-                        if !matches {
-                            // Skip non-matching events, continue loop
-                            continue;
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                tracing::warn!(
+                                    lagged = n,
+                                    "SSE broadcast lagged, some events may have been missed"
+                                );
+                                continue;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                return None;
+                            }
                         }
-
-                        if let Some(sse_event) = transform_event(&ns_inner, event).await {
-                            return Some((Ok(sse_event), (rx, ns_inner, params)));
-                        }
-                        // Event transformed to None (e.g., record not found), continue
-                        continue;
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(
-                            lagged = n,
-                            "SSE broadcast lagged, some events may have been missed"
-                        );
-                        // Continue listening after lag
-                        continue;
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        // Channel closed, end the stream
-                        return None;
-                    }
-                }
-            }
-        },
-    );
+                },
+            );
 
-    // 4. Chain: snapshot first, then live events
-    let combined_stream = initial_stream.chain(live_stream);
+            // 4. Chain: snapshot first, then live events
+            let combined_stream: std::pin::Pin<
+                Box<dyn Stream<Item = Result<Event, Infallible>> + Send>,
+            > = Box::pin(initial_stream.chain(live_stream));
 
-    Ok(
-        Sse::new(combined_stream)
-            .keep_alive(KeepAlive::default().interval(Duration::from_secs(30))),
-    )
+            Ok(Sse::new(combined_stream)
+                .keep_alive(KeepAlive::default().interval(Duration::from_secs(30))))
+        }
+        crate::state::FlureeInstance::Proxy(_) => {
+            // Unreachable: peer-mode guard above returns early.
+            Err(ServerError::internal("Events not available in proxy mode"))
+        }
+    }
 }
 
 #[cfg(test)]

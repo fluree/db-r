@@ -57,6 +57,7 @@ pub struct ProfileConfig {
 pub struct ServerFileConfig {
     pub listen_addr: Option<String>,
     pub storage_path: Option<String>,
+    pub connection_config: Option<String>,
     pub log_level: Option<String>,
     pub cors_enabled: Option<bool>,
     pub body_limit: Option<usize>,
@@ -366,6 +367,7 @@ fn merge_json_values(base: &mut serde_json::Value, overlay: &serde_json::Value) 
 pub const CONFIG_FILE_ARG_IDS: &[&str] = &[
     "listen_addr",
     "storage_path",
+    "connection_config",
     "log_level",
     "cors_enabled",
     "body_limit",
@@ -449,6 +451,11 @@ pub fn apply_to_server_config(
     if is_default("storage_path") {
         if let Some(ref path) = file.storage_path {
             config.storage_path = Some(PathBuf::from(path));
+        }
+    }
+    if is_default("connection_config") {
+        if let Some(ref path) = file.connection_config {
+            config.connection_config = Some(PathBuf::from(path));
         }
     }
     if is_default("log_level") {

@@ -839,6 +839,10 @@ pub enum ServerAction {
         #[arg(long)]
         storage_path: Option<PathBuf>,
 
+        /// Path to a JSON-LD connection config file (S3, DynamoDB, etc.)
+        #[arg(long)]
+        connection_config: Option<PathBuf>,
+
         /// Log level (trace, debug, info, warn, error)
         #[arg(long)]
         log_level: Option<String>,
@@ -861,6 +865,10 @@ pub enum ServerAction {
         /// Storage path override
         #[arg(long)]
         storage_path: Option<PathBuf>,
+
+        /// Path to a JSON-LD connection config file (S3, DynamoDB, etc.)
+        #[arg(long)]
+        connection_config: Option<PathBuf>,
 
         /// Log level (trace, debug, info, warn, error)
         #[arg(long)]
@@ -898,6 +906,10 @@ pub enum ServerAction {
         /// Storage path override
         #[arg(long)]
         storage_path: Option<PathBuf>,
+
+        /// Path to a JSON-LD connection config file (S3, DynamoDB, etc.)
+        #[arg(long)]
+        connection_config: Option<PathBuf>,
 
         /// Log level (trace, debug, info, warn, error)
         #[arg(long)]

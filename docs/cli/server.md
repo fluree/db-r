@@ -20,10 +20,13 @@ These options are available on `run`, `start`, and `restart`:
 | Option | Description |
 |--------|-------------|
 | `--listen-addr <ADDR>` | Listen address (e.g., `0.0.0.0:8090`) |
-| `--storage-path <PATH>` | Storage path override |
+| `--storage-path <PATH>` | Storage path override (local file storage) |
+| `--connection-config <FILE>` | JSON-LD connection config for S3, DynamoDB, etc. |
 | `--log-level <LEVEL>` | Log level (`trace`, `debug`, `info`, `warn`, `error`) |
 | `--profile <NAME>` | Configuration profile to activate |
 | `-- <ARGS>...` | Additional server flags (passed through to server config) |
+
+`--storage-path` and `--connection-config` are mutually exclusive. Use `--storage-path` for local file storage or `--connection-config` for remote backends (S3, DynamoDB, split storage). See [Configuration](../operations/configuration.md#connection-configuration-s3-dynamodb-etc) for details.
 
 When no flags are provided, the server discovers its configuration using the same search as the CLI: it walks up from the current working directory looking for a `.fluree/config.toml` (or `config.jsonld`), then falls back to the global Fluree config directory (`$FLUREE_HOME`, or the platform config directory — see [Configuration](../operations/configuration.md)). Server settings live under the `[server]` section. The CLI's `--config` flag is also honored.
 
@@ -37,6 +40,9 @@ fluree server run
 
 # Override listen address
 fluree server run --listen-addr 127.0.0.1:9090
+
+# S3 + DynamoDB backend
+fluree server run --connection-config /etc/fluree/connection.jsonld
 
 # Pass through advanced server flags
 fluree server run -- --cors-enabled --indexing-enabled
@@ -89,6 +95,18 @@ ok: Server is running
   uptime:       2h 15m 30s
   health:       ok
   log:          /path/to/.fluree/server.log
+```
+
+When using `--connection-config`, the status shows the connection config path instead of the storage path:
+
+```
+ok: Server is running
+  pid:          12345
+  listen_addr:  0.0.0.0:8090
+  connection:   /etc/fluree/connection.jsonld
+  started_at:   2026-02-16T10:30:00Z
+  uptime:       2h 15m 30s
+  health:       ok
 ```
 
 ## restart
@@ -185,11 +203,22 @@ reindex_min_bytes = 100_000
 reindex_max_bytes = 1_000_000
 ```
 
+For S3/DynamoDB backends, use `connection_config` instead of `storage_path`:
+
+```toml
+[server]
+connection_config = "/etc/fluree/connection.jsonld"
+cache_max_mb = 4096
+
+[server.indexing]
+enabled = true
+```
+
 Indexing settings live under the `[server.indexing]` subsection, not directly on `[server]`. Authentication settings similarly use `[server.auth.events]`, `[server.auth.data]`, etc.
 
 See [Configuration](../operations/configuration.md) for the full list of server options.
 
-## Feature Flag
+## Feature Flags
 
 The `server` subcommand requires the `server` Cargo feature (enabled by default). If compiled without it:
 
@@ -197,3 +226,11 @@ The `server` subcommand requires the `server` Cargo feature (enabled by default)
 fluree server run
 # error: server support not compiled. Rebuild with `--features server`.
 ```
+
+For S3/DynamoDB support via `--connection-config`, the `aws` feature must be enabled:
+
+```bash
+cargo build -p fluree-db-cli --features aws
+```
+
+Without this feature, S3 storage configs in the connection config will produce a clear error at startup.

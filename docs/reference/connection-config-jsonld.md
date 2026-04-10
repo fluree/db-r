@@ -4,7 +4,17 @@ This page documents the **JSON-LD connection config** supported by the Rust impl
 
 This config uses the same `@context` + `@graph` model as other Fluree JSON-LD config surfaces.
 
-## Entry points
+## Using with the Fluree server
+
+The server accepts a connection config file via `--connection-config`:
+
+```bash
+fluree server run --connection-config /path/to/connection.jsonld
+```
+
+This replaces `--storage-path` for S3, DynamoDB, and other non-filesystem backends. The server builds its storage and nameservice from the config file at startup. Server-level settings (`--cache-max-mb`, `--indexing-enabled`, etc.) override connection config defaults. See [Configuration](../operations/configuration.md#connection-configuration-s3-dynamodb-etc) for full details and examples.
+
+## Entry points (Rust API)
 
 All construction flows through `FlureeBuilder`:
 

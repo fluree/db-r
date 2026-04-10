@@ -1201,7 +1201,7 @@ async fn execute_transaction(
 
         // Get cached ledger handle (loads if not cached)
         // Transaction execution is only in transaction mode (peers forward)
-        let handle = match state.fluree.as_file().ledger_cached(ledger_id).await {
+        let handle = match state.fluree.as_direct().ledger_cached(ledger_id).await {
             Ok(handle) => handle,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -1230,7 +1230,7 @@ async fn execute_transaction(
         }
 
         // Build and execute the transaction via the builder API
-        let fluree = state.fluree.as_file();
+        let fluree = state.fluree.as_direct();
         let builder = fluree.stage(&handle);
         let builder = match txn_type {
             TxnType::Insert => builder.insert(body),
@@ -1357,7 +1357,7 @@ async fn execute_turtle_transaction(
         tracing::debug!(tx_id = %tx_id, "computed transaction ID");
 
         // Get cached ledger handle (loads if not cached)
-        let handle = match state.fluree.as_file().ledger_cached(ledger_id).await {
+        let handle = match state.fluree.as_direct().ledger_cached(ledger_id).await {
             Ok(handle) => handle,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -1385,7 +1385,7 @@ async fn execute_turtle_transaction(
         }
 
         // Build and execute the transaction via the builder API
-        let fluree = state.fluree.as_file();
+        let fluree = state.fluree.as_direct();
         let builder = fluree.stage(&handle);
         let builder = match txn_type {
             // Insert with plain Turtle: use fast direct flake path
@@ -1540,7 +1540,7 @@ async fn execute_sparql_update_request(
     };
 
     // Get ledger handle
-    let handle = match state.fluree.as_file().ledger_cached(&ledger_id).await {
+    let handle = match state.fluree.as_direct().ledger_cached(&ledger_id).await {
         Ok(handle) => handle,
         Err(e) => {
             let server_error = ServerError::Api(e);
@@ -1582,7 +1582,7 @@ async fn execute_sparql_update_request(
     );
 
     // Execute the transaction using the Txn IR directly
-    let fluree = state.fluree.as_file();
+    let fluree = state.fluree.as_direct();
     let mut builder = fluree.stage(&handle).txn(txn);
     // If the request was signed, ALWAYS store the original signed envelope for provenance.
     if let Some(raw_txn) = raw_txn_from_credential(credential) {

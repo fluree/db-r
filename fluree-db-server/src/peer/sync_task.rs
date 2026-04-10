@@ -2,15 +2,15 @@
 //!
 //! Unlike [`PeerSubscriptionTask`](super::subscription::PeerSubscriptionTask) which only
 //! updates in-memory [`PeerState`] watermarks, `PeerSyncTask` **persists remote refs into
-//! the local [`FileNameService`]** via `RefPublisher` CAS operations. This means a restarted
+//! the local nameservice** via `RefPublisher` CAS operations. This means a restarted
 //! peer can serve queries immediately without waiting for SSE replay.
 //!
-//! Used for shared-storage peers where `FlureeInstance::File` is available.
+//! Used for shared-storage peers (both file-backed and connection-config-backed).
 //! Proxy-storage peers continue to use `PeerSubscriptionTask`.
 
 use std::sync::Arc;
 
-use fluree_db_api::{NotifyResult, NsNotify};
+use fluree_db_api::{FlureeClient, NotifyResult, NsNotify};
 use fluree_db_nameservice::{
     CasResult, NameServiceError, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
 };
@@ -20,12 +20,11 @@ use futures::StreamExt;
 
 use crate::config::ServerConfig;
 use crate::peer::state::PeerState;
-use crate::state::FileFluree;
 
 /// Background task that syncs nameservice state from a remote transaction server
-/// into the local `FileNameService` via SSE events and `RefPublisher` CAS operations.
+/// via SSE events and `RefPublisher` CAS operations.
 pub struct PeerSyncTask {
-    fluree: Arc<FileFluree>,
+    fluree: Arc<FlureeClient>,
     peer_state: Arc<PeerState>,
     watch: SseRemoteWatch,
     config: ServerConfig,
@@ -33,7 +32,7 @@ pub struct PeerSyncTask {
 
 impl PeerSyncTask {
     pub fn new(
-        fluree: Arc<FileFluree>,
+        fluree: Arc<FlureeClient>,
         peer_state: Arc<PeerState>,
         watch: SseRemoteWatch,
         config: ServerConfig,

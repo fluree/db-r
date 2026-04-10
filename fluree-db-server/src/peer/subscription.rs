@@ -246,7 +246,7 @@ impl PeerSubscriptionTask {
         for ledger_id in &sub.ledgers {
             // Preload by loading into the connection-level ledger cache.
             let result = match &self.fluree {
-                FlureeInstance::File(f) => f.ledger_cached(ledger_id).await.map(|_| ()),
+                FlureeInstance::Direct(d) => d.ledger_cached(ledger_id).await.map(|_| ()),
                 FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await.map(|_| ()),
             };
 
@@ -263,7 +263,7 @@ impl PeerSubscriptionTask {
 
     async fn disconnect_cached_ledger(&self, ledger_id: &str) {
         match &self.fluree {
-            FlureeInstance::File(f) => f.disconnect_ledger(ledger_id).await,
+            FlureeInstance::Direct(d) => d.disconnect_ledger(ledger_id).await,
             FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
         }
     }
@@ -278,8 +278,8 @@ impl PeerSubscriptionTask {
         };
 
         match &self.fluree {
-            FlureeInstance::File(f) => {
-                let Some(mgr) = f.ledger_manager() else {
+            FlureeInstance::Direct(d) => {
+                let Some(mgr) = d.ledger_manager() else {
                     return;
                 };
                 self.notify_mgr(mgr, record, ns_record).await;
