@@ -134,6 +134,7 @@
   - [Query peers and replication](operations/query-peers.md)
   - [Telemetry and logging](operations/telemetry.md)
   - [Distributed tracing integration](operations/distributed-tracing.md)
+  - [Pack format: archive and restore](operations/pack-archive-restore.md)
   - [Admin, health, and stats](operations/admin-and-health.md)
 
 - [Troubleshooting](troubleshooting/README.md)

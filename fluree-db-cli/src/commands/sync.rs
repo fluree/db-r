@@ -5,6 +5,7 @@ use crate::context;
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use fluree_db_api::server_defaults::FlureeDir;
+use fluree_db_core::commit::codec::{read_commit_envelope, verify_commit_blob};
 use fluree_db_core::pack::{PackRequest, LARGE_TRANSFER_THRESHOLD};
 use fluree_db_core::storage::ContentAddressedWrite;
 use fluree_db_core::ContentKind;
@@ -17,7 +18,6 @@ use fluree_db_nameservice_sync::{
     ingest_pack_stream, ingest_pack_stream_with_header, peek_pack_header, FetchResult,
     HttpRemoteClient, MultiOriginFetcher, RemoteEndpoint, SyncConfigStore, SyncDriver,
 };
-use fluree_db_novelty::commit_v2::{read_commit_envelope, verify_commit_v2_blob};
 use futures::StreamExt;
 use std::sync::Arc;
 
@@ -537,13 +537,13 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
     }
 
     // Filter to only commits with t > local_t, then reverse to oldest→newest.
-    use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
+    use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
     let mut to_import: Vec<fluree_db_api::Base64Bytes> = Vec::new();
     for commit in &all_commits {
         if commit.0.len() < HEADER_LEN {
             continue;
         }
-        let header = CommitV2Header::read_from(&commit.0)
+        let header = CommitHeader::read_from(&commit.0)
             .map_err(|e| CliError::Config(format!("invalid commit in pull response: {e}")))?;
         if header.t > local_ref.t {
             to_import.push(commit.clone());
@@ -681,7 +681,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
     let mut found_base = local_ref.t == remote_t || (remote_t == 0 && remote_commit_id.is_none());
 
     if !found_base {
-        let stream = fluree_db_novelty::trace_commit_envelopes_by_id(
+        let stream = fluree_db_core::trace_commit_envelopes_by_id(
             content_store.clone(),
             local_head_cid.clone(),
             remote_t,
@@ -700,7 +700,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
         if let Some(remote_cid) = remote_commit_id.as_ref() {
             if let Some(oldest_cid) = to_push_cids.last() {
                 let oldest_env =
-                    fluree_db_novelty::load_commit_envelope_by_id(&content_store, oldest_cid)
+                    fluree_db_core::load_commit_envelope_by_id(&content_store, oldest_cid)
                         .await
                         .map_err(|e| CliError::Config(e.to_string()))?;
                 if !oldest_env.parent_ids().any(|id| id == remote_cid) {
@@ -740,7 +740,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
             .get(cid)
             .await
             .map_err(|e| CliError::Config(format!("failed to read local commit {cid}: {e}")))?;
-        let commit = fluree_db_novelty::commit_v2::read_commit(&bytes)
+        let commit = fluree_db_core::commit::codec::read_commit(&bytes)
             .map_err(|e| CliError::Config(format!("failed to decode local commit {cid}: {e}")))?;
         commits.push(fluree_db_api::Base64Bytes(bytes));
 
@@ -910,7 +910,7 @@ pub async fn run_publish(
             .get(cid)
             .await
             .map_err(|e| CliError::Config(format!("failed to read local commit {cid}: {e}")))?;
-        let commit = fluree_db_novelty::commit_v2::read_commit(&bytes)
+        let commit = fluree_db_core::commit::codec::read_commit(&bytes)
             .map_err(|e| CliError::Config(format!("failed to decode local commit {cid}: {e}")))?;
         commits.push(fluree_db_api::Base64Bytes(bytes));
 
@@ -1497,8 +1497,8 @@ pub async fn run_clone_origin(
                     .await
                     .map_err(|e| CliError::Config(format!("clone failed (fetch commit): {e}")))?;
 
-                // Verify integrity + derive CID from the commit-v2 blob.
-                let derived_id = verify_commit_v2_blob(&bytes).map_err(|e| {
+                // Verify integrity + derive CID from the commit blob.
+                let derived_id = verify_commit_blob(&bytes).map_err(|e| {
                     CliError::Config(format!("clone failed (commit integrity): {e}"))
                 })?;
                 if derived_id != cid {
@@ -1507,15 +1507,10 @@ pub async fn run_clone_origin(
                     )));
                 }
 
-                // Store commit blob locally (uses pre-verified hash; commits use sub-range hashing).
+                // Store commit blob locally.
                 fluree
                     .storage()
-                    .content_write_bytes_with_hash(
-                        ContentKind::Commit,
-                        &local_id,
-                        &derived_id.digest_hex(),
-                        &bytes,
-                    )
+                    .content_write_bytes(ContentKind::Commit, &local_id, &bytes)
                     .await
                     .map_err(|e| CliError::Config(format!("clone failed (store commit): {e}")))?;
 
@@ -1873,7 +1868,6 @@ async fn run_pull_via_origins(
 
     // Walk chain from remote head toward local head.
     struct FetchedCommit {
-        cid: fluree_db_core::ContentId,
         bytes: Vec<u8>,
         txn: Option<fluree_db_core::ContentId>,
     }
@@ -1914,7 +1908,7 @@ async fn run_pull_via_origins(
             .map_err(|e| CliError::Config(format!("pull failed (fetch commit): {e}")))?;
 
         // Verify integrity.
-        let derived_id = verify_commit_v2_blob(&commit_bytes)
+        let derived_id = verify_commit_blob(&commit_bytes)
             .map_err(|e| CliError::Config(format!("pull failed (commit integrity): {e}")))?;
         if derived_id != cid {
             return Err(CliError::Config(format!(
@@ -1934,7 +1928,6 @@ async fn run_pull_via_origins(
             frontier.push(parent_id.clone());
         }
         fetched.push(FetchedCommit {
-            cid,
             bytes: commit_bytes,
             txn: envelope.txn,
         });
@@ -1950,12 +1943,7 @@ async fn run_pull_via_origins(
     for fc in &fetched {
         fluree
             .storage()
-            .content_write_bytes_with_hash(
-                ContentKind::Commit,
-                ledger_id,
-                &fc.cid.digest_hex(),
-                &fc.bytes,
-            )
+            .content_write_bytes(ContentKind::Commit, ledger_id, &fc.bytes)
             .await
             .map_err(|e| CliError::Config(format!("pull failed (store commit): {e}")))?;
 

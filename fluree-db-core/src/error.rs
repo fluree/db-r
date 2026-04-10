@@ -40,6 +40,10 @@ pub enum Error {
     #[error("I/O error: {0}")]
     Io(String),
 
+    /// Invalid commit format
+    #[error("Invalid commit: {0}")]
+    InvalidCommit(String),
+
     /// Generic error with message
     #[error("{0}")]
     Other(String),
@@ -64,6 +68,11 @@ impl Error {
     /// Create an invalid index error
     pub fn invalid_index(msg: impl Into<String>) -> Self {
         Error::InvalidIndex(msg.into())
+    }
+
+    /// Create an invalid commit error
+    pub fn invalid_commit(msg: impl Into<String>) -> Self {
+        Error::InvalidCommit(msg.into())
     }
 
     /// Create an invalid range error

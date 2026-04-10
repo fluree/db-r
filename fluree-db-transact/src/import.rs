@@ -14,7 +14,7 @@
 //! See the Phase 3 plan for full semantics documentation.
 
 mod inner {
-    use crate::commit_v2::CommitV2Envelope;
+    use crate::commit_v2::CodecEnvelope;
     use crate::commit_v2::StreamingCommitWriter;
     use crate::error::{Result, TransactError};
     use crate::generate::{infer_datatype, DT_ID, DT_LANG_STRING};
@@ -25,7 +25,6 @@ mod inner {
     use fluree_db_core::ns_encoding::NsSplitMode;
     use fluree_db_core::{
         ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid,
-        CODEC_FLUREE_COMMIT,
     };
     use fluree_db_novelty::CommitRef;
 
@@ -187,7 +186,7 @@ mod inner {
             // Persist split mode in genesis commit (first chunk, no previous ref).
             let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-            let envelope = CommitV2Envelope {
+            let envelope = CodecEnvelope {
                 t: new_t,
                 previous_refs: state.previous_ref.clone().into_iter().collect(),
                 namespace_delta: ns_delta,
@@ -208,20 +207,14 @@ mod inner {
             let _span = tracing::debug_span!("import_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
-        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-            .expect("valid SHA-256 hex from commit writer");
+        let commit_cid = ContentId::new(ContentKind::Commit, &result.bytes);
         let blob_bytes = result.bytes.len();
 
         // 5. Store
         let write_res = {
             let _span = tracing::debug_span!("import_store", t = new_t, blob_bytes).entered();
             storage
-                .content_write_bytes_with_hash(
-                    ContentKind::Commit,
-                    ledger_id,
-                    &result.content_hash_hex,
-                    &result.bytes,
-                )
+                .content_write_bytes(ContentKind::Commit, ledger_id, &result.bytes)
                 .await?
         };
 
@@ -329,7 +322,7 @@ mod inner {
             // Persist split mode in genesis commit (first chunk, no previous ref).
             let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-            let envelope = CommitV2Envelope {
+            let envelope = CodecEnvelope {
                 t: new_t,
                 previous_refs: state.previous_ref.clone().into_iter().collect(),
                 namespace_delta: ns_delta,
@@ -349,19 +342,13 @@ mod inner {
             let _span = tracing::debug_span!("import_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
-        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-            .expect("valid SHA-256 hex from commit writer");
+        let commit_cid = ContentId::new(ContentKind::Commit, &result.bytes);
         let blob_bytes = result.bytes.len();
 
         let write_res = {
             let _span = tracing::debug_span!("import_store", t = new_t, blob_bytes).entered();
             storage
-                .content_write_bytes_with_hash(
-                    ContentKind::Commit,
-                    ledger_id,
-                    &result.content_hash_hex,
-                    &result.bytes,
-                )
+                .content_write_bytes(ContentKind::Commit, ledger_id, &result.bytes)
                 .await?
         };
 
@@ -554,7 +541,7 @@ mod inner {
         // Persist split mode in genesis commit (first chunk, no previous ref).
         let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: new_t,
             previous_refs: state.previous_ref.clone().into_iter().collect(),
             namespace_delta: ns_delta,
@@ -573,20 +560,14 @@ mod inner {
                 tracing::debug_span!("import_trig_finish_blob", t = new_t, op_count).entered();
             writer.finish(&envelope)?
         };
-        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-            .expect("valid SHA-256 hex from commit writer");
+        let commit_cid = ContentId::new(ContentKind::Commit, &result.bytes);
         let blob_bytes = result.bytes.len();
 
         // 8. Store
         let write_res = {
             let _span = tracing::debug_span!("import_trig_store", t = new_t, blob_bytes).entered();
             storage
-                .content_write_bytes_with_hash(
-                    ContentKind::Commit,
-                    ledger_id,
-                    &result.content_hash_hex,
-                    &result.bytes,
-                )
+                .content_write_bytes(ContentKind::Commit, ledger_id, &result.bytes)
                 .await?
         };
 
@@ -1003,7 +984,7 @@ mod inner {
         // Persist split mode in genesis commit (first chunk, no previous ref).
         let ns_split_mode = genesis_split_mode(state, state.ns_registry.split_mode());
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: new_t,
             previous_refs: state.previous_ref.clone().into_iter().collect(),
             namespace_delta: ns_delta,
@@ -1017,17 +998,11 @@ mod inner {
         };
 
         let result = parsed.writer.finish(&envelope)?;
-        let commit_cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-            .expect("valid SHA-256 hex from commit writer");
+        let commit_cid = ContentId::new(ContentKind::Commit, &result.bytes);
         let blob_bytes = result.bytes.len();
 
         let write_res = storage
-            .content_write_bytes_with_hash(
-                ContentKind::Commit,
-                ledger_id,
-                &result.content_hash_hex,
-                &result.bytes,
-            )
+            .content_write_bytes(ContentKind::Commit, ledger_id, &result.bytes)
             .await?;
 
         tracing::debug!(

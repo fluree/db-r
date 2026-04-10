@@ -11,8 +11,8 @@ mod support;
 
 use fluree_db_api::TimeSpec;
 use fluree_db_api::{DataSetDb, DatasetSpec, FlureeBuilder, GraphDb, GraphSource, QueryInput};
+use fluree_db_core::load_commit_by_id;
 use fluree_db_core::StorageContentStore;
-use fluree_db_novelty::load_commit_by_id;
 use serde_json::json;
 use support::{
     assert_index_defaults, genesis_ledger, normalize_flat_results, normalize_rows_array,

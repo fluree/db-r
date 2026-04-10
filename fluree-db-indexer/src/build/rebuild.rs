@@ -60,7 +60,7 @@ where
     S: Storage + Clone + Send + Sync + 'static,
     C: ContentStore + Clone + Send + Sync + 'static,
 {
-    use fluree_db_novelty::commit_v2::read_commit_envelope;
+    use fluree_db_core::commit::codec::read_commit_envelope;
     use run_index::resolver::{RebuildChunk, SharedResolverState};
     use run_index::spool::SortedCommitInfo;
 
@@ -113,7 +113,7 @@ where
             let (commit_cids, ledger_split_mode) = {
                 // stop_at_t=0 collects all commits (t starts at 1).
                 let dag =
-                    fluree_db_novelty::collect_dag_cids(&content_store, &head_commit_id, 0).await?;
+                    fluree_db_core::collect_dag_cids(&content_store, &head_commit_id, 0).await?;
 
                 // collect_dag_cids returns (t, cid) sorted by t descending.
                 // Reverse for chronological (genesis-first) order.

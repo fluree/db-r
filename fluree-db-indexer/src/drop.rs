@@ -13,11 +13,11 @@ use std::collections::HashSet;
 
 use fluree_db_binary_index::format::branch::read_branch_from_bytes;
 use fluree_db_binary_index::IndexRoot;
+use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::storage::ContentStore;
 use fluree_db_core::Storage;
-use fluree_db_novelty::commit_v2::read_commit_envelope;
 
 use crate::error::Result;
 use crate::gc::collector::{derive_address, walk_prev_index_chain};
@@ -70,7 +70,7 @@ async fn collect_commit_chain_cids<S: Storage + Clone>(
     let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
 
     // Collect all commit CIDs via DAG walk (stop_at_t=0 means collect all).
-    let dag = fluree_db_novelty::collect_dag_cids(&content_store, head, 0)
+    let dag = fluree_db_core::collect_dag_cids(&content_store, head, 0)
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -244,9 +244,8 @@ mod tests {
     use fluree_db_binary_index::{
         BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
-    use fluree_db_core::content_kind::CODEC_FLUREE_COMMIT;
+    use fluree_db_core::commit::codec::write_commit;
     use fluree_db_core::prelude::*;
-    use fluree_db_novelty::commit_v2::write_commit;
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::BTreeMap;
 
@@ -310,10 +309,8 @@ mod tests {
 
     /// Write a minimal commit blob to storage and return its CID.
     ///
-    /// Uses `from_hex_digest(CODEC_FLUREE_COMMIT, &content_hash_hex)` to derive
-    /// the CID — matching how real NsRecord.commit_head_id is produced. The
-    /// content_hash_hex is the SHA-256 of the canonical preimage (excluding the
-    /// trailing embedded hash and signature block), NOT SHA-256(full_bytes).
+    /// Uses `ContentId::new(ContentKind::Commit, &bytes)` to derive the CID
+    /// from the full v4 blob.
     async fn write_test_commit(
         storage: &MemoryStorage,
         t: i64,
@@ -339,14 +336,10 @@ mod tests {
         };
 
         let result = write_commit(&commit, false, None).expect("write_commit");
-        let cid = ContentId::from_hex_digest(CODEC_FLUREE_COMMIT, &result.content_hash_hex)
-            .expect("valid hex digest from write_commit");
-        let addr = fluree_db_core::content_address(
-            "memory",
-            ContentKind::Commit,
-            LEDGER,
-            &result.content_hash_hex,
-        );
+        let cid = ContentId::new(ContentKind::Commit, &result.bytes);
+        let hash_hex = cid.digest_hex();
+        let addr =
+            fluree_db_core::content_address("memory", ContentKind::Commit, LEDGER, &hash_hex);
         storage.write_bytes(&addr, &result.bytes).await.unwrap();
         cid
     }

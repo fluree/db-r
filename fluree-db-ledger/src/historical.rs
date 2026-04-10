@@ -587,7 +587,7 @@ mod tests {
         use fluree_db_nameservice::{CasResult, RefPublisher, RefValue};
 
         let store = content_store_for(storage.clone(), ledger_id);
-        let blob = fluree_db_novelty::commit_v2::write_commit(commit, false, None).unwrap();
+        let blob = fluree_db_core::commit::codec::write_commit(commit, false, None).unwrap();
         let cid = store.put(ContentKind::Commit, &blob.bytes).await.unwrap();
         let new = RefValue {
             id: Some(cid.clone()),

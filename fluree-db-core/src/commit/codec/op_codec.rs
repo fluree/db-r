@@ -14,15 +14,11 @@
 //! flags, [lang], [i]
 //! ```
 
-use super::error::CommitV2Error;
+use super::error::CommitCodecError;
 use super::format::{OTag, OP_FLAG_ASSERT, OP_FLAG_HAS_I, OP_FLAG_HAS_LANG};
 use super::string_dict::{StringDict, StringDictBuilder};
-use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
-use fluree_db_core::temporal::{
-    Date, DateTime, DayTimeDuration, Duration, GDay, GMonth, GMonthDay, GYear, GYearMonth, Time,
-    YearMonthDuration,
-};
-use fluree_db_core::{Flake, FlakeMeta, FlakeValue, GeoPointBits, Sid};
+use super::varint::{decode_varint, encode_varint, read_exact, read_u8, zigzag_encode};
+use crate::{Flake, FlakeMeta, FlakeValue, Sid};
 
 // =============================================================================
 // CommitDicts — dictionary set for writing
@@ -80,7 +76,7 @@ pub fn encode_op(
     flake: &Flake,
     dicts: &mut CommitDicts,
     buf: &mut Vec<u8>,
-) -> Result<(), CommitV2Error> {
+) -> Result<(), CommitCodecError> {
     // Graph: None = default graph (0, 0), Some(Sid) = named graph
     if let Some(ref g) = flake.g {
         encode_varint(g.namespace_code as u64, buf);
@@ -134,7 +130,7 @@ pub fn encode_op(
     // Optional list index (unsigned varint — negative indices not supported)
     if let Some(i) = flake.m.as_ref().and_then(|m| m.i) {
         if i < 0 {
-            return Err(CommitV2Error::NegativeListIndex(i));
+            return Err(CommitCodecError::NegativeListIndex(i));
         }
         encode_varint(i as u64, buf);
     }
@@ -146,7 +142,7 @@ fn encode_object(
     value: &FlakeValue,
     dicts: &mut CommitDicts,
     buf: &mut Vec<u8>,
-) -> Result<(), CommitV2Error> {
+) -> Result<(), CommitCodecError> {
     match value {
         FlakeValue::Ref(sid) => {
             buf.push(OTag::Ref as u8);
@@ -172,23 +168,23 @@ fn encode_object(
         }
         FlakeValue::DateTime(dt) => {
             buf.push(OTag::DateTime as u8);
-            encode_len_prefixed_str(&dt.to_string(), buf);
+            encode_len_prefixed_display(dt.as_ref(), buf);
         }
         FlakeValue::Date(d) => {
             buf.push(OTag::Date as u8);
-            encode_len_prefixed_str(&d.to_string(), buf);
+            encode_len_prefixed_display(d.as_ref(), buf);
         }
         FlakeValue::Time(t) => {
             buf.push(OTag::Time as u8);
-            encode_len_prefixed_str(&t.to_string(), buf);
+            encode_len_prefixed_display(t.as_ref(), buf);
         }
         FlakeValue::BigInt(n) => {
             buf.push(OTag::BigInt as u8);
-            encode_len_prefixed_str(&n.to_string(), buf);
+            encode_len_prefixed_display(n.as_ref(), buf);
         }
         FlakeValue::Decimal(d) => {
             buf.push(OTag::Decimal as u8);
-            encode_len_prefixed_str(&d.to_string(), buf);
+            encode_len_prefixed_display(d.as_ref(), buf);
         }
         FlakeValue::Json(s) => {
             buf.push(OTag::Json as u8);
@@ -199,35 +195,35 @@ fn encode_object(
         }
         FlakeValue::GYear(v) => {
             buf.push(OTag::GYear as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GYearMonth(v) => {
             buf.push(OTag::GYearMonth as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GMonth(v) => {
             buf.push(OTag::GMonth as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GDay(v) => {
             buf.push(OTag::GDay as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GMonthDay(v) => {
             buf.push(OTag::GMonthDay as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::YearMonthDuration(v) => {
             buf.push(OTag::YearMonthDuration as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::DayTimeDuration(v) => {
             buf.push(OTag::DayTimeDuration as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::Duration(v) => {
             buf.push(OTag::Duration as u8);
-            encode_len_prefixed_str(&v.to_string(), buf);
+            encode_len_prefixed_display(v.as_ref(), buf);
         }
         FlakeValue::GeoPoint(bits) => {
             buf.push(OTag::GeoPoint as u8);
@@ -254,16 +250,67 @@ fn encode_len_prefixed_str(s: &str, buf: &mut Vec<u8>) {
     buf.extend_from_slice(bytes);
 }
 
+/// Encode a `Display` value as a length-prefixed UTF-8 string without heap
+/// allocation. Formats into the output buffer directly by reserving space for
+/// the length prefix, writing the value, then backfilling the length.
+fn encode_len_prefixed_display(value: &impl std::fmt::Display, buf: &mut Vec<u8>) {
+    use std::fmt::Write;
+
+    // Reserve a placeholder for the varint length (we'll overwrite it).
+    // Most temporal/numeric strings are <128 bytes, so 1 byte suffices for the varint.
+    // Strategy: format into the buf starting after a 1-byte gap, then check if the
+    // length fits in 1 varint byte. If not, shift and use multi-byte varint.
+    let len_pos = buf.len();
+    buf.push(0); // placeholder for 1-byte varint
+    let data_start = buf.len();
+
+    // Write the display value directly into the Vec<u8> via a UTF-8 adapter.
+    struct VecWriter<'a>(&'a mut Vec<u8>);
+    impl std::fmt::Write for VecWriter<'_> {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.extend_from_slice(s.as_bytes());
+            Ok(())
+        }
+    }
+    // Display::fmt is infallible for our temporal/numeric types.
+    write!(VecWriter(buf), "{}", value).expect("Display::fmt failed");
+
+    let data_len = buf.len() - data_start;
+    if data_len < 128 {
+        // Fits in 1-byte varint — just fill in the placeholder.
+        buf[len_pos] = data_len as u8;
+    } else {
+        // Need multi-byte varint. Encode the length, then shift the data.
+        let mut varint_buf = Vec::new();
+        encode_varint(data_len as u64, &mut varint_buf);
+        let extra = varint_buf.len() - 1; // how many extra bytes beyond our 1-byte placeholder
+                                          // Make room by inserting `extra` bytes at data_start.
+        buf.splice(len_pos..len_pos + 1, varint_buf);
+        // Data was shifted by `extra` bytes, which splice handles automatically.
+        let _ = extra; // splice already handled the shift
+    }
+}
+
 // =============================================================================
 // Decode
 // =============================================================================
 
+/// Decode a length-prefixed UTF-8 string, returning an owned `String`.
+fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, CommitCodecError> {
+    let len = decode_varint(data, pos)? as usize;
+    let bytes = read_exact(data, pos, len)?;
+    std::str::from_utf8(bytes)
+        .map(|s| s.to_string())
+        .map_err(|e| CommitCodecError::InvalidOp(format!("invalid UTF-8: {e}")))
+}
+
 /// Decode a varint as a u16 namespace code, returning an error if the value
 /// exceeds `u16::MAX`.
-fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitV2Error> {
+fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitCodecError> {
     let raw = decode_varint(data, pos)?;
-    u16::try_from(raw)
-        .map_err(|_| CommitV2Error::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw)))
+    u16::try_from(raw).map_err(|_| {
+        CommitCodecError::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw))
+    })
 }
 
 /// Decode a single op from `data` starting at `*pos`, returning a `Flake`.
@@ -275,7 +322,7 @@ pub fn decode_op(
     pos: &mut usize,
     dicts: &ReadDicts,
     t: i64,
-) -> Result<Flake, CommitV2Error> {
+) -> Result<Flake, CommitCodecError> {
     // Graph: (0, 0) = default graph; otherwise named graph Sid encoded as (ns_code, name_id)
     let g_ns_code = decode_ns_code(data, pos)?;
     let g_name_id = decode_varint(data, pos)? as u32;
@@ -283,7 +330,7 @@ pub fn decode_op(
         None
     } else {
         if g_name_id == 0 {
-            return Err(CommitV2Error::InvalidOp(
+            return Err(CommitCodecError::InvalidOp(
                 "graph name_id 0 is reserved (use (0,0) for default graph)".into(),
             ));
         }
@@ -310,19 +357,11 @@ pub fn decode_op(
     let dt = Sid::new(dt_ns_code, dt_name);
 
     // Object (tag + payload)
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let o_tag = OTag::from_u8(data[*pos])?;
-    *pos += 1;
+    let o_tag = OTag::from_u8(read_u8(data, pos)?)?;
     let o = decode_object(o_tag, data, pos, dicts)?;
 
     // Flags
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let flags = data[*pos];
-    *pos += 1;
+    let flags = read_u8(data, pos)?;
     let op = flags & OP_FLAG_ASSERT != 0;
 
     // Optional lang
@@ -336,7 +375,7 @@ pub fn decode_op(
     let i = if flags & OP_FLAG_HAS_I != 0 {
         let raw = decode_varint(data, pos)?;
         if raw > i32::MAX as u64 {
-            return Err(CommitV2Error::InvalidOp(format!(
+            return Err(CommitCodecError::InvalidOp(format!(
                 "list index {} exceeds i32::MAX",
                 raw
             )));
@@ -362,165 +401,18 @@ pub fn decode_op(
     })
 }
 
+/// Decode a binary object value into a [`FlakeValue`].
+///
+/// Delegates binary parsing to [`raw_reader::decode_raw_object`] (shared with
+/// the zero-copy raw reader) and converts via `TryFrom<RawObject> for FlakeValue`.
 fn decode_object(
     tag: OTag,
     data: &[u8],
     pos: &mut usize,
     dicts: &ReadDicts,
-) -> Result<FlakeValue, CommitV2Error> {
-    match tag {
-        OTag::Ref => {
-            let ns_code = decode_ns_code(data, pos)?;
-            let name_id = decode_varint(data, pos)? as u32;
-            let name = dicts.object_ref.get(name_id)?;
-            Ok(FlakeValue::Ref(Sid::new(ns_code, name)))
-        }
-        OTag::Long => {
-            let raw = decode_varint(data, pos)?;
-            Ok(FlakeValue::Long(zigzag_decode(raw)))
-        }
-        OTag::Double => {
-            if *pos + 8 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
-            *pos += 8;
-            Ok(FlakeValue::Double(f64::from_le_bytes(bytes)))
-        }
-        OTag::String => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Ok(FlakeValue::String(s))
-        }
-        OTag::Boolean => {
-            if *pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let b = data[*pos] != 0;
-            *pos += 1;
-            Ok(FlakeValue::Boolean(b))
-        }
-        OTag::DateTime => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            DateTime::parse(&s)
-                .map(|dt| FlakeValue::DateTime(Box::new(dt)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad datetime: {}", e)))
-        }
-        OTag::Date => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Date::parse(&s)
-                .map(|d| FlakeValue::Date(Box::new(d)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad date: {}", e)))
-        }
-        OTag::Time => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Time::parse(&s)
-                .map(|t| FlakeValue::Time(Box::new(t)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad time: {}", e)))
-        }
-        OTag::BigInt => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            s.parse::<num_bigint::BigInt>()
-                .map(|n| FlakeValue::BigInt(Box::new(n)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad bigint: {}", e)))
-        }
-        OTag::Decimal => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            s.parse::<bigdecimal::BigDecimal>()
-                .map(|d| FlakeValue::Decimal(Box::new(d)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad decimal: {}", e)))
-        }
-        OTag::Json => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Ok(FlakeValue::Json(s))
-        }
-        OTag::Null => Ok(FlakeValue::Null),
-        OTag::GYear => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GYear::parse(&s)
-                .map(|v| FlakeValue::GYear(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gYear: {}", e)))
-        }
-        OTag::GYearMonth => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GYearMonth::parse(&s)
-                .map(|v| FlakeValue::GYearMonth(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gYearMonth: {}", e)))
-        }
-        OTag::GMonth => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GMonth::parse(&s)
-                .map(|v| FlakeValue::GMonth(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gMonth: {}", e)))
-        }
-        OTag::GDay => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GDay::parse(&s)
-                .map(|v| FlakeValue::GDay(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gDay: {}", e)))
-        }
-        OTag::GMonthDay => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            GMonthDay::parse(&s)
-                .map(|v| FlakeValue::GMonthDay(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad gMonthDay: {}", e)))
-        }
-        OTag::YearMonthDuration => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            YearMonthDuration::parse(&s)
-                .map(|v| FlakeValue::YearMonthDuration(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad yearMonthDuration: {}", e)))
-        }
-        OTag::DayTimeDuration => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            DayTimeDuration::parse(&s)
-                .map(|v| FlakeValue::DayTimeDuration(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad dayTimeDuration: {}", e)))
-        }
-        OTag::Duration => {
-            let s = decode_len_prefixed_str(data, pos)?;
-            Duration::parse(&s)
-                .map(|v| FlakeValue::Duration(Box::new(v)))
-                .map_err(|e| CommitV2Error::InvalidOp(format!("bad duration: {}", e)))
-        }
-        OTag::GeoPoint => {
-            if *pos + 16 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let lat = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-            let lng = f64::from_le_bytes(data[*pos + 8..*pos + 16].try_into().unwrap());
-            *pos += 16;
-            GeoPointBits::new(lat, lng)
-                .map(FlakeValue::GeoPoint)
-                .ok_or_else(|| {
-                    CommitV2Error::InvalidOp(format!("bad geo point: ({}, {})", lat, lng))
-                })
-        }
-        OTag::Vector => {
-            let len = decode_varint(data, pos)? as usize;
-            let byte_len = len.checked_mul(8).ok_or(CommitV2Error::UnexpectedEof)?;
-            if *pos + byte_len > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let mut vec = Vec::with_capacity(len);
-            for _ in 0..len {
-                let element = f64::from_le_bytes(data[*pos..*pos + 8].try_into().unwrap());
-                *pos += 8;
-                vec.push(element);
-            }
-            Ok(FlakeValue::Vector(vec))
-        }
-    }
-}
-
-fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error> {
-    let len = decode_varint(data, pos)? as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
-        .map_err(|e| CommitV2Error::InvalidOp(format!("invalid UTF-8: {}", e)))?;
-    *pos += len;
-    Ok(s.to_string())
+) -> Result<FlakeValue, CommitCodecError> {
+    let raw = super::raw_reader::decode_raw_object(tag, data, pos, dicts)?;
+    FlakeValue::try_from(raw).map_err(|e| CommitCodecError::InvalidOp(e.to_string()))
 }
 
 // =============================================================================

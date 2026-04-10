@@ -13,18 +13,16 @@
 //!     writer.push_flake(&flake)?;
 //! }
 //! let result = writer.finish(&envelope)?;
-//! // result.bytes is the complete v2 blob, result.content_hash_hex is the SHA-256
+//! // result.bytes is the complete v4 blob (no embedded hash)
 //! ```
 
-use fluree_db_core::Flake;
-use fluree_db_novelty::commit_v2::envelope::encode_envelope_fields;
-use fluree_db_novelty::commit_v2::format::{
-    CommitV2Footer, CommitV2Header, DictLocation, FLAG_ZSTD, FOOTER_LEN, HASH_LEN, HEADER_LEN,
-    VERSION,
+use fluree_db_core::commit::codec::envelope::encode_envelope_fields;
+use fluree_db_core::commit::codec::format::{
+    CommitFooter, CommitHeader, DictLocation, FLAG_ZSTD, FOOTER_LEN, HEADER_LEN, VERSION,
 };
-use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
-use fluree_db_novelty::commit_v2::{CommitV2Envelope, CommitV2Error};
-use sha2::{Digest, Sha256};
+use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
+use fluree_db_core::commit::codec::{CodecEnvelope, CommitCodecError};
+use fluree_db_core::Flake;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -41,22 +39,22 @@ enum OpsSink {
 }
 
 impl OpsSink {
-    fn write_all(&mut self, buf: &[u8]) -> Result<(), CommitV2Error> {
+    fn write_all(&mut self, buf: &[u8]) -> Result<(), CommitCodecError> {
         match self {
-            OpsSink::Compressed(enc) => {
-                enc.write_all(buf).map_err(CommitV2Error::CompressionFailed)
-            }
+            OpsSink::Compressed(enc) => enc
+                .write_all(buf)
+                .map_err(CommitCodecError::CompressionFailed),
             OpsSink::Raw(file) => file
                 .write_all(buf)
-                .map_err(CommitV2Error::CompressionFailed),
+                .map_err(CommitCodecError::CompressionFailed),
         }
     }
 
     /// Finalize the sink and return the underlying file + whether compression was used.
-    fn finish(self) -> Result<(File, bool), CommitV2Error> {
+    fn finish(self) -> Result<(File, bool), CommitCodecError> {
         match self {
             OpsSink::Compressed(enc) => {
-                let file = enc.finish().map_err(CommitV2Error::CompressionFailed)?;
+                let file = enc.finish().map_err(CommitCodecError::CompressionFailed)?;
                 Ok((file, true))
             }
             OpsSink::Raw(file) => Ok((file, false)),
@@ -86,10 +84,11 @@ impl StreamingCommitWriter {
     ///
     /// If `compress` is true, ops stream through a zstd encoder (level 3)
     /// into the spool file. If false, raw encoded ops are written directly.
-    pub fn new(compress: bool) -> Result<Self, CommitV2Error> {
-        let file = tempfile::tempfile().map_err(CommitV2Error::CompressionFailed)?;
+    pub fn new(compress: bool) -> Result<Self, CommitCodecError> {
+        let file = tempfile::tempfile().map_err(CommitCodecError::CompressionFailed)?;
         let sink = if compress {
-            let encoder = zstd::Encoder::new(file, 3).map_err(CommitV2Error::CompressionFailed)?;
+            let encoder =
+                zstd::Encoder::new(file, 3).map_err(CommitCodecError::CompressionFailed)?;
             OpsSink::Compressed(encoder)
         } else {
             OpsSink::Raw(file)
@@ -104,7 +103,7 @@ impl StreamingCommitWriter {
     }
 
     /// Encode one flake as an op and write it to the spool.
-    pub fn push_flake(&mut self, flake: &Flake) -> Result<(), CommitV2Error> {
+    pub fn push_flake(&mut self, flake: &Flake) -> Result<(), CommitCodecError> {
         self.temp_op.clear();
         encode_op(flake, &mut self.dicts, &mut self.temp_op)?;
         self.sink.write_all(&self.temp_op)?;
@@ -122,7 +121,7 @@ impl StreamingCommitWriter {
     /// Flushes the encoder (if compressing), reads the spool back, encodes the
     /// envelope and dictionaries, and assembles the final blob:
     /// `[header|envelope|ops|dicts|footer|hash]`.
-    pub fn finish(self, envelope: &CommitV2Envelope) -> Result<CommitWriteResult, CommitV2Error> {
+    pub fn finish(self, envelope: &CodecEnvelope) -> Result<CommitWriteResult, CommitCodecError> {
         let op_count = self.op_count;
 
         // 1. Finalize the ops sink and read back the spool
@@ -130,10 +129,10 @@ impl StreamingCommitWriter {
         let ops_section = {
             let _span = tracing::debug_span!("v2_spool_readback", op_count).entered();
             file.seek(SeekFrom::Start(0))
-                .map_err(CommitV2Error::CompressionFailed)?;
+                .map_err(CommitCodecError::CompressionFailed)?;
             let mut buf = Vec::new();
             file.read_to_end(&mut buf)
-                .map_err(CommitV2Error::CompressionFailed)?;
+                .map_err(CommitCodecError::CompressionFailed)?;
             buf
         };
 
@@ -168,13 +167,12 @@ impl StreamingCommitWriter {
             bytes
         };
 
-        // 4. Calculate total size and allocate output
+        // 4. Calculate total size and allocate output (v4: no embedded hash)
         let total_size = HEADER_LEN
             + envelope_bytes.len()
             + ops_section.len()
             + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN
-            + HASH_LEN;
+            + FOOTER_LEN;
         let mut output = Vec::with_capacity(total_size);
 
         // 5. Write header
@@ -182,7 +180,7 @@ impl StreamingCommitWriter {
         if is_compressed {
             flags |= FLAG_ZSTD;
         }
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: VERSION,
             flags,
             t: envelope.t,
@@ -211,22 +209,13 @@ impl StreamingCommitWriter {
         }
 
         // 9. Write footer
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: dict_locations,
             ops_section_len: ops_section.len() as u32,
         };
         let mut footer_buf = [0u8; FOOTER_LEN];
         footer.write_to(&mut footer_buf);
         output.extend_from_slice(&footer_buf);
-
-        // 10. Compute SHA-256, append as trailing hash
-        let hash = {
-            let _span = tracing::debug_span!("v2_sha256_hash", blob_bytes = output.len()).entered();
-            Sha256::digest(&output)
-        };
-        let hash_bytes: [u8; 32] = hash.into();
-        let content_hash_hex = hex::encode(hash_bytes);
-        output.extend_from_slice(&hash_bytes);
 
         debug_assert_eq!(output.len(), total_size);
 
@@ -236,13 +225,10 @@ impl StreamingCommitWriter {
             envelope_bytes = envelope_bytes.len(),
             ops_bytes = ops_section.len(),
             compressed = is_compressed,
-            "v2 streaming commit written"
+            "v4 streaming commit written"
         );
 
-        Ok(CommitWriteResult {
-            bytes: output,
-            content_hash_hex,
-        })
+        Ok(CommitWriteResult { bytes: output })
     }
 }
 
@@ -253,12 +239,12 @@ impl StreamingCommitWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::commit::codec::read_commit;
     use fluree_db_core::{FlakeMeta, FlakeValue, Sid};
-    use fluree_db_novelty::commit_v2::read_commit;
     use std::collections::HashMap;
 
-    fn make_envelope(t: i64) -> CommitV2Envelope {
-        CommitV2Envelope {
+    fn make_envelope(t: i64) -> CodecEnvelope {
+        CodecEnvelope {
             t,
             previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
@@ -309,7 +295,7 @@ mod tests {
 
         let envelope = make_envelope(1);
         let result = writer.finish(&envelope).unwrap();
-        assert!(!result.content_hash_hex.is_empty());
+        assert!(!result.bytes.is_empty());
 
         // Round-trip through reader
         let decoded = read_commit(&result.bytes).unwrap();
@@ -491,7 +477,7 @@ mod tests {
             .unwrap();
 
         let prev_cid = ContentId::new(ContentKind::Commit, b"prev-commit-bytes");
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: 5,
             previous_refs: vec![CommitRef::new(prev_cid.clone())],
             namespace_delta: HashMap::from([(200, "ex:".to_string())]),

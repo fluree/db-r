@@ -847,7 +847,7 @@ where
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
     pub async fn sync_bm25_index(&self, graph_source_id: &str) -> Result<Bm25SyncResult> {
-        use fluree_db_novelty::trace_commits_by_id;
+        use fluree_db_core::trace_commits_by_id;
         use fluree_db_query::bm25::{CompiledPropertyDeps, IncrementalUpdater};
         use futures::StreamExt;
 

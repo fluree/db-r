@@ -24,6 +24,7 @@ use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
 use fluree_db_core::ids::GraphId;
 use fluree_db_core::ledger_id::{format_ledger_id, split_ledger_id};
+use fluree_db_core::load_commit_by_id;
 use fluree_db_core::value_id::ValueTypeTag;
 use fluree_db_core::{
     ClassStatEntry, GraphPropertyStatEntry, GraphStatsEntry, IndexSchema, IndexStats,
@@ -33,7 +34,7 @@ use fluree_db_core::{
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourceRecord, NsRecord};
 use fluree_db_novelty::{
-    assemble_fast_stats, assemble_full_stats, load_commit_by_id, StatsAssemblyError, StatsLookup,
+    assemble_fast_stats, assemble_full_stats, StatsAssemblyError, StatsLookup,
 };
 use fluree_graph_json_ld::ParsedContext;
 use serde_json::{json, Map, Value as JsonValue};

@@ -10,11 +10,13 @@
 //! [fields in bit order, only if corresponding bit set]
 //! ```
 
-use super::error::CommitV2Error;
-use super::varint::{decode_varint, encode_varint, zigzag_decode, zigzag_encode};
+use super::error::CommitCodecError;
+use super::varint::{
+    decode_varint, encode_varint, read_exact, read_u8, zigzag_decode, zigzag_encode,
+};
+use crate::ns_encoding::NsSplitMode;
+use crate::ContentId;
 use crate::{CommitRef, TxnMetaEntry, TxnMetaValue, TxnSignature, MAX_TXN_META_ENTRIES};
-use fluree_db_core::ns_encoding::NsSplitMode;
-use fluree_db_core::ContentId;
 use std::collections::HashMap;
 
 // --- Presence flag bits ---
@@ -55,7 +57,7 @@ const MAX_PREVIOUS_REFS: usize = 16;
 /// The `t` field is carried here for convenience but is actually stored in the
 /// header, not the envelope section.
 #[derive(Debug)]
-pub struct CommitV2Envelope {
+pub struct CodecEnvelope {
     /// Transaction `t` (stored in header, not in the envelope bytes).
     pub t: i64,
     /// Parent commit references (CID-based).
@@ -76,7 +78,7 @@ pub struct CommitV2Envelope {
     pub ns_split_mode: Option<NsSplitMode>,
 }
 
-impl CommitV2Envelope {
+impl CodecEnvelope {
     /// Build an envelope from a `Commit` reference.
     pub fn from_commit(commit: &crate::Commit) -> Self {
         Self {
@@ -97,14 +99,14 @@ impl CommitV2Envelope {
 // Encode
 // =============================================================================
 
-/// Encode envelope fields from a `CommitV2Envelope` into `buf`.
+/// Encode envelope fields from a `CodecEnvelope` into `buf`.
 pub fn encode_envelope_fields(
-    envelope: &CommitV2Envelope,
+    envelope: &CodecEnvelope,
     buf: &mut Vec<u8>,
-) -> Result<(), CommitV2Error> {
+) -> Result<(), CommitCodecError> {
     let num_parents = envelope.previous_refs.len();
     if num_parents > MAX_PREVIOUS_REFS {
-        return Err(CommitV2Error::EnvelopeEncode(format!(
+        return Err(CommitCodecError::EnvelopeEncode(format!(
             "previous_refs has {} entries, max is {}",
             num_parents, MAX_PREVIOUS_REFS
         )));
@@ -176,7 +178,7 @@ pub fn encode_envelope_fields(
     // Trailing optional extensions (not flag-controlled)
     if !envelope.graph_delta.is_empty() {
         if envelope.graph_delta.len() > MAX_GRAPH_DELTA_ENTRIES {
-            return Err(CommitV2Error::LimitExceeded(format!(
+            return Err(CommitCodecError::LimitExceeded(format!(
                 "graph_delta has {} entries, max is {}",
                 envelope.graph_delta.len(),
                 MAX_GRAPH_DELTA_ENTRIES
@@ -184,7 +186,7 @@ pub fn encode_envelope_fields(
         }
         for (g_id, iri) in &envelope.graph_delta {
             if iri.len() > MAX_GRAPH_IRI_LENGTH {
-                return Err(CommitV2Error::LimitExceeded(format!(
+                return Err(CommitCodecError::LimitExceeded(format!(
                     "graph_delta[{}] IRI is {} bytes, max is {}",
                     g_id,
                     iri.len(),
@@ -201,11 +203,9 @@ pub fn encode_envelope_fields(
     // ns_split_mode (trailing optional extension)
     if let Some(mode) = envelope.ns_split_mode {
         buf.push(1);
-        buf.push(
-            mode.to_byte().map_err(|e| {
-                CommitV2Error::EnvelopeDecode(format!("ns_split_mode encode: {}", e))
-            })?,
-        );
+        buf.push(mode.to_byte().map_err(|e| {
+            CommitCodecError::EnvelopeDecode(format!("ns_split_mode encode: {}", e))
+        })?);
     } else {
         buf.push(0);
     }
@@ -214,8 +214,8 @@ pub fn encode_envelope_fields(
 }
 
 /// Encode the envelope fields of a commit into `buf`.
-pub fn encode_envelope(commit: &crate::Commit, buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
-    let envelope = CommitV2Envelope::from_commit(commit);
+pub fn encode_envelope(commit: &crate::Commit, buf: &mut Vec<u8>) -> Result<(), CommitCodecError> {
+    let envelope = CodecEnvelope::from_commit(commit);
     encode_envelope_fields(&envelope, buf)
 }
 
@@ -225,30 +225,26 @@ pub fn encode_envelope(commit: &crate::Commit, buf: &mut Vec<u8>) -> Result<(), 
 
 /// Decode the envelope from a binary slice.
 ///
-/// The returned `CommitV2Envelope` has `t = 0` because `t` is stored in the
+/// The returned `CodecEnvelope` has `t = 0` because `t` is stored in the
 /// header, not the envelope. The caller should populate `t` from the header.
-pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
+pub fn decode_envelope(data: &[u8]) -> Result<CodecEnvelope, CommitCodecError> {
     let mut pos = 0;
 
     // v (always present) — envelope format version
     let v = zigzag_decode(decode_varint(data, &mut pos)?) as i32;
     if v != 2 && v != 3 {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "unsupported envelope version: {v} (expected 2 or 3)"
         )));
     }
 
     // flags
-    if pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let flags = data[pos];
-    pos += 1;
+    let flags = read_u8(data, &mut pos)?;
 
     // Reject unknown flag bits (forward safety: new flags require a new decoder)
     let unknown = flags & !KNOWN_FLAGS;
     if unknown != 0 {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "unknown envelope flags: 0x{:02x}",
             unknown
         )));
@@ -266,7 +262,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
             // v3: varint(count) followed by count commit refs.
             let count = decode_varint(data, &mut pos)? as usize;
             if count > MAX_PREVIOUS_REFS {
-                return Err(CommitV2Error::EnvelopeDecode(format!(
+                return Err(CommitCodecError::EnvelopeDecode(format!(
                     "previous_refs count {} exceeds maximum {}",
                     count, MAX_PREVIOUS_REFS
                 )));
@@ -294,7 +290,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
         let cid_bytes = decode_len_bytes(data, &mut pos)?;
         Some(
             ContentId::from_bytes(cid_bytes)
-                .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid txn CID: {e}")))?,
+                .map_err(|e| CommitCodecError::EnvelopeDecode(format!("invalid txn CID: {e}")))?,
         )
     } else {
         None
@@ -309,20 +305,16 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     let txn_signature = if flags & FLAG_TXN_SIGNATURE != 0 {
         let signer = decode_len_str(data, &mut pos)?;
         if signer.len() > 256 {
-            return Err(CommitV2Error::EnvelopeDecode(format!(
+            return Err(CommitCodecError::EnvelopeDecode(format!(
                 "txn_signature signer length {} exceeds maximum 256",
                 signer.len()
             )));
         }
-        if pos >= data.len() {
-            return Err(CommitV2Error::UnexpectedEof);
-        }
-        let has_txn_id = data[pos] != 0;
-        pos += 1;
+        let has_txn_id = read_u8(data, &mut pos)? != 0;
         let txn_id = if has_txn_id {
             let id = decode_len_str(data, &mut pos)?;
             if id.len() > 256 {
-                return Err(CommitV2Error::EnvelopeDecode(format!(
+                return Err(CommitCodecError::EnvelopeDecode(format!(
                     "txn_signature txn_id length {} exceeds maximum 256",
                     id.len()
                 )));
@@ -338,8 +330,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
 
     // Trailing optional extensions
     let graph_delta = if pos < data.len() {
-        let has_graph_delta = data[pos] != 0;
-        pos += 1;
+        let has_graph_delta = read_u8(data, &mut pos)? != 0;
         if has_graph_delta {
             decode_graph_delta(data, &mut pos)?
         } else {
@@ -351,14 +342,9 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
 
     // ns_split_mode (trailing optional extension)
     let ns_split_mode = if pos < data.len() {
-        let has_mode = data[pos] != 0;
-        pos += 1;
+        let has_mode = read_u8(data, &mut pos)? != 0;
         if has_mode {
-            if pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let mode_byte = data[pos];
-            pos += 1;
+            let mode_byte = read_u8(data, &mut pos)?;
             Some(NsSplitMode::from_byte(mode_byte))
         } else {
             None
@@ -368,14 +354,14 @@ pub fn decode_envelope(data: &[u8]) -> Result<CommitV2Envelope, CommitV2Error> {
     };
 
     if pos != data.len() {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "trailing bytes: consumed {} of {} bytes",
             pos,
             data.len()
         )));
     }
 
-    Ok(CommitV2Envelope {
+    Ok(CodecEnvelope {
         t: 0,
         previous_refs,
         namespace_delta,
@@ -398,14 +384,11 @@ fn encode_len_str(s: &str, buf: &mut Vec<u8>) {
     buf.extend_from_slice(bytes);
 }
 
-fn decode_len_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error> {
+fn decode_len_str(data: &[u8], pos: &mut usize) -> Result<String, CommitCodecError> {
     let len = decode_varint(data, pos)? as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let s = std::str::from_utf8(&data[*pos..*pos + len])
-        .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid UTF-8: {}", e)))?;
-    *pos += len;
+    let bytes = read_exact(data, pos, len)?;
+    let s = std::str::from_utf8(bytes)
+        .map_err(|e| CommitCodecError::EnvelopeDecode(format!("invalid UTF-8: {}", e)))?;
     Ok(s.to_string())
 }
 
@@ -413,9 +396,9 @@ fn decode_len_str(data: &[u8], pos: &mut usize) -> Result<String, CommitV2Error>
 // Binary length-prefixed helpers (for CID bytes)
 // =============================================================================
 
-fn encode_len_bytes(bytes: &[u8], buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+fn encode_len_bytes(bytes: &[u8], buf: &mut Vec<u8>) -> Result<(), CommitCodecError> {
     if bytes.len() > MAX_CID_BYTES {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "CID byte length {} exceeds maximum {}",
             bytes.len(),
             MAX_CID_BYTES
@@ -428,35 +411,30 @@ fn encode_len_bytes(bytes: &[u8], buf: &mut Vec<u8>) -> Result<(), CommitV2Error
 
 /// Decode a length-prefixed byte slice, returning a borrow into `data`.
 /// Advances `pos` past the consumed bytes. No allocation.
-fn decode_len_bytes<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], CommitV2Error> {
+fn decode_len_bytes<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], CommitCodecError> {
     let len64 = decode_varint(data, pos)?;
     if len64 > MAX_CID_BYTES as u64 {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "CID byte length {} exceeds maximum {}",
             len64, MAX_CID_BYTES
         )));
     }
     let len = len64 as usize;
-    if *pos + len > data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let slice = &data[*pos..*pos + len];
-    *pos += len;
-    Ok(slice)
+    read_exact(data, pos, len)
 }
 
 // =============================================================================
 // CommitRef (binary CID encoding)
 // =============================================================================
 
-fn encode_commit_ref(cr: &CommitRef, buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+fn encode_commit_ref(cr: &CommitRef, buf: &mut Vec<u8>) -> Result<(), CommitCodecError> {
     encode_len_bytes(&cr.id.to_bytes(), buf)
 }
 
-fn decode_commit_ref(data: &[u8], pos: &mut usize) -> Result<CommitRef, CommitV2Error> {
+fn decode_commit_ref(data: &[u8], pos: &mut usize) -> Result<CommitRef, CommitCodecError> {
     let cid_bytes = decode_len_bytes(data, pos)?;
     let content_id = ContentId::from_bytes(cid_bytes)
-        .map_err(|e| CommitV2Error::EnvelopeDecode(format!("invalid commit ref CID: {e}")))?;
+        .map_err(|e| CommitCodecError::EnvelopeDecode(format!("invalid commit ref CID: {e}")))?;
     Ok(CommitRef::new(content_id))
 }
 
@@ -474,7 +452,7 @@ fn encode_ns_delta(delta: &HashMap<u16, String>, buf: &mut Vec<u8>) {
     }
 }
 
-fn decode_ns_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>, CommitV2Error> {
+fn decode_ns_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>, CommitCodecError> {
     let count = decode_varint(data, pos)? as usize;
     let mut map = HashMap::with_capacity(count);
     for _ in 0..count {
@@ -499,12 +477,15 @@ fn encode_graph_delta(delta: &HashMap<u16, String>, buf: &mut Vec<u8>) {
     }
 }
 
-fn decode_graph_delta(data: &[u8], pos: &mut usize) -> Result<HashMap<u16, String>, CommitV2Error> {
+fn decode_graph_delta(
+    data: &[u8],
+    pos: &mut usize,
+) -> Result<HashMap<u16, String>, CommitCodecError> {
     let count = decode_varint(data, pos)? as usize;
     let mut map = HashMap::with_capacity(count);
     for _ in 0..count {
         let raw = decode_varint(data, pos)?;
-        let g_id = u16::try_from(raw).map_err(|_| CommitV2Error::GIdOutOfRange(raw))?;
+        let g_id = u16::try_from(raw).map_err(|_| CommitCodecError::GIdOutOfRange(raw))?;
         let iri = decode_len_str(data, pos)?;
         map.insert(g_id, iri);
     }
@@ -523,9 +504,9 @@ const TXN_META_TAG_LONG: u8 = 4;
 const TXN_META_TAG_DOUBLE: u8 = 5;
 const TXN_META_TAG_BOOLEAN: u8 = 6;
 
-fn encode_txn_meta(entries: &[TxnMetaEntry], buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+fn encode_txn_meta(entries: &[TxnMetaEntry], buf: &mut Vec<u8>) -> Result<(), CommitCodecError> {
     if entries.len() > MAX_TXN_META_ENTRIES {
-        return Err(CommitV2Error::EnvelopeEncode(format!(
+        return Err(CommitCodecError::EnvelopeEncode(format!(
             "txn_meta entry count {} exceeds maximum {}",
             entries.len(),
             MAX_TXN_META_ENTRIES
@@ -540,7 +521,7 @@ fn encode_txn_meta(entries: &[TxnMetaEntry], buf: &mut Vec<u8>) -> Result<(), Co
     Ok(())
 }
 
-fn encode_txn_meta_value(value: &TxnMetaValue, buf: &mut Vec<u8>) -> Result<(), CommitV2Error> {
+fn encode_txn_meta_value(value: &TxnMetaValue, buf: &mut Vec<u8>) -> Result<(), CommitCodecError> {
     match value {
         TxnMetaValue::String(s) => {
             buf.push(TXN_META_TAG_STRING);
@@ -572,7 +553,7 @@ fn encode_txn_meta_value(value: &TxnMetaValue, buf: &mut Vec<u8>) -> Result<(), 
         }
         TxnMetaValue::Double(n) => {
             if !n.is_finite() {
-                return Err(CommitV2Error::EnvelopeEncode(
+                return Err(CommitCodecError::EnvelopeEncode(
                     "txn_meta does not support non-finite double values".into(),
                 ));
             }
@@ -587,10 +568,10 @@ fn encode_txn_meta_value(value: &TxnMetaValue, buf: &mut Vec<u8>) -> Result<(), 
     Ok(())
 }
 
-fn decode_txn_meta(data: &[u8], pos: &mut usize) -> Result<Vec<TxnMetaEntry>, CommitV2Error> {
+fn decode_txn_meta(data: &[u8], pos: &mut usize) -> Result<Vec<TxnMetaEntry>, CommitCodecError> {
     let count = decode_varint(data, pos)? as usize;
     if count > MAX_TXN_META_ENTRIES {
-        return Err(CommitV2Error::EnvelopeDecode(format!(
+        return Err(CommitCodecError::EnvelopeDecode(format!(
             "txn_meta entry count {} exceeds maximum {}",
             count, MAX_TXN_META_ENTRIES
         )));
@@ -609,12 +590,8 @@ fn decode_txn_meta(data: &[u8], pos: &mut usize) -> Result<Vec<TxnMetaEntry>, Co
     Ok(entries)
 }
 
-fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, CommitV2Error> {
-    if *pos >= data.len() {
-        return Err(CommitV2Error::UnexpectedEof);
-    }
-    let tag = data[*pos];
-    *pos += 1;
+fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, CommitCodecError> {
+    let tag = read_u8(data, pos)?;
 
     match tag {
         TXN_META_TAG_STRING => {
@@ -646,28 +623,20 @@ fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, C
             Ok(TxnMetaValue::Long(n))
         }
         TXN_META_TAG_DOUBLE => {
-            if *pos + 8 > data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let bytes: [u8; 8] = data[*pos..*pos + 8].try_into().unwrap();
-            *pos += 8;
+            let bytes: [u8; 8] = read_exact(data, pos, 8)?.try_into().unwrap();
             let n = f64::from_le_bytes(bytes);
             if !n.is_finite() {
-                return Err(CommitV2Error::EnvelopeDecode(
+                return Err(CommitCodecError::EnvelopeDecode(
                     "txn_meta contains non-finite double value".into(),
                 ));
             }
             Ok(TxnMetaValue::Double(n))
         }
         TXN_META_TAG_BOOLEAN => {
-            if *pos >= data.len() {
-                return Err(CommitV2Error::UnexpectedEof);
-            }
-            let b = data[*pos] != 0;
-            *pos += 1;
+            let b = read_u8(data, pos)? != 0;
             Ok(TxnMetaValue::Boolean(b))
         }
-        _ => Err(CommitV2Error::EnvelopeDecode(format!(
+        _ => Err(CommitCodecError::EnvelopeDecode(format!(
             "unknown txn_meta value tag: {}",
             tag
         ))),
@@ -681,7 +650,7 @@ fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::ContentKind;
+    use crate::ContentKind;
 
     fn make_test_cid(kind: ContentKind, label: &str) -> ContentId {
         ContentId::new(kind, label.as_bytes())

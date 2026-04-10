@@ -1,6 +1,35 @@
-//! LEB128 variable-length integer encoding and zigzag signed encoding.
+//! Binary read/write primitives: varints, zigzag encoding, and fixed-width reads.
 
-use super::error::CommitV2Error;
+use super::error::CommitCodecError;
+
+/// Read exactly `n` bytes from `data` at `*pos`, advancing `*pos`.
+///
+/// Returns a slice into `data`. Returns `UnexpectedEof` if insufficient bytes.
+#[inline]
+pub fn read_exact<'a>(
+    data: &'a [u8],
+    pos: &mut usize,
+    n: usize,
+) -> Result<&'a [u8], CommitCodecError> {
+    let end = pos.checked_add(n).ok_or(CommitCodecError::UnexpectedEof)?;
+    if end > data.len() {
+        return Err(CommitCodecError::UnexpectedEof);
+    }
+    let slice = &data[*pos..end];
+    *pos = end;
+    Ok(slice)
+}
+
+/// Read a single byte from `data` at `*pos`, advancing `*pos`.
+#[inline]
+pub fn read_u8(data: &[u8], pos: &mut usize) -> Result<u8, CommitCodecError> {
+    if *pos >= data.len() {
+        return Err(CommitCodecError::UnexpectedEof);
+    }
+    let byte = data[*pos];
+    *pos += 1;
+    Ok(byte)
+}
 
 /// Encode an unsigned 64-bit integer as LEB128 into `buf`.
 pub fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
@@ -19,12 +48,12 @@ pub fn encode_varint(mut value: u64, buf: &mut Vec<u8>) {
 
 /// Decode a LEB128 unsigned 64-bit integer from `buf` starting at `*pos`.
 /// Advances `*pos` past the consumed bytes.
-pub fn decode_varint(buf: &[u8], pos: &mut usize) -> Result<u64, CommitV2Error> {
+pub fn decode_varint(buf: &[u8], pos: &mut usize) -> Result<u64, CommitCodecError> {
     let mut result: u64 = 0;
     let mut shift: u32 = 0;
     loop {
         if *pos >= buf.len() {
-            return Err(CommitV2Error::UnexpectedEof);
+            return Err(CommitCodecError::UnexpectedEof);
         }
         let byte = buf[*pos];
         *pos += 1;
@@ -32,7 +61,7 @@ pub fn decode_varint(buf: &[u8], pos: &mut usize) -> Result<u64, CommitV2Error> 
         let payload = (byte & 0x7F) as u64;
         // Prevent overflow: shift must be < 64, and the value must fit
         if shift >= 63 && payload > 1 {
-            return Err(CommitV2Error::InvalidOp("varint overflow".into()));
+            return Err(CommitCodecError::InvalidOp("varint overflow".into()));
         }
         result |= payload << shift;
         if byte & 0x80 == 0 {

@@ -412,7 +412,7 @@ where
     /// This operation performs incremental updates when possible,
     /// falling back to full resync if needed.
     pub async fn sync_vector_index(&self, graph_source_id: &str) -> Result<VectorSyncResult> {
-        use fluree_db_novelty::trace_commits_by_id;
+        use fluree_db_core::trace_commits_by_id;
         use fluree_db_query::bm25::CompiledPropertyDeps;
         use fluree_db_query::vector::usearch::deserialize;
         use futures::StreamExt;

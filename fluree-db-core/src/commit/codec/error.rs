@@ -3,18 +3,13 @@
 use std::fmt;
 
 #[derive(Debug)]
-pub enum CommitV2Error {
+pub enum CommitCodecError {
     /// First 4 bytes are not b"FCV2".
     InvalidMagic,
     /// Version byte is not supported.
     UnsupportedVersion(u8),
     /// Blob is smaller than the minimum valid size.
     TooSmall { got: usize, min: usize },
-    /// SHA-256 of blob content does not match the trailing hash.
-    HashMismatch {
-        expected: [u8; 32],
-        actual: [u8; 32],
-    },
     /// Dictionary data is malformed.
     InvalidDictionary(String),
     /// Op data is malformed.
@@ -31,7 +26,7 @@ pub enum CommitV2Error {
     EnvelopeEncode(String),
     /// Unexpected end of data while reading.
     UnexpectedEof,
-    /// FlakeValue variant not supported in commit-v2 format.
+    /// FlakeValue variant not supported in commit codec format.
     UnsupportedValue(String),
     /// Non-default graph encountered; Phase 1 only supports default graph.
     NonDefaultGraph { ns_code: u16, name_id: u32 },
@@ -45,68 +40,60 @@ pub enum CommitV2Error {
     NegativeListIndex(i32),
 }
 
-impl fmt::Display for CommitV2Error {
+impl fmt::Display for CommitCodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidMagic => write!(f, "commit-v2: invalid magic bytes (expected FCV2)"),
+            Self::InvalidMagic => write!(f, "commit-codec: invalid magic bytes (expected FCV2)"),
             Self::UnsupportedVersion(v) => {
-                write!(f, "commit-v2: unsupported version {}", v)
+                write!(f, "commit-codec: unsupported version {}", v)
             }
             Self::TooSmall { got, min } => {
                 write!(
                     f,
-                    "commit-v2: blob too small ({} bytes, need >= {})",
+                    "commit-codec: blob too small ({} bytes, need >= {})",
                     got, min
                 )
             }
-            Self::HashMismatch { expected, actual } => {
-                write!(
-                    f,
-                    "commit-v2: hash mismatch (expected {:?}, got {:?})",
-                    &expected[..4],
-                    &actual[..4]
-                )
-            }
-            Self::InvalidDictionary(msg) => write!(f, "commit-v2: invalid dictionary: {}", msg),
-            Self::InvalidOp(msg) => write!(f, "commit-v2: invalid op: {}", msg),
-            Self::InvalidOpTag(tag) => write!(f, "commit-v2: invalid op tag: {}", tag),
+            Self::InvalidDictionary(msg) => write!(f, "commit-codec: invalid dictionary: {}", msg),
+            Self::InvalidOp(msg) => write!(f, "commit-codec: invalid op: {}", msg),
+            Self::InvalidOpTag(tag) => write!(f, "commit-codec: invalid op tag: {}", tag),
             Self::DecompressionFailed(e) => {
-                write!(f, "commit-v2: zstd decompression failed: {}", e)
+                write!(f, "commit-codec: zstd decompression failed: {}", e)
             }
             Self::CompressionFailed(e) => {
-                write!(f, "commit-v2: zstd compression failed: {}", e)
+                write!(f, "commit-codec: zstd compression failed: {}", e)
             }
             Self::EnvelopeDecode(msg) => {
-                write!(f, "commit-v2: envelope decode failed: {}", msg)
+                write!(f, "commit-codec: envelope decode failed: {}", msg)
             }
             Self::EnvelopeEncode(msg) => {
-                write!(f, "commit-v2: envelope encode failed: {}", msg)
+                write!(f, "commit-codec: envelope encode failed: {}", msg)
             }
-            Self::UnexpectedEof => write!(f, "commit-v2: unexpected end of data"),
+            Self::UnexpectedEof => write!(f, "commit-codec: unexpected end of data"),
             Self::UnsupportedValue(desc) => {
-                write!(f, "commit-v2: unsupported FlakeValue variant: {}", desc)
+                write!(f, "commit-codec: unsupported FlakeValue variant: {}", desc)
             }
             Self::NonDefaultGraph { ns_code, name_id } => {
                 write!(
                     f,
-                    "commit-v2: non-default graph (ns_code={}, name_id={}); Phase 1 only supports default graph",
+                    "commit-codec: non-default graph (ns_code={}, name_id={}); Phase 1 only supports default graph",
                     ns_code, name_id
                 )
             }
             Self::LimitExceeded(msg) => {
-                write!(f, "commit-v2: limit exceeded: {}", msg)
+                write!(f, "commit-codec: limit exceeded: {}", msg)
             }
             Self::TOutOfRange(t) => {
-                write!(f, "commit-v2: t value {} out of u32 range", t)
+                write!(f, "commit-codec: t value {} out of u32 range", t)
             }
             Self::GIdOutOfRange(g) => {
-                write!(f, "commit-v2: graph_delta key {} exceeds u16::MAX", g)
+                write!(f, "commit-codec: graph_delta key {} exceeds u16::MAX", g)
             }
             Self::NegativeListIndex(i) => {
-                write!(f, "commit-v2: negative list index {}", i)
+                write!(f, "commit-codec: negative list index {}", i)
             }
         }
     }
 }
 
-impl std::error::Error for CommitV2Error {}
+impl std::error::Error for CommitCodecError {}

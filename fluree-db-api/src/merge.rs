@@ -6,15 +6,16 @@
 
 use crate::error::{ApiError, Result};
 use crate::rebase::ConflictStrategy;
+use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
+use fluree_db_core::{collect_dag_cids, load_commit_by_id, CommonAncestor};
 use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake, Storage};
 use fluree_db_ledger::{LedgerState, LedgerView};
 use fluree_db_nameservice::{
-    CasResult, NameService, NsRecord, NsRecordSnapshot, Publisher, RefKind, RefPublisher, RefValue,
+    CasResult, NameService, NsRecord, NsRecordSnapshot, Publisher, RefPublisher, RefValue,
 };
-use fluree_db_novelty::commit_v2::read_commit_envelope;
-use fluree_db_novelty::{collect_dag_cids, compute_delta_keys, load_commit_by_id, CommonAncestor};
+use fluree_db_novelty::compute_delta_keys;
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use rustc_hash::FxHashSet;
 use serde::Serialize;
@@ -126,7 +127,7 @@ where
         let target_head = target_record.commit_head_id.as_ref();
         let ancestor = match target_head {
             Some(target_head_id) => Some(
-                fluree_db_novelty::find_common_ancestor(
+                fluree_db_core::find_common_ancestor(
                     &source_store,
                     &source_head_id,
                     target_head_id,
@@ -161,7 +162,6 @@ where
                 source_head_t,
                 resolved_target,
                 &target_id,
-                &target_record,
                 stop_at_t,
                 &source_store,
             )
@@ -219,15 +219,9 @@ where
         source_head_t: i64,
         resolved_target: &str,
         target_id: &str,
-        target_record: &NsRecord,
         stop_at_t: i64,
         source_store: &impl ContentStore,
     ) -> Result<MergeReport> {
-        let expected_target_head = RefValue {
-            id: target_record.commit_head_id.clone(),
-            t: target_record.commit_t,
-        };
-
         // Copy commit and txn blobs from the source namespace into the target
         // namespace so the target is self-contained (no fallback reads needed).
         // We use the branched content store so that collect_dag_cids can read
@@ -236,18 +230,14 @@ where
             .copy_commit_chain(source_store, source_head_id, stop_at_t, target_id)
             .await?;
 
-        // Advance target's HEAD to source's HEAD via compare-and-set.
+        // Advance target's HEAD to source's HEAD via fast-forward.
+        let new_ref = RefValue {
+            id: Some(source_head_id.clone()),
+            t: source_head_t,
+        };
         match self
             .nameservice
-            .compare_and_set_ref(
-                target_id,
-                RefKind::CommitHead,
-                Some(&expected_target_head),
-                &RefValue {
-                    id: Some(source_head_id.clone()),
-                    t: source_head_t,
-                },
-            )
+            .fast_forward_commit(target_id, &new_ref, 3)
             .await?
         {
             CasResult::Updated => {}
@@ -258,15 +248,8 @@ where
                     .map(|cid| cid.to_string())
                     .unwrap_or_else(|| "None".to_string());
                 return Err(ApiError::BranchConflict(format!(
-                    "Merge aborted: target branch advanced concurrently (expected head t={} id={}, found t={} id={})",
-                    expected_target_head.t,
-                    expected_target_head
-                        .id
-                        .as_ref()
-                        .map(|cid| cid.to_string())
-                        .unwrap_or_else(|| "None".to_string()),
-                    actual_t,
-                    actual_id
+                    "Fast-forward merge aborted: target branch advanced concurrently \
+                     (found t={actual_t} id={actual_id})"
                 )));
             }
         }
@@ -412,10 +395,13 @@ where
             .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
             .await?;
 
+        let content_store =
+            fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
-            self.connection.storage(),
+            &content_store,
             &self.nameservice,
             &self.index_config,
             commit_opts,

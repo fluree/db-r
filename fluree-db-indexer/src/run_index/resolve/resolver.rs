@@ -13,6 +13,9 @@ use crate::run_index::runs::run_writer::RecordSink;
 use bigdecimal::BigDecimal;
 use chrono;
 use fluree_db_binary_index::format::run_record::{RunRecord, LIST_INDEX_NONE};
+use fluree_db_core::commit::codec::envelope::CodecEnvelope;
+use fluree_db_core::commit::codec::raw_reader::{CommitOps, RawObject, RawOp};
+use fluree_db_core::commit::codec::{load_commit_ops, CommitCodecError};
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::temporal::{
     Date, DateTime, DayTimeDuration, Duration as XsdDuration, GDay, GMonth, GMonthDay, GYear,
@@ -21,9 +24,6 @@ use fluree_db_core::temporal::{
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::DatatypeDictId;
 use fluree_db_core::GraphId;
-use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
-use fluree_db_novelty::commit_v2::raw_reader::{CommitOps, RawObject, RawOp};
-use fluree_db_novelty::commit_v2::{load_commit_ops, CommitV2Error};
 use fluree_vocab::{db, fluree};
 use num_bigint::BigInt;
 use rustc_hash::FxHashMap;
@@ -188,7 +188,7 @@ impl CommitResolver {
 
             writer
                 .push(record, &mut dicts.languages)
-                .map_err(|e| CommitV2Error::InvalidOp(format!("run writer error: {}", e)))?;
+                .map_err(|e| CommitCodecError::InvalidOp(format!("run writer error: {}", e)))?;
             if record.op != 0 {
                 asserts += 1;
             } else {
@@ -257,7 +257,7 @@ impl CommitResolver {
     pub fn emit_txn_meta<W: RecordSink>(
         &mut self,
         commit_hash_hex: &str,
-        envelope: &CommitV2Envelope,
+        envelope: &CodecEnvelope,
         commit_size: u64,
         asserts: u32,
         retracts: u32,
@@ -581,16 +581,16 @@ impl CommitResolver {
         op: &RawOp<'_>,
         t: u32,
         dicts: &mut GlobalDicts,
-    ) -> Result<RunRecord, CommitV2Error> {
+    ) -> Result<RunRecord, CommitCodecError> {
         // 1. Resolve graph
         let g_id = self
             .resolve_graph(op.g_ns_code, op.g_name, dicts)
-            .map_err(|e| CommitV2Error::InvalidOp(format!("graph resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("graph resolve: {}", e)))?;
 
         // 2. Resolve subject (streaming hash) → sid64
         let s_id = self
             .resolve_subject(op.s_ns_code, op.s_name, dicts)
-            .map_err(|e| CommitV2Error::InvalidOp(format!("subject resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("subject resolve: {}", e)))?;
 
         // 3. Resolve predicate
         let p_id = self.resolve_predicate(op.p_ns_code, op.p_name, dicts);
@@ -601,7 +601,7 @@ impl CommitResolver {
         // Bulk import path: enforce u8 dt ids for now (imports are allowed to error here).
         // Operationally, the binary format supports widening dt to u16.
         if dt_id > u8::MAX as u32 {
-            return Err(CommitV2Error::InvalidOp(format!(
+            return Err(CommitCodecError::InvalidOp(format!(
                 "import not available: datatype dict overflow (dt_id={} exceeds u8 max)",
                 dt_id
             )));
@@ -611,7 +611,7 @@ impl CommitResolver {
         // 5. Encode object -> (ObjKind, ObjKey)
         let (o_kind, o_key) = self
             .resolve_object(&op.o, g_id, p_id, dt_id, dicts)
-            .map_err(|e| CommitV2Error::InvalidOp(format!("object resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("object resolve: {}", e)))?;
 
         // 6. Language tag
         let lang_id = dicts.languages.get_or_insert(op.lang);
@@ -620,7 +620,7 @@ impl CommitResolver {
         let i = match op.i {
             Some(idx) if idx >= 0 => idx as u32,
             Some(idx) => {
-                return Err(CommitV2Error::InvalidOp(format!(
+                return Err(CommitCodecError::InvalidOp(format!(
                     "negative list index {idx} is invalid"
                 )));
             }
@@ -1272,11 +1272,11 @@ impl SharedResolverState {
         op: &RawOp<'_>,
         t: u32,
         chunk: &mut RebuildChunk,
-    ) -> Result<RunRecord, CommitV2Error> {
+    ) -> Result<RunRecord, CommitCodecError> {
         // 1. Resolve graph (global)
         let g_id = self
             .resolve_graph(op.g_ns_code, op.g_name)
-            .map_err(|e| CommitV2Error::InvalidOp(format!("graph resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("graph resolve: {}", e)))?;
 
         // 2. Resolve subject (chunk-local)
         let s_id = self.resolve_subject_chunk(op.s_ns_code, op.s_name, chunk);
@@ -1287,7 +1287,7 @@ impl SharedResolverState {
         // 4. Resolve datatype (global, with ValueTypeTag capture)
         let dt_id = self.resolve_datatype(op.dt_ns_code, op.dt_name);
         if dt_id > u8::MAX as u32 {
-            return Err(CommitV2Error::InvalidOp(format!(
+            return Err(CommitCodecError::InvalidOp(format!(
                 "datatype dict overflow (dt_id={} exceeds u8 max)",
                 dt_id
             )));
@@ -1297,7 +1297,7 @@ impl SharedResolverState {
         // 5. Encode object (subjects/strings → chunk-local)
         let (o_kind, o_key) = self
             .resolve_object_chunk(&op.o, g_id, p_id, dt_id, chunk)
-            .map_err(|e| CommitV2Error::InvalidOp(format!("object resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("object resolve: {}", e)))?;
 
         // 6. Language tag (global)
         let lang_id = self.languages.get_or_insert(op.lang);
@@ -1306,7 +1306,7 @@ impl SharedResolverState {
         let i = match op.i {
             Some(idx) if idx >= 0 => idx as u32,
             Some(idx) => {
-                return Err(CommitV2Error::InvalidOp(format!(
+                return Err(CommitCodecError::InvalidOp(format!(
                     "negative list index {idx} is invalid"
                 )));
             }
@@ -1524,7 +1524,7 @@ impl SharedResolverState {
     fn emit_txn_meta_chunk(
         &mut self,
         commit_hash_hex: &str,
-        envelope: &CommitV2Envelope,
+        envelope: &CodecEnvelope,
         commit_size: u64,
         asserts: u32,
         retracts: u32,
@@ -1860,14 +1860,14 @@ impl Default for RebuildChunk {
 /// Errors from the resolution pipeline.
 #[derive(Debug)]
 pub enum ResolverError {
-    CommitV2(CommitV2Error),
+    Codec(CommitCodecError),
     Io(io::Error),
     Resolve(String),
 }
 
-impl From<CommitV2Error> for ResolverError {
-    fn from(e: CommitV2Error) -> Self {
-        Self::CommitV2(e)
+impl From<CommitCodecError> for ResolverError {
+    fn from(e: CommitCodecError) -> Self {
+        Self::Codec(e)
     }
 }
 
@@ -1880,7 +1880,7 @@ impl From<io::Error> for ResolverError {
 impl std::fmt::Display for ResolverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CommitV2(e) => write!(f, "commit-v2: {}", e),
+            Self::Codec(e) => write!(f, "commit-codec: {}", e),
             Self::Io(e) => write!(f, "I/O: {}", e),
             Self::Resolve(msg) => write!(f, "resolve: {}", msg),
         }
@@ -1935,14 +1935,13 @@ mod tests {
     use super::*;
     use crate::run_index::runs::run_writer::RecordSink;
     use fluree_db_binary_index::format::run_record::RunRecord;
-    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
-    use fluree_db_novelty::commit_v2::envelope::{encode_envelope_fields, CommitV2Envelope};
-    use fluree_db_novelty::commit_v2::format::{
-        self, CommitV2Footer, CommitV2Header, FOOTER_LEN, HASH_LEN, HEADER_LEN,
+    use fluree_db_core::commit::codec::envelope::{encode_envelope_fields, CodecEnvelope};
+    use fluree_db_core::commit::codec::format::{
+        self, CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN,
     };
-    use fluree_db_novelty::commit_v2::op_codec::{encode_op, CommitDicts};
-    use fluree_db_novelty::commit_v2::raw_reader::load_commit_ops;
-    use sha2::{Digest, Sha256};
+    use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
+    use fluree_db_core::commit::codec::raw_reader::load_commit_ops;
+    use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 
     /// In-memory V1 record collector for tests.
     ///
@@ -1979,7 +1978,7 @@ mod tests {
             encode_op(f, &mut dicts, &mut ops_buf).unwrap();
         }
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t,
             previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
@@ -2014,11 +2013,11 @@ mod tests {
             offset += d.len() as u64;
         }
 
-        let footer = CommitV2Footer {
+        let footer = CommitFooter {
             dicts: dict_locations,
             ops_section_len,
         };
-        let header = CommitV2Header {
+        let header = CommitHeader {
             version: format::VERSION,
             flags: 0,
             t,
@@ -2027,12 +2026,12 @@ mod tests {
             sig_block_len: 0,
         };
 
+        // V4: no trailing hash
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
             + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN
-            + HASH_LEN;
+            + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 
         let mut pos = 0;
@@ -2047,9 +2046,6 @@ mod tests {
             pos += d.len();
         }
         footer.write_to(&mut blob[pos..]);
-        pos += FOOTER_LEN;
-        let hash: [u8; 32] = Sha256::digest(&blob[..pos]).into();
-        blob[pos..pos + HASH_LEN].copy_from_slice(&hash);
         blob
     }
 
@@ -2297,8 +2293,8 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta() {
+        use fluree_db_core::commit::codec::envelope::CodecEnvelope;
         use fluree_db_core::{ContentId, ContentKind};
-        use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
         use fluree_db_novelty::CommitRef;
 
         let mut dicts = GlobalDicts::new_memory("test:main");
@@ -2310,7 +2306,7 @@ mod tests {
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
         let prev_commit_id = format!("fluree:commit:sha256:{}", prev_hex);
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: 42,
             previous_refs: vec![CommitRef::new(ContentId::new(
                 ContentKind::Commit,
@@ -2409,7 +2405,7 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta_minimal() {
-        use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
+        use fluree_db_core::commit::codec::envelope::CodecEnvelope;
 
         let mut dicts = GlobalDicts::new_memory("test:main");
         let mut resolver = CommitResolver::new();
@@ -2418,7 +2414,7 @@ mod tests {
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: 1,
             previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),
@@ -2440,7 +2436,7 @@ mod tests {
 
     #[test]
     fn test_emit_txn_meta_user_entries() {
-        use fluree_db_novelty::commit_v2::envelope::CommitV2Envelope;
+        use fluree_db_core::commit::codec::envelope::CodecEnvelope;
         use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue};
 
         let mut dicts = GlobalDicts::new_memory("test:main");
@@ -2457,7 +2453,7 @@ mod tests {
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
 
-        let envelope = CommitV2Envelope {
+        let envelope = CodecEnvelope {
             t: 5,
             previous_refs: Vec::new(),
             namespace_delta: HashMap::new(),

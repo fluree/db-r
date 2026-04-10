@@ -25,12 +25,12 @@ use fluree_db_core::pack::{
 
 // Re-export types that appear in our public API signatures so consumers
 // don't need fluree-db-core as a direct dependency.
+use fluree_db_core::commit::codec::envelope::decode_envelope;
+use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
 pub use fluree_db_core::pack::PackRequest;
 use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore, Storage};
 use fluree_db_nameservice::{NameService, RefPublisher};
-use fluree_db_novelty::commit_v2::envelope::decode_envelope;
-use fluree_db_novelty::commit_v2::format::{CommitV2Header, HEADER_LEN};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -97,7 +97,7 @@ pub async fn compute_missing_commits<C: ContentStore>(
                 ApiError::internal(format!("failed to read commit {}: {}", current_id, e))
             })?;
 
-            let header = CommitV2Header::read_from(&raw_bytes).map_err(|e| {
+            let header = CommitHeader::read_from(&raw_bytes).map_err(|e| {
                 ApiError::internal(format!("invalid commit header for {}: {}", current_id, e))
             })?;
 
@@ -419,7 +419,7 @@ where
         commits_sent += 1;
 
         // Decode envelope to find txn blob CID.
-        let header = CommitV2Header::read_from(&raw_bytes)
+        let header = CommitHeader::read_from(&raw_bytes)
             .map_err(|e| format!("invalid commit header for {}: {}", commit_cid, e))?;
 
         let envelope_start = HEADER_LEN;

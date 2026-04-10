@@ -1,163 +1,111 @@
-//! Commit v2 reader: binary blob -> Commit / CommitEnvelope.
+//! Commit v4 reader: binary blob -> Commit / CommitEnvelope.
 //!
 //! No NamespaceRegistry needed — Sids are reconstructed directly from
 //! (namespace_code, name) pairs stored in the binary format.
 //!
-//! The v2 reader produces CID-based types (`ContentId`, `CommitRef`).
-//! String-based references in the v2 on-disk format are converted to `ContentId`
-//! during decode.
+//! The reader produces CID-based types (`ContentId`, `CommitRef`).
 
-use super::error::CommitV2Error;
+use super::error::CommitCodecError;
 use super::format::{
-    decode_sig_block, CommitV2Footer, CommitV2Header, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN,
-    HASH_LEN, HEADER_LEN, MIN_COMMIT_LEN,
+    decode_sig_block, CommitFooter, CommitHeader, FLAG_HAS_COMMIT_SIG, FLAG_ZSTD, FOOTER_LEN,
+    HEADER_LEN, MIN_COMMIT_LEN,
 };
 use super::op_codec::{decode_op, ReadDicts};
 use super::string_dict::StringDict;
-use crate::{Commit, CommitEnvelope};
-use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
-use sha2::{Digest, Sha256};
+use crate::{Commit, CommitEnvelope, ContentId, ContentKind};
 
-/// Verify a commit-v2 blob's embedded hash and return its `ContentId`.
+/// Verify a commit blob and return its `ContentId`.
 ///
-/// This performs only the hash verification step (no full decode).
-/// For commit-v2, the CID is derived from `SHA-256(bytes[0..hash_offset])`
-/// where `hash_offset` excludes the trailing embedded hash and optional
-/// signature block.
+/// The CID is `SHA-256(full blob)`, computed via
+/// `ContentId::new(ContentKind::Commit, bytes)`. Integrity is guaranteed by
+/// the content-addressed store.
 ///
 /// Use this for integrity checks without full commit parsing.
-pub fn verify_commit_v2_blob(bytes: &[u8]) -> Result<ContentId, CommitV2Error> {
+pub fn verify_commit_blob(bytes: &[u8]) -> Result<ContentId, CommitCodecError> {
     let blob_len = bytes.len();
 
     if blob_len < MIN_COMMIT_LEN {
-        return Err(CommitV2Error::TooSmall {
+        return Err(CommitCodecError::TooSmall {
             got: blob_len,
             min: MIN_COMMIT_LEN,
         });
     }
 
-    let header = CommitV2Header::read_from(bytes)?;
+    // Validate header (checks magic + version).
+    CommitHeader::read_from(bytes)?;
 
-    let sig_block_len = header.sig_block_len as usize;
-    let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
-
-    let hash_offset = if has_sig_block {
-        if blob_len < HEADER_LEN + HASH_LEN + sig_block_len {
-            return Err(CommitV2Error::TooSmall {
-                got: blob_len,
-                min: HEADER_LEN + HASH_LEN + sig_block_len,
-            });
-        }
-        blob_len - sig_block_len - HASH_LEN
-    } else {
-        blob_len - HASH_LEN
-    };
-
-    let expected_hash: [u8; 32] = bytes[hash_offset..hash_offset + HASH_LEN]
-        .try_into()
-        .unwrap();
-    let actual_hash: [u8; 32] = Sha256::digest(&bytes[..hash_offset]).into();
-    if expected_hash != actual_hash {
-        return Err(CommitV2Error::HashMismatch {
-            expected: expected_hash,
-            actual: actual_hash,
-        });
-    }
-
-    Ok(ContentId::from_sha256_digest(
-        CODEC_FLUREE_COMMIT,
-        &actual_hash,
-    ))
+    Ok(ContentId::new(ContentKind::Commit, bytes))
 }
 
-/// Read a v2 commit blob and return a full `Commit` (with flakes).
+/// Read a v4 commit blob and return a full `Commit` (with flakes).
 ///
-/// The commit's `id` is derived from the v2 blob hash (SHA-256 of
-/// everything before the trailing hash). This CID uses `CODEC_FLUREE_COMMIT`
-/// and matches the hash that was used to construct the storage address.
-pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
+/// CID = `SHA-256(full blob)` via `ContentId::new(ContentKind::Commit, bytes)`.
+pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitCodecError> {
     let blob_len = bytes.len();
 
     // 1. Validate minimum size
     if blob_len < MIN_COMMIT_LEN {
-        return Err(CommitV2Error::TooSmall {
+        return Err(CommitCodecError::TooSmall {
             got: blob_len,
             min: MIN_COMMIT_LEN,
         });
     }
 
     // 2. Parse header
-    let header = CommitV2Header::read_from(bytes)?;
+    let header = CommitHeader::read_from(bytes)?;
 
-    // 3. Determine hash offset (accounts for trailing signature block)
+    // 3. Determine body_end and commit_id
     let sig_block_len = header.sig_block_len as usize;
     let has_sig_block = header.flags & FLAG_HAS_COMMIT_SIG != 0 && sig_block_len > 0;
 
-    let hash_offset = if has_sig_block {
-        if blob_len < HEADER_LEN + HASH_LEN + sig_block_len {
-            return Err(CommitV2Error::TooSmall {
+    // V4: no embedded hash. Body ends before signature block (if any).
+    let body_end = if has_sig_block {
+        if blob_len < sig_block_len {
+            return Err(CommitCodecError::TooSmall {
                 got: blob_len,
-                min: HEADER_LEN + HASH_LEN + sig_block_len,
+                min: sig_block_len,
             });
         }
-        blob_len - sig_block_len - HASH_LEN
+        blob_len - sig_block_len
     } else {
-        blob_len - HASH_LEN
+        blob_len
     };
 
-    // 4. Verify hash: SHA-256(bytes[0..hash_offset]) == bytes[hash_offset..hash_offset+32]
-    let actual_hash: [u8; 32] = {
-        let _span = tracing::debug_span!("v2_read_verify_hash", blob_len).entered();
-        let expected_hash: [u8; 32] = bytes[hash_offset..hash_offset + HASH_LEN]
-            .try_into()
-            .unwrap();
-        let actual_hash: [u8; 32] = Sha256::digest(&bytes[..hash_offset]).into();
-        if expected_hash != actual_hash {
-            return Err(CommitV2Error::HashMismatch {
-                expected: expected_hash,
-                actual: actual_hash,
-            });
-        }
-        actual_hash
-    };
+    let commit_id = ContentId::new(ContentKind::Commit, bytes);
 
-    // 5. Derive ContentId from the v2 hash
-    let commit_id = ContentId::from_sha256_digest(CODEC_FLUREE_COMMIT, &actual_hash);
-
-    // 6. Parse signature block (if present)
+    // Parse signature block (if present) — located directly after footer
     let commit_signatures = if has_sig_block {
-        let sig_block_start = hash_offset + HASH_LEN;
-        let sig_block_data = &bytes[sig_block_start..sig_block_start + sig_block_len];
+        let sig_block_data = &bytes[body_end..body_end + sig_block_len];
         decode_sig_block(sig_block_data)?
     } else {
         Vec::new()
     };
 
-    // 7. Decode binary envelope
+    // 4. Decode binary envelope
     let envelope_start = HEADER_LEN;
     let envelope_end = envelope_start + header.envelope_len as usize;
     if envelope_end > blob_len {
-        return Err(CommitV2Error::TooSmall {
+        return Err(CommitCodecError::TooSmall {
             got: blob_len,
             min: envelope_end,
         });
     }
     let envelope = super::envelope::decode_envelope(&bytes[envelope_start..envelope_end])?;
 
-    // 8. Parse footer
-    let footer_start = hash_offset - FOOTER_LEN;
-    let footer = CommitV2Footer::read_from(&bytes[footer_start..hash_offset])?;
+    // 5. Parse footer
+    let footer_start = body_end - FOOTER_LEN;
+    let footer = CommitFooter::read_from(&bytes[footer_start..body_end])?;
 
-    // 9. Validate ops section bounds
+    // 6. Validate ops section bounds
     let ops_start = envelope_end;
     let ops_end = ops_start + footer.ops_section_len as usize;
     if ops_end > footer_start {
-        return Err(CommitV2Error::InvalidOp(
+        return Err(CommitCodecError::InvalidOp(
             "ops section extends into footer".into(),
         ));
     }
 
-    // 10. Load dictionaries
+    // 7. Load dictionaries
     let dicts = load_dicts(bytes, &footer, ops_end, footer_start)?;
     let ops_bytes = &bytes[ops_start..ops_end];
     let ops_decompressed;
@@ -165,7 +113,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         let _span = tracing::debug_span!("v2_read_decompress", compressed_bytes = ops_bytes.len())
             .entered();
         ops_decompressed =
-            zstd::decode_all(ops_bytes).map_err(CommitV2Error::DecompressionFailed)?;
+            zstd::decode_all(ops_bytes).map_err(CommitCodecError::DecompressionFailed)?;
         tracing::debug!(
             compressed = ops_bytes.len(),
             decompressed = ops_decompressed.len(),
@@ -176,7 +124,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         ops_bytes
     };
 
-    // 11. Decode ops into flakes
+    // 8. Decode ops into flakes
     let flakes = {
         let _span = tracing::debug_span!(
             "v2_decode_ops",
@@ -201,7 +149,7 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
         "v2 commit read"
     );
 
-    // 12. Assemble Commit with CID-based types
+    // 9. Assemble Commit with CID-based types
     Ok(Commit {
         id: Some(commit_id),
         t: header.t,
@@ -222,23 +170,23 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitV2Error> {
 ///
 /// This is fast because it only reads the header + binary envelope section,
 /// skipping the ops, dictionaries, and footer entirely.
-pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Error> {
+pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitCodecError> {
     // 1. Validate minimum size for header
     if bytes.len() < HEADER_LEN {
-        return Err(CommitV2Error::TooSmall {
+        return Err(CommitCodecError::TooSmall {
             got: bytes.len(),
             min: HEADER_LEN,
         });
     }
 
     // 2. Parse header
-    let header = CommitV2Header::read_from(bytes)?;
+    let header = CommitHeader::read_from(bytes)?;
 
     // 3. Decode binary envelope
     let envelope_start = HEADER_LEN;
     let envelope_end = envelope_start + header.envelope_len as usize;
     if envelope_end > bytes.len() {
-        return Err(CommitV2Error::TooSmall {
+        return Err(CommitCodecError::TooSmall {
             got: bytes.len(),
             min: envelope_end,
         });
@@ -261,27 +209,27 @@ pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitV2Erro
 /// between the ops section and footer) and that dictionaries don't overlap.
 pub(crate) fn load_dicts(
     bytes: &[u8],
-    footer: &CommitV2Footer,
+    footer: &CommitFooter,
     valid_start: usize,
     valid_end: usize,
-) -> Result<ReadDicts, CommitV2Error> {
+) -> Result<ReadDicts, CommitCodecError> {
     let dict_names = ["graph", "subject", "predicate", "datatype", "object_ref"];
     let mut prev_end = valid_start;
 
     let load_one = |loc: &super::format::DictLocation,
                     name: &str,
                     prev_end: &mut usize|
-     -> Result<StringDict, CommitV2Error> {
+     -> Result<StringDict, CommitCodecError> {
         let start = loc.offset as usize;
         let end = start + loc.len as usize;
         if start < *prev_end {
-            return Err(CommitV2Error::InvalidDictionary(format!(
+            return Err(CommitCodecError::InvalidDictionary(format!(
                 "{} dict at offset {} overlaps previous region ending at {}",
                 name, start, *prev_end
             )));
         }
         if end > valid_end {
-            return Err(CommitV2Error::InvalidDictionary(format!(
+            return Err(CommitCodecError::InvalidDictionary(format!(
                 "{} dict at offset {} len {} extends past dict region end {}",
                 name, start, loc.len, valid_end
             )));

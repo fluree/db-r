@@ -1,11 +1,9 @@
 //! Commit v2 writer: Commit -> binary blob.
 //!
-//! The writer implementation now lives in `fluree_db_novelty::commit_v2::writer`
-//! so that any crate depending on novelty can encode commits without pulling in
-//! `fluree-db-transact`. This module re-exports the public API for backward
-//! compatibility.
+//! The writer implementation lives in `fluree_db_core::commit::codec::writer`.
+//! This module re-exports the public API for backward compatibility.
 
-pub use fluree_db_novelty::commit_v2::{write_commit, CommitWriteResult};
+pub use fluree_db_core::commit::codec::{write_commit, CommitWriteResult};
 
 // =============================================================================
 // Tests
@@ -14,8 +12,8 @@ pub use fluree_db_novelty::commit_v2::{write_commit, CommitWriteResult};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fluree_db_core::commit::codec::{read_commit, read_commit_envelope, MAGIC};
     use fluree_db_core::{ContentId, ContentKind, Flake, FlakeMeta, FlakeValue, Sid};
-    use fluree_db_novelty::commit_v2::{read_commit, read_commit_envelope, MAGIC};
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;
 
@@ -71,7 +69,7 @@ mod tests {
 
         let commit = make_test_commit(flakes, 1);
         let result = write_commit(&commit, false, None).unwrap();
-        assert!(!result.content_hash_hex.is_empty());
+        assert!(!result.bytes.is_empty());
         assert_eq!(&result.bytes[0..4], &MAGIC);
 
         let decoded = read_commit(&result.bytes).unwrap();
@@ -108,7 +106,8 @@ mod tests {
             result_c.bytes.len(),
             result_u.bytes.len()
         );
-        assert_ne!(result_c.content_hash_hex, result_u.content_hash_hex);
+        // Compressed and uncompressed blobs should differ
+        assert_ne!(result_c.bytes, result_u.bytes);
 
         let dec_c = read_commit(&result_c.bytes).unwrap();
         let dec_u = read_commit(&result_u.bytes).unwrap();

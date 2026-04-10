@@ -2476,6 +2476,7 @@ dependencies = [
  "ciborium",
  "cid",
  "dashmap",
+ "fluree-db-credential",
  "fluree-vocab",
  "fs2",
  "futures",
@@ -2488,13 +2489,16 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "postcard",
+ "rustc-hash",
  "serde",
  "serde_json",
  "sha2",
  "smallvec",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "xxhash-rust",
+ "zstd",
 ]
 
 [[package]]
@@ -2681,23 +2685,17 @@ name = "fluree-db-novelty"
 version = "4.0.0"
 dependencies = [
  "async-trait",
- "bigdecimal 0.4.10",
  "chrono",
  "fluree-db-core",
  "fluree-db-credential",
  "fluree-vocab",
  "futures",
- "hex",
- "num-bigint",
  "rayon",
  "rustc-hash",
- "serde",
  "serde_json",
- "sha2",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "zstd",
 ]
 
 [[package]]

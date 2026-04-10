@@ -552,7 +552,7 @@ async fn walk_commit_chain_since(
     let walk_started = Instant::now();
 
     // Use DAG-aware traversal to handle merge commits with multiple parents.
-    let dag = fluree_db_novelty::collect_dag_cids(cs, head_id, from_t)
+    let dag = fluree_db_core::collect_dag_cids(cs, head_id, from_t)
         .await
         .map_err(|e| IncrementalResolveError::CommitChain(e.to_string()))?;
 

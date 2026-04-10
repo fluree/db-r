@@ -32,7 +32,7 @@ The CLI uses a **peek-then-ingest** pattern: it reads the Header frame first (vi
 ### Client-side verification
 
 Each data frame is verified before writing to CAS:
-- **Commit-v2 blobs** (`FCV2` magic): Sub-range SHA-256 via `verify_commit_v2_blob()` (excludes trailing hash+sig block)
+- **Commit blobs** (`FCV2` magic): SHA-256 of full blob via `verify_commit_blob()`
 - **All other blobs** (txn, index artifacts, config): Full-bytes SHA-256 via `ContentId::verify()`
 
 Integrity failure is terminal -- the entire ingest is aborted.

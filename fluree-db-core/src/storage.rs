@@ -267,11 +267,8 @@ pub trait ContentStore: Debug + Send + Sync {
     ///
     /// Implementations MUST call `id.verify(bytes)` and reject mismatches.
     ///
-    /// **Not for commit-v2 blobs.** Commit CIDs are derived from a
-    /// canonical sub-range of the blob, not the full bytes, so
-    /// `id.verify(bytes)` will fail. Commit blobs should be written via
-    /// `Storage::content_write_bytes_with_hash()` with the pre-verified
-    /// canonical hash instead.
+    /// V4 commit blobs can be stored with this method since their CID
+    /// is `SHA-256(full blob)`, matching `id.verify(bytes)`.
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()>;
 
     /// Resolve a CID to a local filesystem path, if available.
