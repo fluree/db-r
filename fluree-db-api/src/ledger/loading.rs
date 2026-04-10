@@ -22,7 +22,7 @@ where
         let mut state = LedgerState::load(
             &self.nameservice,
             ledger_id,
-            self.connection.storage().clone(),
+            self.storage().clone(),
         )
         .await?;
 
@@ -39,7 +39,7 @@ where
             .cloned()
         {
             if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
-                let storage = self.connection.storage();
+                let storage = self.storage();
                 // Use the NsRecord's ledger_id (canonical namespace) rather than
                 // snapshot.ledger_id, which may reflect the source ledger after
                 // a pack import/clone into a differently-named destination.
@@ -160,7 +160,7 @@ where
                 .map(|r| r.ledger_id.as_str())
                 .unwrap_or(state.snapshot.ledger_id.as_str());
             let cs =
-                fluree_db_core::content_store_for(self.connection.storage().clone(), ns_ledger_id);
+                fluree_db_core::content_store_for(self.storage().clone(), ns_ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),
@@ -185,7 +185,7 @@ where
         let view = HistoricalLedgerView::load_at(
             &self.nameservice,
             ledger_id,
-            self.connection.storage().clone(),
+            self.storage().clone(),
             target_t,
         )
         .await?;
@@ -367,7 +367,7 @@ where
         use fluree_db_core::storage::content_address;
         use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
 
-        let storage = self.connection.storage().clone();
+        let storage = self.storage().clone();
         let method = storage.storage_method();
         let source_store = fluree_db_core::content_store_for(storage.clone(), source_id);
 

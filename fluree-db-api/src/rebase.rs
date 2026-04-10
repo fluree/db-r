@@ -172,7 +172,7 @@ where
         let branch_store = LedgerState::build_branched_store(
             &self.nameservice,
             &branch_record,
-            self.connection.storage(),
+            self.storage(),
         )
         .await?;
 
@@ -207,13 +207,13 @@ where
             let source_store = LedgerState::build_branched_store(
                 &self.nameservice,
                 &source_record,
-                self.connection.storage(),
+                self.storage(),
             )
             .await?;
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         } else {
             let source_store =
-                fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
+                fluree_db_core::content_store_for(self.storage().clone(), &source_id);
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         };
 
@@ -301,7 +301,7 @@ where
         let mut current_state = LedgerState::load(
             &self.nameservice,
             ctx.source_id,
-            self.connection.storage().clone(),
+            self.storage().clone(),
         )
         .await?;
 
@@ -424,7 +424,7 @@ where
             .with_graph_delta(original_commit.graph_delta.clone());
 
         let content_store = fluree_db_core::content_store_for(
-            self.connection.storage().clone(),
+            self.storage().clone(),
             view.db().ledger_id.as_str(),
         );
         let (_receipt, new_state) = fluree_db_transact::commit(
@@ -552,7 +552,7 @@ where
         let branch_store = LedgerState::build_branched_store(
             &self.nameservice,
             branch_record,
-            self.connection.storage(),
+            self.storage(),
         )
         .await?;
 
@@ -562,10 +562,10 @@ where
             .await?
             .ok_or_else(|| ApiError::NotFound(branch_id.to_string()))?;
 
-        let indexer_config = crate::build_indexer_config(self.connection.config());
+        let indexer_config = crate::build_indexer_config(self.config());
 
         let index_result = fluree_db_indexer::rebuild_index_from_commits_with_store(
-            self.connection.storage(),
+            self.storage(),
             branch_store,
             branch_id,
             &record,
@@ -581,7 +581,7 @@ where
         LedgerState::load(
             &self.nameservice,
             branch_id,
-            self.connection.storage().clone(),
+            self.storage().clone(),
         )
         .await
         .map_err(Into::into)

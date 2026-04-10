@@ -118,7 +118,7 @@ where
         let source_store = LedgerState::build_branched_store(
             &self.nameservice,
             &source_record,
-            self.connection.storage(),
+            self.storage(),
         )
         .await?;
 
@@ -302,13 +302,13 @@ where
             let target_store = LedgerState::build_branched_store(
                 &self.nameservice,
                 target_record,
-                self.connection.storage(),
+                self.storage(),
             )
             .await?;
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         } else {
             let target_store =
-                fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+                fluree_db_core::content_store_for(self.storage().clone(), target_id);
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         };
 
@@ -332,7 +332,7 @@ where
         let target_state = LedgerState::load(
             &self.nameservice,
             target_id,
-            self.connection.storage().clone(),
+            self.storage().clone(),
         )
         .await?;
 
@@ -375,7 +375,7 @@ where
             .await?;
 
         let content_store =
-            fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+            fluree_db_core::content_store_for(self.storage().clone(), target_id);
 
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
@@ -475,7 +475,7 @@ where
         stop_at_t: i64,
         target_ledger_id: &str,
     ) -> Result<usize> {
-        let storage = self.connection.storage();
+        let storage = self.storage();
 
         let dag = collect_dag_cids(source_store, head_id, stop_at_t).await?;
         let mut copied = 0;

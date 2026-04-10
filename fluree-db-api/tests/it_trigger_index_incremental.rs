@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use fluree_db_api::tx::IndexingMode;
 use fluree_db_api::{Fluree, IndexerConfig, TriggerIndexOptions};
 use fluree_db_connection::config::ConnectionConfig;
-use fluree_db_connection::Connection;
 use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentKind, ContentStore, MemoryStorage, StorageMethod};
 use fluree_db_nameservice::memory::MemoryNameService;
@@ -110,9 +109,8 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
     let storage = CountingStorage::new();
     let nameservice = MemoryNameService::new();
 
-    let conn = Connection::new(ConnectionConfig::memory(), storage.clone());
     let mut fluree: Fluree<CountingStorage, MemoryNameService> =
-        Fluree::new(conn, nameservice.clone());
+        Fluree::new(ConnectionConfig::memory(), storage.clone(), nameservice.clone());
 
     // Use tiny leaflets/leaves so we can get multi-leaf indexes with small data.
     let indexer_cfg = IndexerConfig::small()

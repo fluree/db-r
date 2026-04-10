@@ -232,7 +232,6 @@ pub use fluree_db_policy::{
 pub use fluree_db_core::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 
 use async_trait::async_trait;
-use fluree_db_connection::Connection;
 use fluree_db_core::ContentStore as _;
 #[cfg(feature = "native")]
 use fluree_db_nameservice::file::FileNameService;
@@ -1773,10 +1772,10 @@ impl FlureeBuilder {
         let nameservice = FileNameService::new(&path);
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        let connection = Connection::new(self.config, storage);
         Ok(Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             indexing_mode,
             index_config,
@@ -1796,10 +1795,10 @@ impl FlureeBuilder {
         N: NameService + Clone + Send + Sync + 'static,
     {
         let index_config = self.derive_indexing();
-        let connection = Connection::new(self.config, storage);
         Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             tx::IndexingMode::Disabled,
             index_config,
@@ -1898,10 +1897,10 @@ impl FlureeBuilder {
         let nameservice = FileNameService::new(&path);
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        let connection = Connection::new(self.config, storage);
         Ok(Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             indexing_mode,
             index_config,
@@ -1921,10 +1920,10 @@ impl FlureeBuilder {
         let storage = MemoryStorage::new();
         let nameservice = MemoryNameService::new();
         let index_config = self.derive_indexing();
-        let connection = Connection::new(self.config, storage);
         Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             tx::IndexingMode::Disabled,
             index_config,
@@ -1948,10 +1947,10 @@ impl FlureeBuilder {
         let storage = EncryptedStorage::new(mem_storage, key_provider);
         let nameservice = MemoryNameService::new();
         let index_config = self.derive_indexing();
-        let connection = Connection::new(self.config, storage);
         Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             tx::IndexingMode::Disabled,
             index_config,
@@ -2016,10 +2015,10 @@ impl FlureeBuilder {
         let nameservice = StorageNameService::new(storage.clone(), "");
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        let connection = Connection::new(self.config, storage);
         Ok(Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             indexing_mode,
             index_config,
@@ -2095,10 +2094,10 @@ impl FlureeBuilder {
         let nameservice = StorageNameService::new(storage.clone(), "");
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        let connection = Connection::new(self.config, storage);
         Ok(Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             indexing_mode,
             index_config,
@@ -2157,7 +2156,8 @@ impl FlureeBuilder {
     /// (e.g., `build_with()` accepts arbitrary `N: NameService`).
     fn finalize<S, N>(
         ledger_cache_config: Option<LedgerManagerConfig>,
-        connection: Connection<S>,
+        config: ConnectionConfig,
+        storage: S,
         nameservice: N,
         indexing_mode: tx::IndexingMode,
         index_config: IndexConfig,
@@ -2166,21 +2166,22 @@ impl FlureeBuilder {
         S: Storage + Clone + Send + Sync + 'static,
         N: NameService + Clone + Send + Sync + 'static,
     {
-        let leaflet_cache = make_leaflet_cache(connection.config());
+        let leaflet_cache = make_leaflet_cache(&config);
 
-        let ledger_manager = ledger_cache_config.map(|mut config| {
-            if config.leaflet_cache.is_none() {
-                config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
+        let ledger_manager = ledger_cache_config.map(|mut lm_config| {
+            if lm_config.leaflet_cache.is_none() {
+                lm_config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
             }
             Arc::new(LedgerManager::new(
-                connection.storage().clone(),
+                storage.clone(),
                 nameservice.clone(),
-                config,
+                lm_config,
             ))
         });
 
         Fluree {
-            connection,
+            config,
+            storage,
             nameservice,
             leaflet_cache,
             indexing_mode,
@@ -2239,10 +2240,10 @@ impl FlureeBuilder {
 
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        let connection = Connection::new(self.config, storage);
         Ok(Self::finalize(
             self.ledger_cache_config,
-            connection,
+            self.config,
+            storage,
             nameservice,
             indexing_mode,
             index_config,
@@ -2285,10 +2286,10 @@ impl FlureeBuilder {
 
             let index_config = self.derive_indexing();
             let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-            let connection = Connection::new(self.config, storage);
             Ok(Self::finalize(
                 self.ledger_cache_config,
-                connection,
+                self.config,
+                storage,
                 nameservice,
                 indexing_mode,
                 index_config,
@@ -2329,10 +2330,10 @@ impl FlureeBuilder {
 
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        let connection = Connection::new(aws_handle.config().clone(), storage);
         Ok(Self::finalize(
             self.ledger_cache_config,
-            connection,
+            aws_handle.config().clone(),
+            storage,
             nameservice,
             indexing_mode,
             index_config,
@@ -2395,8 +2396,10 @@ impl FlureeBuilder {
 /// - `S`: Storage implementation (FileStorage or MemoryStorage)
 /// - `N`: NameService implementation
 pub struct Fluree<S: Storage + 'static, N> {
-    /// Connection for database operations (includes storage)
-    connection: Connection<S>,
+    /// Connection configuration
+    config: ConnectionConfig,
+    /// Storage backend
+    storage: S,
     /// Nameservice for ledger discovery
     nameservice: N,
     /// Shared global cache for decoded index artifacts (one budget).
@@ -2425,10 +2428,11 @@ where
     /// Create a new Fluree instance with custom components
     ///
     /// Most users should use `FlureeBuilder` instead.
-    pub fn new(connection: Connection<S>, nameservice: N) -> Self {
-        let leaflet_cache = make_leaflet_cache(connection.config());
+    pub fn new(config: ConnectionConfig, storage: S, nameservice: N) -> Self {
+        let leaflet_cache = make_leaflet_cache(&config);
         Self {
-            connection,
+            config,
+            storage,
             nameservice,
             leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
@@ -2440,13 +2444,15 @@ where
 
     /// Create a new Fluree instance with a specific indexing mode
     pub fn with_indexing_mode(
-        connection: Connection<S>,
+        config: ConnectionConfig,
+        storage: S,
         nameservice: N,
         indexing_mode: tx::IndexingMode,
     ) -> Self {
-        let leaflet_cache = make_leaflet_cache(connection.config());
+        let leaflet_cache = make_leaflet_cache(&config);
         Self {
-            connection,
+            config,
+            storage,
             nameservice,
             leaflet_cache,
             indexing_mode,
@@ -2473,8 +2479,7 @@ where
     ///
     /// Defaults to `true` if not explicitly configured.
     pub(crate) fn defaults_indexing_enabled(&self) -> bool {
-        self.connection
-            .config()
+        self.config
             .defaults
             .as_ref()
             .and_then(|d| d.indexing.as_ref())
@@ -2487,14 +2492,14 @@ where
         &self.nameservice
     }
 
-    /// Get a reference to the connection
-    pub fn connection(&self) -> &Connection<S> {
-        &self.connection
+    /// Get a reference to the connection config
+    pub fn config(&self) -> &ConnectionConfig {
+        &self.config
     }
 
-    /// Get a reference to the storage (via the connection)
+    /// Get a reference to the storage
     pub fn storage(&self) -> &S {
-        self.connection.storage()
+        &self.storage
     }
 
     /// Get a reference to the R2RML cache
@@ -2509,7 +2514,7 @@ where
 
     /// Global cache budget in MB.
     pub fn cache_budget_mb(&self) -> usize {
-        self.connection.config().cache.max_mb
+        self.config().cache.max_mb
     }
 
     /// Check if ledger caching is enabled (true by default).
@@ -3190,7 +3195,7 @@ mod tests {
     fn test_fluree_builder_memory() {
         let fluree = FlureeBuilder::memory().cache_max_mb(500).build_memory();
 
-        assert_eq!(fluree.connection.config().cache.max_mb, 500);
+        assert_eq!(fluree.config.cache.max_mb, 500);
     }
 
     #[test]
@@ -3203,7 +3208,7 @@ mod tests {
 
         assert!(result.is_ok());
         let fluree = result.unwrap();
-        assert_eq!(fluree.connection.config().parallelism, 8);
+        assert_eq!(fluree.config.parallelism, 8);
     }
 
     #[test]

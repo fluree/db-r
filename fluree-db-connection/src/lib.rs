@@ -4,64 +4,17 @@
 //!
 //! This crate provides:
 //! - Configuration types for storage, cache, and connections
-//! - Factory functions for creating storage and cache instances
-//! - The `Connection` struct for loading databases
+//! - [`ConnectionHandle`] for runtime-dispatched storage backends
 //! - JSON-LD configuration parsing compatible with legacy configs
 //!
-//! ## Quick Start
+//! ## Usage
 //!
-//! ```ignore
-//! use fluree_db_connection::connect_file;
-//!
-//! // Connect to a file-based storage
-//! let conn = connect_file("/path/to/ledger/data");
-//!
-//! // Load a specific database snapshot
-//! let db = conn.load_ledger_snapshot_fresh_cache(&root_id, "ledger/main").await?;
-//! ```
-//!
-//! ## AWS/S3 Connections
-//!
-//! For S3-backed storage with DynamoDB nameservice:
-//!
-//! ```ignore
-//! use fluree_db_connection::connect_async;
-//! use serde_json::json;
-//!
-//! let config = json!({
-//!     "@context": {
-//!         "@base": "https://ns.flur.ee/config/connection/",
-//!         "@vocab": "https://ns.flur.ee/system#"
-//!     },
-//!     "@graph": [
-//!         {"@id": "s3Storage", "@type": "Storage", "s3Bucket": "my-bucket", "s3Prefix": "ledgers"},
-//!         {"@id": "conn", "@type": "Connection",
-//!          "indexStorage": {"@id": "s3Storage"},
-//!          "commitStorage": {"@id": "s3Storage"},
-//!          "primaryPublisher": {"@type": "Publisher", "dynamodbTable": "fluree-ns"}}
-//!     ]
-//! });
-//! let conn = connect_async(&config).await?;
-//! let db = conn.load_ledger_snapshot(&root_id, "mydb:main").await?;
-//! ```
-//!
-//! ## Configuration
-//!
-//! For more control, create a `Connection` directly with custom storage and cache:
-//!
-//! ```ignore
-//! use fluree_db_connection::{Connection, ConnectionConfig};
-//! use fluree_db_core::{FileStorage, SimpleCache};
-//!
-//! let config = ConnectionConfig::file("/data/fluree");
-//! let storage = FileStorage::new("/data/fluree");
-//! let cache = SimpleCache::new(10000);
-//! let conn = Connection::new(config, storage, cache);
-//! ```
+//! Most users should use `FlureeBuilder` in `fluree-db-api` rather than
+//! constructing connections directly. This crate is primarily used internally
+//! by the builder and for AWS connection initialization.
 
 pub mod cache;
 pub mod config;
-pub mod connection;
 pub mod error;
 pub mod graph;
 pub mod registry;
@@ -74,9 +27,6 @@ pub mod aws;
 // Re-export main types
 pub use cache::default_cache_max_mb;
 pub use config::{CacheConfig, ConnectionConfig, StorageConfig, StorageType};
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-pub use connection::FileConnection;
-pub use connection::{Connection, MemoryConnection};
 pub use error::{ConnectionError, Result};
 pub use graph::ConfigGraph;
 
@@ -89,45 +39,6 @@ pub use aws::{AwsConnectionHandle, AwsNameService};
 pub use fluree_db_core::FileStorage;
 pub use fluree_db_core::{LedgerSnapshot, MemoryStorage};
 
-/// Create a memory-backed connection
-///
-/// This is useful for testing or when data doesn't need to persist.
-///
-/// # Example
-///
-/// ```
-/// use fluree_db_connection::connect_memory;
-///
-/// let conn = connect_memory();
-/// // conn.load_ledger_snapshot(&root_id, "ledger/main").await?;
-/// ```
-pub fn connect_memory() -> MemoryConnection {
-    let config = ConnectionConfig::memory();
-    let storage = MemoryStorage::new();
-    Connection::new(config, storage)
-}
-
-/// Create a file-backed connection
-///
-/// The `base_path` should be the root directory containing ledger data.
-/// Storage addresses like `fluree:file://path/to/file.json` will resolve
-/// relative to this base path.
-///
-/// # Example
-///
-/// ```ignore
-/// use fluree_db_connection::connect_file;
-///
-/// let conn = connect_file("/data/fluree");
-/// let db = conn.load_ledger_snapshot_fresh_cache(&root_id, "mydb/main").await?;
-/// ```
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-pub fn connect_file(base_path: &str) -> FileConnection {
-    let config = ConnectionConfig::file(base_path);
-    let storage = FileStorage::new(base_path);
-    Connection::new(config, storage)
-}
-
 /// Connection that can be file, memory, or AWS backed
 ///
 /// This enum is returned by `connect()` and `connect_async()` when parsing
@@ -136,9 +47,15 @@ pub fn connect_file(base_path: &str) -> FileConnection {
 pub enum ConnectionHandle {
     /// File-backed connection
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-    File(FileConnection),
+    File {
+        config: ConnectionConfig,
+        storage: FileStorage,
+    },
     /// Memory-backed connection
-    Memory(MemoryConnection),
+    Memory {
+        config: ConnectionConfig,
+        storage: MemoryStorage,
+    },
     /// AWS-backed connection (S3 storage, DynamoDB nameservice)
     #[cfg(feature = "aws")]
     Aws(AwsConnectionHandle),
@@ -149,8 +66,8 @@ impl ConnectionHandle {
     pub fn config(&self) -> &ConnectionConfig {
         match self {
             #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-            ConnectionHandle::File(c) => c.config(),
-            ConnectionHandle::Memory(c) => c.config(),
+            ConnectionHandle::File { config, .. } => config,
+            ConnectionHandle::Memory { config, .. } => config,
             #[cfg(feature = "aws")]
             ConnectionHandle::Aws(c) => c.config(),
         }
@@ -164,38 +81,22 @@ impl ConnectionHandle {
         &self,
         root_id: &fluree_db_core::ContentId,
         ledger_id: &str,
-    ) -> Result<DynDb> {
+    ) -> Result<LedgerSnapshot> {
         match self {
             #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-            ConnectionHandle::File(c) => {
-                let db = c.load_ledger_snapshot(root_id, ledger_id).await?;
-                Ok(DynDb::File(db))
+            ConnectionHandle::File { storage, .. } => {
+                Ok(fluree_db_core::load_ledger_snapshot(storage, root_id, ledger_id).await?)
             }
-            ConnectionHandle::Memory(c) => {
-                let db = c.load_ledger_snapshot(root_id, ledger_id).await?;
-                Ok(DynDb::Memory(db))
+            ConnectionHandle::Memory { storage, .. } => {
+                Ok(fluree_db_core::load_ledger_snapshot(storage, root_id, ledger_id).await?)
             }
             #[cfg(feature = "aws")]
             ConnectionHandle::Aws(c) => {
                 let storage = c.index_storage().clone();
-                let db = fluree_db_core::load_ledger_snapshot(&storage, root_id, ledger_id).await?;
-                Ok(DynDb::Aws(db))
+                Ok(fluree_db_core::load_ledger_snapshot(&storage, root_id, ledger_id).await?)
             }
         }
     }
-}
-
-/// Dynamic database handle that can be backed by any storage type
-#[derive(Debug)]
-pub enum DynDb {
-    /// File-backed database
-    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-    File(LedgerSnapshot),
-    /// Memory-backed database
-    Memory(LedgerSnapshot),
-    /// AWS-backed database (S3 storage)
-    #[cfg(feature = "aws")]
-    Aws(LedgerSnapshot),
 }
 
 /// Create connection from JSON config (auto-detects format)
@@ -297,12 +198,12 @@ fn create_sync_connection(config: ConnectionConfig) -> Result<ConnectionHandle> 
                         ConnectionError::invalid_config("File storage requires path")
                     })?;
                 let storage = FileStorage::new(path.as_ref());
-                Ok(ConnectionHandle::File(Connection::new(config, storage)))
+                Ok(ConnectionHandle::File { config, storage })
             }
         }
         StorageType::Memory => {
             let storage = MemoryStorage::new();
-            Ok(ConnectionHandle::Memory(Connection::new(config, storage)))
+            Ok(ConnectionHandle::Memory { config, storage })
         }
         StorageType::S3(_) => Err(ConnectionError::invalid_config(
             "S3 storage requires async initialization. Use connect_async() instead of connect().",
@@ -332,12 +233,12 @@ async fn create_async_connection(config: ConnectionConfig) -> Result<ConnectionH
                         ConnectionError::invalid_config("File storage requires path")
                     })?;
                 let storage = FileStorage::new(path.as_ref());
-                Ok(ConnectionHandle::File(Connection::new(config, storage)))
+                Ok(ConnectionHandle::File { config, storage })
             }
         }
         StorageType::Memory => {
             let storage = MemoryStorage::new();
-            Ok(ConnectionHandle::Memory(Connection::new(config, storage)))
+            Ok(ConnectionHandle::Memory { config, storage })
         }
         StorageType::Unsupported { type_iri, .. } => {
             Err(ConnectionError::unsupported_component(type_iri))
@@ -481,27 +382,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_connect_memory() {
-        let conn = connect_memory();
-        assert!(format!("{:?}", conn.storage()).contains("MemoryStorage"));
+    fn test_connection_handle_memory() {
+        let handle = ConnectionHandle::Memory {
+            config: ConnectionConfig::memory(),
+            storage: MemoryStorage::new(),
+        };
+        assert!(format!("{:?}", handle).contains("MemoryStorage"));
+        assert_eq!(handle.config().parallelism, ConnectionConfig::default().parallelism);
     }
 
     #[test]
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-    fn test_connect_file() {
-        let conn = connect_file("/tmp/test");
-        assert!(format!("{:?}", conn.storage()).contains("FileStorage"));
-    }
-
-    #[test]
-    fn test_custom_connection() {
-        let config = ConnectionConfig {
-            parallelism: 8,
-            ..ConnectionConfig::default()
+    fn test_connection_handle_file() {
+        let handle = ConnectionHandle::File {
+            config: ConnectionConfig::file("/tmp/test"),
+            storage: FileStorage::new("/tmp/test"),
         };
-        let storage = MemoryStorage::new();
-        let conn = Connection::new(config, storage);
-
-        assert_eq!(conn.config().parallelism, 8);
+        assert!(format!("{:?}", handle).contains("FileStorage"));
     }
 }
