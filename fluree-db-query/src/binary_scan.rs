@@ -2236,28 +2236,40 @@ fn value_to_otype_okey(
     }
 
     // For value types that are dt-dependent (Long, Double, String), resolve
-    // the exact OType from the datatype Sid IRI. For value types with 1:1
+    // the exact OType from the datatype Sid. For value types with 1:1
     // OType mapping (Bool, Date, Ref, etc.), the FlakeValue variant suffices.
+    //
+    // If the datatype cannot be resolved (novelty-only custom type not yet in
+    // the persisted dict), return Unsupported so callers decline the fast path
+    // rather than silently encoding under a wrong base-XSD type.
     let dt_otype = otype_from_dt_sid(dt_sid, store);
 
     match val {
         FlakeValue::Null => Ok((OType::NULL, 0)),
         FlakeValue::Boolean(b) => Ok((OType::XSD_BOOLEAN, *b as u64)),
         FlakeValue::Long(n) => {
-            // Use dt-derived OType for integer subtypes (xsd:int, xsd:short, etc.)
-            let ot = dt_otype.unwrap_or(OType::XSD_INTEGER);
+            let ot = dt_otype.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "datatype not resolvable to OType for Long value",
+                )
+            })?;
             Ok((ot, ObjKey::encode_i64(*n).as_u64()))
         }
         FlakeValue::Double(d) => {
+            let ot = dt_otype.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "datatype not resolvable to OType for Double value",
+                )
+            })?;
             if d.is_finite() && d.fract() == 0.0 {
                 let as_i64 = *d as i64;
                 if (as_i64 as f64) == *d {
-                    let ot = dt_otype.unwrap_or(OType::XSD_INTEGER);
                     return Ok((ot, ObjKey::encode_i64(as_i64).as_u64()));
                 }
             }
             if d.is_finite() {
-                let ot = dt_otype.unwrap_or(OType::XSD_DOUBLE);
                 match ObjKey::encode_f64(*d) {
                     Ok(key) => Ok((ot, key.as_u64())),
                     Err(_) => Ok((OType::NULL, 0)),
@@ -2272,8 +2284,12 @@ fn value_to_otype_okey(
         }
         FlakeValue::String(s) => {
             let str_id = resolve_string_v3(s, store, dict_novelty)?;
-            // Use dt-derived OType for string subtypes (xsd:anyURI, xsd:token, etc.)
-            let ot = dt_otype.unwrap_or(OType::XSD_STRING);
+            let ot = dt_otype.ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "datatype not resolvable to OType for String value",
+                )
+            })?;
             Ok((ot, str_id as u64))
         }
         FlakeValue::Json(s) => {
@@ -2476,13 +2492,22 @@ fn datatype_sid_for_untyped_value(
     }
 }
 
-/// Resolve a datatype Sid to its OType constant.
+/// Resolve a datatype Sid to its exact OType.
 ///
-/// Reconstructs the IRI from the Sid and matches against well-known XSD types.
-/// Returns `None` for unrecognized datatypes (caller uses FlakeValue-inferred default).
+/// Resolution order:
+/// 1. Well-known: Sid → IRI → `resolve_iri_to_otype_option` (XSD, rdf:JSON, etc.)
+/// 2. Custom persisted: Sid → positional `dt_id` → `OType::customer_datatype(dt_id)`
+/// 3. Unknown (novelty-only custom type): `None`
 fn otype_from_dt_sid(dt_sid: &Sid, store: &BinaryIndexStore) -> Option<OType> {
-    let iri = store.sid_to_iri(dt_sid)?;
-    fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri)
+    // Well-known datatypes: resolve via IRI string matching.
+    if let Some(iri) = store.sid_to_iri(dt_sid) {
+        if let Some(ot) = fluree_db_core::o_type_registry::resolve_iri_to_otype_option(&iri) {
+            return Some(ot);
+        }
+    }
+    // Custom persisted datatypes: look up the Sid's position in the datatype dict.
+    let dt_id = store.find_dt_id(dt_sid)?;
+    Some(OType::customer_datatype(dt_id))
 }
 
 /// Simplified FlakeValue → (OType, o_key) translation for fast-path operators.
