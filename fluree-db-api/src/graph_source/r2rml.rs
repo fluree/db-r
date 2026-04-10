@@ -121,7 +121,7 @@ where
                 let compiled = Self::compile_r2rml_content(content, &config)?;
                 let count = compiled.len();
                 let gs_id = config.graph_source_id();
-                let cs = fluree_db_core::content_store_for(self.storage().clone(), &gs_id);
+                let cs = self.content_store(&gs_id);
                 let cid = cs
                     .put(
                         fluree_db_core::ContentKind::GraphSourceMapping,

@@ -365,6 +365,36 @@ pub trait ContentStore: Debug + Send + Sync {
     }
 }
 
+// Blanket `ContentStore` impl for `Arc<dyn ContentStore>`, so callers can pass
+// a dynamically-dispatched content store anywhere a `C: ContentStore` bound is
+// expected.
+#[async_trait]
+impl ContentStore for Arc<dyn ContentStore> {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        self.as_ref().has(id).await
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        self.as_ref().get(id).await
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        self.as_ref().put(kind, bytes).await
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        self.as_ref().put_with_id(id, bytes).await
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        self.as_ref().resolve_local_path(id)
+    }
+
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        self.as_ref().get_range(id, range).await
+    }
+}
+
 // ============================================================================
 // StorageContentStore (bridge adapter: existing Storage → ContentStore)
 // ============================================================================
@@ -615,9 +645,23 @@ impl StorageBackend {
             StorageBackend::Managed(storage) => {
                 LedgerStore::Managed(content_store_for(storage.clone(), namespace_id))
             }
-            StorageBackend::Permanent(store) => {
-                LedgerStore::Permanent(Arc::clone(store))
+            StorageBackend::Permanent(store) => LedgerStore::Permanent(Arc::clone(store)),
+        }
+    }
+
+    /// Create an `Arc<dyn ContentStore>` scoped to the given namespace.
+    ///
+    /// This is the trait-object variant of [`content_store`], useful when
+    /// working with code that needs dynamic dispatch (e.g., constructing
+    /// a [`BranchedContentStore`]).
+    ///
+    /// [`content_store`]: StorageBackend::content_store
+    pub fn content_store_dyn(&self, namespace_id: &str) -> Arc<dyn ContentStore> {
+        match self {
+            StorageBackend::Managed(storage) => {
+                Arc::new(content_store_for(storage.clone(), namespace_id))
             }
+            StorageBackend::Permanent(store) => Arc::clone(store),
         }
     }
 
@@ -627,6 +671,26 @@ impl StorageBackend {
     pub fn admin_storage(&self) -> Option<&dyn Storage> {
         match self {
             StorageBackend::Managed(storage) => Some(storage.as_ref()),
+            StorageBackend::Permanent(_) => None,
+        }
+    }
+
+    /// Clone the admin storage as an owned `Arc<dyn Storage>`, if available.
+    ///
+    /// Returns `Some` for `Managed` backends, `None` for `Permanent`.
+    pub fn admin_storage_cloned(&self) -> Option<Arc<dyn Storage>> {
+        match self {
+            StorageBackend::Managed(storage) => Some(Arc::clone(storage)),
+            StorageBackend::Permanent(_) => None,
+        }
+    }
+
+    /// Get a reference to the admin storage, if available.
+    ///
+    /// Returns `Some(&Arc<dyn Storage>)` for `Managed` backends, `None` for `Permanent`.
+    pub fn admin_storage_arc(&self) -> Option<&Arc<dyn Storage>> {
+        match self {
+            StorageBackend::Managed(storage) => Some(storage),
             StorageBackend::Permanent(_) => None,
         }
     }
@@ -727,37 +791,44 @@ impl Debug for LedgerStore {
 /// namespace first, then recurse into parent stores. The recursive structure
 /// supports both linear branching (branch from branch) and future merge
 /// scenarios where a branch has multiple parents.
-#[derive(Debug, Clone)]
-pub struct BranchedContentStore<S: Storage> {
+#[derive(Clone)]
+pub struct BranchedContentStore {
     /// Store scoped to this branch's own namespace
-    branch_store: StorageContentStore<S>,
+    branch_store: Arc<dyn ContentStore>,
     /// Parent stores to fall back to on read misses. Typically one parent
     /// for a simple branch; multiple parents after a merge.
-    parents: Vec<BranchedContentStore<S>>,
+    parents: Vec<BranchedContentStore>,
 }
 
-impl<S: Storage + Clone> BranchedContentStore<S> {
+impl BranchedContentStore {
     /// Create a leaf content store with no parents (equivalent to a root branch).
-    pub fn leaf(storage: S, namespace_id: &str) -> Self {
-        let method = storage.storage_method().to_string();
+    pub fn leaf(store: Arc<dyn ContentStore>) -> Self {
         Self {
-            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            branch_store: store,
             parents: Vec::new(),
         }
     }
 
     /// Create a branched content store with parent fallbacks.
-    pub fn with_parents(storage: S, namespace_id: &str, parents: Vec<Self>) -> Self {
-        let method = storage.storage_method().to_string();
+    pub fn with_parents(store: Arc<dyn ContentStore>, parents: Vec<Self>) -> Self {
         Self {
-            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            branch_store: store,
             parents,
         }
     }
 }
 
+impl Debug for BranchedContentStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BranchedContentStore")
+            .field("branch_store", &self.branch_store)
+            .field("parents", &self.parents)
+            .finish()
+    }
+}
+
 #[async_trait]
-impl<S: Storage + Send + Sync> ContentStore for BranchedContentStore<S> {
+impl ContentStore for BranchedContentStore {
     async fn has(&self, id: &ContentId) -> Result<bool> {
         if self.branch_store.has(id).await? {
             return Ok(true);

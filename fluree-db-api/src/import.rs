@@ -779,8 +779,9 @@ where
 
     /// Execute the bulk import pipeline.
     pub async fn execute(self) -> std::result::Result<ImportResult, ImportError> {
+        let storage = self.fluree.storage();
         run_import_pipeline(
-            self.fluree.storage(),
+            storage,
             self.fluree.nameservice(),
             &self.ledger_id,
             &self.import_path,

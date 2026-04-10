@@ -324,7 +324,7 @@ where
         use fluree_db_query::bm25::serialize;
 
         let bytes = serialize(index)?;
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let snapshot_id = cs
             .put(fluree_db_core::ContentKind::GraphSourceSnapshot, &bytes)
             .await?;
@@ -342,7 +342,7 @@ where
         use futures::stream::{self, StreamExt, TryStreamExt};
 
         let mut prep = prepare_chunked(index)?;
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
 
         // Drain blobs for parallel writes — finalize_chunked_root only uses
         // prep.root + prep.leaflet_infos, not leaflet_blobs.
@@ -412,7 +412,7 @@ where
         let bytes = serde_json::to_vec(manifest)?;
 
         // Write through the content store so it's stored at the CID-mapped address
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let index_id = cs
             .put(fluree_db_core::ContentKind::IndexRoot, &bytes)
             .await?;
@@ -449,7 +449,7 @@ where
         {
             Some(record) if record.index_id.is_some() => {
                 let index_cid = record.index_id.as_ref().unwrap();
-                let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+                let cs = self.content_store(graph_source_id);
                 let bytes = cs.get(index_cid).await?;
                 let manifest: Bm25Manifest = serde_json::from_slice(&bytes)?;
                 Ok(manifest)
@@ -474,7 +474,7 @@ where
             crate::ApiError::NotFound(format!("No index for graph source: {}", graph_source_id))
         })?;
 
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&index_cid).await?;
         let manifest: Bm25Manifest = serde_json::from_slice(&bytes)?;
         Ok(manifest)
@@ -529,7 +529,7 @@ where
                 ))
             })?;
 
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&selection.snapshot_id).await?;
 
         let index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
@@ -550,7 +550,7 @@ where
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
 
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
         let index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
         Ok(Arc::new(index))
@@ -575,7 +575,7 @@ where
 
         if is_chunked_format(bytes) {
             let root = deserialize_chunked_root(bytes)?;
-            let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+            let cs = self.content_store(graph_source_id);
             let cache = self.leaflet_cache();
 
             let leaflet_refs = root.leaflet_refs();
@@ -710,7 +710,7 @@ where
         let needed_leaflets = root.leaflet_refs_for_terms(&term_idxs);
 
         // Fetch needed leaflets with caching + bounded concurrency
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let cache = self.leaflet_cache();
         let mut posting_lists = vec![PostingList::default(); root.next_term_idx() as usize];
 
@@ -896,7 +896,7 @@ where
         let head = manifest.head().ok_or_else(|| {
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
         let mut index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
         let old_watermark = index.watermark.get(&source_ledger_alias).unwrap_or(0);
@@ -930,7 +930,7 @@ where
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
         let store =
-            fluree_db_core::content_store_for(self.storage().clone(), &ledger.snapshot.ledger_id);
+            self.content_store(&ledger.snapshot.ledger_id);
         let stream = trace_commits_by_id(store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
@@ -1083,7 +1083,7 @@ where
         let head = manifest.head().ok_or_else(|| {
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
         let mut index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
         let old_watermark = index.watermark.get(&source_ledger).unwrap_or(0);
@@ -1199,7 +1199,7 @@ where
             crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
         })?;
 
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
         let index = self.load_bm25_from_bytes(graph_source_id, &bytes).await?;
 

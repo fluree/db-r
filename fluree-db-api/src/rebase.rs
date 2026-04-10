@@ -171,7 +171,7 @@ where
         let branch_store = LedgerState::build_branched_store(
             &self.nameservice,
             &branch_record,
-            self.storage(),
+            self.backend(),
         )
         .await?;
 
@@ -206,13 +206,13 @@ where
             let source_store = LedgerState::build_branched_store(
                 &self.nameservice,
                 &source_record,
-                self.storage(),
+                self.backend(),
             )
             .await?;
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         } else {
             let source_store =
-                fluree_db_core::content_store_for(self.storage().clone(), &source_id);
+                self.content_store(&source_id);
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         };
 
@@ -300,7 +300,7 @@ where
         let mut current_state = LedgerState::load(
             &self.nameservice,
             ctx.source_id,
-            self.storage().clone(),
+            self.backend(),
         )
         .await?;
 
@@ -551,7 +551,7 @@ where
         let branch_store = LedgerState::build_branched_store(
             &self.nameservice,
             branch_record,
-            self.storage(),
+            self.backend(),
         )
         .await?;
 
@@ -563,8 +563,9 @@ where
 
         let indexer_config = crate::build_indexer_config(self.config());
 
+        let storage = self.storage();
         let index_result = fluree_db_indexer::rebuild_index_from_commits_with_store(
-            self.storage(),
+            storage,
             branch_store,
             branch_id,
             &record,
@@ -580,7 +581,7 @@ where
         LedgerState::load(
             &self.nameservice,
             branch_id,
-            self.storage().clone(),
+            self.backend(),
         )
         .await
         .map_err(Into::into)
@@ -625,7 +626,7 @@ struct ReplayContext<'a> {
     source_id: &'a str,
     source_head_id: &'a ContentId,
     source_head_t: i64,
-    branch_store: &'a fluree_db_core::BranchedContentStore<std::sync::Arc<dyn Storage>>,
+    branch_store: &'a fluree_db_core::BranchedContentStore,
     summaries: &'a [CommitSummary],
     strategy: &'a ConflictStrategy,
     total_commits: usize,

@@ -294,7 +294,7 @@ where
         let bytes = serialize(index)?;
 
         // Write through the content store so it's stored at the CID-mapped address
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let index_id = cs
             .put(fluree_db_core::ContentKind::IndexRoot, &bytes)
             .await?;
@@ -333,7 +333,7 @@ where
         })?;
 
         // Load from content store
-        let store = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let store = self.content_store(graph_source_id);
         let bytes = store.get(&index_cid).await?;
 
         // Deserialize
@@ -462,7 +462,7 @@ where
         let ledger_t = ledger.t();
 
         // 3. Load existing index by CID
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+        let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&index_cid).await?;
         let mut index = deserialize(&bytes)?;
         let old_watermark = index.watermark.get(&source_ledger_alias).unwrap_or(0);
@@ -498,7 +498,7 @@ where
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
         let commit_store =
-            fluree_db_core::content_store_for(self.storage().clone(), &ledger.snapshot.ledger_id);
+            self.content_store(&ledger.snapshot.ledger_id);
         let stream = trace_commits_by_id(commit_store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
@@ -666,7 +666,7 @@ where
 
         // 3. Load existing index to get old watermark
         let old_watermark = if let Some(cid) = &record.index_id {
-            let cs = fluree_db_core::content_store_for(self.storage().clone(), graph_source_id);
+            let cs = self.content_store(graph_source_id);
             let bytes = cs.get(cid).await?;
             let old_index = deserialize(&bytes)?;
             old_index.watermark.get(&source_ledger_alias).unwrap_or(0)

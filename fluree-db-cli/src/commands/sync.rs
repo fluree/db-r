@@ -671,7 +671,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
 
     // Use ContentStore for CID-based chain walking (storage-agnostic).
     let content_store =
-        fluree_db_core::storage::content_store_for(fluree.storage().clone(), &ledger_id);
+        fluree.content_store(&ledger_id);
 
     let mut to_push_cids: Vec<fluree_db_core::ContentId> = Vec::new();
 
@@ -876,7 +876,7 @@ pub async fn run_publish(
 
     // Walk the full commit chain (oldest → newest).
     let content_store =
-        fluree_db_core::storage::content_store_for(fluree.storage().clone(), &ledger_id);
+        fluree.content_store(&ledger_id);
 
     let mut to_push_cids: Vec<fluree_db_core::ContentId> = Vec::new();
     {
@@ -1372,7 +1372,7 @@ pub async fn run_clone_origin(
 
     // 5. Fetch commit chain — try pack protocol first (single round-trip).
     let content_store =
-        fluree_db_core::storage::content_store_for(fluree.storage().clone(), &local_id);
+        fluree.content_store(&local_id);
     let mut commits_fetched = 0usize;
     let mut index_artifacts_fetched = 0usize;
 
@@ -1670,7 +1670,7 @@ async fn run_pull_via_origins(
 
     // Load LedgerConfig from local CAS.
     let content_store =
-        fluree_db_core::storage::content_store_for(fluree.storage().clone(), ledger_id);
+        fluree.content_store(ledger_id);
     let config_bytes = content_store.get(&config_id).await.map_err(|e| {
         CliError::Config(format!("failed to load LedgerConfig from local CAS: {e}"))
     })?;

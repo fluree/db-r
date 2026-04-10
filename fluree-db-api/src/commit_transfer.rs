@@ -284,8 +284,9 @@ where
         }
 
         // 5) Write required blobs and commit bytes to storage (safe before CAS).
+        let storage = self.storage();
         write_required_blobs(
-            self.storage(),
+            storage,
             base_state.ledger_id(),
             &request.blobs,
             &decoded,
@@ -293,7 +294,7 @@ where
         .await
         .map_err(|e| e.into_api_error())?;
 
-        let stored_commits = write_commit_blobs(self.storage(), base_state.ledger_id(), &decoded)
+        let stored_commits = write_commit_blobs(storage, base_state.ledger_id(), &decoded)
             .await
             .map_err(|e| e.into_api_error())?;
 
@@ -340,7 +341,7 @@ where
             let cache_dir = self.binary_store_cache_dir();
             // Result unused: load_and_attach mutates new_state in-place
             let _store = crate::ledger_manager::load_and_attach_binary_store(
-                self.storage(),
+                self.backend(),
                 &mut new_state,
                 &cache_dir,
                 Some(std::sync::Arc::clone(self.leaflet_cache())),
@@ -1375,8 +1376,9 @@ where
         validate_required_blobs(&decoded, &request.blobs).map_err(|e| e.into_api_error())?;
 
         // 6) Write blobs + commit bytes to local CAS.
+        let storage = self.storage();
         write_required_blobs(
-            self.storage(),
+            storage,
             base_state.ledger_id(),
             &request.blobs,
             &decoded,
@@ -1384,7 +1386,7 @@ where
         .await
         .map_err(|e| e.into_api_error())?;
 
-        let stored_commits = write_commit_blobs(self.storage(), base_state.ledger_id(), &decoded)
+        let stored_commits = write_commit_blobs(storage, base_state.ledger_id(), &decoded)
             .await
             .map_err(|e| e.into_api_error())?;
 

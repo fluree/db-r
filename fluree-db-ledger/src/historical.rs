@@ -28,8 +28,8 @@
 use crate::error::{LedgerError, Result};
 use crate::LedgerState;
 use fluree_db_core::{
-    content_store_for, ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId,
-    IndexType, LedgerSnapshot, OverlayProvider, RuntimeSmallDicts, Sid, Storage, TXN_META_GRAPH_ID,
+    ContentId, ContentStore, Flake, FlakeMeta, FlakeValue, GraphDbRef, GraphId, IndexType,
+    LedgerSnapshot, OverlayProvider, RuntimeSmallDicts, Sid, StorageBackend, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::NameService;
 
@@ -84,10 +84,10 @@ impl HistoricalLedgerView {
     ///
     /// - `NotFound` if the ledger doesn't exist
     /// - `FutureTime` if `target_t` is beyond the current head
-    pub async fn load_at<S: Storage + Clone + 'static, N: NameService>(
+    pub async fn load_at<N: NameService>(
         ns: &N,
         alias: &str,
-        storage: S,
+        backend: &StorageBackend,
         target_t: i64,
     ) -> Result<Self> {
         let record = ns
@@ -103,11 +103,11 @@ impl HistoricalLedgerView {
         // For branched ledgers, build a recursive content store that falls
         // back through the branch ancestry DAG.
         if record.source_branch.is_some() {
-            let store = LedgerState::build_branched_store(ns, &record, &storage).await?;
+            let store = LedgerState::build_branched_store(ns, &record, backend).await?;
             return Self::load_at_with_store(store, record, target_t).await;
         }
 
-        let store = content_store_for(storage, &record.ledger_id);
+        let store = backend.content_store_dyn(&record.ledger_id);
         Self::load_at_with_store(store, record, target_t).await
     }
 
@@ -572,7 +572,7 @@ mod tests {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
 
-        let result = HistoricalLedgerView::load_at(&ns, "nonexistent:main", storage, 10).await;
+        let result = HistoricalLedgerView::load_at(&ns, "nonexistent:main", &StorageBackend::Managed(std::sync::Arc::new(storage)), 10).await;
 
         assert!(matches!(result, Err(LedgerError::NotFound(_))));
     }
@@ -602,7 +602,7 @@ mod tests {
         store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
         // Try to load at t=10 (future)
-        let result = HistoricalLedgerView::load_at(&ns, "test:main", storage, 10).await;
+        let result = HistoricalLedgerView::load_at(&ns, "test:main", &StorageBackend::Managed(std::sync::Arc::new(storage)), 10).await;
 
         assert!(matches!(result, Err(LedgerError::FutureTime { .. })));
     }
@@ -617,7 +617,7 @@ mod tests {
         store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
         // Load at t=5 - should use genesis snapshot since no index exists
-        let view = HistoricalLedgerView::load_at(&ns, "test:main", storage, 5)
+        let view = HistoricalLedgerView::load_at(&ns, "test:main", &StorageBackend::Managed(std::sync::Arc::new(storage)), 5)
             .await
             .unwrap();
 

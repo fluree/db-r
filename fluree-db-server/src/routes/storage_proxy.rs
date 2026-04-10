@@ -502,13 +502,11 @@ pub async fn get_object_by_cid(
     }
 
     // 4. Resolve CID → storage address and read bytes
-    let method = fluree_db_core::StorageMethod::storage_method(state.fluree.as_file().storage());
+    let file_storage = state.fluree.as_file().storage();
+    let method = fluree_db_core::StorageMethod::storage_method(file_storage.as_ref());
     let address = fluree_db_core::content_address(method, kind, &query.ledger, &id.digest_hex());
 
-    let bytes = state
-        .fluree
-        .as_file()
-        .storage()
+    let bytes = file_storage
         .read_bytes(&address)
         .await
         .map_err(|e| match e {

@@ -117,7 +117,7 @@ where
         let source_store = LedgerState::build_branched_store(
             &self.nameservice,
             &source_record,
-            self.storage(),
+            self.backend(),
         )
         .await?;
 
@@ -301,13 +301,12 @@ where
             let target_store = LedgerState::build_branched_store(
                 &self.nameservice,
                 target_record,
-                self.storage(),
+                self.backend(),
             )
             .await?;
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         } else {
-            let target_store =
-                fluree_db_core::content_store_for(self.storage().clone(), target_id);
+            let target_store = self.content_store(target_id);
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         };
 
@@ -331,7 +330,7 @@ where
         let target_state = LedgerState::load(
             &self.nameservice,
             target_id,
-            self.storage().clone(),
+            self.backend(),
         )
         .await?;
 
@@ -374,7 +373,7 @@ where
             .await?;
 
         let content_store =
-            fluree_db_core::content_store_for(self.storage().clone(), target_id);
+            self.content_store(target_id);
 
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,

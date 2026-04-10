@@ -21,7 +21,7 @@ where
         let mut state = LedgerState::load(
             &self.nameservice,
             ledger_id,
-            self.storage().clone(),
+            self.backend(),
         )
         .await?;
 
@@ -159,7 +159,7 @@ where
                 .map(|r| r.ledger_id.as_str())
                 .unwrap_or(state.snapshot.ledger_id.as_str());
             let cs =
-                fluree_db_core::content_store_for(self.storage().clone(), ns_ledger_id);
+                self.content_store(ns_ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),
@@ -184,7 +184,7 @@ where
         let view = HistoricalLedgerView::load_at(
             &self.nameservice,
             ledger_id,
-            self.storage().clone(),
+            self.backend(),
             target_t,
         )
         .await?;

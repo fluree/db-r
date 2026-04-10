@@ -232,7 +232,7 @@ pub use fluree_db_policy::{
 pub use fluree_db_core::{FuelExceededError, PolicyStats, Tracker, TrackingOptions, TrackingTally};
 
 use async_trait::async_trait;
-use fluree_db_core::ContentStore as _;
+use fluree_db_core::{ContentStore, StorageBackend};
 #[cfg(feature = "native")]
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::memory::MemoryNameService;
@@ -1850,6 +1850,47 @@ impl FlureeBuilder {
         )
     }
 
+    /// Build an IPFS-backed Fluree instance with an in-memory nameservice.
+    ///
+    /// Stores content-addressed data (commits, indexes) in IPFS via the Kubo
+    /// HTTP RPC API. The nameservice is in-memory only — ledger heads and
+    /// branch metadata do not persist across restarts. For persistent
+    /// nameservice, compose your own with [`build_with`] using
+    /// [`fluree_db_storage_ipfs::IpfsStorage`].
+    ///
+    /// # Arguments
+    ///
+    /// * `api_url` - Kubo RPC API base URL (e.g., `"http://127.0.0.1:5001"`)
+    ///
+    /// # Notes
+    ///
+    /// - Requires the `ipfs` feature.
+    /// - IPFS does not support delete or list operations; admin/GC paths
+    ///   that need these will return errors.
+    ///
+    /// [`build_with`]: FlureeBuilder::build_with
+    #[cfg(feature = "ipfs")]
+    pub fn build_ipfs(self, api_url: impl Into<String>) -> Fluree<MemoryNameService> {
+        use fluree_db_storage_ipfs::{IpfsConfig, IpfsStorage};
+        let ipfs_store = IpfsStorage::new(IpfsConfig {
+            api_url: api_url.into(),
+            pin_on_put: true,
+        });
+        let backend = StorageBackend::Permanent(Arc::new(ipfs_store));
+        let nameservice = MemoryNameService::new();
+        let index_config = self.derive_indexing();
+        // Note: background indexing is disabled for IPFS — the indexer
+        // still requires a Storage-trait backend.
+        Self::finalize_with_backend(
+            self.ledger_cache_config,
+            self.config,
+            backend,
+            nameservice,
+            tx::IndexingMode::Disabled,
+            index_config,
+        )
+    }
+
     /// Build an S3-backed Fluree instance (storage-backed nameservice).
     ///
     /// Convenience wrapper around JSON-LD config for S3-backed storage.
@@ -2047,15 +2088,36 @@ impl FlureeBuilder {
         S: Storage + 'static,
         N: NameService + Clone + Send + Sync + 'static,
     {
+        Self::finalize_with_backend(
+            ledger_cache_config,
+            config,
+            StorageBackend::Managed(Arc::new(storage)),
+            nameservice,
+            indexing_mode,
+            index_config,
+        )
+    }
+
+    /// Shared finalize logic taking a pre-built `StorageBackend`.
+    fn finalize_with_backend<N>(
+        ledger_cache_config: Option<LedgerManagerConfig>,
+        config: ConnectionConfig,
+        backend: StorageBackend,
+        nameservice: N,
+        indexing_mode: tx::IndexingMode,
+        index_config: IndexConfig,
+    ) -> Fluree<N>
+    where
+        N: NameService + Clone + Send + Sync + 'static,
+    {
         let leaflet_cache = make_leaflet_cache(&config);
-        let storage: Arc<dyn Storage> = Arc::new(storage);
 
         let ledger_manager = ledger_cache_config.map(|mut lm_config| {
             if lm_config.leaflet_cache.is_none() {
                 lm_config.leaflet_cache = Some(std::sync::Arc::clone(&leaflet_cache));
             }
             Arc::new(LedgerManager::new(
-                Arc::clone(&storage),
+                backend.clone(),
                 nameservice.clone(),
                 lm_config,
             ))
@@ -2063,7 +2125,7 @@ impl FlureeBuilder {
 
         Fluree {
             config,
-            storage,
+            backend,
             nameservice,
             leaflet_cache,
             indexing_mode,
@@ -2275,8 +2337,8 @@ impl FlureeBuilder {
 pub struct Fluree<N> {
     /// Connection configuration
     config: ConnectionConfig,
-    /// Storage backend (type-erased)
-    storage: Arc<dyn Storage>,
+    /// Storage backend (managed or permanent).
+    backend: StorageBackend,
     /// Nameservice for ledger discovery
     nameservice: N,
     /// Shared global cache for decoded index artifacts (one budget).
@@ -2294,7 +2356,7 @@ pub struct Fluree<N> {
     ///
     /// Loaded ledgers are cached for reuse across queries and transactions.
     /// Disabled via `FlureeBuilder::without_ledger_caching()` for one-shot use.
-    ledger_manager: Option<Arc<LedgerManager<Arc<dyn Storage>, N>>>,
+    ledger_manager: Option<Arc<LedgerManager<N>>>,
 }
 
 impl<N> Fluree<N>
@@ -2305,10 +2367,23 @@ where
     ///
     /// Most users should use `FlureeBuilder` instead.
     pub fn new(config: ConnectionConfig, storage: impl Storage + 'static, nameservice: N) -> Self {
+        Self::from_backend(
+            config,
+            StorageBackend::Managed(Arc::new(storage)),
+            nameservice,
+        )
+    }
+
+    /// Create a new Fluree instance from a pre-built `StorageBackend`.
+    pub fn from_backend(
+        config: ConnectionConfig,
+        backend: StorageBackend,
+        nameservice: N,
+    ) -> Self {
         let leaflet_cache = make_leaflet_cache(&config);
         Self {
             config,
-            storage: Arc::new(storage),
+            backend,
             nameservice,
             leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
@@ -2328,7 +2403,7 @@ where
         let leaflet_cache = make_leaflet_cache(&config);
         Self {
             config,
-            storage: Arc::new(storage),
+            backend: StorageBackend::Managed(Arc::new(storage)),
             nameservice,
             leaflet_cache,
             indexing_mode,
@@ -2373,9 +2448,39 @@ where
         &self.config
     }
 
-    /// Get a reference to the storage
+    /// Get a reference to the storage backend.
+    pub fn backend(&self) -> &StorageBackend {
+        &self.backend
+    }
+
+    /// Get a content store scoped to the given namespace/ledger ID.
+    pub fn content_store(&self, namespace_id: &str) -> Arc<dyn ContentStore> {
+        self.backend.content_store_dyn(namespace_id)
+    }
+
+    /// Get the raw address-based storage for admin/GC operations.
+    ///
+    /// Returns `None` for `Permanent` (IPFS) backends, which do not
+    /// support address-based listing or deletion.
+    pub fn admin_storage(&self) -> Option<&dyn Storage> {
+        self.backend.admin_storage()
+    }
+
+    /// Get a reference to the raw address-based storage.
+    ///
+    /// **Panics** for `Permanent` (IPFS) backends. Prefer [`content_store`]
+    /// or [`admin_storage`] for code that should support both backend kinds.
+    ///
+    /// This exists as a migration bridge — many call sites still require
+    /// address-based storage and haven't been migrated to use `content_store`
+    /// yet. Over time, those sites should move to the backend-aware APIs.
+    ///
+    /// [`content_store`]: Fluree::content_store
+    /// [`admin_storage`]: Fluree::admin_storage
     pub fn storage(&self) -> &Arc<dyn Storage> {
-        &self.storage
+        self.backend
+            .admin_storage_arc()
+            .expect("this operation requires a Managed storage backend; Permanent (IPFS) backends are not supported here")
     }
 
     /// Get a reference to the R2RML cache
@@ -2399,7 +2504,7 @@ where
     }
 
     /// Get the ledger manager (if caching is enabled)
-    pub fn ledger_manager(&self) -> Option<&Arc<LedgerManager<Arc<dyn Storage>, N>>> {
+    pub fn ledger_manager(&self) -> Option<&Arc<LedgerManager<N>>> {
         self.ledger_manager.as_ref()
     }
 }
@@ -2905,7 +3010,7 @@ where
         };
 
         // Fetch blob from CAS using canonical ID for namespace
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), canonical_id);
+        let cs = self.content_store(canonical_id);
         let bytes = cs.get(cid).await.map_err(|e| {
             ApiError::internal(format!("failed to read default context from CAS: {e}"))
         })?;
@@ -2947,7 +3052,7 @@ where
         let context_bytes = serde_json::to_vec(context)
             .map_err(|e| ApiError::internal(format!("failed to serialize context: {e}")))?;
 
-        let cs = fluree_db_core::content_store_for(self.storage().clone(), canonical_id);
+        let cs = self.content_store(canonical_id);
         let new_cid = cs
             .put(ContentKind::LedgerConfig, &context_bytes)
             .await
@@ -3519,6 +3624,20 @@ mod tests {
             .exists("fluree:memory://nonexistent.json")
             .await
             .unwrap());
+    }
+
+    #[test]
+    #[cfg(feature = "ipfs")]
+    fn test_build_ipfs_constructs_fluree() {
+        // No real Kubo node needed — this only verifies the type plumbing.
+        let fluree = FlureeBuilder::memory().build_ipfs("http://127.0.0.1:5001");
+        // Backend should be Permanent (IPFS), not Managed.
+        assert!(matches!(
+            fluree.backend(),
+            fluree_db_core::StorageBackend::Permanent(_)
+        ));
+        // Admin storage should be None for IPFS (no raw Storage interface).
+        assert!(fluree.admin_storage().is_none());
     }
 }
 
