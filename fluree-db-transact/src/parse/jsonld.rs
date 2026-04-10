@@ -20,7 +20,10 @@ use fluree_db_core::FlakeValue;
 use fluree_db_query::parse::{parse_where_with_counters, PathAliasMap, UnresolvedQuery};
 use fluree_db_query::VarRegistry;
 use fluree_graph_json_ld::{details, expand_with_context, parse_context, ParsedContext};
-use fluree_vocab::rdf::{self, TYPE};
+use fluree_vocab::{
+    rdf::{self, TYPE},
+    rdf_names, xsd, xsd_names,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -710,6 +713,73 @@ fn extract_context(json: &Value) -> Result<ParsedContext> {
     }
 }
 
+pub(crate) fn expand_datatype_iri(type_iri: &str, context: &ParsedContext) -> String {
+    let (expanded, _) = details(type_iri, context);
+    if expanded != type_iri {
+        return expanded;
+    }
+
+    if let Some(local) = type_iri.strip_prefix("xsd:") {
+        if let Some(full) = expand_builtin_xsd_datatype(local) {
+            return full.to_string();
+        }
+    }
+
+    if let Some(local) = type_iri.strip_prefix("rdf:") {
+        let full = match local {
+            rdf_names::JSON => Some(rdf::JSON),
+            rdf_names::LANG_STRING => Some(rdf::LANG_STRING),
+            _ => None,
+        };
+        if let Some(full) = full {
+            return full.to_string();
+        }
+    }
+
+    expanded
+}
+
+fn expand_builtin_xsd_datatype(local: &str) -> Option<&'static str> {
+    Some(match local {
+        xsd_names::STRING => xsd::STRING,
+        xsd_names::INTEGER => xsd::INTEGER,
+        xsd_names::LONG => xsd::LONG,
+        xsd_names::INT => xsd::INT,
+        xsd_names::SHORT => xsd::SHORT,
+        xsd_names::BYTE => xsd::BYTE,
+        xsd_names::UNSIGNED_LONG => xsd::UNSIGNED_LONG,
+        xsd_names::UNSIGNED_INT => xsd::UNSIGNED_INT,
+        xsd_names::UNSIGNED_SHORT => xsd::UNSIGNED_SHORT,
+        xsd_names::UNSIGNED_BYTE => xsd::UNSIGNED_BYTE,
+        xsd_names::NON_NEGATIVE_INTEGER => xsd::NON_NEGATIVE_INTEGER,
+        xsd_names::POSITIVE_INTEGER => xsd::POSITIVE_INTEGER,
+        xsd_names::NON_POSITIVE_INTEGER => xsd::NON_POSITIVE_INTEGER,
+        xsd_names::NEGATIVE_INTEGER => xsd::NEGATIVE_INTEGER,
+        xsd_names::DECIMAL => xsd::DECIMAL,
+        xsd_names::FLOAT => xsd::FLOAT,
+        xsd_names::DOUBLE => xsd::DOUBLE,
+        xsd_names::BOOLEAN => xsd::BOOLEAN,
+        xsd_names::DATE_TIME => xsd::DATE_TIME,
+        xsd_names::DATE => xsd::DATE,
+        xsd_names::TIME => xsd::TIME,
+        xsd_names::G_YEAR => xsd::G_YEAR,
+        xsd_names::G_YEAR_MONTH => xsd::G_YEAR_MONTH,
+        xsd_names::G_MONTH => xsd::G_MONTH,
+        xsd_names::G_DAY => xsd::G_DAY,
+        xsd_names::G_MONTH_DAY => xsd::G_MONTH_DAY,
+        xsd_names::DURATION => xsd::DURATION,
+        xsd_names::DAY_TIME_DURATION => xsd::DAY_TIME_DURATION,
+        xsd_names::YEAR_MONTH_DURATION => xsd::YEAR_MONTH_DURATION,
+        xsd_names::ANY_URI => xsd::ANY_URI,
+        xsd_names::NORMALIZED_STRING => xsd::NORMALIZED_STRING,
+        xsd_names::TOKEN => xsd::TOKEN,
+        xsd_names::LANGUAGE => xsd::LANGUAGE,
+        xsd_names::BASE64_BINARY => xsd::BASE64_BINARY,
+        xsd_names::HEX_BINARY => xsd::HEX_BINARY,
+        _ => return None,
+    })
+}
+
 fn normalize_context_value(context_val: &Value) -> Value {
     if let Value::Object(map) = context_val {
         if let Some(base) = map.get("@base") {
@@ -888,7 +958,7 @@ fn parse_values_cell(
                     return Ok(TemplateTerm::Sid(ns_registry.sid_for_iri(&expanded)));
                 }
 
-                let (expanded_type, _) = details(type_val, context);
+                let expanded_type = expand_datatype_iri(type_val, context);
                 let parsed = coerce_value_with_datatype(value_val, &expanded_type, ns_registry)?;
                 return Ok(parsed.term);
             }
@@ -1370,8 +1440,10 @@ fn parse_literal_value_with_meta(
     // Check for @type first - always route through typed coercion when present
     if let Some(type_val) = obj.get("@type") {
         if let Some(type_iri) = type_val.as_str() {
+            let expanded_type = expand_datatype_iri(type_iri, context);
+
             // Handle @json specially
-            if type_iri == "@json" || type_iri == rdf::JSON {
+            if type_iri == "@json" || expanded_type == rdf::JSON {
                 // If @value is already a string, use it directly (avoid double-serialization)
                 // Only serialize if it's an object, array, or other non-string JSON value
                 let json_string = match val {
@@ -1394,7 +1466,7 @@ fn parse_literal_value_with_meta(
             } else if type_iri == "@fulltext" {
                 fluree_vocab::fluree::FULL_TEXT
             } else {
-                type_iri
+                expanded_type.as_str()
             };
 
             // Route all @value types through typed coercion
@@ -1951,6 +2023,39 @@ mod tests {
         ));
         let dtc = result.dtc.as_ref().expect("should have dtc");
         assert!(dtc.datatype().name.as_ref().contains("integer"));
+    }
+
+    #[test]
+    fn test_parse_value_object_builtin_xsd_curie_without_context() {
+        let mut vars = VarRegistry::new();
+        let mut ns_registry = test_registry();
+        let mut templates: Vec<TripleTemplate> = Vec::new();
+        let ctx = ParsedContext::new();
+        let mut graph_ids = GraphIdAssigner::new();
+        let mut blank_counter: usize = 0;
+
+        let val = json!({"@value": "before", "@type": "xsd:string"});
+        let result = parse_expanded_value(
+            &val,
+            &ctx,
+            &mut vars,
+            &mut ns_registry,
+            &mut templates,
+            true,
+            &mut graph_ids,
+            None,
+            &HashMap::new(),
+            &mut blank_counter,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.term,
+            TemplateTerm::Value(FlakeValue::String(ref s)) if s == "before"
+        ));
+        let dtc = result.dtc.as_ref().expect("should have dtc");
+        assert_eq!(dtc.datatype().namespace_code, 2);
+        assert_eq!(dtc.datatype().name.as_ref(), "string");
     }
 
     #[test]

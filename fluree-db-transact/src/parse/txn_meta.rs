@@ -33,6 +33,7 @@
 
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
+use crate::parse::jsonld::expand_datatype_iri;
 use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES};
 use fluree_graph_json_ld::{details, ParsedContext};
 use serde_json::Value;
@@ -203,7 +204,7 @@ fn parse_value_object(
         })?;
 
         // Expand the datatype IRI
-        let (expanded_type, _) = details(type_iri, context);
+        let expanded_type = expand_datatype_iri(type_iri, context);
         let dt_sid = ns_registry.sid_for_iri(&expanded_type);
 
         // Get the string value
