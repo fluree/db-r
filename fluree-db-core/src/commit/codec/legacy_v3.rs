@@ -530,57 +530,15 @@ fn canonicalize_empty_curie_name(name: &str) -> Option<(u16, &'static str)> {
 }
 
 /// Return `Some(&'static str)` for a known XSD built-in datatype local name.
-/// Returns `None` for unknown locals so they pass through unchanged.
+/// Delegates to `fluree_vocab::datatype::KnownDatatype` so the allowlist is
+/// shared with every other recognizer in the codebase.
 fn known_xsd_local(local: &str) -> Option<&'static str> {
-    use fluree_vocab::xsd_names;
-    match local {
-        x if x == xsd_names::STRING => Some(xsd_names::STRING),
-        x if x == xsd_names::BOOLEAN => Some(xsd_names::BOOLEAN),
-        x if x == xsd_names::INTEGER => Some(xsd_names::INTEGER),
-        x if x == xsd_names::LONG => Some(xsd_names::LONG),
-        x if x == xsd_names::INT => Some(xsd_names::INT),
-        x if x == xsd_names::SHORT => Some(xsd_names::SHORT),
-        x if x == xsd_names::BYTE => Some(xsd_names::BYTE),
-        x if x == xsd_names::UNSIGNED_LONG => Some(xsd_names::UNSIGNED_LONG),
-        x if x == xsd_names::UNSIGNED_INT => Some(xsd_names::UNSIGNED_INT),
-        x if x == xsd_names::UNSIGNED_SHORT => Some(xsd_names::UNSIGNED_SHORT),
-        x if x == xsd_names::UNSIGNED_BYTE => Some(xsd_names::UNSIGNED_BYTE),
-        x if x == xsd_names::NON_NEGATIVE_INTEGER => Some(xsd_names::NON_NEGATIVE_INTEGER),
-        x if x == xsd_names::POSITIVE_INTEGER => Some(xsd_names::POSITIVE_INTEGER),
-        x if x == xsd_names::NON_POSITIVE_INTEGER => Some(xsd_names::NON_POSITIVE_INTEGER),
-        x if x == xsd_names::NEGATIVE_INTEGER => Some(xsd_names::NEGATIVE_INTEGER),
-        x if x == xsd_names::DECIMAL => Some(xsd_names::DECIMAL),
-        x if x == xsd_names::FLOAT => Some(xsd_names::FLOAT),
-        x if x == xsd_names::DOUBLE => Some(xsd_names::DOUBLE),
-        x if x == xsd_names::DATE_TIME => Some(xsd_names::DATE_TIME),
-        x if x == xsd_names::DATE => Some(xsd_names::DATE),
-        x if x == xsd_names::TIME => Some(xsd_names::TIME),
-        x if x == xsd_names::G_YEAR => Some(xsd_names::G_YEAR),
-        x if x == xsd_names::G_YEAR_MONTH => Some(xsd_names::G_YEAR_MONTH),
-        x if x == xsd_names::G_MONTH => Some(xsd_names::G_MONTH),
-        x if x == xsd_names::G_DAY => Some(xsd_names::G_DAY),
-        x if x == xsd_names::G_MONTH_DAY => Some(xsd_names::G_MONTH_DAY),
-        x if x == xsd_names::DURATION => Some(xsd_names::DURATION),
-        x if x == xsd_names::DAY_TIME_DURATION => Some(xsd_names::DAY_TIME_DURATION),
-        x if x == xsd_names::YEAR_MONTH_DURATION => Some(xsd_names::YEAR_MONTH_DURATION),
-        x if x == xsd_names::ANY_URI => Some(xsd_names::ANY_URI),
-        x if x == xsd_names::NORMALIZED_STRING => Some(xsd_names::NORMALIZED_STRING),
-        x if x == xsd_names::TOKEN => Some(xsd_names::TOKEN),
-        x if x == xsd_names::LANGUAGE => Some(xsd_names::LANGUAGE),
-        x if x == xsd_names::BASE64_BINARY => Some(xsd_names::BASE64_BINARY),
-        x if x == xsd_names::HEX_BINARY => Some(xsd_names::HEX_BINARY),
-        _ => None,
-    }
+    fluree_vocab::datatype::KnownDatatype::from_xsd_local(local).map(|dt| dt.local_name())
 }
 
 /// Return `Some(&'static str)` for a known RDF built-in datatype local name.
 fn known_rdf_local(local: &str) -> Option<&'static str> {
-    use fluree_vocab::rdf_names;
-    match local {
-        x if x == rdf_names::JSON => Some(rdf_names::JSON),
-        x if x == rdf_names::LANG_STRING => Some(rdf_names::LANG_STRING),
-        _ => None,
-    }
+    fluree_vocab::datatype::KnownDatatype::from_rdf_local(local).map(|dt| dt.local_name())
 }
 
 /// Return `Some(&'static str)` for a known RDFS built-in datatype local name.

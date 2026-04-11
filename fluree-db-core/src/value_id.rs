@@ -621,69 +621,80 @@ impl ValueTypeTag {
 
     /// Resolve an XSD local name to ValueTypeTag.
     fn from_xsd_name(name: &str) -> Self {
-        match name {
-            xsd_names::STRING => Self::STRING,
-            xsd_names::BOOLEAN => Self::BOOLEAN,
-            xsd_names::INTEGER => Self::INTEGER,
-            xsd_names::LONG => Self::LONG,
-            xsd_names::INT => Self::INT,
-            xsd_names::SHORT => Self::SHORT,
-            xsd_names::BYTE => Self::BYTE,
-            xsd_names::DOUBLE => Self::DOUBLE,
-            xsd_names::FLOAT => Self::FLOAT,
-            xsd_names::DECIMAL => Self::DECIMAL,
-            xsd_names::DATE_TIME => Self::DATE_TIME,
-            xsd_names::DATE => Self::DATE,
-            xsd_names::TIME => Self::TIME,
-            xsd_names::ANY_URI => Self::ANY_URI,
-            xsd_names::UNSIGNED_LONG => Self::UNSIGNED_LONG,
-            xsd_names::UNSIGNED_INT => Self::UNSIGNED_INT,
-            xsd_names::UNSIGNED_SHORT => Self::UNSIGNED_SHORT,
-            xsd_names::UNSIGNED_BYTE => Self::UNSIGNED_BYTE,
-            xsd_names::NON_NEGATIVE_INTEGER => Self::NON_NEGATIVE_INTEGER,
-            xsd_names::POSITIVE_INTEGER => Self::POSITIVE_INTEGER,
-            xsd_names::NON_POSITIVE_INTEGER => Self::NON_POSITIVE_INTEGER,
-            xsd_names::NEGATIVE_INTEGER => Self::NEGATIVE_INTEGER,
-            xsd_names::NORMALIZED_STRING => Self::NORMALIZED_STRING,
-            xsd_names::TOKEN => Self::TOKEN,
-            xsd_names::LANGUAGE => Self::LANGUAGE,
-            xsd_names::DURATION => Self::DURATION,
-            xsd_names::DAY_TIME_DURATION => Self::DAY_TIME_DURATION,
-            xsd_names::YEAR_MONTH_DURATION => Self::YEAR_MONTH_DURATION,
-            xsd_names::BASE64_BINARY => Self::BASE64_BINARY,
-            xsd_names::HEX_BINARY => Self::HEX_BINARY,
-            xsd_names::G_YEAR => Self::G_YEAR,
-            xsd_names::G_MONTH => Self::G_MONTH,
-            xsd_names::G_DAY => Self::G_DAY,
-            xsd_names::G_YEAR_MONTH => Self::G_YEAR_MONTH,
-            xsd_names::G_MONTH_DAY => Self::G_MONTH_DAY,
-            _ => Self::UNKNOWN,
-        }
+        fluree_vocab::datatype::KnownDatatype::from_xsd_local(name)
+            .map(Self::from_known_datatype)
+            .unwrap_or(Self::UNKNOWN)
     }
 
     /// Resolve an RDF local name to ValueTypeTag.
     fn from_rdf_name(name: &str) -> Self {
-        match name {
-            rdf_names::LANG_STRING => Self::LANG_STRING,
-            rdf_names::JSON => Self::RDF_JSON,
-            _ => Self::UNKNOWN,
-        }
+        fluree_vocab::datatype::KnownDatatype::from_rdf_local(name)
+            .map(Self::from_known_datatype)
+            .unwrap_or(Self::UNKNOWN)
     }
 
     /// Resolve a JSON-LD local name to ValueTypeTag.
     fn from_jsonld_name(name: &str) -> Self {
-        match name {
-            jsonld_names::ID => Self::JSON_LD_ID,
-            _ => Self::UNKNOWN,
-        }
+        fluree_vocab::datatype::KnownDatatype::from_jsonld_local(name)
+            .map(Self::from_known_datatype)
+            .unwrap_or(Self::UNKNOWN)
     }
 
     /// Resolve a Fluree DB local name to ValueTypeTag.
     fn from_fluree_db_name(name: &str) -> Self {
-        match name {
-            "embeddingVector" => Self::VECTOR,
-            "fullText" => Self::FULL_TEXT,
-            _ => Self::UNKNOWN,
+        fluree_vocab::datatype::KnownDatatype::from_fluree_db_local(name)
+            .map(Self::from_known_datatype)
+            .unwrap_or(Self::UNKNOWN)
+    }
+
+    /// Map a shared `KnownDatatype` to its `ValueTypeTag`.
+    ///
+    /// This is the single conversion table; the `from_*_name` helpers above
+    /// all delegate here after `fluree_vocab::datatype::KnownDatatype`
+    /// handles the vocabulary recognition.
+    fn from_known_datatype(dt: fluree_vocab::datatype::KnownDatatype) -> Self {
+        use fluree_vocab::datatype::KnownDatatype::*;
+        match dt {
+            XsdString => Self::STRING,
+            XsdBoolean => Self::BOOLEAN,
+            XsdInteger => Self::INTEGER,
+            XsdLong => Self::LONG,
+            XsdInt => Self::INT,
+            XsdShort => Self::SHORT,
+            XsdByte => Self::BYTE,
+            XsdDouble => Self::DOUBLE,
+            XsdFloat => Self::FLOAT,
+            XsdDecimal => Self::DECIMAL,
+            XsdDateTime => Self::DATE_TIME,
+            XsdDate => Self::DATE,
+            XsdTime => Self::TIME,
+            XsdAnyUri => Self::ANY_URI,
+            XsdUnsignedLong => Self::UNSIGNED_LONG,
+            XsdUnsignedInt => Self::UNSIGNED_INT,
+            XsdUnsignedShort => Self::UNSIGNED_SHORT,
+            XsdUnsignedByte => Self::UNSIGNED_BYTE,
+            XsdNonNegativeInteger => Self::NON_NEGATIVE_INTEGER,
+            XsdPositiveInteger => Self::POSITIVE_INTEGER,
+            XsdNonPositiveInteger => Self::NON_POSITIVE_INTEGER,
+            XsdNegativeInteger => Self::NEGATIVE_INTEGER,
+            XsdNormalizedString => Self::NORMALIZED_STRING,
+            XsdToken => Self::TOKEN,
+            XsdLanguage => Self::LANGUAGE,
+            XsdDuration => Self::DURATION,
+            XsdDayTimeDuration => Self::DAY_TIME_DURATION,
+            XsdYearMonthDuration => Self::YEAR_MONTH_DURATION,
+            XsdBase64Binary => Self::BASE64_BINARY,
+            XsdHexBinary => Self::HEX_BINARY,
+            XsdGYear => Self::G_YEAR,
+            XsdGMonth => Self::G_MONTH,
+            XsdGDay => Self::G_DAY,
+            XsdGYearMonth => Self::G_YEAR_MONTH,
+            XsdGMonthDay => Self::G_MONTH_DAY,
+            RdfJson => Self::RDF_JSON,
+            RdfLangString => Self::LANG_STRING,
+            JsonLdId => Self::JSON_LD_ID,
+            FlureeEmbeddingVector => Self::VECTOR,
+            FlureeFullText => Self::FULL_TEXT,
         }
     }
 

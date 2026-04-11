@@ -1873,3 +1873,393 @@ pub mod config_iris {
     /// `f:enforceUnique` — annotation on property IRIs requiring unique values per graph.
     pub const ENFORCE_UNIQUE: &str = "https://ns.flur.ee/db#enforceUnique";
 }
+
+// ============================================================================
+// Built-in datatype recognition
+// ============================================================================
+
+/// Recognized built-in datatypes.
+///
+/// This enum is the single source of truth for "which well-known datatype
+/// does an IRI (or namespace + local name) refer to." Downstream crates
+/// convert `KnownDatatype` to their own representation (`OType`,
+/// `ValueTypeTag`, etc.) via per-crate match functions — keeping the
+/// vocabulary recognition in one place while allowing each crate to own
+/// its target-type mapping.
+///
+/// Variants cover every built-in datatype that appears in any of the
+/// historical parallel tables: `o_type_registry::resolve_xsd_local_to_otype`,
+/// `commit::codec::legacy_v3::known_xsd_local` and friends,
+/// `value_id::ValueTypeTag::from_xsd_name` and friends, and
+/// `parse::jsonld::expand_builtin_xsd_datatype`. A new well-known datatype
+/// should be added as a new variant here first; the exhaustiveness of
+/// downstream match statements then forces every consumer to decide how to
+/// represent it.
+pub mod datatype {
+    use super::{fluree, jsonld_names, rdf, rdf_names, xsd, xsd_names};
+
+    /// A well-known built-in datatype that Fluree recognizes.
+    ///
+    /// Use [`from_xsd_local`](Self::from_xsd_local),
+    /// [`from_rdf_local`](Self::from_rdf_local),
+    /// [`from_jsonld_local`](Self::from_jsonld_local),
+    /// [`from_fluree_db_local`](Self::from_fluree_db_local), or the
+    /// convenience [`from_ns_and_local`](Self::from_ns_and_local) to
+    /// recognize a datatype from its namespace + local name. Use
+    /// [`from_full_iri`](Self::from_full_iri) to recognize one from its
+    /// full canonical IRI.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub enum KnownDatatype {
+        // XSD string / binary / URI / language subtypes
+        XsdString,
+        XsdAnyUri,
+        XsdNormalizedString,
+        XsdToken,
+        XsdLanguage,
+        XsdBase64Binary,
+        XsdHexBinary,
+
+        // XSD boolean
+        XsdBoolean,
+
+        // XSD numeric — int family
+        XsdInteger,
+        XsdLong,
+        XsdInt,
+        XsdShort,
+        XsdByte,
+        XsdUnsignedLong,
+        XsdUnsignedInt,
+        XsdUnsignedShort,
+        XsdUnsignedByte,
+        XsdNonNegativeInteger,
+        XsdPositiveInteger,
+        XsdNonPositiveInteger,
+        XsdNegativeInteger,
+
+        // XSD numeric — decimal family
+        XsdDecimal,
+        XsdFloat,
+        XsdDouble,
+
+        // XSD temporal
+        XsdDateTime,
+        XsdDate,
+        XsdTime,
+        XsdGYear,
+        XsdGYearMonth,
+        XsdGMonth,
+        XsdGDay,
+        XsdGMonthDay,
+
+        // XSD duration
+        XsdDuration,
+        XsdDayTimeDuration,
+        XsdYearMonthDuration,
+
+        // RDF
+        RdfJson,
+        RdfLangString,
+
+        // JSON-LD keyword namespace (used as datatype for IRI references)
+        JsonLdId,
+
+        // Fluree built-ins
+        FlureeEmbeddingVector,
+        FlureeFullText,
+    }
+
+    impl KnownDatatype {
+        /// Recognize an XSD built-in by its local name (e.g. `"string"`,
+        /// `"gYearMonth"`).
+        pub fn from_xsd_local(local: &str) -> Option<Self> {
+            use KnownDatatype::*;
+            let dt = match local {
+                s if s == xsd_names::STRING => XsdString,
+                s if s == xsd_names::ANY_URI => XsdAnyUri,
+                s if s == xsd_names::NORMALIZED_STRING => XsdNormalizedString,
+                s if s == xsd_names::TOKEN => XsdToken,
+                s if s == xsd_names::LANGUAGE => XsdLanguage,
+                s if s == xsd_names::BASE64_BINARY => XsdBase64Binary,
+                s if s == xsd_names::HEX_BINARY => XsdHexBinary,
+                s if s == xsd_names::BOOLEAN => XsdBoolean,
+                s if s == xsd_names::INTEGER => XsdInteger,
+                s if s == xsd_names::LONG => XsdLong,
+                s if s == xsd_names::INT => XsdInt,
+                s if s == xsd_names::SHORT => XsdShort,
+                s if s == xsd_names::BYTE => XsdByte,
+                s if s == xsd_names::UNSIGNED_LONG => XsdUnsignedLong,
+                s if s == xsd_names::UNSIGNED_INT => XsdUnsignedInt,
+                s if s == xsd_names::UNSIGNED_SHORT => XsdUnsignedShort,
+                s if s == xsd_names::UNSIGNED_BYTE => XsdUnsignedByte,
+                s if s == xsd_names::NON_NEGATIVE_INTEGER => XsdNonNegativeInteger,
+                s if s == xsd_names::POSITIVE_INTEGER => XsdPositiveInteger,
+                s if s == xsd_names::NON_POSITIVE_INTEGER => XsdNonPositiveInteger,
+                s if s == xsd_names::NEGATIVE_INTEGER => XsdNegativeInteger,
+                s if s == xsd_names::DECIMAL => XsdDecimal,
+                s if s == xsd_names::FLOAT => XsdFloat,
+                s if s == xsd_names::DOUBLE => XsdDouble,
+                s if s == xsd_names::DATE_TIME => XsdDateTime,
+                s if s == xsd_names::DATE => XsdDate,
+                s if s == xsd_names::TIME => XsdTime,
+                s if s == xsd_names::G_YEAR => XsdGYear,
+                s if s == xsd_names::G_YEAR_MONTH => XsdGYearMonth,
+                s if s == xsd_names::G_MONTH => XsdGMonth,
+                s if s == xsd_names::G_DAY => XsdGDay,
+                s if s == xsd_names::G_MONTH_DAY => XsdGMonthDay,
+                s if s == xsd_names::DURATION => XsdDuration,
+                s if s == xsd_names::DAY_TIME_DURATION => XsdDayTimeDuration,
+                s if s == xsd_names::YEAR_MONTH_DURATION => XsdYearMonthDuration,
+                _ => return None,
+            };
+            Some(dt)
+        }
+
+        /// Recognize an RDF built-in by its local name (`"JSON"`, `"langString"`).
+        pub fn from_rdf_local(local: &str) -> Option<Self> {
+            match local {
+                s if s == rdf_names::JSON => Some(Self::RdfJson),
+                s if s == rdf_names::LANG_STRING => Some(Self::RdfLangString),
+                _ => None,
+            }
+        }
+
+        /// Recognize a JSON-LD keyword-namespace built-in by its local name
+        /// (`"id"`).
+        pub fn from_jsonld_local(local: &str) -> Option<Self> {
+            match local {
+                s if s == jsonld_names::ID => Some(Self::JsonLdId),
+                _ => None,
+            }
+        }
+
+        /// Recognize a Fluree built-in by its local name (e.g.
+        /// `"embeddingVector"`, `"fullText"`).
+        pub fn from_fluree_db_local(local: &str) -> Option<Self> {
+            match local {
+                "embeddingVector" => Some(Self::FlureeEmbeddingVector),
+                "fullText" => Some(Self::FlureeFullText),
+                _ => None,
+            }
+        }
+
+        /// Recognize a built-in by its namespace code + local name.
+        ///
+        /// `ns_code` is a Fluree namespace code (see `namespaces::XSD`, etc.);
+        /// `local` is the trailing local-name portion of the IRI.
+        pub fn from_ns_and_local(ns_code: u16, local: &str) -> Option<Self> {
+            use super::namespaces;
+            match ns_code {
+                namespaces::XSD => Self::from_xsd_local(local),
+                namespaces::RDF => Self::from_rdf_local(local),
+                namespaces::JSON_LD => Self::from_jsonld_local(local),
+                namespaces::FLUREE_DB => Self::from_fluree_db_local(local),
+                _ => None,
+            }
+        }
+
+        /// Recognize a built-in by its canonical full IRI.
+        pub fn from_full_iri(iri: &str) -> Option<Self> {
+            if let Some(local) = iri.strip_prefix(xsd::NS) {
+                return Self::from_xsd_local(local);
+            }
+            if let Some(local) = iri.strip_prefix(rdf::NS) {
+                return Self::from_rdf_local(local);
+            }
+            match iri {
+                s if s == fluree::EMBEDDING_VECTOR => Some(Self::FlureeEmbeddingVector),
+                s if s == fluree::FULL_TEXT => Some(Self::FlureeFullText),
+                _ => None,
+            }
+        }
+
+        /// Return the canonical full IRI for this datatype.
+        pub const fn full_iri(&self) -> &'static str {
+            use KnownDatatype::*;
+            match self {
+                XsdString => xsd::STRING,
+                XsdAnyUri => xsd::ANY_URI,
+                XsdNormalizedString => xsd::NORMALIZED_STRING,
+                XsdToken => xsd::TOKEN,
+                XsdLanguage => xsd::LANGUAGE,
+                XsdBase64Binary => xsd::BASE64_BINARY,
+                XsdHexBinary => xsd::HEX_BINARY,
+                XsdBoolean => xsd::BOOLEAN,
+                XsdInteger => xsd::INTEGER,
+                XsdLong => xsd::LONG,
+                XsdInt => xsd::INT,
+                XsdShort => xsd::SHORT,
+                XsdByte => xsd::BYTE,
+                XsdUnsignedLong => xsd::UNSIGNED_LONG,
+                XsdUnsignedInt => xsd::UNSIGNED_INT,
+                XsdUnsignedShort => xsd::UNSIGNED_SHORT,
+                XsdUnsignedByte => xsd::UNSIGNED_BYTE,
+                XsdNonNegativeInteger => xsd::NON_NEGATIVE_INTEGER,
+                XsdPositiveInteger => xsd::POSITIVE_INTEGER,
+                XsdNonPositiveInteger => xsd::NON_POSITIVE_INTEGER,
+                XsdNegativeInteger => xsd::NEGATIVE_INTEGER,
+                XsdDecimal => xsd::DECIMAL,
+                XsdFloat => xsd::FLOAT,
+                XsdDouble => xsd::DOUBLE,
+                XsdDateTime => xsd::DATE_TIME,
+                XsdDate => xsd::DATE,
+                XsdTime => xsd::TIME,
+                XsdGYear => xsd::G_YEAR,
+                XsdGYearMonth => xsd::G_YEAR_MONTH,
+                XsdGMonth => xsd::G_MONTH,
+                XsdGDay => xsd::G_DAY,
+                XsdGMonthDay => xsd::G_MONTH_DAY,
+                XsdDuration => xsd::DURATION,
+                XsdDayTimeDuration => xsd::DAY_TIME_DURATION,
+                XsdYearMonthDuration => xsd::YEAR_MONTH_DURATION,
+                RdfJson => rdf::JSON,
+                RdfLangString => rdf::LANG_STRING,
+                JsonLdId => "@id",
+                FlureeEmbeddingVector => fluree::EMBEDDING_VECTOR,
+                FlureeFullText => fluree::FULL_TEXT,
+            }
+        }
+
+        /// Return the local-name component of this datatype (e.g. `"string"`,
+        /// `"JSON"`, `"embeddingVector"`, `"id"`).
+        pub const fn local_name(&self) -> &'static str {
+            use KnownDatatype::*;
+            match self {
+                XsdString => xsd_names::STRING,
+                XsdAnyUri => xsd_names::ANY_URI,
+                XsdNormalizedString => xsd_names::NORMALIZED_STRING,
+                XsdToken => xsd_names::TOKEN,
+                XsdLanguage => xsd_names::LANGUAGE,
+                XsdBase64Binary => xsd_names::BASE64_BINARY,
+                XsdHexBinary => xsd_names::HEX_BINARY,
+                XsdBoolean => xsd_names::BOOLEAN,
+                XsdInteger => xsd_names::INTEGER,
+                XsdLong => xsd_names::LONG,
+                XsdInt => xsd_names::INT,
+                XsdShort => xsd_names::SHORT,
+                XsdByte => xsd_names::BYTE,
+                XsdUnsignedLong => xsd_names::UNSIGNED_LONG,
+                XsdUnsignedInt => xsd_names::UNSIGNED_INT,
+                XsdUnsignedShort => xsd_names::UNSIGNED_SHORT,
+                XsdUnsignedByte => xsd_names::UNSIGNED_BYTE,
+                XsdNonNegativeInteger => xsd_names::NON_NEGATIVE_INTEGER,
+                XsdPositiveInteger => xsd_names::POSITIVE_INTEGER,
+                XsdNonPositiveInteger => xsd_names::NON_POSITIVE_INTEGER,
+                XsdNegativeInteger => xsd_names::NEGATIVE_INTEGER,
+                XsdDecimal => xsd_names::DECIMAL,
+                XsdFloat => xsd_names::FLOAT,
+                XsdDouble => xsd_names::DOUBLE,
+                XsdDateTime => xsd_names::DATE_TIME,
+                XsdDate => xsd_names::DATE,
+                XsdTime => xsd_names::TIME,
+                XsdGYear => xsd_names::G_YEAR,
+                XsdGYearMonth => xsd_names::G_YEAR_MONTH,
+                XsdGMonth => xsd_names::G_MONTH,
+                XsdGDay => xsd_names::G_DAY,
+                XsdGMonthDay => xsd_names::G_MONTH_DAY,
+                XsdDuration => xsd_names::DURATION,
+                XsdDayTimeDuration => xsd_names::DAY_TIME_DURATION,
+                XsdYearMonthDuration => xsd_names::YEAR_MONTH_DURATION,
+                RdfJson => rdf_names::JSON,
+                RdfLangString => rdf_names::LANG_STRING,
+                JsonLdId => jsonld_names::ID,
+                FlureeEmbeddingVector => "embeddingVector",
+                FlureeFullText => "fullText",
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn xsd_local_roundtrip() {
+            // Every xsd_names constant must round-trip through
+            // from_xsd_local → local_name → from_xsd_local.
+            for local in [
+                xsd_names::STRING,
+                xsd_names::INTEGER,
+                xsd_names::LONG,
+                xsd_names::INT,
+                xsd_names::SHORT,
+                xsd_names::BYTE,
+                xsd_names::UNSIGNED_LONG,
+                xsd_names::UNSIGNED_INT,
+                xsd_names::UNSIGNED_SHORT,
+                xsd_names::UNSIGNED_BYTE,
+                xsd_names::NON_NEGATIVE_INTEGER,
+                xsd_names::POSITIVE_INTEGER,
+                xsd_names::NON_POSITIVE_INTEGER,
+                xsd_names::NEGATIVE_INTEGER,
+                xsd_names::DECIMAL,
+                xsd_names::FLOAT,
+                xsd_names::DOUBLE,
+                xsd_names::BOOLEAN,
+                xsd_names::DATE_TIME,
+                xsd_names::DATE,
+                xsd_names::TIME,
+                xsd_names::DURATION,
+                xsd_names::DAY_TIME_DURATION,
+                xsd_names::YEAR_MONTH_DURATION,
+                xsd_names::ANY_URI,
+                xsd_names::NORMALIZED_STRING,
+                xsd_names::TOKEN,
+                xsd_names::LANGUAGE,
+                xsd_names::BASE64_BINARY,
+                xsd_names::HEX_BINARY,
+                xsd_names::G_YEAR,
+                xsd_names::G_YEAR_MONTH,
+                xsd_names::G_MONTH,
+                xsd_names::G_DAY,
+                xsd_names::G_MONTH_DAY,
+            ] {
+                let dt =
+                    KnownDatatype::from_xsd_local(local).unwrap_or_else(|| {
+                        panic!("KnownDatatype::from_xsd_local missed {:?}", local)
+                    });
+                assert_eq!(dt.local_name(), local);
+                // Full IRI should also recognize it.
+                let full = dt.full_iri();
+                assert_eq!(KnownDatatype::from_full_iri(full), Some(dt));
+            }
+        }
+
+        #[test]
+        fn rdf_local_roundtrip() {
+            for local in [rdf_names::JSON, rdf_names::LANG_STRING] {
+                let dt = KnownDatatype::from_rdf_local(local).unwrap();
+                assert_eq!(dt.local_name(), local);
+                assert_eq!(KnownDatatype::from_full_iri(dt.full_iri()), Some(dt));
+            }
+        }
+
+        #[test]
+        fn jsonld_id_roundtrip() {
+            let dt = KnownDatatype::from_jsonld_local(jsonld_names::ID).unwrap();
+            assert_eq!(dt, KnownDatatype::JsonLdId);
+            assert_eq!(dt.local_name(), jsonld_names::ID);
+        }
+
+        #[test]
+        fn fluree_db_locals_roundtrip() {
+            let v = KnownDatatype::from_fluree_db_local("embeddingVector").unwrap();
+            assert_eq!(v, KnownDatatype::FlureeEmbeddingVector);
+            assert_eq!(
+                KnownDatatype::from_full_iri(fluree::EMBEDDING_VECTOR),
+                Some(v)
+            );
+
+            let f = KnownDatatype::from_fluree_db_local("fullText").unwrap();
+            assert_eq!(f, KnownDatatype::FlureeFullText);
+            assert_eq!(KnownDatatype::from_full_iri(fluree::FULL_TEXT), Some(f));
+        }
+
+        #[test]
+        fn unknown_locals_return_none() {
+            assert!(KnownDatatype::from_xsd_local("notAType").is_none());
+            assert!(KnownDatatype::from_rdf_local("notAType").is_none());
+            assert!(KnownDatatype::from_full_iri("http://example.org/custom").is_none());
+        }
+    }
+}

@@ -129,143 +129,136 @@ impl OTypeRegistry {
     }
 }
 
-// ── IRI → OType resolution for custom (non-reserved) DatatypeDictId values ──
+// ============================================================================
+// IRI → OType resolution (shared, deduped)
+// ============================================================================
+//
+// Both `resolve_iri_to_otype` (positional-dict build) and
+// `resolve_iri_to_otype_option` (runtime Sid→OType lookup) delegate to a
+// single `KnownDatatype → OType` conversion. The vocabulary recognition
+// itself lives in `fluree_vocab::datatype::KnownDatatype`, so all the
+// per-crate "which local names does Fluree know about" tables share one
+// source of truth.
+//
+// The split between the two public functions is only in the post-processing
+// of unknown IRIs:
+//
+// - `resolve_iri_to_otype` maps `None` to `OType::customer_datatype(dt_id)`
+//   and keeps `OType::RESERVED` for `rdf:langString` as the positional marker.
+// - `resolve_iri_to_otype_option` maps both `None` and `RESERVED` to
+//   `None`, because runtime callers cannot use the positional marker
+//   without a `lang_id` context.
 
-/// Resolve a datatype IRI string to its corresponding `OType`.
+/// Map a recognized `KnownDatatype` to its corresponding `OType`.
 ///
-/// Recognizes well-known XSD subtypes that aren't in the reserved DatatypeDictId set.
-/// Unrecognized IRIs are assigned `OType::customer_datatype(dt_id)`.
-fn resolve_iri_to_otype(iri: &str, dt_id: u16) -> OType {
-    // Strip the XSD namespace prefix if present.
-    const XSD_NS: &str = "http://www.w3.org/2001/XMLSchema#";
+/// `KnownDatatype::RdfLangString` returns `OType::RESERVED` — that's a
+/// positional marker used by the `OTypeRegistry` positional-dict builder
+/// at slot 11 to signal "special-case via `OType::lang_string(lang_id)`
+/// at query time." Runtime callers that can't compute it should filter
+/// the marker back to `None`.
+fn known_datatype_to_otype(dt: fluree_vocab::datatype::KnownDatatype) -> OType {
+    use fluree_vocab::datatype::KnownDatatype::*;
+    match dt {
+        // XSD string + subtypes
+        XsdString => OType::XSD_STRING,
+        XsdAnyUri => OType::XSD_ANY_URI,
+        XsdNormalizedString => OType::XSD_NORMALIZED_STRING,
+        XsdToken => OType::XSD_TOKEN,
+        XsdLanguage => OType::XSD_LANGUAGE,
+        XsdBase64Binary => OType::XSD_BASE64_BINARY,
+        XsdHexBinary => OType::XSD_HEX_BINARY,
 
-    if let Some(local) = iri.strip_prefix(XSD_NS) {
-        match local {
-            // Integer subtypes not in the reserved DatatypeDictId set.
-            "int" => OType::XSD_INT,
-            "short" => OType::XSD_SHORT,
-            "byte" => OType::XSD_BYTE,
-            "unsignedLong" => OType::XSD_UNSIGNED_LONG,
-            "unsignedInt" => OType::XSD_UNSIGNED_INT,
-            "unsignedShort" => OType::XSD_UNSIGNED_SHORT,
-            "unsignedByte" => OType::XSD_UNSIGNED_BYTE,
-            "nonNegativeInteger" => OType::XSD_NON_NEGATIVE_INTEGER,
-            "positiveInteger" => OType::XSD_POSITIVE_INTEGER,
-            "nonPositiveInteger" => OType::XSD_NON_POSITIVE_INTEGER,
-            "negativeInteger" => OType::XSD_NEGATIVE_INTEGER,
+        // XSD boolean
+        XsdBoolean => OType::XSD_BOOLEAN,
 
-            // String subtypes not in the reserved set.
-            "anyURI" => OType::XSD_ANY_URI,
-            "normalizedString" => OType::XSD_NORMALIZED_STRING,
-            "token" => OType::XSD_TOKEN,
-            "language" => OType::XSD_LANGUAGE,
-            "base64Binary" => OType::XSD_BASE64_BINARY,
-            "hexBinary" => OType::XSD_HEX_BINARY,
+        // XSD integer family
+        XsdInteger => OType::XSD_INTEGER,
+        XsdLong => OType::XSD_LONG,
+        XsdInt => OType::XSD_INT,
+        XsdShort => OType::XSD_SHORT,
+        XsdByte => OType::XSD_BYTE,
+        XsdUnsignedLong => OType::XSD_UNSIGNED_LONG,
+        XsdUnsignedInt => OType::XSD_UNSIGNED_INT,
+        XsdUnsignedShort => OType::XSD_UNSIGNED_SHORT,
+        XsdUnsignedByte => OType::XSD_UNSIGNED_BYTE,
+        XsdNonNegativeInteger => OType::XSD_NON_NEGATIVE_INTEGER,
+        XsdPositiveInteger => OType::XSD_POSITIVE_INTEGER,
+        XsdNonPositiveInteger => OType::XSD_NON_POSITIVE_INTEGER,
+        XsdNegativeInteger => OType::XSD_NEGATIVE_INTEGER,
 
-            // Duration (compound type).
-            "duration" => OType::XSD_DURATION,
+        // XSD decimal family
+        XsdDecimal => OType::XSD_DECIMAL,
+        XsdFloat => OType::XSD_FLOAT,
+        XsdDouble => OType::XSD_DOUBLE,
 
-            // Types that ARE in the reserved set but might appear as custom IRIs
-            // if a ledger was created with explicit datatype IRIs.
-            "string" => OType::XSD_STRING,
-            "boolean" => OType::XSD_BOOLEAN,
-            "integer" => OType::XSD_INTEGER,
-            "long" => OType::XSD_LONG,
-            "decimal" => OType::XSD_DECIMAL,
-            "double" => OType::XSD_DOUBLE,
-            "float" => OType::XSD_FLOAT,
-            "dateTime" => OType::XSD_DATE_TIME,
-            "date" => OType::XSD_DATE,
-            "time" => OType::XSD_TIME,
-            "gYear" => OType::XSD_G_YEAR,
-            "gYearMonth" => OType::XSD_G_YEAR_MONTH,
-            "gMonth" => OType::XSD_G_MONTH,
-            "gDay" => OType::XSD_G_DAY,
-            "gMonthDay" => OType::XSD_G_MONTH_DAY,
-            "yearMonthDuration" => OType::XSD_YEAR_MONTH_DURATION,
-            "dayTimeDuration" => OType::XSD_DAY_TIME_DURATION,
+        // XSD temporal
+        XsdDateTime => OType::XSD_DATE_TIME,
+        XsdDate => OType::XSD_DATE,
+        XsdTime => OType::XSD_TIME,
+        XsdGYear => OType::XSD_G_YEAR,
+        XsdGYearMonth => OType::XSD_G_YEAR_MONTH,
+        XsdGMonth => OType::XSD_G_MONTH,
+        XsdGDay => OType::XSD_G_DAY,
+        XsdGMonthDay => OType::XSD_G_MONTH_DAY,
 
-            _ => OType::customer_datatype(dt_id),
-        }
-    } else {
-        // Non-XSD well-known datatypes (canonical IRIs only).
-        //
-        // Legacy CURIE and `@` shorthand forms (`xsd:string`, `@json`, etc.)
-        // that v3-era commits sometimes carried are canonicalized in
-        // `legacy_v3::load_commit_ops_v3` at raw-op iteration time, so by
-        // the time any IRI reaches this function it has a canonical prefix.
-        match iri {
-            fluree_vocab::rdf::JSON => OType::RDF_JSON,
-            // rdf:langString is special-cased in `resolve()` via the
-            // `RESERVED` placeholder.
-            fluree_vocab::rdf::LANG_STRING => OType::RESERVED,
-            fluree_vocab::fluree::EMBEDDING_VECTOR => OType::VECTOR,
-            fluree_vocab::fluree::FULL_TEXT => OType::FULLTEXT,
-            _ => OType::customer_datatype(dt_id),
-        }
+        // XSD duration
+        XsdDuration => OType::XSD_DURATION,
+        XsdDayTimeDuration => OType::XSD_DAY_TIME_DURATION,
+        XsdYearMonthDuration => OType::XSD_YEAR_MONTH_DURATION,
+
+        // RDF
+        RdfJson => OType::RDF_JSON,
+        RdfLangString => OType::RESERVED,
+
+        // JSON-LD `@id` — used for IRI references. There is no dedicated
+        // "id" OType variant today; refs reach the positional dict through
+        // the `IRI_REF` o_kind at a different layer, so if we ever
+        // encounter this through the IRI→OType path we return RESERVED
+        // to signal "caller should use its own ref handling." In practice
+        // this path is never hit.
+        JsonLdId => OType::RESERVED,
+
+        // Fluree built-ins
+        FlureeEmbeddingVector => OType::VECTOR,
+        FlureeFullText => OType::FULLTEXT,
     }
 }
 
-/// Resolve a datatype IRI to its OType, returning `None` for unrecognized IRIs.
+/// Resolve a canonical full IRI to its well-known `OType`, if recognized.
 ///
-/// Same matching as `resolve_iri_to_otype` but without requiring a `dt_id`
-/// fallback. Used by the V3 overlay translator to derive OType from `flake.dt`.
+/// Delegates vocabulary recognition to
+/// `fluree_vocab::datatype::KnownDatatype::from_full_iri`, then maps the
+/// recognized variant to its specific `OType` via
+/// [`known_datatype_to_otype`]. See its doc for the `RESERVED` semantics.
+fn resolve_known_iri_to_otype(iri: &str) -> Option<OType> {
+    fluree_vocab::datatype::KnownDatatype::from_full_iri(iri).map(known_datatype_to_otype)
+}
+
+/// Resolve a datatype IRI to its `OType` for the positional-dict build path.
+///
+/// Unknown IRIs are assigned `OType::customer_datatype(dt_id)`. The
+/// positional marker `OType::RESERVED` returned by the shared helper for
+/// `rdf:langString` is kept as-is — the builder uses it to mark slot 11 as
+/// "special-cased via `OType::lang_string(lang_id)` at query time."
+fn resolve_iri_to_otype(iri: &str, dt_id: u16) -> OType {
+    resolve_known_iri_to_otype(iri).unwrap_or_else(|| OType::customer_datatype(dt_id))
+}
+
+/// Resolve a datatype IRI to its `OType` for the runtime Sid→OType path.
+///
+/// Returns `None` for unrecognized IRIs **and** for `rdf:langString`
+/// (whose positional-marker `OType::RESERVED` is not usable at runtime
+/// without an accompanying `lang_id`). Callers that see `None` fall back
+/// to their own handling — e.g. `find_dt_id` in the binary scan path.
 ///
 /// Expects canonical full IRIs. Legacy CURIE / `@` shorthand forms that
 /// historical v3 commits may carry are canonicalized upstream by the v3
 /// reader (`legacy_v3::read_commit_v3` / `load_commit_ops_v3`) before any
 /// IRI reaches this function.
 pub fn resolve_iri_to_otype_option(iri: &str) -> Option<OType> {
-    const XSD_NS: &str = "http://www.w3.org/2001/XMLSchema#";
-
-    if let Some(local) = iri.strip_prefix(XSD_NS) {
-        let ot = match local {
-            "int" => OType::XSD_INT,
-            "short" => OType::XSD_SHORT,
-            "byte" => OType::XSD_BYTE,
-            "unsignedLong" => OType::XSD_UNSIGNED_LONG,
-            "unsignedInt" => OType::XSD_UNSIGNED_INT,
-            "unsignedShort" => OType::XSD_UNSIGNED_SHORT,
-            "unsignedByte" => OType::XSD_UNSIGNED_BYTE,
-            "nonNegativeInteger" => OType::XSD_NON_NEGATIVE_INTEGER,
-            "positiveInteger" => OType::XSD_POSITIVE_INTEGER,
-            "nonPositiveInteger" => OType::XSD_NON_POSITIVE_INTEGER,
-            "negativeInteger" => OType::XSD_NEGATIVE_INTEGER,
-            "anyURI" => OType::XSD_ANY_URI,
-            "normalizedString" => OType::XSD_NORMALIZED_STRING,
-            "token" => OType::XSD_TOKEN,
-            "language" => OType::XSD_LANGUAGE,
-            "base64Binary" => OType::XSD_BASE64_BINARY,
-            "hexBinary" => OType::XSD_HEX_BINARY,
-            "duration" => OType::XSD_DURATION,
-            "string" => OType::XSD_STRING,
-            "boolean" => OType::XSD_BOOLEAN,
-            "integer" => OType::XSD_INTEGER,
-            "long" => OType::XSD_LONG,
-            "decimal" => OType::XSD_DECIMAL,
-            "double" => OType::XSD_DOUBLE,
-            "float" => OType::XSD_FLOAT,
-            "dateTime" => OType::XSD_DATE_TIME,
-            "date" => OType::XSD_DATE,
-            "time" => OType::XSD_TIME,
-            "gYear" => OType::XSD_G_YEAR,
-            "gYearMonth" => OType::XSD_G_YEAR_MONTH,
-            "gMonth" => OType::XSD_G_MONTH,
-            "gDay" => OType::XSD_G_DAY,
-            "gMonthDay" => OType::XSD_G_MONTH_DAY,
-            "yearMonthDuration" => OType::XSD_YEAR_MONTH_DURATION,
-            "dayTimeDuration" => OType::XSD_DAY_TIME_DURATION,
-            _ => return None,
-        };
-        return Some(ot);
-    }
-
-    // Non-XSD well-known datatypes — canonical IRIs only.
-    match iri {
-        fluree_vocab::rdf::JSON => Some(OType::RDF_JSON),
-        fluree_vocab::fluree::EMBEDDING_VECTOR => Some(OType::VECTOR),
-        fluree_vocab::fluree::FULL_TEXT => Some(OType::FULLTEXT),
-        _ => None,
+    match resolve_known_iri_to_otype(iri) {
+        Some(OType::RESERVED) => None,
+        other => other,
     }
 }
 
