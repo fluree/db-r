@@ -45,6 +45,24 @@ pub struct CommitOps {
 }
 
 impl CommitOps {
+    /// Construct a `CommitOps` from its parts. Only used by the codec's
+    /// reader paths (v4 and legacy_v3).
+    pub(crate) fn new(
+        envelope: CodecEnvelope,
+        t: i64,
+        op_count: u32,
+        dicts: ReadDicts,
+        ops_data: Vec<u8>,
+    ) -> Self {
+        Self {
+            envelope,
+            t,
+            op_count,
+            dicts,
+            ops_data,
+        }
+    }
+
     /// Iterate raw ops, calling `f` for each. No Flake/Sid construction.
     ///
     /// The callback receives a `RawOp` with borrowed `&str` fields from
@@ -239,7 +257,7 @@ impl<'a> TryFrom<RawObject<'a>> for crate::FlakeValue {
 ///
 /// V4 format: no embedded hash. Integrity is guaranteed by the
 /// content-addressed store. CID = SHA-256(full blob).
-pub fn load_commit_ops(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
+pub(crate) fn load_commit_ops_v4(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
     let blob_len = bytes.len();
 
     // 1. Validate minimum size
@@ -631,7 +649,7 @@ mod tests {
         );
 
         let blob = build_test_blob(&[flake], 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
 
         assert_eq!(ops.t, 1);
         assert_eq!(ops.op_count, 1);
@@ -765,7 +783,7 @@ mod tests {
         ];
 
         let blob = build_test_blob(&flakes, 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
         assert_eq!(ops.op_count, flakes.len() as u32);
 
         let mut idx = 0;
@@ -842,7 +860,7 @@ mod tests {
         ];
 
         let blob = build_test_blob(&flakes, 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
 
         let mut idx = 0;
         ops.for_each_op(|raw| {
@@ -880,7 +898,7 @@ mod tests {
         );
 
         let blob = build_test_blob(&[flake], 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
 
         ops.for_each_op(|raw| {
             assert!(!raw.op); // retract
@@ -923,7 +941,7 @@ mod tests {
         ];
 
         let blob = build_test_blob(&flakes, 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
         assert_eq!(ops.op_count, 3);
 
         let mut names = Vec::new();

@@ -4,6 +4,14 @@
 //! (namespace_code, name) pairs stored in the binary format.
 //!
 //! The reader produces CID-based types (`ContentId`, `CommitRef`).
+//!
+//! # Dispatch
+//!
+//! These functions are `pub(crate)` and are only called from the dispatch
+//! layer in [`super`]. External callers go through the public `read_commit`,
+//! `read_commit_envelope`, and `verify_commit_blob` functions, which route
+//! to either this module (v4) or [`super::legacy_v3`] (v3) based on the
+//! commit blob's version byte.
 
 use super::error::CommitCodecError;
 use super::format::{
@@ -14,14 +22,12 @@ use super::op_codec::{decode_op, ReadDicts};
 use super::string_dict::StringDict;
 use crate::{Commit, CommitEnvelope, ContentId, ContentKind};
 
-/// Verify a commit blob and return its `ContentId`.
+/// Verify a v4 commit blob and return its `ContentId`.
 ///
 /// The CID is `SHA-256(full blob)`, computed via
 /// `ContentId::new(ContentKind::Commit, bytes)`. Integrity is guaranteed by
 /// the content-addressed store.
-///
-/// Use this for integrity checks without full commit parsing.
-pub fn verify_commit_blob(bytes: &[u8]) -> Result<ContentId, CommitCodecError> {
+pub(crate) fn verify_commit_blob_v4(bytes: &[u8]) -> Result<ContentId, CommitCodecError> {
     let blob_len = bytes.len();
 
     if blob_len < MIN_COMMIT_LEN {
@@ -40,7 +46,7 @@ pub fn verify_commit_blob(bytes: &[u8]) -> Result<ContentId, CommitCodecError> {
 /// Read a v4 commit blob and return a full `Commit` (with flakes).
 ///
 /// CID = `SHA-256(full blob)` via `ContentId::new(ContentKind::Commit, bytes)`.
-pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitCodecError> {
+pub(crate) fn read_commit_v4(bytes: &[u8]) -> Result<Commit, CommitCodecError> {
     let blob_len = bytes.len();
 
     // 1. Validate minimum size
@@ -166,11 +172,11 @@ pub fn read_commit(bytes: &[u8]) -> Result<Commit, CommitCodecError> {
     })
 }
 
-/// Read only the envelope from a v2 commit blob (no flakes, no hash check).
+/// Read only the envelope from a v4 commit blob (no flakes, no hash check).
 ///
 /// This is fast because it only reads the header + binary envelope section,
 /// skipping the ops, dictionaries, and footer entirely.
-pub fn read_commit_envelope(bytes: &[u8]) -> Result<CommitEnvelope, CommitCodecError> {
+pub(crate) fn read_commit_envelope_v4(bytes: &[u8]) -> Result<CommitEnvelope, CommitCodecError> {
     // 1. Validate minimum size for header
     if bytes.len() < HEADER_LEN {
         return Err(CommitCodecError::TooSmall {
