@@ -224,14 +224,15 @@ fn known_datatype_to_otype(dt: fluree_vocab::datatype::KnownDatatype) -> OType {
     }
 }
 
-/// Resolve a canonical full IRI to its well-known `OType`, if recognized.
+/// Resolve a canonical datatype identifier to its well-known `OType`, if
+/// recognized.
 ///
 /// Delegates vocabulary recognition to
-/// `fluree_vocab::datatype::KnownDatatype::from_full_iri`, then maps the
-/// recognized variant to its specific `OType` via
+/// `fluree_vocab::datatype::KnownDatatype::from_canonical_form`, then maps
+/// the recognized variant to its specific `OType` via
 /// [`known_datatype_to_otype`]. See its doc for the `RESERVED` semantics.
 fn resolve_known_iri_to_otype(iri: &str) -> Option<OType> {
-    fluree_vocab::datatype::KnownDatatype::from_full_iri(iri).map(known_datatype_to_otype)
+    fluree_vocab::datatype::KnownDatatype::from_canonical_form(iri).map(known_datatype_to_otype)
 }
 
 /// Resolve a datatype IRI to its `OType` for the positional-dict build path.

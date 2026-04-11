@@ -1906,8 +1906,14 @@ pub mod datatype {
     /// [`from_fluree_db_local`](Self::from_fluree_db_local), or the
     /// convenience [`from_ns_and_local`](Self::from_ns_and_local) to
     /// recognize a datatype from its namespace + local name. Use
-    /// [`from_full_iri`](Self::from_full_iri) to recognize one from its
-    /// full canonical IRI.
+    /// [`from_canonical_form`](Self::from_canonical_form) to recognize one
+    /// from its canonical external form (a fully-qualified IRI for most
+    /// variants, or the JSON-LD keyword `"@id"` for [`JsonLdId`](Self::JsonLdId)).
+    ///
+    /// # Round-trip guarantee
+    ///
+    /// For every variant,
+    /// `KnownDatatype::from_canonical_form(dt.canonical_form()) == Some(dt)`.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum KnownDatatype {
         // XSD string / binary / URI / language subtypes
@@ -2058,8 +2064,19 @@ pub mod datatype {
             }
         }
 
-        /// Recognize a built-in by its canonical full IRI.
-        pub fn from_full_iri(iri: &str) -> Option<Self> {
+        /// Recognize a built-in by its canonical external form.
+        ///
+        /// For most variants this is a fully-qualified IRI (e.g.
+        /// `http://www.w3.org/2001/XMLSchema#string`). For
+        /// [`JsonLdId`](Self::JsonLdId) it is the JSON-LD keyword
+        /// `"@id"`, which is how that datatype appears on the wire and in
+        /// JSON-LD documents — there is no absolute IRI form for JSON-LD
+        /// keywords.
+        ///
+        /// Satisfies the round-trip property
+        /// `KnownDatatype::from_canonical_form(dt.canonical_form()) == Some(dt)`
+        /// for every variant.
+        pub fn from_canonical_form(iri: &str) -> Option<Self> {
             if let Some(local) = iri.strip_prefix(xsd::NS) {
                 return Self::from_xsd_local(local);
             }
@@ -2067,14 +2084,23 @@ pub mod datatype {
                 return Self::from_rdf_local(local);
             }
             match iri {
+                "@id" => Some(Self::JsonLdId),
                 s if s == fluree::EMBEDDING_VECTOR => Some(Self::FlureeEmbeddingVector),
                 s if s == fluree::FULL_TEXT => Some(Self::FlureeFullText),
                 _ => None,
             }
         }
 
-        /// Return the canonical full IRI for this datatype.
-        pub const fn full_iri(&self) -> &'static str {
+        /// Return the canonical external form for this datatype.
+        ///
+        /// For most variants this is a fully-qualified IRI. For
+        /// [`JsonLdId`](Self::JsonLdId) it is the JSON-LD keyword
+        /// `"@id"` — that's how JSON-LD keywords are written on the wire
+        /// and there is no absolute IRI for them.
+        ///
+        /// Round-trips through [`from_canonical_form`](Self::from_canonical_form)
+        /// for every variant.
+        pub const fn canonical_form(&self) -> &'static str {
             use KnownDatatype::*;
             match self {
                 XsdString => xsd::STRING,
@@ -2219,9 +2245,9 @@ pub mod datatype {
                         panic!("KnownDatatype::from_xsd_local missed {:?}", local)
                     });
                 assert_eq!(dt.local_name(), local);
-                // Full IRI should also recognize it.
-                let full = dt.full_iri();
-                assert_eq!(KnownDatatype::from_full_iri(full), Some(dt));
+                // Canonical form should also recognize it.
+                let canon = dt.canonical_form();
+                assert_eq!(KnownDatatype::from_canonical_form(canon), Some(dt));
             }
         }
 
@@ -2230,7 +2256,10 @@ pub mod datatype {
             for local in [rdf_names::JSON, rdf_names::LANG_STRING] {
                 let dt = KnownDatatype::from_rdf_local(local).unwrap();
                 assert_eq!(dt.local_name(), local);
-                assert_eq!(KnownDatatype::from_full_iri(dt.full_iri()), Some(dt));
+                assert_eq!(
+                    KnownDatatype::from_canonical_form(dt.canonical_form()),
+                    Some(dt)
+                );
             }
         }
 
@@ -2239,6 +2268,16 @@ pub mod datatype {
             let dt = KnownDatatype::from_jsonld_local(jsonld_names::ID).unwrap();
             assert_eq!(dt, KnownDatatype::JsonLdId);
             assert_eq!(dt.local_name(), jsonld_names::ID);
+
+            // Canonical form round-trip: "@id" → JsonLdId → "@id".
+            // The JSON-LD keyword `@id` is the canonical external form for
+            // this datatype — there is no absolute IRI form for JSON-LD
+            // keywords, so `canonical_form` returns the keyword itself.
+            assert_eq!(dt.canonical_form(), "@id");
+            assert_eq!(
+                KnownDatatype::from_canonical_form("@id"),
+                Some(KnownDatatype::JsonLdId)
+            );
         }
 
         #[test]
@@ -2246,20 +2285,87 @@ pub mod datatype {
             let v = KnownDatatype::from_fluree_db_local("embeddingVector").unwrap();
             assert_eq!(v, KnownDatatype::FlureeEmbeddingVector);
             assert_eq!(
-                KnownDatatype::from_full_iri(fluree::EMBEDDING_VECTOR),
+                KnownDatatype::from_canonical_form(fluree::EMBEDDING_VECTOR),
                 Some(v)
             );
 
             let f = KnownDatatype::from_fluree_db_local("fullText").unwrap();
             assert_eq!(f, KnownDatatype::FlureeFullText);
-            assert_eq!(KnownDatatype::from_full_iri(fluree::FULL_TEXT), Some(f));
+            assert_eq!(
+                KnownDatatype::from_canonical_form(fluree::FULL_TEXT),
+                Some(f)
+            );
+        }
+
+        #[test]
+        fn canonical_form_roundtrip_covers_every_variant() {
+            // Exhaustive round-trip: every variant must satisfy
+            // `from_canonical_form(dt.canonical_form()) == Some(dt)`.
+            // This is the invariant the module documents and any new
+            // variant must uphold. Add the variant here whenever a new
+            // one is added to the enum.
+            use KnownDatatype::*;
+            let all = [
+                XsdString,
+                XsdAnyUri,
+                XsdNormalizedString,
+                XsdToken,
+                XsdLanguage,
+                XsdBase64Binary,
+                XsdHexBinary,
+                XsdBoolean,
+                XsdInteger,
+                XsdLong,
+                XsdInt,
+                XsdShort,
+                XsdByte,
+                XsdUnsignedLong,
+                XsdUnsignedInt,
+                XsdUnsignedShort,
+                XsdUnsignedByte,
+                XsdNonNegativeInteger,
+                XsdPositiveInteger,
+                XsdNonPositiveInteger,
+                XsdNegativeInteger,
+                XsdDecimal,
+                XsdFloat,
+                XsdDouble,
+                XsdDateTime,
+                XsdDate,
+                XsdTime,
+                XsdGYear,
+                XsdGYearMonth,
+                XsdGMonth,
+                XsdGDay,
+                XsdGMonthDay,
+                XsdDuration,
+                XsdDayTimeDuration,
+                XsdYearMonthDuration,
+                RdfJson,
+                RdfLangString,
+                JsonLdId,
+                FlureeEmbeddingVector,
+                FlureeFullText,
+            ];
+            for dt in all {
+                let canon = dt.canonical_form();
+                assert_eq!(
+                    KnownDatatype::from_canonical_form(canon),
+                    Some(dt),
+                    "round-trip failed for {:?} (canonical form {:?})",
+                    dt,
+                    canon,
+                );
+            }
         }
 
         #[test]
         fn unknown_locals_return_none() {
             assert!(KnownDatatype::from_xsd_local("notAType").is_none());
             assert!(KnownDatatype::from_rdf_local("notAType").is_none());
-            assert!(KnownDatatype::from_full_iri("http://example.org/custom").is_none());
+            assert!(
+                KnownDatatype::from_canonical_form("http://example.org/custom").is_none()
+            );
         }
     }
 }

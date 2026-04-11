@@ -740,7 +740,7 @@ pub(crate) fn expand_datatype_iri(type_iri: &str, context: &ParsedContext) -> St
 }
 
 fn expand_builtin_xsd_datatype(local: &str) -> Option<&'static str> {
-    fluree_vocab::datatype::KnownDatatype::from_xsd_local(local).map(|dt| dt.full_iri())
+    fluree_vocab::datatype::KnownDatatype::from_xsd_local(local).map(|dt| dt.canonical_form())
 }
 
 fn normalize_context_value(context_val: &Value) -> Value {
