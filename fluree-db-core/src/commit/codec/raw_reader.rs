@@ -42,11 +42,16 @@ pub struct CommitOps {
     dicts: ReadDicts,
     /// Decompressed ops bytes (owned). `RawOp` borrows from this + `dicts`.
     ops_data: Vec<u8>,
+    /// When true, [`for_each_op`] canonicalizes legacy v3 datatype shapes
+    /// on each `RawOp` before invoking the user's callback. Set by
+    /// [`super::legacy_v3::load_commit_ops_v3`]; always `false` for v4 ops
+    /// produced by [`load_commit_ops_v4`].
+    legacy_v3_canonicalize: bool,
 }
 
 impl CommitOps {
-    /// Construct a `CommitOps` from its parts. Only used by the codec's
-    /// reader paths (v4 and legacy_v3).
+    /// Construct a `CommitOps` from its parts, in the v4 (no canonicalization)
+    /// mode. Only used by the codec's reader paths.
     pub(crate) fn new(
         envelope: CodecEnvelope,
         t: i64,
@@ -60,13 +65,31 @@ impl CommitOps {
             op_count,
             dicts,
             ops_data,
+            legacy_v3_canonicalize: false,
         }
+    }
+
+    /// Return a `CommitOps` that will canonicalize legacy v3 datatype
+    /// shapes on each iterated `RawOp`. Only called from
+    /// [`super::legacy_v3::load_commit_ops_v3`]; the v4 path leaves the
+    /// flag unset so there is zero legacy-related work in the v4 hot path.
+    pub(in crate::commit::codec) fn with_legacy_v3_canonicalization(mut self) -> Self {
+        self.legacy_v3_canonicalize = true;
+        self
     }
 
     /// Iterate raw ops, calling `f` for each. No Flake/Sid construction.
     ///
     /// The callback receives a `RawOp` with borrowed `&str` fields from
     /// the commit's string dictionaries and ops buffer.
+    ///
+    /// When `self` was constructed via
+    /// [`with_legacy_v3_canonicalization`](Self::with_legacy_v3_canonicalization),
+    /// each `RawOp`'s `(dt_ns_code, dt_name)` pair is checked against the
+    /// legacy-v3 canonicalization rules before the user's callback runs.
+    /// Known corrupt shapes (empty-prefix CURIEs, JSON-LD shorthands,
+    /// `JSON_LD + "json"` aliases) are rewritten to their canonical form;
+    /// all other pairs pass through unchanged.
     pub fn for_each_op<F>(&self, mut f: F) -> Result<(), CommitCodecError>
     where
         F: FnMut(RawOp<'_>) -> Result<(), CommitCodecError>,
@@ -75,7 +98,19 @@ impl CommitOps {
         let mut pos = 0;
 
         for _ in 0..self.op_count {
-            let raw_op = decode_raw_op(data, &mut pos, &self.dicts)?;
+            let mut raw_op = decode_raw_op(data, &mut pos, &self.dicts)?;
+            if self.legacy_v3_canonicalize {
+                if let Some((new_ns, new_name)) =
+                    super::legacy_v3::canonicalize_dt_parts_static(
+                        raw_op.dt_ns_code,
+                        raw_op.dt_name,
+                    )
+                {
+                    raw_op.dt_ns_code = new_ns;
+                    // `&'static str` satisfies `&'a str` for any lifetime.
+                    raw_op.dt_name = new_name;
+                }
+            }
             f(raw_op)?;
         }
 
@@ -325,13 +360,7 @@ pub(crate) fn load_commit_ops_v4(bytes: &[u8]) -> Result<CommitOps, CommitCodecE
     let mut envelope = envelope;
     envelope.t = header.t;
 
-    Ok(CommitOps {
-        envelope,
-        t: header.t,
-        op_count: header.op_count,
-        dicts,
-        ops_data,
-    })
+    Ok(CommitOps::new(envelope, header.t, header.op_count, dicts, ops_data))
 }
 
 // ============================================================================

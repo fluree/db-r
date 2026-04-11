@@ -306,16 +306,20 @@ pub fn read_commit_envelope_v3(bytes: &[u8]) -> Result<CommitEnvelope, CommitCod
     })
 }
 
-/// Load v3 commit ops for raw replay.
+/// Load v3 commit ops for raw replay, with legacy-v3 datatype
+/// canonicalization applied on each yielded [`crate::commit::codec::RawOp`].
 ///
-/// **No canonicalization is applied here.** The raw-op path is cold (runs
-/// only during commit replay in the indexer), and the resolver already
-/// canonicalizes `(dt_prefix, dt_name)` pairs using the chain-accumulated
-/// namespace map — which is required to handle the dynamic-prefix corruption
-/// case that cannot be detected from a `Sid` alone.
+/// The returned [`CommitOps`] has its internal
+/// `legacy_v3_canonicalize` flag set, so
+/// [`CommitOps::for_each_op`](CommitOps::for_each_op) rewrites any
+/// context-free-corrupt `(dt_ns_code, dt_name)` pairs to their canonical
+/// form before invoking the caller's closure. Consumers (the indexer's
+/// resolver in particular) see canonical datatypes regardless of which
+/// on-disk shape the v3 blob used.
 ///
-/// V3 and v4 share the same envelope + ops layout; the only difference this
-/// path cares about is the trailing-hash offset when locating the footer.
+/// V3 and v4 share the same envelope + ops layout; the only framing
+/// difference this path cares about is the trailing-hash offset when
+/// locating the footer.
 pub fn load_commit_ops_v3(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
     log_v3_first_seen();
 
@@ -373,16 +377,11 @@ pub fn load_commit_ops_v3(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
         blob_len,
         op_count = header.op_count,
         t = header.t,
-        "v3 commit ops loaded (pass-through; resolver canonicalizes during replay)"
+        "v3 commit ops loaded (canonicalization applied per-op at iteration)"
     );
 
-    Ok(CommitOps::new(
-        envelope,
-        header.t,
-        header.op_count,
-        dicts,
-        ops_data,
-    ))
+    let ops = CommitOps::new(envelope, header.t, header.op_count, dicts, ops_data);
+    Ok(ops.with_legacy_v3_canonicalization())
 }
 
 // ============================================================================
@@ -647,30 +646,41 @@ fn canonicalize_dt_sid(dt: &Sid) -> Option<Sid> {
     }
 }
 
-/// Canonicalize a `(dt_ns, dt_name)` pair in txn-meta parts representation.
+/// Canonicalize a `(dt_ns, dt_name)` pair using only the static allowlist.
+/// Returns a `&'static str` for the canonical local name so callers that
+/// borrow into op-stream data can substitute without allocation or lifetime
+/// gymnastics.
 ///
-/// Same rules as [`canonicalize_dt_sid`] but produces an owned `String`
-/// suitable for rewriting `TxnMetaValue::TypedLiteral` fields.
-fn canonicalize_dt_parts(dt_ns: u16, dt_name: &str) -> Option<(u16, String)> {
+/// Exposed to the rest of the `codec` module so that
+/// [`CommitOps::for_each_op`](super::raw_reader::CommitOps::for_each_op)
+/// can inline this rewrite when iterating v3 ops.
+pub(in crate::commit::codec) fn canonicalize_dt_parts_static(
+    dt_ns: u16,
+    dt_name: &str,
+) -> Option<(u16, &'static str)> {
     match dt_ns {
-        namespaces::EMPTY => {
-            if let Some((ns, local)) = canonicalize_empty_curie_name(dt_name) {
-                Some((ns, local.to_string()))
-            } else if let Some((ns, local)) = canonicalize_jsonld_shorthand(dt_name) {
-                Some((ns, local.to_string()))
-            } else {
-                None
-            }
-        }
+        namespaces::EMPTY => canonicalize_empty_curie_name(dt_name)
+            .or_else(|| canonicalize_jsonld_shorthand(dt_name)),
         namespaces::JSON_LD => {
+            // Earlier aliasing: @json was sometimes encoded as
+            // `(JSON_LD, "json")` instead of `(RDF, "JSON")`.
             if dt_name == "json" {
-                Some((namespaces::RDF, "JSON".to_string()))
+                Some((namespaces::RDF, "JSON"))
             } else {
                 None
             }
         }
         _ => None,
     }
+}
+
+/// Canonicalize a `(dt_ns, dt_name)` pair in txn-meta parts representation.
+///
+/// Thin wrapper around [`canonicalize_dt_parts_static`] that allocates an
+/// owned `String` for callers that need to rewrite
+/// `TxnMetaValue::TypedLiteral` fields in place.
+fn canonicalize_dt_parts(dt_ns: u16, dt_name: &str) -> Option<(u16, String)> {
+    canonicalize_dt_parts_static(dt_ns, dt_name).map(|(ns, name)| (ns, name.to_string()))
 }
 
 /// Walk flakes and canonicalize their `dt` fields in place. Returns the

@@ -187,19 +187,20 @@ fn resolve_iri_to_otype(iri: &str, dt_id: u16) -> OType {
 
             _ => OType::customer_datatype(dt_id),
         }
-    } else if let Some(local) = iri.strip_prefix("xsd:") {
-        // Legacy CURIE form: un-expanded "xsd:string" etc. in datatype dict.
-        resolve_iri_to_otype(
-            &format!("http://www.w3.org/2001/XMLSchema#{}", local),
-            dt_id,
-        )
     } else {
-        // Non-XSD well-known datatypes: canonical IRI, CURIE, or legacy shorthand.
+        // Non-XSD well-known datatypes (canonical IRIs only).
+        //
+        // Legacy CURIE and `@` shorthand forms (`xsd:string`, `@json`, etc.)
+        // that v3-era commits sometimes carried are canonicalized in
+        // `legacy_v3::load_commit_ops_v3` at raw-op iteration time, so by
+        // the time any IRI reaches this function it has a canonical prefix.
         match iri {
-            fluree_vocab::rdf::JSON | "rdf:JSON" | "@json" => OType::RDF_JSON,
-            fluree_vocab::rdf::LANG_STRING | "rdf:langString" => OType::RESERVED, // special-cased in resolve()
-            fluree_vocab::fluree::EMBEDDING_VECTOR | "@vector" => OType::VECTOR,
-            fluree_vocab::fluree::FULL_TEXT | "@fulltext" => OType::FULLTEXT,
+            fluree_vocab::rdf::JSON => OType::RDF_JSON,
+            // rdf:langString is special-cased in `resolve()` via the
+            // `RESERVED` placeholder.
+            fluree_vocab::rdf::LANG_STRING => OType::RESERVED,
+            fluree_vocab::fluree::EMBEDDING_VECTOR => OType::VECTOR,
+            fluree_vocab::fluree::FULL_TEXT => OType::FULLTEXT,
             _ => OType::customer_datatype(dt_id),
         }
     }
@@ -210,9 +211,10 @@ fn resolve_iri_to_otype(iri: &str, dt_id: u16) -> OType {
 /// Same matching as `resolve_iri_to_otype` but without requiring a `dt_id`
 /// fallback. Used by the V3 overlay translator to derive OType from `flake.dt`.
 ///
-/// Accepts both canonical IRIs and legacy JSON-LD shorthands (`@json`,
-/// `@vector`, `@fulltext`) so that any IRI form reaching this function
-/// (e.g. from `sid_to_iri` on a novelty flake) resolves correctly.
+/// Expects canonical full IRIs. Legacy CURIE / `@` shorthand forms that
+/// historical v3 commits may carry are canonicalized upstream by the v3
+/// reader (`legacy_v3::read_commit_v3` / `load_commit_ops_v3`) before any
+/// IRI reaches this function.
 pub fn resolve_iri_to_otype_option(iri: &str) -> Option<OType> {
     const XSD_NS: &str = "http://www.w3.org/2001/XMLSchema#";
 
@@ -258,11 +260,11 @@ pub fn resolve_iri_to_otype_option(iri: &str) -> Option<OType> {
         return Some(ot);
     }
 
-    // Non-XSD well-known datatypes: canonical IRI or legacy JSON-LD shorthand.
+    // Non-XSD well-known datatypes — canonical IRIs only.
     match iri {
-        fluree_vocab::rdf::JSON | "@json" => Some(OType::RDF_JSON),
-        fluree_vocab::fluree::EMBEDDING_VECTOR | "@vector" => Some(OType::VECTOR),
-        fluree_vocab::fluree::FULL_TEXT | "@fulltext" => Some(OType::FULLTEXT),
+        fluree_vocab::rdf::JSON => Some(OType::RDF_JSON),
+        fluree_vocab::fluree::EMBEDDING_VECTOR => Some(OType::VECTOR),
+        fluree_vocab::fluree::FULL_TEXT => Some(OType::FULLTEXT),
         _ => None,
     }
 }

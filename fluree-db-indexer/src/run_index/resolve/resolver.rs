@@ -554,11 +554,17 @@ impl CommitResolver {
                 dt_ns,
                 dt_name,
             } => {
-                // Store the value as a string, with custom datatype
+                // Store the value as a string, with custom datatype.
+                //
+                // NOTE: Legacy v3 datatype canonicalization (rewriting
+                // corrupt shapes like `EMPTY + "xsd:string"` to
+                // canonical `(XSD, "string")`) is applied at decode time
+                // by `legacy_v3::read_commit_v3` / `read_commit_envelope_v3`
+                // before the envelope reaches this point. By the time the
+                // resolver sees `TxnMetaValue::TypedLiteral`, both v3 and
+                // v4 commits carry canonical `(dt_ns, dt_name)` pairs.
                 let str_id = dicts.strings.get_or_insert(value)?;
                 let dt_prefix = self.lookup_prefix(*dt_ns);
-                let (dt_prefix, dt_name) =
-                    canonicalize_datatype_curie(dt_prefix, dt_name).unwrap_or((dt_prefix, dt_name));
                 let dt_id = dicts.datatypes.get_or_insert_parts(dt_prefix, dt_name);
                 // Match resolve_single_op()'s u8 constraint for format consistency
                 if dt_id > u8::MAX as u32 {
@@ -597,11 +603,14 @@ impl CommitResolver {
         // 3. Resolve predicate
         let p_id = self.resolve_predicate(op.p_ns_code, op.p_name, dicts);
 
-        // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID)
+        // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID).
+        //
+        // V3 legacy canonicalization has already been applied at iteration
+        // time by `CommitOps::for_each_op` when the ops came from
+        // `legacy_v3::load_commit_ops_v3`; v4 ops come through clean. Either
+        // way, `(op.dt_ns_code, op.dt_name)` here is guaranteed canonical.
         let prefix = self.lookup_prefix(op.dt_ns_code);
-        let (prefix, dt_name) =
-            canonicalize_datatype_curie(prefix, op.dt_name).unwrap_or((prefix, op.dt_name));
-        let dt_id = dicts.datatypes.get_or_insert_parts(prefix, dt_name);
+        let dt_id = dicts.datatypes.get_or_insert_parts(prefix, op.dt_name);
         // Bulk import path: enforce u8 dt ids for now (imports are allowed to error here).
         // Operationally, the binary format supports widening dt to u16.
         if dt_id > u8::MAX as u32 {
@@ -928,176 +937,6 @@ impl Default for CommitResolver {
 }
 
 // ============================================================================
-// Datatype CURIE canonicalization
-// ============================================================================
-
-/// Canonicalize a legacy datatype `(prefix, name)` pair to its canonical form.
-///
-/// Some v3-era commits stored datatypes in non-canonical shapes due to bugs
-/// in the transaction parser that pre-dated the CURIE-expansion fix. This
-/// helper recognizes and repairs two distinct corruption patterns:
-///
-/// **Case A — empty-prefix CURIE-in-name.**
-/// The parser failed to expand a CURIE and stored it verbatim as the local
-/// name with an empty namespace prefix:
-/// ```text
-/// prefix = "", name = "xsd:string"    →    (XSD_NS, "string")
-/// prefix = "", name = "@json"         →    (RDF_NS, "JSON")
-/// ```
-///
-/// **Case B — dynamic compact-prefix namespace.**
-/// The parser allocated a fresh namespace code whose prefix string was the
-/// compact form `"xsd:"` / `"rdf:"` / `"rdfs:"` instead of the canonical full
-/// IRI. The local name is correct, but the namespace code maps to the wrong
-/// prefix string:
-/// ```text
-/// prefix = "xsd:", name = "string"    →    (XSD_NS, "string")
-/// prefix = "rdf:", name = "JSON"      →    (RDF_NS, "JSON")
-/// ```
-/// Without this repair, retracts written by the fixed parser fail to match
-/// asserts written by the buggy parser (different dt_id → different OType).
-///
-/// # Conservative repair rules
-///
-/// The rules are deliberately narrow to avoid misclassifying legitimate
-/// custom datatypes:
-///
-/// 1. **Split the name with [`str::split_once`], not [`str::strip_prefix`].**
-///    A name like `"xsd:string:extra"` must not become `(XSD, "string:extra")`.
-/// 2. **Only accept locals from a built-in allowlist.** Only well-known XSD
-///    / RDF / RDFS locals are rewritten. Unknown locals pass through (they
-///    may be legitimate custom datatypes sharing a coincidental prefix).
-/// 3. **Exact-match JSON-LD shorthands only**: `@json`, `@vector`,
-///    `@fulltext`. No prefix matching.
-///
-/// Returns `Some((canonical_prefix, canonical_name))` when repair is needed,
-/// or `None` when the inputs are already canonical or don't match any known
-/// legacy corruption pattern. Avoids allocation in the common case.
-fn canonicalize_datatype_curie<'a>(prefix: &str, name: &'a str) -> Option<(&'static str, &'a str)> {
-    // Case A: empty prefix with CURIE or shorthand stored in `name`.
-    if prefix.is_empty() {
-        if let Some((ns, local)) = canonicalize_empty_curie_name(name) {
-            return Some((ns, local));
-        }
-        return canonicalize_jsonld_shorthand(name);
-    }
-
-    // Case B: dynamic compact-prefix namespace. The prefix is the compact
-    // CURIE form ("xsd:" etc.); the local name must still be in the
-    // corresponding vocabulary's built-in allowlist to avoid rewriting
-    // unrelated custom datatypes that happened to be allocated under a
-    // compact-prefix namespace.
-    if let Some(repaired) = match prefix {
-        "xsd:" => known_xsd_local(name).map(|l| (fluree_vocab::xsd::NS, l)),
-        "rdf:" => known_rdf_local(name).map(|l| (fluree_vocab::rdf::NS, l)),
-        "rdfs:" => known_rdfs_local(name).map(|l| (fluree_vocab::rdfs::NS, l)),
-        _ => None,
-    } {
-        return Some(repaired);
-    }
-
-    // Case C: JSON-LD `@` namespace with a lowercase alias local name. This
-    // is the fingerprint of an earlier aliasing bug where `@json` was
-    // encoded as `(JSON_LD, "json")` instead of `(RDF, "JSON")`. The
-    // resolver sees `prefix == "@"` because that's the string the JSON_LD
-    // namespace code resolves to. Only exact-match aliases are accepted.
-    if prefix == "@" {
-        return match name {
-            "json" => Some((fluree_vocab::rdf::NS, "JSON")),
-            "vector" => Some((fluree_vocab::fluree::DB, "embeddingVector")),
-            "fulltext" => Some((fluree_vocab::fluree::DB, "fullText")),
-            _ => None,
-        };
-    }
-
-    None
-}
-
-/// Parse a CURIE-shaped name (split on first `':'`) and return the canonical
-/// `(namespace_iri, local_name)` pair if the local is in the allowlist.
-fn canonicalize_empty_curie_name(name: &str) -> Option<(&'static str, &'static str)> {
-    let (prefix, local) = name.split_once(':')?;
-    match prefix {
-        "xsd" => known_xsd_local(local).map(|l| (fluree_vocab::xsd::NS, l)),
-        "rdf" => known_rdf_local(local).map(|l| (fluree_vocab::rdf::NS, l)),
-        "rdfs" => known_rdfs_local(local).map(|l| (fluree_vocab::rdfs::NS, l)),
-        _ => None,
-    }
-}
-
-/// Canonicalize an exact-match JSON-LD shorthand keyword.
-fn canonicalize_jsonld_shorthand(name: &str) -> Option<(&'static str, &'static str)> {
-    match name {
-        "@json" => Some((fluree_vocab::rdf::NS, "JSON")),
-        "@vector" => Some((fluree_vocab::fluree::DB, "embeddingVector")),
-        "@fulltext" => Some((fluree_vocab::fluree::DB, "fullText")),
-        _ => None,
-    }
-}
-
-/// Known XSD built-in datatype locals. Returns the static string if the
-/// input matches; `None` otherwise.
-fn known_xsd_local(local: &str) -> Option<&'static str> {
-    use fluree_vocab::xsd_names;
-    match local {
-        x if x == xsd_names::STRING => Some(xsd_names::STRING),
-        x if x == xsd_names::BOOLEAN => Some(xsd_names::BOOLEAN),
-        x if x == xsd_names::INTEGER => Some(xsd_names::INTEGER),
-        x if x == xsd_names::LONG => Some(xsd_names::LONG),
-        x if x == xsd_names::INT => Some(xsd_names::INT),
-        x if x == xsd_names::SHORT => Some(xsd_names::SHORT),
-        x if x == xsd_names::BYTE => Some(xsd_names::BYTE),
-        x if x == xsd_names::UNSIGNED_LONG => Some(xsd_names::UNSIGNED_LONG),
-        x if x == xsd_names::UNSIGNED_INT => Some(xsd_names::UNSIGNED_INT),
-        x if x == xsd_names::UNSIGNED_SHORT => Some(xsd_names::UNSIGNED_SHORT),
-        x if x == xsd_names::UNSIGNED_BYTE => Some(xsd_names::UNSIGNED_BYTE),
-        x if x == xsd_names::NON_NEGATIVE_INTEGER => Some(xsd_names::NON_NEGATIVE_INTEGER),
-        x if x == xsd_names::POSITIVE_INTEGER => Some(xsd_names::POSITIVE_INTEGER),
-        x if x == xsd_names::NON_POSITIVE_INTEGER => Some(xsd_names::NON_POSITIVE_INTEGER),
-        x if x == xsd_names::NEGATIVE_INTEGER => Some(xsd_names::NEGATIVE_INTEGER),
-        x if x == xsd_names::DECIMAL => Some(xsd_names::DECIMAL),
-        x if x == xsd_names::FLOAT => Some(xsd_names::FLOAT),
-        x if x == xsd_names::DOUBLE => Some(xsd_names::DOUBLE),
-        x if x == xsd_names::DATE_TIME => Some(xsd_names::DATE_TIME),
-        x if x == xsd_names::DATE => Some(xsd_names::DATE),
-        x if x == xsd_names::TIME => Some(xsd_names::TIME),
-        x if x == xsd_names::G_YEAR => Some(xsd_names::G_YEAR),
-        x if x == xsd_names::G_YEAR_MONTH => Some(xsd_names::G_YEAR_MONTH),
-        x if x == xsd_names::G_MONTH => Some(xsd_names::G_MONTH),
-        x if x == xsd_names::G_DAY => Some(xsd_names::G_DAY),
-        x if x == xsd_names::G_MONTH_DAY => Some(xsd_names::G_MONTH_DAY),
-        x if x == xsd_names::DURATION => Some(xsd_names::DURATION),
-        x if x == xsd_names::DAY_TIME_DURATION => Some(xsd_names::DAY_TIME_DURATION),
-        x if x == xsd_names::YEAR_MONTH_DURATION => Some(xsd_names::YEAR_MONTH_DURATION),
-        x if x == xsd_names::ANY_URI => Some(xsd_names::ANY_URI),
-        x if x == xsd_names::NORMALIZED_STRING => Some(xsd_names::NORMALIZED_STRING),
-        x if x == xsd_names::TOKEN => Some(xsd_names::TOKEN),
-        x if x == xsd_names::LANGUAGE => Some(xsd_names::LANGUAGE),
-        x if x == xsd_names::BASE64_BINARY => Some(xsd_names::BASE64_BINARY),
-        x if x == xsd_names::HEX_BINARY => Some(xsd_names::HEX_BINARY),
-        _ => None,
-    }
-}
-
-/// Known RDF built-in datatype locals.
-fn known_rdf_local(local: &str) -> Option<&'static str> {
-    use fluree_vocab::rdf_names;
-    match local {
-        x if x == rdf_names::JSON => Some(rdf_names::JSON),
-        x if x == rdf_names::LANG_STRING => Some(rdf_names::LANG_STRING),
-        _ => None,
-    }
-}
-
-/// Known RDFS built-in datatype locals.
-fn known_rdfs_local(local: &str) -> Option<&'static str> {
-    match local {
-        "Resource" => Some("Resource"),
-        _ => None,
-    }
-}
-
-// ============================================================================
 // SharedResolverState + RebuildChunk (commit-based rebuild pipeline)
 // ============================================================================
 
@@ -1309,13 +1148,18 @@ impl SharedResolverState {
     }
 
     /// Insert or look up a datatype, recording its ValueTypeTag deterministically.
+    ///
+    /// The caller is responsible for passing a canonical `(ns_code, name)`
+    /// pair. V3 legacy canonicalization is applied at v3 raw-op iteration
+    /// time (see `CommitOps::for_each_op`), so every caller in the rebuild
+    /// pipeline hands this function a clean pair regardless of on-disk
+    /// commit format.
     fn resolve_datatype(&mut self, ns_code: u16, name: &str) -> u32 {
         let prefix = self
             .ns_prefixes
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let (prefix, name) = canonicalize_datatype_curie(prefix, name).unwrap_or((prefix, name));
         let dt_id = self.datatypes.get_or_insert_parts(prefix, name);
         // Grow dt_tags if this is a new entry.
         if dt_id as usize >= self.dt_tags.len() {
@@ -2755,177 +2599,4 @@ mod tests {
         );
     }
 
-    // ========================================================================
-    // canonicalize_datatype_curie tests
-    // ========================================================================
-
-    #[test]
-    fn canonicalize_empty_prefix_xsd_curie() {
-        assert_eq!(
-            canonicalize_datatype_curie("", "xsd:string"),
-            Some((fluree_vocab::xsd::NS, "string"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("", "xsd:integer"),
-            Some((fluree_vocab::xsd::NS, "integer"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_empty_prefix_rdf_curie() {
-        assert_eq!(
-            canonicalize_datatype_curie("", "rdf:JSON"),
-            Some((fluree_vocab::rdf::NS, "JSON"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("", "rdf:langString"),
-            Some((fluree_vocab::rdf::NS, "langString"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_empty_prefix_rdfs_curie() {
-        assert_eq!(
-            canonicalize_datatype_curie("", "rdfs:Resource"),
-            Some((fluree_vocab::rdfs::NS, "Resource"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_empty_prefix_jsonld_shorthands() {
-        assert_eq!(
-            canonicalize_datatype_curie("", "@json"),
-            Some((fluree_vocab::rdf::NS, "JSON"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("", "@vector"),
-            Some((fluree_vocab::fluree::DB, "embeddingVector"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("", "@fulltext"),
-            Some((fluree_vocab::fluree::DB, "fullText"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_dynamic_compact_prefix_xsd() {
-        // Case B: a fresh namespace code was allocated with the compact
-        // prefix "xsd:" instead of the canonical full IRI. The local name
-        // is correct and is in the built-in XSD allowlist.
-        assert_eq!(
-            canonicalize_datatype_curie("xsd:", "string"),
-            Some((fluree_vocab::xsd::NS, "string"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("xsd:", "integer"),
-            Some((fluree_vocab::xsd::NS, "integer"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_dynamic_compact_prefix_rejects_unknown_local() {
-        // Case B with an unknown local must NOT be rewritten — it may be a
-        // legitimate custom datatype allocated under a compact-prefix
-        // namespace by mistake, or something else entirely. Only the
-        // built-in allowlist is trusted.
-        assert_eq!(canonicalize_datatype_curie("xsd:", "unknownLocal"), None);
-        assert_eq!(canonicalize_datatype_curie("rdf:", "notAThing"), None);
-    }
-
-    #[test]
-    fn canonicalize_rejects_extra_colon_segments() {
-        // "xsd:string:extra" splits to ("xsd", "string:extra"); "string:extra"
-        // is not in the XSD allowlist so this does not match.
-        assert_eq!(canonicalize_datatype_curie("", "xsd:string:extra"), None);
-    }
-
-    #[test]
-    fn canonicalize_rejects_unknown_xsd_local_in_case_a() {
-        // Empty prefix + unknown xsd: local also passes through.
-        assert_eq!(canonicalize_datatype_curie("", "xsd:notARealType"), None);
-    }
-
-    #[test]
-    fn canonicalize_jsonld_at_prefix_with_lowercase_json_alias() {
-        // Case C: prefix = "@" (the JSON_LD namespace's resolved prefix
-        // string, from `default_namespace_codes`) + name = "json" →
-        // (RDF, "JSON"). This is the fingerprint of the JSON_LD + "json"
-        // aliasing corruption observed in real customer data, where 5
-        // flakes had their datatype encoded this way instead of as
-        // canonical rdf:JSON.
-        assert_eq!(
-            canonicalize_datatype_curie("@", "json"),
-            Some((fluree_vocab::rdf::NS, "JSON"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_jsonld_at_prefix_with_other_known_aliases() {
-        assert_eq!(
-            canonicalize_datatype_curie("@", "vector"),
-            Some((fluree_vocab::fluree::DB, "embeddingVector"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("@", "fulltext"),
-            Some((fluree_vocab::fluree::DB, "fullText"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_jsonld_at_prefix_rejects_unknown_alias() {
-        // Case C must NOT rewrite arbitrary JSON-LD keyword-namespace
-        // locals — only the exact-match aliases are accepted.
-        assert_eq!(canonicalize_datatype_curie("@", "id"), None);
-        assert_eq!(canonicalize_datatype_curie("@", "type"), None);
-        assert_eq!(canonicalize_datatype_curie("@", "context"), None);
-        assert_eq!(canonicalize_datatype_curie("@", "jsonld"), None);
-    }
-
-    #[test]
-    fn canonicalize_dynamic_compact_prefix_rdf_and_rdfs() {
-        assert_eq!(
-            canonicalize_datatype_curie("rdf:", "JSON"),
-            Some((fluree_vocab::rdf::NS, "JSON"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("rdf:", "langString"),
-            Some((fluree_vocab::rdf::NS, "langString"))
-        );
-        assert_eq!(
-            canonicalize_datatype_curie("rdfs:", "Resource"),
-            Some((fluree_vocab::rdfs::NS, "Resource"))
-        );
-    }
-
-    #[test]
-    fn canonicalize_already_canonical_returns_none() {
-        // Canonical full-IRI prefixes are left alone.
-        assert_eq!(
-            canonicalize_datatype_curie(fluree_vocab::xsd::NS, "string"),
-            None
-        );
-        assert_eq!(
-            canonicalize_datatype_curie(fluree_vocab::rdf::NS, "JSON"),
-            None
-        );
-    }
-
-    #[test]
-    fn canonicalize_legitimate_custom_datatype_returns_none() {
-        // A legitimate custom datatype with its own namespace must pass through
-        // unchanged — this is not corruption.
-        assert_eq!(
-            canonicalize_datatype_curie("http://example.org/", "myType"),
-            None
-        );
-        assert_eq!(canonicalize_datatype_curie("ex:", "myType"), None);
-    }
-
-    #[test]
-    fn canonicalize_empty_prefix_unknown_name_returns_none() {
-        // Empty prefix with a name that doesn't match any known CURIE or
-        // shorthand: nothing to do.
-        assert_eq!(canonicalize_datatype_curie("", "plainString"), None);
-        assert_eq!(canonicalize_datatype_curie("", ""), None);
-    }
 }
