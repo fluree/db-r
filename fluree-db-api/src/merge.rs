@@ -10,7 +10,7 @@ use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{collect_dag_cids, load_commit_by_id, CommonAncestor};
-use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake, Storage};
+use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake};
 use fluree_db_ledger::{LedgerState, LedgerView};
 use fluree_db_nameservice::{NameService, NsRecord, NsRecordSnapshot, Publisher};
 use fluree_db_novelty::compute_delta_keys;

@@ -4,7 +4,7 @@ use crate::types::{
     Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryPreview, MemoryStatus, MemoryUpdate, Scope,
 };
 use chrono::Utc;
-use fluree_db_api::{FileStorage, Fluree};
+use fluree_db_api::Fluree;
 use fluree_db_nameservice::file::FileNameService;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};

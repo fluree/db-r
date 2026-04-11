@@ -15,7 +15,7 @@
 use crate::export::{self, ExportConfig, ExportFormat, ExportStats, PrefixMap};
 use crate::{time_resolve, ApiError, Fluree, Result, TimeSpec};
 use fluree_db_binary_index::BinaryIndexStore;
-use fluree_db_core::{GraphRegistry, Storage};
+use fluree_db_core::GraphRegistry;
 use fluree_db_nameservice::{ConfigPublisher, NameService};
 use std::io::{self, BufWriter, Write};
 use std::sync::Arc;

@@ -21,8 +21,8 @@ use crate::format::FormatterConfig;
 use crate::query::helpers::parse_dataset_spec;
 use crate::view::{DataSetDb, GraphDb, QueryInput};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, Storage,
-    TrackedErrorResponse, TrackedQueryResponse, TrackingOptions,
+    ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, TrackedErrorResponse,
+    TrackedQueryResponse, TrackingOptions,
 };
 
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};

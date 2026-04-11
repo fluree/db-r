@@ -9,7 +9,7 @@ use crate::graph_commit_builder::CommitBuilder;
 use crate::graph_query_builder::GraphQueryBuilder;
 use crate::graph_snapshot::GraphSnapshot;
 use crate::graph_transact_builder::GraphTransactBuilder;
-use crate::{Fluree, NameService, Result, Storage};
+use crate::{Fluree, NameService, Result};
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::Publisher;
 

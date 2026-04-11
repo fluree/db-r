@@ -12,7 +12,6 @@ mod support;
 use fluree_db_api::{
     FlureeBuilder, IndexConfig, LedgerManagerConfig, LedgerState, QueryInput, QueryResult,
 };
-use fluree_db_core::MemoryStorage;
 use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;

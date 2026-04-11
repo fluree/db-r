@@ -9,7 +9,7 @@ use chrono::DateTime;
 use crate::view::{GraphDb, ReasoningModePrecedence};
 use crate::{
     config_resolver, time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result,
-    Storage, TimeSpec,
+    TimeSpec,
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ids::GraphId;

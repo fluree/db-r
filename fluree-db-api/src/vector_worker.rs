@@ -31,8 +31,6 @@
 #[cfg(feature = "vector")]
 use crate::{ApiError, Result};
 #[cfg(feature = "vector")]
-use fluree_db_core::{Storage, StorageWrite};
-#[cfg(feature = "vector")]
 use fluree_db_nameservice::{
     GraphSourcePublisher, NameService, NameServiceEvent, Publication, Publisher,
 };

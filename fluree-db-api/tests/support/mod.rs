@@ -13,7 +13,7 @@
 pub mod span_capture;
 
 use fluree_db_api::{IndexConfig, LedgerState, Novelty};
-use fluree_db_core::{LedgerSnapshot, MemoryStorage};
+use fluree_db_core::LedgerSnapshot;
 use serde_json::{json, Value as JsonValue};
 use std::sync::Arc;
 

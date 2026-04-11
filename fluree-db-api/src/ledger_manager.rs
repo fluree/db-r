@@ -31,7 +31,7 @@ use fluree_db_core::db::{LedgerSnapshot, LedgerSnapshotMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::trace_commits_by_id;
 use fluree_db_core::{
-    ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage, StorageBackend,
+    ledger_id::normalize_ledger_id, ContentId, ContentStore, StorageBackend,
 };
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};

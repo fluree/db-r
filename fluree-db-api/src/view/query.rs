@@ -10,8 +10,7 @@ use crate::query::helpers::{
 };
 use crate::view::{GraphDb, QueryInput};
 use crate::{
-    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
-    TrackingOptions,
+    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Tracker, TrackingOptions,
 };
 use fluree_db_query::execute::{
     execute_prepared, prepare_execution_with_binary_store, ContextConfig,

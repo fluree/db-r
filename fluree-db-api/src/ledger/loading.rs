@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
-    TypeErasedStore,
+    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, TypeErasedStore,
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;

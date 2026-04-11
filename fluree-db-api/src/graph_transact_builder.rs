@@ -11,10 +11,9 @@ use crate::graph_query_builder::GraphSnapshotQueryBuilder;
 use crate::tx_builder::{commit_with_handle, Staged, TransactCore, TransactOperation};
 use crate::view::GraphDb;
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
+    ApiError, Fluree, NameService, PolicyContext, Result, TrackedErrorResponse,
     TrackedTransactionInput, Tracker, TrackingOptions, TransactResultRef,
 };
-use fluree_db_core::ContentAddressedWrite;
 use fluree_db_ledger::IndexConfig;
 use fluree_db_nameservice::Publisher;
 use fluree_db_transact::{CommitOpts, TxnOpts};

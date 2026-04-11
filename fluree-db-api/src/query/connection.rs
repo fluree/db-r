@@ -7,7 +7,7 @@ use crate::query::helpers::{
 use crate::view::{DataSetDb, GraphDb};
 use crate::{
     ApiError, DatasetSpec, Fluree, FormatterConfig, PolicyContext, QueryConnectionOptions,
-    QueryResult, Result, Storage,
+    QueryResult, Result,
 };
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 

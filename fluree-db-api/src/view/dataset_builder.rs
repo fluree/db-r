@@ -6,7 +6,7 @@
 use crate::view::{DataSetDb, GraphDb};
 use crate::{
     dataset, time_resolve, ApiError, DatasetSpec, Fluree, NameService, QueryConnectionOptions,
-    Result, Storage,
+    Result,
 };
 use chrono::DateTime;
 

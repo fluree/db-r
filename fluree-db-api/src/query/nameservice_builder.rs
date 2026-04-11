@@ -36,7 +36,7 @@ use crate::format::FormatterConfig;
 use crate::ledger_info::{gs_record_to_jsonld, ns_record_to_jsonld};
 use crate::query::builder::QueryCore;
 use crate::view::QueryInput;
-use crate::{ApiError, Fluree, GraphDb, GraphSourcePublisher, NameService, Result, Storage};
+use crate::{ApiError, Fluree, GraphDb, GraphSourcePublisher, NameService, Result};
 use fluree_db_ledger::IndexConfig;
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
 use serde_json::json;

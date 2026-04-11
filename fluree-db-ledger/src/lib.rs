@@ -34,9 +34,8 @@ pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
 use fluree_db_core::{
-    content_store_for, format_ledger_id, BranchedContentStore, ContentId, ContentStore,
-    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, RuntimeSmallDicts, StorageBackend,
-    TXN_META_GRAPH_ID,
+    format_ledger_id, BranchedContentStore, ContentId, ContentStore, DictNovelty, Flake,
+    GraphDbRef, GraphId, LedgerSnapshot, RuntimeSmallDicts, StorageBackend, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{
@@ -808,7 +807,9 @@ impl LedgerState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{
+        content_store_for, ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid,
+    };
     use fluree_db_nameservice::memory::MemoryNameService;
     use std::collections::HashMap;
 

@@ -10,7 +10,7 @@ use crate::graph_source::config::{CatalogMode, IcebergCreateConfig, R2rmlCreateC
 use crate::graph_source::result::{IcebergCreateResult, R2rmlCreateResult};
 use crate::Result;
 use async_trait::async_trait;
-use fluree_db_core::{ContentStore, Storage};
+use fluree_db_core::ContentStore;
 use fluree_db_iceberg::{
     catalog::{RestCatalogClient, RestCatalogConfig, SendCatalogClient},
     io::{ColumnBatch, S3IcebergStorage, SendIcebergStorage, SendParquetReader},

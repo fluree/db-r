@@ -16,7 +16,7 @@ use crate::graph_source::result::{
 #[cfg(feature = "vector")]
 use crate::Result;
 #[cfg(feature = "vector")]
-use fluree_db_core::{ledger_id::split_ledger_id, ContentId, ContentStore, Storage, StorageWrite};
+use fluree_db_core::{ledger_id::split_ledger_id, ContentId, ContentStore};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]

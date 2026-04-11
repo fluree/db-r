@@ -29,7 +29,6 @@
 //! ```
 
 use crate::{ApiError, Result};
-use fluree_db_core::{Storage, StorageWrite};
 use fluree_db_nameservice::{
     GraphSourcePublisher, NameService, NameServiceEvent, Publication, Publisher,
 };

@@ -13,7 +13,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerManagerConfig, LedgerState, Novelty};
-use fluree_db_core::{LedgerSnapshot, MemoryStorage};
+use fluree_db_core::LedgerSnapshot;
 use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;

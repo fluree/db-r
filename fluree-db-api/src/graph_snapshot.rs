@@ -5,7 +5,7 @@
 
 use crate::graph_query_builder::GraphSnapshotQueryBuilder;
 use crate::view::GraphDb;
-use crate::{Fluree, NameService, Storage};
+use crate::{Fluree, NameService};
 
 /// A materialized, queryable graph snapshot.
 ///

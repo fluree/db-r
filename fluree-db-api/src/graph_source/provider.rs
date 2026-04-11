@@ -17,7 +17,7 @@
 //!   to a remote search service via HTTP.
 
 use async_trait::async_trait;
-use fluree_db_core::{ContentStore, Storage, StorageWrite};
+use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{GraphSourcePublisher, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result as QueryResult};

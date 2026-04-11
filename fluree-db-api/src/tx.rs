@@ -16,8 +16,8 @@ use fluree_db_core::ledger_config::LedgerConfig;
 use fluree_db_core::ledger_config::ValidationMode;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
-    range_with_overlay, ContentAddressedWrite, ContentId, ContentKind, FlakeValue, GraphId,
-    IndexType, RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+    range_with_overlay, ContentId, ContentKind, FlakeValue, GraphId, IndexType, RangeMatch,
+    RangeOptions, RangeTest, Sid,
 };
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};

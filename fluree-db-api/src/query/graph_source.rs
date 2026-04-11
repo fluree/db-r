@@ -2,9 +2,7 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
-use crate::{
-    ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result, Storage,
-};
+use crate::{ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result};
 
 impl<N> Fluree<N>
 where

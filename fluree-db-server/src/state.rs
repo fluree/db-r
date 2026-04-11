@@ -25,7 +25,6 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fluree_db_api::FileStorage;
 use fluree_db_nameservice::file::FileNameService;
 
 /// File-backed Fluree instance type (transaction server or peer with shared storage)

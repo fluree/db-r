@@ -29,7 +29,7 @@ use fluree_db_core::commit::codec::envelope::decode_envelope;
 use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
 pub use fluree_db_core::pack::PackRequest;
 use fluree_db_core::storage::content_store_for;
-use fluree_db_core::{ContentId, ContentStore, Storage};
+use fluree_db_core::{ContentId, ContentStore};
 use fluree_db_nameservice::{NameService, RefPublisher};
 use std::collections::HashSet;
 use tokio::sync::mpsc;

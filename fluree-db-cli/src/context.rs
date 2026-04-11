@@ -3,7 +3,7 @@ use crate::error::{CliError, CliResult};
 use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
 use colored::Colorize;
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_api::{FileStorage, Fluree, FlureeBuilder, IndexConfig};
+use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig};
 use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{

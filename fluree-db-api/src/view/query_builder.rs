@@ -5,7 +5,7 @@
 
 use crate::query::builder::{DatasetQueryBuilder, ViewQueryBuilder};
 use crate::view::{DataSetDb, GraphDb};
-use crate::{Fluree, NameService, Storage};
+use crate::{Fluree, NameService};
 
 impl GraphDb {
     /// Create a query builder for this graph/view.

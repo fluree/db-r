@@ -19,10 +19,10 @@ use crate::error::{BuilderError, BuilderErrors};
 use crate::ledger_manager::LedgerHandle;
 use crate::tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
+    ApiError, Fluree, NameService, PolicyContext, Result, TrackedErrorResponse,
     TrackedTransactionInput, Tracker, TrackingOptions,
 };
-use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind};
+use fluree_db_core::{ContentId, ContentKind};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::Publisher;
 use fluree_db_transact::{
