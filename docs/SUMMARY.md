@@ -39,10 +39,12 @@
   - [completions](cli/completions.md)
 
 - [Getting started](getting-started/README.md)
+  - [Fluree for SQL developers](getting-started/fluree-for-sql-developers.md)
   - [Quickstart: run the server](getting-started/quickstart-server.md)
   - [Quickstart: create a ledger](getting-started/quickstart-ledger.md)
   - [Quickstart: write data (insert/upsert/update)](getting-started/quickstart-write.md)
   - [Quickstart: query data (JSON-LD Query + SPARQL)](getting-started/quickstart-query.md)
+  - [Tutorial: end-to-end (search, time travel, branching, policies)](getting-started/tutorial-end-to-end.md)
   - [Using Fluree as a Rust library](getting-started/rust-api.md)
 
 - [Concepts](concepts/README.md)
@@ -55,6 +57,13 @@
   - [Policy enforcement](concepts/policy-enforcement.md)
   - [Verifiable data](concepts/verifiable-data.md)
   - [Reasoning and inference](concepts/reasoning.md)
+
+- [Guides (cookbooks)](guides/README.md)
+  - [Full-text and vector search](guides/cookbook-search.md)
+  - [Time travel patterns](guides/cookbook-time-travel.md)
+  - [Branching and merging](guides/cookbook-branching.md)
+  - [Access control policies](guides/cookbook-policies.md)
+  - [SHACL validation](guides/cookbook-shacl.md)
 
 - [Design](design/README.md)
   - [Query execution and overlay merge](design/query-execution.md)

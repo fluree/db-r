@@ -4,6 +4,10 @@ Welcome to Fluree! This section will guide you through the essential steps to st
 
 ## Quick Navigation
 
+### [Fluree for SQL Developers](fluree-for-sql-developers.md)
+
+Coming from PostgreSQL, MySQL, or SQL Server? This guide maps SQL concepts to Fluree equivalents, shows the same operations in both languages, and highlights where Fluree gives you capabilities that relational databases don't have.
+
 ### [Quickstart: Run the Server](quickstart-server.md)
 
 Get Fluree up and running in minutes. Learn how to:
@@ -36,6 +40,14 @@ Query your data using Fluree's powerful query languages. Learn how to:
 - Filter and select data
 - Understand query results
 
+### [Tutorial: End-to-End](tutorial-end-to-end.md)
+
+Build a knowledge base that combines Fluree's differentiating features in one workflow:
+- Full-text search with BM25 relevance ranking
+- Time travel to compare current and historical state
+- Branching to experiment safely
+- Policies for role-based access control
+
 ### [Using Fluree as a Rust Library](rust-api.md)
 
 Embed Fluree directly in your Rust applications. Learn how to:
@@ -61,27 +73,31 @@ Fluree is a temporal graph database that stores data as RDF triples with built-i
 
 **For HTTP API users (server-based):**
 
-1. **Start with the Server**: [Run the Server](quickstart-server.md) to get Fluree running
-2. **Create Your First Ledger**: [Create a Ledger](quickstart-ledger.md) to set up your database
-3. **Add Data**: [Write Data](quickstart-write.md) to insert your first entities
-4. **Query Your Data**: [Query Data](quickstart-query.md) to retrieve and explore
-5. **Core Concepts**: Read [Concepts](../concepts/README.md) to understand Fluree's architecture
-6. **Deep Dive**: Explore [Query](../query/README.md), [Transactions](../transactions/README.md), and [Security](../security/README.md)
-7. **Production Ready**: Review [Operations](../operations/README.md) for deployment guidance
+1. **Bridge the gap**: [Fluree for SQL Developers](fluree-for-sql-developers.md) if coming from relational databases
+2. **Start with the Server**: [Run the Server](quickstart-server.md) to get Fluree running
+3. **Create Your First Ledger**: [Create a Ledger](quickstart-ledger.md) to set up your database
+4. **Add Data**: [Write Data](quickstart-write.md) to insert your first entities
+5. **Query Your Data**: [Query Data](quickstart-query.md) to retrieve and explore
+6. **See it all together**: [End-to-End Tutorial](tutorial-end-to-end.md) — search, time travel, branching, and policies in one workflow
+7. **Core Concepts**: Read [Concepts](../concepts/README.md) to understand Fluree's architecture
+8. **Practical Guides**: Explore [Cookbooks](../guides/README.md) for search, time travel, branching, policies, and SHACL validation
+9. **Deep Dive**: Explore [Query](../query/README.md), [Transactions](../transactions/README.md), and [Security](../security/README.md)
+10. **Production Ready**: Review [Operations](../operations/README.md) for deployment guidance
 
 **For Rust developers (embedded library):**
 
 1. **Rust API Guide**: [Using Fluree as a Rust Library](rust-api.md) for embedding Fluree in your application
 2. **Core Concepts**: [Concepts](../concepts/README.md) to understand how Fluree works
-3. **Advanced Queries**: [Query](../query/README.md) for complex query patterns
-4. **Transactions**: [Transactions](../transactions/README.md) for data modification patterns
-5. **Production Ready**: [Operations](../operations/README.md) and [Dev Setup](../contributing/dev-setup.md)
+3. **Practical Guides**: [Cookbooks](../guides/README.md) for search, time travel, branching, policies, and validation
+4. **Advanced Queries**: [Query](../query/README.md) for complex query patterns
+5. **Transactions**: [Transactions](../transactions/README.md) for data modification patterns
+6. **Production Ready**: [Operations](../operations/README.md) and [Dev Setup](../contributing/dev-setup.md)
 
 ## Prerequisites
 
-- Basic understanding of graph databases or RDF (helpful but not required)
 - Familiarity with JSON format
 - HTTP client (curl, Postman, or your programming language's HTTP library)
+- No graph database or RDF experience required — [Fluree for SQL Developers](fluree-for-sql-developers.md) bridges the gap from relational databases
 
 ## Support and Resources
 

@@ -130,12 +130,15 @@ SELECT ?doc ?score WHERE {
 
 ### Git-like data management
 
-Branch, clone, push, and pull ledgers between instances. Fork a dataset to experiment without affecting production. Merge when ready.
+Branch, rebase, merge, push, pull — the same workflow developers already use for code, applied to data. Fork a dataset to experiment without affecting production. Merge when ready. Rebase to catch up with upstream changes. Every branch has its own independent commit history.
 
 ```bash
-fluree branch experiments
-fluree clone https://upstream.example.com/shared-ontology
-fluree push origin
+fluree branch create experiment
+fluree use mydb:experiment
+# ... make changes safely ...
+fluree branch rebase experiment    # catch up with main
+fluree branch merge experiment     # fast-forward merge into main
+fluree branch drop experiment      # clean up
 ```
 
 ### Triple-level access control
@@ -197,7 +200,10 @@ let result = ledger.query_sparql("SELECT ?s WHERE { ?s a <http://schema.org/Pers
 Full documentation lives in [`docs/`](docs/README.md):
 
 - [Getting started](docs/getting-started/README.md) — Install, create a ledger, write and query data
+- [Fluree for SQL developers](docs/getting-started/fluree-for-sql-developers.md) — Coming from relational? Start here
+- [End-to-end tutorial](docs/getting-started/tutorial-end-to-end.md) — Build a knowledge base using search, time travel, branching, and policies
 - [Concepts](docs/concepts/README.md) — Time travel, graph sources, policies, verifiable data
+- [Guides](docs/guides/) — Practical cookbooks for [search](docs/guides/cookbook-search.md), [time travel](docs/guides/cookbook-time-travel.md), [branching](docs/guides/cookbook-branching.md), [policies](docs/guides/cookbook-policies.md), and [SHACL validation](docs/guides/cookbook-shacl.md)
 - [Query languages](docs/query/README.md) — SPARQL and JSON-LD query reference
 - [Transactions](docs/transactions/README.md) — Insert, upsert, update patterns
 - [CLI reference](docs/cli/README.md) — All commands and options
