@@ -115,6 +115,9 @@ where
     S: Storage + Clone + Send + Sync + 'static,
 {
     let ledger_id = record.ledger_id.as_str();
+    let content_store: std::sync::Arc<dyn ContentStore> = std::sync::Arc::new(
+        fluree_db_core::storage::content_store_for(storage.clone(), ledger_id),
+    );
     let span = tracing::debug_span!("index_build", ledger_id = ledger_id);
     async move {
         let commit_gap = record.commit_t - record.index_t;
@@ -162,7 +165,8 @@ where
                 "attempting incremental index"
             );
 
-            match incremental_index(storage, ledger_id, record, config.clone()).await {
+            match incremental_index(content_store.clone(), ledger_id, record, config.clone()).await
+            {
                 Ok(result) => {
                     return Ok(result);
                 }
@@ -271,38 +275,32 @@ where
 ///
 /// Loads the existing `IndexRoot`, resolves only new commits, merges
 /// novelty into affected FLI3 leaves, and publishes a new FIR6 root.
-async fn incremental_index<S>(
-    storage: &S,
+async fn incremental_index(
+    content_store: std::sync::Arc<dyn fluree_db_core::ContentStore>,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    build::incremental::incremental_index(storage, ledger_id, record, config).await
+) -> Result<IndexResult> {
+    build::incremental::incremental_index(content_store, ledger_id, record, config).await
 }
 
 /// Upload index artifacts (FLI3 leaves, FHS1 sidecars, FBR3 branches) to CAS.
-pub async fn upload_indexes_to_cas<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub async fn upload_indexes_to_cas(
+    content_store: &dyn fluree_db_core::ContentStore,
     build_result: &BuildResult,
 ) -> Result<UploadedIndexes> {
-    build::upload::upload_indexes_to_cas(storage, ledger_id, build_result).await
+    build::upload::upload_indexes_to_cas(content_store, build_result).await
 }
 
 /// Upload dictionary artifacts from persisted flat files to CAS.
-pub async fn upload_dicts_from_disk<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub async fn upload_dicts_from_disk(
+    content_store: &dyn fluree_db_core::ContentStore,
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
     trust_sorted_order_invariants: bool,
 ) -> Result<UploadedDicts> {
     build::upload_dicts::upload_dicts_from_disk(
-        storage,
-        ledger_id,
+        content_store,
         run_dir,
         namespace_codes,
         trust_sorted_order_invariants,

@@ -7,13 +7,13 @@
 use fluree_db_binary_index::{
     DictPackRefs, DictRefs, DictTreeRefs, PackBranchEntry, VectorDictRef,
 };
-use fluree_db_core::{ContentId, Storage};
+use fluree_db_core::{ContentId, ContentStore};
 
 use crate::error::{IndexerError, Result};
 use crate::run_index;
 
 use super::types::UploadedDicts;
-use super::upload::{cid_from_write, upload_dict_file};
+use super::upload::upload_dict_file;
 
 /// Output of a flushed reverse-index leaf: `(leaf_bytes, first_key, last_key, entry_count)`.
 type FlushedLeaf = (Vec<u8>, Vec<u8>, Vec<u8>, u32);
@@ -89,9 +89,8 @@ fn build_forward_pack_artifact(
 ///   - `needs_wide` = any local_id exceeds `u16::MAX`
 ///   - `string_watermark` = string entry count − 1 (IDs are 0..=N contiguous)
 #[allow(clippy::type_complexity)]
-pub async fn upload_dicts_from_disk<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub async fn upload_dicts_from_disk(
+    content_store: &dyn ContentStore,
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
     trust_sorted_order_invariants: bool,
@@ -259,8 +258,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                                     ))
                                                 },
                                             )?;
-                                        let cas_result = storage
-                                            .content_write_bytes(kind, ledger_id, &bytes)
+                                        let cas_result = content_store
+                                            .put(kind, &bytes)
                                             .await
                                             .map_err(|e| {
                                                 IndexerError::StorageWrite(e.to_string())
@@ -268,7 +267,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         current_pack_refs.push(PackBranchEntry {
                                             first_id,
                                             last_id,
-                                            pack_cid: cid_from_write(kind, &cas_result),
+                                            pack_cid: cas_result,
                                         });
                                         current_entries.clear();
                                         current_pack_est = 0;
@@ -292,14 +291,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 .map_err(|e| {
                                     IndexerError::StorageWrite(format!("subject pack build: {}", e))
                                 })?;
-                                let cas_result = storage
-                                    .content_write_bytes(kind, ledger_id, &bytes)
+                                let cas_result = content_store
+                                    .put(kind, &bytes)
                                     .await
                                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                                 current_pack_refs.push(PackBranchEntry {
                                     first_id,
                                     last_id,
-                                    pack_cid: cid_from_write(kind, &cas_result),
+                                    pack_cid: cas_result,
                                 });
                                 current_entries.clear();
                                 current_pack_est = 0;
@@ -328,8 +327,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                                     ))
                                                 },
                                             )?;
-                                        let cas_result = storage
-                                            .content_write_bytes(kind, ledger_id, &bytes)
+                                        let cas_result = content_store
+                                            .put(kind, &bytes)
                                             .await
                                             .map_err(|e| {
                                                 IndexerError::StorageWrite(e.to_string())
@@ -337,7 +336,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         current_pack_refs.push(PackBranchEntry {
                                             first_id,
                                             last_id,
-                                            pack_cid: cid_from_write(kind, &cas_result),
+                                            pack_cid: cas_result,
                                         });
                                         current_entries.clear();
                                         current_pack_est = 0;
@@ -361,14 +360,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                 .map_err(|e| {
                                     IndexerError::StorageWrite(format!("subject pack build: {}", e))
                                 })?;
-                                let cas_result = storage
-                                    .content_write_bytes(kind, ledger_id, &bytes)
+                                let cas_result = content_store
+                                    .put(kind, &bytes)
                                     .await
                                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                                 current_pack_refs.push(PackBranchEntry {
                                     first_id,
                                     last_id,
-                                    pack_cid: cid_from_write(kind, &cas_result),
+                                    pack_cid: cas_result,
                                 });
                                 current_entries.clear();
                                 current_pack_est = 0;
@@ -388,14 +387,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         .map_err(|e| {
                             IndexerError::StorageWrite(format!("subject pack build: {}", e))
                         })?;
-                        let cas_result = storage
-                            .content_write_bytes(kind, ledger_id, &bytes)
+                        let cas_result = content_store
+                            .put(kind, &bytes)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                         current_pack_refs.push(PackBranchEntry {
                             first_id,
                             last_id,
-                            pack_cid: cid_from_write(kind, &cas_result),
+                            pack_cid: cas_result,
                         });
                     }
                     subject_fwd_ns_packs.push((ns_code, current_pack_refs));
@@ -513,16 +512,17 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         lk
                                     },
                                 ) {
-                                    let cas_result = storage
-                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                    let cas_result = content_store
+                                        .put(kind, &leaf_bytes)
                                         .await
                                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                                    let address = cas_result.to_string();
+                                    leaf_cids.push(cas_result);
                                     branch_entries.push(BranchLeafEntry {
                                         first_key: fk,
                                         last_key: lk,
                                         entry_count,
-                                        address: cas_result.address,
+                                        address,
                                     });
                                 }
                             }
@@ -571,16 +571,17 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         lk
                                     },
                                 ) {
-                                    let cas_result = storage
-                                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                    let cas_result = content_store
+                                        .put(kind, &leaf_bytes)
                                         .await
                                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                                    let address = cas_result.to_string();
+                                    leaf_cids.push(cas_result);
                                     branch_entries.push(BranchLeafEntry {
                                         first_key: fk,
                                         last_key: lk,
                                         entry_count,
-                                        address: cas_result.address,
+                                        address,
                                     });
                                 }
                             }
@@ -602,16 +603,17 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         lk
                     },
                 ) {
-                    let cas_result = storage
-                        .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                    let cas_result = content_store
+                        .put(kind, &leaf_bytes)
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                    leaf_cids.push(cid_from_write(kind, &cas_result));
+                    let address = cas_result.to_string();
+                    leaf_cids.push(cas_result);
                     branch_entries.push(BranchLeafEntry {
                         first_key: fk,
                         last_key: lk,
                         entry_count,
-                        address: cas_result.address,
+                        address,
                     });
                 }
 
@@ -619,13 +621,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                     leaves: branch_entries,
                 };
                 let branch_bytes = branch.encode();
-                let branch_result = storage
-                    .content_write_bytes(kind, ledger_id, &branch_bytes)
+                let branch_result = content_store
+                    .put(kind, &branch_bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
                 Ok::<_, IndexerError>(DictTreeRefs {
-                    branch: cid_from_write(kind, &branch_result),
+                    branch: branch_result,
                     leaves: leaf_cids,
                 })?
             };
@@ -689,14 +691,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             .map_err(|e| {
                                 IndexerError::StorageWrite(format!("string pack build: {}", e))
                             })?;
-                            let cas_result = storage
-                                .content_write_bytes(kind, ledger_id, &bytes)
+                            let cas_result = content_store
+                                .put(kind, &bytes)
                                 .await
                                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                             pack_refs.push(PackBranchEntry {
                                 first_id,
                                 last_id,
-                                pack_cid: cid_from_write(kind, &cas_result),
+                                pack_cid: cas_result,
                             });
                             entries.clear();
                             pack_est = 0;
@@ -713,14 +715,14 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         .map_err(|e| {
                             IndexerError::StorageWrite(format!("string pack build: {}", e))
                         })?;
-                        let cas_result = storage
-                            .content_write_bytes(kind, ledger_id, &bytes)
+                        let cas_result = content_store
+                            .put(kind, &bytes)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                         pack_refs.push(PackBranchEntry {
                             first_id,
                             last_id,
-                            pack_cid: cid_from_write(kind, &cas_result),
+                            pack_cid: cas_result,
                         });
                     }
 
@@ -811,18 +813,19 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                             },
                                         )
                                     {
-                                        let cas_result = storage
-                                            .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                        let cas_result = content_store
+                                            .put(kind, &leaf_bytes)
                                             .await
                                             .map_err(|e| {
                                                 IndexerError::StorageWrite(e.to_string())
                                             })?;
-                                        leaf_cids.push(cid_from_write(kind, &cas_result));
+                                        let address = cas_result.to_string();
+                                        leaf_cids.push(cas_result);
                                         branch_entries.push(BranchLeafEntry {
                                             first_key: fk,
                                             last_key: lk,
                                             entry_count,
-                                            address: cas_result.address,
+                                            address,
                                         });
                                     }
                                 }
@@ -862,18 +865,19 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                             },
                                         )
                                     {
-                                        let cas_result = storage
-                                            .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                                        let cas_result = content_store
+                                            .put(kind, &leaf_bytes)
                                             .await
                                             .map_err(|e| {
                                                 IndexerError::StorageWrite(e.to_string())
                                             })?;
-                                        leaf_cids.push(cid_from_write(kind, &cas_result));
+                                        let address = cas_result.to_string();
+                                        leaf_cids.push(cas_result);
                                         branch_entries.push(BranchLeafEntry {
                                             first_key: fk,
                                             last_key: lk,
                                             entry_count,
-                                            address: cas_result.address,
+                                            address,
                                         });
                                     }
                                 }
@@ -888,16 +892,17 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         &mut chunk_bytes,
                         || str_fwd_data[last_off..(last_off + last_len)].to_vec(),
                     ) {
-                        let cas_result = storage
-                            .content_write_bytes(kind, ledger_id, &leaf_bytes)
+                        let cas_result = content_store
+                            .put(kind, &leaf_bytes)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                        leaf_cids.push(cid_from_write(kind, &cas_result));
+                        let address = cas_result.to_string();
+                        leaf_cids.push(cas_result);
                         branch_entries.push(BranchLeafEntry {
                             first_key: fk,
                             last_key: lk,
                             entry_count,
-                            address: cas_result.address,
+                            address,
                         });
                     }
 
@@ -905,13 +910,13 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                         leaves: branch_entries,
                     };
                     let branch_bytes = branch.encode();
-                    let branch_result = storage
-                        .content_write_bytes(kind, ledger_id, &branch_bytes)
+                    let branch_result = content_store
+                        .put(kind, &branch_bytes)
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
                     Ok::<_, IndexerError>(DictTreeRefs {
-                        branch: cid_from_write(kind, &branch_result),
+                        branch: branch_result,
                         leaves: leaf_cids,
                     })?
                 };
@@ -925,15 +930,15 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                 };
                 let empty_branch = DictBranch { leaves: vec![] };
                 let empty_bytes = empty_branch.encode();
-                let wr_rev = storage
-                    .content_write_bytes(kind_rev, ledger_id, &empty_bytes)
+                let wr_rev = content_store
+                    .put(kind_rev, &empty_bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 Ok((
                     0,
                     vec![], // no forward packs
                     DictTreeRefs {
-                        branch: cid_from_write(kind_rev, &wr_rev),
+                        branch: wr_rev,
                         leaves: vec![],
                     },
                 ))
@@ -965,9 +970,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                             if let Some(rest) = name_str.strip_prefix("p_") {
                                 if let Some(id_str) = rest.strip_suffix(".nba") {
                                     if let Ok(p_id) = id_str.parse::<u32>() {
-                                        let (cid, _) = upload_dict_file(
-                                            storage,
-                                            ledger_id,
+                                        let cid = upload_dict_file(
+                                            content_store,
                                             &entry.path(),
                                             DictKind::NumBig { p_id },
                                             "dict artifact uploaded to CAS (from disk)",
@@ -1041,9 +1045,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                         {
                                             let shard_path = vec_dir
                                                 .join(format!("p_{}_s_{}.vas", p_id, shard_idx));
-                                            let (shard_cid, shard_wr) = upload_dict_file(
-                                                storage,
-                                                ledger_id,
+                                            let shard_cid = upload_dict_file(
+                                                content_store,
                                                 &shard_path,
                                                 DictKind::VectorShard { p_id },
                                                 "dict artifact uploaded to CAS (from disk)",
@@ -1051,7 +1054,7 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                             .await?;
                                             shard_infos.push(
                                                 fluree_db_binary_index::arena::vector::ShardInfo {
-                                                    cas: shard_wr.address,
+                                                    cas: shard_cid.to_string(),
                                                     count: shard_info.count,
                                                 },
                                             );
@@ -1081,9 +1084,8 @@ pub async fn upload_dicts_from_disk<S: Storage>(
                                                     e
                                                 ))
                                             })?;
-                                        let (manifest_cid, _) = upload_dict_file(
-                                            storage,
-                                            ledger_id,
+                                        let manifest_cid = upload_dict_file(
+                                            content_store,
                                             &final_manifest_path,
                                             DictKind::VectorManifest { p_id },
                                             "dict artifact uploaded to CAS (from disk)",

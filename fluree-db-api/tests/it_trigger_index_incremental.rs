@@ -60,9 +60,26 @@ impl fluree_db_core::StorageRead for CountingStorage {
     }
 }
 
+impl CountingStorage {
+    /// Increment the appropriate counter based on what kind of artifact the
+    /// address points at. Used by both `write_bytes` and
+    /// `content_write_bytes_with_hash` so writes are counted regardless of
+    /// which entry point the indexer uses to upload a CAS blob.
+    fn note_address(&self, address: &str) {
+        if address.contains("/index/objects/leaves/") {
+            self.index_leaf_writes.fetch_add(1, Ordering::Relaxed);
+        } else if address.contains("/index/objects/branches/") {
+            self.index_branch_writes.fetch_add(1, Ordering::Relaxed);
+        } else if address.contains("/index/roots/") {
+            self.index_root_writes.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 #[async_trait]
 impl fluree_db_core::StorageWrite for CountingStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> fluree_db_core::error::Result<()> {
+        self.note_address(address);
         self.inner.write_bytes(address, bytes).await
     }
 
@@ -86,21 +103,12 @@ impl fluree_db_core::ContentAddressedWrite for CountingStorage {
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> fluree_db_core::error::Result<fluree_db_core::storage::ContentWriteResult> {
-        match kind {
-            ContentKind::IndexLeaf => {
-                self.index_leaf_writes.fetch_add(1, Ordering::Relaxed);
-            }
-            ContentKind::IndexBranch => {
-                self.index_branch_writes.fetch_add(1, Ordering::Relaxed);
-            }
-            ContentKind::IndexRoot => {
-                self.index_root_writes.fetch_add(1, Ordering::Relaxed);
-            }
-            _ => {}
-        }
-        self.inner
+        let result = self
+            .inner
             .content_write_bytes_with_hash(kind, ledger_id, content_hash_hex, bytes)
-            .await
+            .await?;
+        self.note_address(&result.address);
+        Ok(result)
     }
 }
 

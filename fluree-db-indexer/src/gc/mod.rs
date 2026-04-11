@@ -40,9 +40,7 @@ pub use collector::clean_garbage;
 pub use record::GarbageRecord;
 
 use crate::error::Result;
-use fluree_db_core::{
-    ContentAddressedWrite, ContentId, ContentKind, Storage, CODEC_FLUREE_GARBAGE,
-};
+use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
 
 /// Default maximum number of old indexes to retain
 pub const DEFAULT_MAX_OLD_INDEXES: u32 = 5;
@@ -79,8 +77,8 @@ pub struct CleanGarbageResult {
 /// Includes a wall-clock `created_at_ms` timestamp for time-based GC retention.
 ///
 /// Returns the `ContentId` of the written garbage record.
-pub async fn write_garbage_record<S: ContentAddressedWrite>(
-    storage: &S,
+pub async fn write_garbage_record(
+    content_store: &dyn ContentStore,
     ledger_id: &str,
     t: i64,
     garbage_cid_strings: Vec<String>,
@@ -105,12 +103,11 @@ pub async fn write_garbage_record<S: ContentAddressedWrite>(
     };
 
     let bytes = serde_json::to_vec(&record)?;
-    let res = storage
-        .content_write_bytes(ContentKind::GarbageRecord, ledger_id, &bytes)
+    let cid = content_store
+        .put(ContentKind::GarbageRecord, &bytes)
         .await?;
 
-    let cid = ContentId::from_hex_digest(CODEC_FLUREE_GARBAGE, &res.content_hash);
-    Ok(cid)
+    Ok(Some(cid))
 }
 
 /// Load a garbage record from storage.
