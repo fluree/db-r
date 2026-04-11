@@ -22,7 +22,7 @@ use fluree_db_query::VarRegistry;
 use fluree_graph_json_ld::{details, expand_with_context, parse_context, ParsedContext};
 use fluree_vocab::{
     rdf::{self, TYPE},
-    rdf_names, xsd, xsd_names,
+    rdf_names,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -740,44 +740,7 @@ pub(crate) fn expand_datatype_iri(type_iri: &str, context: &ParsedContext) -> St
 }
 
 fn expand_builtin_xsd_datatype(local: &str) -> Option<&'static str> {
-    Some(match local {
-        xsd_names::STRING => xsd::STRING,
-        xsd_names::INTEGER => xsd::INTEGER,
-        xsd_names::LONG => xsd::LONG,
-        xsd_names::INT => xsd::INT,
-        xsd_names::SHORT => xsd::SHORT,
-        xsd_names::BYTE => xsd::BYTE,
-        xsd_names::UNSIGNED_LONG => xsd::UNSIGNED_LONG,
-        xsd_names::UNSIGNED_INT => xsd::UNSIGNED_INT,
-        xsd_names::UNSIGNED_SHORT => xsd::UNSIGNED_SHORT,
-        xsd_names::UNSIGNED_BYTE => xsd::UNSIGNED_BYTE,
-        xsd_names::NON_NEGATIVE_INTEGER => xsd::NON_NEGATIVE_INTEGER,
-        xsd_names::POSITIVE_INTEGER => xsd::POSITIVE_INTEGER,
-        xsd_names::NON_POSITIVE_INTEGER => xsd::NON_POSITIVE_INTEGER,
-        xsd_names::NEGATIVE_INTEGER => xsd::NEGATIVE_INTEGER,
-        xsd_names::DECIMAL => xsd::DECIMAL,
-        xsd_names::FLOAT => xsd::FLOAT,
-        xsd_names::DOUBLE => xsd::DOUBLE,
-        xsd_names::BOOLEAN => xsd::BOOLEAN,
-        xsd_names::DATE_TIME => xsd::DATE_TIME,
-        xsd_names::DATE => xsd::DATE,
-        xsd_names::TIME => xsd::TIME,
-        xsd_names::G_YEAR => xsd::G_YEAR,
-        xsd_names::G_YEAR_MONTH => xsd::G_YEAR_MONTH,
-        xsd_names::G_MONTH => xsd::G_MONTH,
-        xsd_names::G_DAY => xsd::G_DAY,
-        xsd_names::G_MONTH_DAY => xsd::G_MONTH_DAY,
-        xsd_names::DURATION => xsd::DURATION,
-        xsd_names::DAY_TIME_DURATION => xsd::DAY_TIME_DURATION,
-        xsd_names::YEAR_MONTH_DURATION => xsd::YEAR_MONTH_DURATION,
-        xsd_names::ANY_URI => xsd::ANY_URI,
-        xsd_names::NORMALIZED_STRING => xsd::NORMALIZED_STRING,
-        xsd_names::TOKEN => xsd::TOKEN,
-        xsd_names::LANGUAGE => xsd::LANGUAGE,
-        xsd_names::BASE64_BINARY => xsd::BASE64_BINARY,
-        xsd_names::HEX_BINARY => xsd::HEX_BINARY,
-        _ => return None,
-    })
+    fluree_vocab::datatype::KnownDatatype::from_xsd_local(local).map(|dt| dt.canonical_form())
 }
 
 fn normalize_context_value(context_val: &Value) -> Value {

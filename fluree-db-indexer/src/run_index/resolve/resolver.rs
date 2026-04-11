@@ -554,11 +554,17 @@ impl CommitResolver {
                 dt_ns,
                 dt_name,
             } => {
-                // Store the value as a string, with custom datatype
+                // Store the value as a string, with custom datatype.
+                //
+                // NOTE: Legacy v3 datatype canonicalization (rewriting
+                // corrupt shapes like `EMPTY + "xsd:string"` to
+                // canonical `(XSD, "string")`) is applied at decode time
+                // by `legacy_v3::read_commit_v3` / `read_commit_envelope_v3`
+                // before the envelope reaches this point. By the time the
+                // resolver sees `TxnMetaValue::TypedLiteral`, both v3 and
+                // v4 commits carry canonical `(dt_ns, dt_name)` pairs.
                 let str_id = dicts.strings.get_or_insert(value)?;
                 let dt_prefix = self.lookup_prefix(*dt_ns);
-                let (dt_prefix, dt_name) =
-                    canonicalize_datatype_curie(dt_prefix, dt_name).unwrap_or((dt_prefix, dt_name));
                 let dt_id = dicts.datatypes.get_or_insert_parts(dt_prefix, dt_name);
                 // Match resolve_single_op()'s u8 constraint for format consistency
                 if dt_id > u8::MAX as u32 {
@@ -597,11 +603,14 @@ impl CommitResolver {
         // 3. Resolve predicate
         let p_id = self.resolve_predicate(op.p_ns_code, op.p_name, dicts);
 
-        // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID)
+        // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID).
+        //
+        // V3 legacy canonicalization has already been applied at iteration
+        // time by `CommitOps::for_each_op` when the ops came from
+        // `legacy_v3::load_commit_ops_v3`; v4 ops come through clean. Either
+        // way, `(op.dt_ns_code, op.dt_name)` here is guaranteed canonical.
         let prefix = self.lookup_prefix(op.dt_ns_code);
-        let (prefix, dt_name) =
-            canonicalize_datatype_curie(prefix, op.dt_name).unwrap_or((prefix, op.dt_name));
-        let dt_id = dicts.datatypes.get_or_insert_parts(prefix, dt_name);
+        let dt_id = dicts.datatypes.get_or_insert_parts(prefix, op.dt_name);
         // Bulk import path: enforce u8 dt ids for now (imports are allowed to error here).
         // Operationally, the binary format supports widening dt to u16.
         if dt_id > u8::MAX as u32 {
@@ -928,46 +937,6 @@ impl Default for CommitResolver {
 }
 
 // ============================================================================
-// Datatype CURIE canonicalization
-// ============================================================================
-
-/// Expand a CURIE-form datatype to its canonical full IRI.
-///
-/// Some legacy commits store datatypes as un-expanded CURIEs (e.g. `"xsd:string"`
-/// instead of splitting into ns_code → `"http://www.w3.org/2001/XMLSchema#"` + name
-/// `"string"`). When the prefix is empty and the name is a CURIE, the resolver would
-/// otherwise insert a literal `"xsd:string"` into the datatype dictionary — a different
-/// entry from the canonical `"http://www.w3.org/2001/XMLSchema#string"`. This causes
-/// retracts to miss their matching asserts (different dt_id → different OType).
-///
-/// Returns `Some((canonical_prefix, canonical_name))` when expansion is needed, or
-/// `None` when the inputs are already canonical and can be used as-is. This avoids
-/// any allocation in the common (correct) case.
-fn canonicalize_datatype_curie<'a>(prefix: &str, name: &'a str) -> Option<(&'static str, &'a str)> {
-    // Only CURIEs to expand when prefix is empty (no namespace code resolved).
-    if !prefix.is_empty() {
-        return None;
-    }
-    // Also handle the old `@json` / `@vector` / `@fulltext` shorthands that some
-    // legacy commits may contain in the datatype field.
-    if let Some(local) = name.strip_prefix("xsd:") {
-        Some((fluree_vocab::xsd::NS, local))
-    } else if let Some(local) = name.strip_prefix("rdf:") {
-        Some((fluree_vocab::rdf::NS, local))
-    } else if let Some(local) = name.strip_prefix("rdfs:") {
-        Some((fluree_vocab::rdfs::NS, local))
-    } else if name == "@json" {
-        Some((fluree_vocab::rdf::NS, "JSON"))
-    } else if name == "@vector" {
-        Some((fluree_vocab::fluree::DB, "embeddingVector"))
-    } else if name == "@fulltext" {
-        Some((fluree_vocab::fluree::DB, "fullText"))
-    } else {
-        None
-    }
-}
-
-// ============================================================================
 // SharedResolverState + RebuildChunk (commit-based rebuild pipeline)
 // ============================================================================
 
@@ -1179,13 +1148,18 @@ impl SharedResolverState {
     }
 
     /// Insert or look up a datatype, recording its ValueTypeTag deterministically.
+    ///
+    /// The caller is responsible for passing a canonical `(ns_code, name)`
+    /// pair. V3 legacy canonicalization is applied at v3 raw-op iteration
+    /// time (see `CommitOps::for_each_op`), so every caller in the rebuild
+    /// pipeline hands this function a clean pair regardless of on-disk
+    /// commit format.
     fn resolve_datatype(&mut self, ns_code: u16, name: &str) -> u32 {
         let prefix = self
             .ns_prefixes
             .get(&ns_code)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let (prefix, name) = canonicalize_datatype_curie(prefix, name).unwrap_or((prefix, name));
         let dt_id = self.datatypes.get_or_insert_parts(prefix, name);
         // Grow dt_tags if this is a new entry.
         if dt_id as usize >= self.dt_tags.len() {
@@ -1984,8 +1958,8 @@ mod tests {
     use fluree_db_core::commit::codec::format::{
         self, CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN,
     };
+    use fluree_db_core::commit::codec::load_commit_ops;
     use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
-    use fluree_db_core::commit::codec::raw_reader::load_commit_ops;
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 
     /// In-memory V1 record collector for tests.
@@ -2624,4 +2598,5 @@ mod tests {
             "txn-meta graph must be first entry (dict id=0, g_id=0+1=1)"
         );
     }
+
 }
