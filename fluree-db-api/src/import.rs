@@ -2764,12 +2764,15 @@ where
         );
     }
 
+    // Shared content store for dict upload, index upload, and other CAS operations.
+    let content_store: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
+        fluree_db_core::storage::content_store_for(storage.clone(), alias),
+    );
+
     // Start dict upload (reads flat files from run_dir, builds CoW trees, uploads to CAS).
     // This runs concurrently with the index builds below.
     let dict_upload_handle = {
-        let content_store: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
-            fluree_db_core::storage::content_store_for(storage.clone(), alias),
-        );
+        let content_store = content_store.clone();
         let run_dir = input.run_dir.to_path_buf();
         let namespace_codes = input.namespace_codes.clone();
         tokio::spawn(async move {
@@ -3056,13 +3059,8 @@ where
             stage: "Uploading index artifacts",
         });
         let upload_indexes_start = Instant::now();
-        let upload_indexes_cs: std::sync::Arc<dyn fluree_db_core::ContentStore> =
-            std::sync::Arc::new(fluree_db_core::storage::content_store_for(
-                storage.clone(),
-                alias,
-            ));
         let v3_uploaded =
-            fluree_db_indexer::upload_indexes_to_cas(upload_indexes_cs.as_ref(), &v3_result)
+            fluree_db_indexer::upload_indexes_to_cas(content_store.as_ref(), &v3_result)
                 .await
                 .map_err(|e| ImportError::Upload(e.to_string()))?;
         tracing::info!(

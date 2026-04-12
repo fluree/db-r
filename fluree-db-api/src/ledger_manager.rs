@@ -30,9 +30,7 @@ use fluree_db_binary_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_core::db::{LedgerSnapshot, LedgerSnapshotMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::trace_commits_by_id;
-use fluree_db_core::{
-    ledger_id::normalize_ledger_id, ContentId, ContentStore, StorageBackend,
-};
+use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, StorageBackend};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
@@ -381,16 +379,20 @@ impl LedgerHandle {
             let state = self.inner.state.lock().await;
             state.snapshot.ledger_id.clone()
         };
-        let cs: Arc<dyn ContentStore> = backend.content_store_dyn(&ledger_id);
+        let cs: Arc<dyn ContentStore> = backend.content_store(&ledger_id);
         let bytes = cs
             .get(index_id)
             .await
             .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
 
-        let mut store =
-            BinaryIndexStore::load_from_root_bytes(Arc::clone(&cs), &bytes, cache_dir, leaflet_cache)
-                .await
-                .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+        let mut store = BinaryIndexStore::load_from_root_bytes(
+            Arc::clone(&cs),
+            &bytes,
+            cache_dir,
+            leaflet_cache,
+        )
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
         // Build metadata-only LedgerSnapshot from FIR6 root.
         let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
@@ -570,7 +572,7 @@ pub(crate) async fn load_and_attach_binary_store(
         None => return Ok(None),
     };
 
-    let cs: Arc<dyn ContentStore> = backend.content_store_dyn(&state.snapshot.ledger_id);
+    let cs: Arc<dyn ContentStore> = backend.content_store(&state.snapshot.ledger_id);
     let bytes = cs
         .get(&index_cid)
         .await
@@ -588,9 +590,10 @@ pub(crate) async fn load_and_attach_binary_store(
         state.snapshot.string_watermark,
     ));
 
-    let mut store = BinaryIndexStore::load_from_root_bytes(Arc::clone(&cs), &bytes, cache_dir, leaflet_cache)
-        .await
-        .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+    let mut store =
+        BinaryIndexStore::load_from_root_bytes(Arc::clone(&cs), &bytes, cache_dir, leaflet_cache)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
     // Sync namespace codes between store and snapshot (bimap validation).
     crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
@@ -635,7 +638,6 @@ pub(crate) async fn load_and_attach_binary_store(
             .as_ref()
             .and_then(|r| r.default_context.as_ref())
         {
-            let cs = backend.content_store_dyn(&state.snapshot.ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),
@@ -1383,7 +1385,7 @@ where
                 );
 
                 let ledger_id_canonical = handle.ledger_id().to_string();
-                let cs: Arc<dyn ContentStore> = self.backend.content_store_dyn(&ledger_id_canonical);
+                let cs: Arc<dyn ContentStore> = self.backend.content_store(&ledger_id_canonical);
 
                 // Load commits outside any lock.
                 // trace_commits_by_id walks HEAD → oldest, stopping at local_t.
