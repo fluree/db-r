@@ -1149,11 +1149,7 @@ where
 
     let ledger_addr = ledger.ledger_id().to_string();
     let cs: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
-        fluree_db_core::StorageContentStore::new(
-            storage.clone(),
-            &ledger_addr,
-            storage.storage_method(),
-        ),
+        fluree_db_core::content_store_for(storage.clone(), &ledger_addr),
     );
 
     // Use the ledger's reindex_max_bytes as the commit-walk byte budget
@@ -1239,11 +1235,7 @@ where
 {
     let ledger_addr = ledger.ledger_id().to_string();
     let cs: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
-        fluree_db_core::StorageContentStore::new(
-            storage.clone(),
-            &ledger_addr,
-            storage.storage_method(),
-        ),
+        fluree_db_core::content_store_for(storage.clone(), &ledger_addr),
     );
 
     let result = if let Some(record) = current_ns_record(&ledger) {
