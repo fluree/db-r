@@ -1123,7 +1123,9 @@ where
                 .fluree
                 .backend()
                 .admin_storage_cloned()
-                .expect("ledger_info requires a managed storage backend");
+                .ok_or_else(|| {
+                    ApiError::config("ledger_info requires a managed storage backend")
+                })?;
             let json =
                 build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
                     .await
@@ -1140,7 +1142,7 @@ where
             .fluree
             .backend()
             .admin_storage_cloned()
-            .expect("ledger_info requires a managed storage backend");
+            .ok_or_else(|| ApiError::config("ledger_info requires a managed storage backend"))?;
         build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
             .await
             .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
