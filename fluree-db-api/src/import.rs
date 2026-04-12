@@ -31,7 +31,7 @@
 //! even though chunk parsing is parallel.
 
 use crate::error::ApiError;
-use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind, ContentStore, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1425,7 +1425,7 @@ where
         commit_metas: &mut Vec<CommitMeta>,
     ) -> std::result::Result<usize, ImportError>
     where
-        S: Storage + ContentAddressedWrite,
+        S: Storage,
         N: NameService + Publisher,
     {
         // Serial commit loop: receive parsed chunks, reorder, finalize in order.
