@@ -37,7 +37,6 @@ where
             .cloned()
         {
             if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
-                let storage = self.storage();
                 // Use the NsRecord's ledger_id (canonical namespace) rather than
                 // snapshot.ledger_id, which may reflect the source ledger after
                 // a pack import/clone into a differently-named destination.
@@ -46,7 +45,7 @@ where
                     .as_ref()
                     .map(|r| r.ledger_id.as_str())
                     .unwrap_or(state.snapshot.ledger_id.as_str());
-                let cs = fluree_db_core::content_store_for(storage.clone(), ns_ledger_id);
+                let cs = self.content_store(ns_ledger_id);
                 let bytes = cs.get(&index_cid).await.map_err(|e| {
                     ApiError::internal(format!(
                         "failed to read binary index root for {}: {}",
@@ -55,12 +54,10 @@ where
                 })?;
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let cs = std::sync::Arc::new(cs);
 
                 // Load BinaryIndexStore from FIR6 root.
-                let cs_dyn: Arc<dyn fluree_db_core::ContentStore> = Arc::clone(&cs) as _;
                 let mut binary_index_store = BinaryIndexStore::load_from_root_bytes(
-                    cs_dyn,
+                    Arc::clone(&cs),
                     &bytes,
                     &cache_dir,
                     Some(Arc::clone(&self.leaflet_cache)),
@@ -364,9 +361,10 @@ where
         use fluree_db_core::storage::content_address;
         use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
 
-        let storage = self.storage().clone();
+        let storage = self.backend().admin_storage_cloned()
+            .expect("copy_index_to_branch requires a managed storage backend");
         let method = storage.storage_method();
-        let source_store = fluree_db_core::content_store_for(storage.clone(), source_id);
+        let source_store = self.content_store(source_id);
 
         // Read and parse the index root
         let root_bytes = source_store.get(index_cid).await.map_err(|e| {

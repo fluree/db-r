@@ -38,9 +38,7 @@ pub async fn run(
         .ok_or_else(|| CliError::NotFound(format!("ledger '{}' has no commits", alias)))?;
 
     // Walk commit chain by CID
-    let storage = fluree.storage().clone();
-    let prefix = ledger_id.clone();
-    let store = fluree_db_core::bridge_content_store(storage, &prefix, "file");
+    let store = fluree.content_store(&ledger_id);
     let stream: std::pin::Pin<
         Box<dyn futures::Stream<Item = fluree_db_core::Result<fluree_db_core::Commit>>>,
     > = Box::pin(fluree_db_core::trace_commits_by_id(

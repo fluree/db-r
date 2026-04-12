@@ -120,8 +120,7 @@ where
 
         // If we have a suitable snapshot, load and return it
         if let Some(entry) = selection {
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             let bytes = cs
                 .get(&entry.snapshot_id)
                 .await
@@ -163,10 +162,7 @@ where
             let selection = manifest.select_snapshot(effective_as_of_t);
 
             if let Some(entry) = selection {
-                let cs = fluree_db_core::content_store_for(
-                    self.fluree.storage().clone(),
-                    graph_source_id,
-                );
+                let cs = self.fluree.content_store(graph_source_id);
                 let bytes = cs
                     .get(&entry.snapshot_id)
                     .await
@@ -352,8 +348,7 @@ where
 
         // Load snapshot bytes
         let snapshot_bytes = if let Some(entry) = selection {
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             cs.get(&entry.snapshot_id)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
@@ -377,8 +372,7 @@ where
                 ))
             })?;
 
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             cs.get(&entry.snapshot_id)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
@@ -579,7 +573,7 @@ where
         };
 
         // Load and deserialize via content store
-        let cs = fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+        let cs = self.fluree.content_store(graph_source_id);
         let bytes = cs
             .get(&index_id)
             .await

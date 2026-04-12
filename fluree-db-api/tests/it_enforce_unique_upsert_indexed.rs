@@ -72,7 +72,7 @@ async fn config_graph_survives_indexing() {
     let mut fluree = FlureeBuilder::file(path).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -169,7 +169,7 @@ async fn upsert_enforce_unique_self_conflict_after_indexing() {
     let mut fluree = FlureeBuilder::file(path).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -267,7 +267,7 @@ async fn upsert_enforce_unique_urn_iris_after_indexing() {
     let mut fluree = FlureeBuilder::file(path).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -378,7 +378,7 @@ async fn failed_unique_violation_no_corruption_after_indexing() {
     let mut fluree = FlureeBuilder::file(path).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

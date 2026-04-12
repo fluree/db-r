@@ -1145,10 +1145,7 @@ where
         index_config: &IndexConfig,
         commit_opts: CommitOpts,
     ) -> Result<(CommitReceipt, LedgerState)> {
-        let content_store = fluree_db_core::content_store_for(
-            self.storage().clone(),
-            view.db().ledger_id.as_str(),
-        );
+        let content_store = self.content_store(view.db().ledger_id.as_str());
         let (receipt, ledger) = commit_txn(
             view,
             ns_registry,

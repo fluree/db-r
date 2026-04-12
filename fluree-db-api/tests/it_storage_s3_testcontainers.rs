@@ -294,7 +294,7 @@ async fn s3_testcontainers_indexing_test() {
 
     // Start background indexing worker + handle (LocalSet since worker may be !Send)
     let (local, handle) = support::start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         IndexerConfig::small(),
     );

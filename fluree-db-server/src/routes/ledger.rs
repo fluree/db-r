@@ -542,26 +542,18 @@ pub async fn info(
             opts.include_property_estimates = enabled;
         }
 
-        let mut info = match &state.fluree {
-            crate::state::FlureeInstance::File(f) => {
-                fluree_db_api::ledger_info::build_ledger_info_with_options(
-                    &ledger_state,
-                    f.storage(),
-                    None,
-                    opts,
-                )
-                .await
-            }
-            crate::state::FlureeInstance::Proxy(p) => {
-                fluree_db_api::ledger_info::build_ledger_info_with_options(
-                    &ledger_state,
-                    p.storage(),
-                    None,
-                    opts,
-                )
-                .await
-            }
-        }
+        let admin_storage = state
+            .fluree
+            .backend()
+            .admin_storage_cloned()
+            .expect("ledger_info requires a managed storage backend");
+        let mut info = fluree_db_api::ledger_info::build_ledger_info_with_options(
+            &ledger_state,
+            &admin_storage,
+            None,
+            opts,
+        )
+        .await
         .map_err(|e| {
             set_span_error_code(&span, "error:InternalError");
             tracing::error!(error = %e, "failed to build ledger info");

@@ -270,6 +270,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
 
     // Resolve local head.
     let fluree = context::build_fluree(dirs)?;
+    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
     let local_ref = fluree
         .nameservice()
         .get_ref(&ledger_id, RefKind::CommitHead)
@@ -342,7 +343,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
                                             &header,
                                             buf_tail,
                                             &mut body_stream,
-                                            fluree.storage(),
+                                            &storage,
                                             &ledger_id,
                                         )
                                         .await
@@ -368,7 +369,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
                                             Ok(Some(resp2)) => {
                                                 ingest_pack_stream(
                                                     resp2,
-                                                    fluree.storage(),
+                                                    &storage,
                                                     &ledger_id,
                                                 )
                                                 .await
@@ -389,7 +390,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
                                         &header,
                                         buf_tail,
                                         &mut body_stream,
-                                        fluree.storage(),
+                                        &storage,
                                         &ledger_id,
                                     )
                                     .await
@@ -670,8 +671,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
     })?;
 
     // Use ContentStore for CID-based chain walking (storage-agnostic).
-    let content_store =
-        fluree.content_store(&ledger_id);
+    let content_store = fluree.content_store(&ledger_id);
 
     let mut to_push_cids: Vec<fluree_db_core::ContentId> = Vec::new();
 
@@ -875,8 +875,7 @@ pub async fn run_publish(
     })?;
 
     // Walk the full commit chain (oldest → newest).
-    let content_store =
-        fluree.content_store(&ledger_id);
+    let content_store = fluree.content_store(&ledger_id);
 
     let mut to_push_cids: Vec<fluree_db_core::ContentId> = Vec::new();
     {
@@ -1045,6 +1044,7 @@ pub async fn run_clone(
 
     // Create the local ledger.
     let fluree = context::build_fluree(dirs)?;
+    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
     fluree
         .create_ledger(&local_id)
         .await
@@ -1099,7 +1099,7 @@ pub async fn run_clone(
                                             &header,
                                             buf_tail,
                                             &mut body_stream,
-                                            fluree.storage(),
+                                            &storage,
                                             &local_id,
                                         )
                                         .await
@@ -1117,7 +1117,7 @@ pub async fn run_clone(
                                             Ok(Some(resp2)) => {
                                                 ingest_pack_stream(
                                                     resp2,
-                                                    fluree.storage(),
+                                                    &storage,
                                                     &local_id,
                                                 )
                                                 .await
@@ -1137,7 +1137,7 @@ pub async fn run_clone(
                                         &header,
                                         buf_tail,
                                         &mut body_stream,
-                                        fluree.storage(),
+                                        &storage,
                                         &local_id,
                                     )
                                     .await
@@ -1345,6 +1345,7 @@ pub async fn run_clone_origin(
 
     // 4. Create the local ledger.
     let fluree = context::build_fluree(dirs)?;
+    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
     fluree
         .create_ledger(&local_id)
         .await
@@ -1371,8 +1372,7 @@ pub async fn run_clone_origin(
     );
 
     // 5. Fetch commit chain — try pack protocol first (single round-trip).
-    let content_store =
-        fluree.content_store(&local_id);
+    let content_store = fluree.content_store(&local_id);
     let mut commits_fetched = 0usize;
     let mut index_artifacts_fetched = 0usize;
 
@@ -1405,7 +1405,7 @@ pub async fn run_clone_origin(
                                 &header,
                                 buf_tail,
                                 &mut body_stream,
-                                fluree.storage(),
+                                &storage,
                                 &local_id,
                             )
                             .await
@@ -1415,7 +1415,7 @@ pub async fn run_clone_origin(
                             let commits_only = PackRequest::commits(vec![head_cid.clone()], vec![]);
                             match fetcher.fetch_pack_response(&ledger_id, &commits_only).await {
                                 Ok(Some(resp2)) => {
-                                    ingest_pack_stream(resp2, fluree.storage(), &local_id).await
+                                    ingest_pack_stream(resp2, &storage, &local_id).await
                                 }
                                 Ok(None) => {
                                     Err(fluree_db_nameservice_sync::SyncError::PackNotSupported)
@@ -1428,7 +1428,7 @@ pub async fn run_clone_origin(
                             &header,
                             buf_tail,
                             &mut body_stream,
-                            fluree.storage(),
+                            &storage,
                             &local_id,
                         )
                         .await
@@ -1508,8 +1508,7 @@ pub async fn run_clone_origin(
                 }
 
                 // Store commit blob locally.
-                fluree
-                    .storage()
+                storage
                     .content_write_bytes(ContentKind::Commit, &local_id, &bytes)
                     .await
                     .map_err(|e| CliError::Config(format!("clone failed (store commit): {e}")))?;
@@ -1650,6 +1649,7 @@ async fn run_pull_via_origins(
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     let fluree = context::build_fluree(dirs)?;
+    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
 
     let ns_record = fluree
         .nameservice()
@@ -1669,8 +1669,7 @@ async fn run_pull_via_origins(
     })?;
 
     // Load LedgerConfig from local CAS.
-    let content_store =
-        fluree.content_store(ledger_id);
+    let content_store = fluree.content_store(ledger_id);
     let config_bytes = content_store.get(&config_id).await.map_err(|e| {
         CliError::Config(format!("failed to load LedgerConfig from local CAS: {e}"))
     })?;
@@ -1762,7 +1761,7 @@ async fn run_pull_via_origins(
                                 &header,
                                 buf_tail,
                                 &mut body_stream,
-                                fluree.storage(),
+                                &storage,
                                 ledger_id,
                             )
                             .await
@@ -1775,7 +1774,7 @@ async fn run_pull_via_origins(
                                 PackRequest::commits(vec![remote_head_cid.clone()], have);
                             match fetcher.fetch_pack_response(ledger_id, &commits_only).await {
                                 Ok(Some(resp2)) => {
-                                    ingest_pack_stream(resp2, fluree.storage(), ledger_id).await
+                                    ingest_pack_stream(resp2, &storage, ledger_id).await
                                 }
                                 Ok(None) => {
                                     Err(fluree_db_nameservice_sync::SyncError::PackNotSupported)
@@ -1788,7 +1787,7 @@ async fn run_pull_via_origins(
                             &header,
                             buf_tail,
                             &mut body_stream,
-                            fluree.storage(),
+                            &storage,
                             ledger_id,
                         )
                         .await
@@ -1941,8 +1940,7 @@ async fn run_pull_via_origins(
     // Reverse to oldest→newest, store blobs.
     fetched.reverse();
     for fc in &fetched {
-        fluree
-            .storage()
+        storage
             .content_write_bytes(ContentKind::Commit, ledger_id, &fc.bytes)
             .await
             .map_err(|e| CliError::Config(format!("pull failed (store commit): {e}")))?;

@@ -248,16 +248,14 @@ pub async fn trigger_index_and_wait_outcome(
 /// - `handle.trigger(ledger_id, receipt.t)`
 /// - `completion.wait().await`
 #[cfg(feature = "native")]
-pub fn start_background_indexer_local<S, N>(
-    storage: S,
+pub fn start_background_indexer_local<N>(
+    backend: fluree_db_core::StorageBackend,
     nameservice: N,
     config: fluree_db_indexer::IndexerConfig,
 ) -> (LocalSet, fluree_db_indexer::IndexerHandle)
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + Clone + 'static,
 {
-    let backend = fluree_db_core::StorageBackend::Managed(Arc::new(storage));
     let (worker, handle) =
         fluree_db_api::BackgroundIndexerWorker::new(backend, Arc::new(nameservice), config);
 

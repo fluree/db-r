@@ -28,7 +28,6 @@ use fluree_db_core::pack::{
 use fluree_db_core::commit::codec::envelope::decode_envelope;
 use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
 pub use fluree_db_core::pack::PackRequest;
-use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore};
 use fluree_db_nameservice::{NameService, RefPublisher};
 use std::collections::HashSet;
@@ -327,7 +326,7 @@ where
     N: NameService + RefPublisher + Send + Sync,
 {
     let ledger_id = handle.ledger_id();
-    let content_store = content_store_for(fluree.storage().clone(), ledger_id);
+    let content_store = fluree.content_store(ledger_id);
 
     // --- Early validation: verify all want CIDs exist ---
     for want_cid in &request.want {

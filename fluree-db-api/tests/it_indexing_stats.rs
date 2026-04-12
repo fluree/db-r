@@ -119,7 +119,7 @@ async fn property_and_class_statistics_persist_in_db_root() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -169,7 +169,7 @@ async fn property_and_class_statistics_persist_in_db_root() {
             assert!(index_t >= commit_t);
             let root_cid = root_id.expect("expected root_id after indexing");
 
-            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
+            let loaded = load_ledger_snapshot(fluree.backend().admin_storage_arc().expect("test uses managed backend"), &root_cid, ledger_id)
             .await
             .expect("load_ledger_snapshot(root_cid)");
 
@@ -202,7 +202,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -263,9 +263,16 @@ async fn class_statistics_decrement_after_delete_refresh() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded2 = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
-                .await
-                .expect("load_ledger_snapshot(root_cid)");
+            let loaded2 = load_ledger_snapshot(
+                fluree
+                    .backend()
+                    .admin_storage_arc()
+                    .expect("test uses managed backend"),
+                &root_cid,
+                ledger_id,
+            )
+            .await
+            .expect("load_ledger_snapshot(root_cid)");
             assert_eq!(class_count(&loaded2, "http://example.org/Person"), Some(2));
         })
         .await;
@@ -277,7 +284,7 @@ async fn statistics_work_with_memory_storage_when_indexed() {
     let mut fluree = FlureeBuilder::memory().build_memory();
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -318,9 +325,16 @@ async fn statistics_work_with_memory_storage_when_indexed() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
-                .await
-                .expect("load_ledger_snapshot(root_cid)");
+            let loaded = load_ledger_snapshot(
+                fluree
+                    .backend()
+                    .admin_storage_arc()
+                    .expect("test uses managed backend"),
+                &root_cid,
+                ledger_id,
+            )
+            .await
+            .expect("load_ledger_snapshot(root_cid)");
 
             assert_eq!(property_count(&loaded, "http://example.org/name"), Some(2));
             assert_eq!(property_count(&loaded, "http://example.org/age"), Some(1));
@@ -360,7 +374,7 @@ async fn ledger_info_api_returns_expected_structure() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -625,7 +639,7 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -780,7 +794,7 @@ async fn ledger_info_property_datatypes_option_merges_novelty() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -893,7 +907,7 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1002,7 +1016,7 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1251,7 +1265,7 @@ async fn ndv_cardinality_estimates_are_accurate() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1305,9 +1319,16 @@ async fn ndv_cardinality_estimates_are_accurate() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
-                .await
-                .expect("load_ledger_snapshot(root_cid)");
+            let loaded = load_ledger_snapshot(
+                fluree
+                    .backend()
+                    .admin_storage_arc()
+                    .expect("test uses managed backend"),
+                &root_cid,
+                ledger_id,
+            )
+            .await
+            .expect("load_ledger_snapshot(root_cid)");
 
             let name_ndv_values = loaded
                 .stats
@@ -1404,7 +1425,7 @@ async fn selectivity_calculation_is_correct() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1509,7 +1530,7 @@ async fn multi_class_entities_tracked_correctly() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1622,7 +1643,7 @@ async fn class_property_type_distribution_tracked() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1744,7 +1765,7 @@ async fn large_dataset_statistics_accuracy() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1806,7 +1827,10 @@ async fn large_dataset_statistics_accuracy() {
                     &mut ledger,
                     &root_cid,
                     ledger_id,
-                    fluree.storage(),
+                    fluree
+                        .backend()
+                        .admin_storage_arc()
+                        .expect("test uses managed backend"),
                     &cache_dir,
                 )
                 .await;
@@ -1819,9 +1843,16 @@ async fn large_dataset_statistics_accuracy() {
             };
             let root_cid = root_id.expect("expected root_id");
 
-            let loaded = load_ledger_snapshot(fluree.storage(), &root_cid, ledger_id)
-                .await
-                .expect("load_ledger_snapshot(root_cid)");
+            let loaded = load_ledger_snapshot(
+                fluree
+                    .backend()
+                    .admin_storage_arc()
+                    .expect("test uses managed backend"),
+                &root_cid,
+                ledger_id,
+            )
+            .await
+            .expect("load_ledger_snapshot(root_cid)");
 
             let name_prop = loaded
                 .stats

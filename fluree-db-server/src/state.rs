@@ -84,6 +84,14 @@ impl FlureeInstance {
         }
     }
 
+    /// Get the storage backend from whichever variant is active.
+    pub fn backend(&self) -> &fluree_db_core::StorageBackend {
+        match self {
+            FlureeInstance::File(f) => f.backend(),
+            FlureeInstance::Proxy(p) => p.backend(),
+        }
+    }
+
     /// Lookup a ledger in the nameservice
     ///
     /// Works with both file-backed and proxy-backed instances.
@@ -448,22 +456,18 @@ impl FlureeInstance {
         &self,
         ledger_id: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::File(f) => {
-                let handle = f.ledger_cached(ledger_id).await?;
-                let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, f.storage(), None)
-                    .await
-                    .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
-            }
-            FlureeInstance::Proxy(p) => {
-                let handle = p.ledger_cached(ledger_id).await?;
-                let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, p.storage(), None)
-                    .await
-                    .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
-            }
-        }
+        let admin_storage = self
+            .backend()
+            .admin_storage_cloned()
+            .expect("ledger_info requires a managed storage backend");
+        let handle = match self {
+            FlureeInstance::File(f) => f.ledger_cached(ledger_id).await?,
+            FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await?,
+        };
+        let ledger_state = handle.snapshot().await.to_ledger_state();
+        fluree_db_api::ledger_info::build_ledger_info(&ledger_state, &admin_storage, None)
+            .await
+            .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
     }
 }
 

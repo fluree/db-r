@@ -54,7 +54,7 @@ async fn indexing_disabled_transaction_exposes_indexing_status_hints() {
 
     // Scenario: "Trigger index API can be called" (trigger+wait succeeds).
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -77,7 +77,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
     let ledger_id = "it/indexing-manual-trigger:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -177,7 +177,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -289,7 +289,7 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -475,7 +475,7 @@ async fn trigger_index_no_commit_ledger_returns_index_t_zero() {
 
     // Enable background indexer
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -510,7 +510,7 @@ async fn trigger_index_builds_index_to_current_commit_t() {
 
     // Enable background indexer
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -547,7 +547,7 @@ async fn trigger_index_times_out_if_worker_not_running() {
 
     // Create a background handle but do NOT run the LocalSet.
     let (_local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -735,7 +735,7 @@ async fn reindex_with_existing_index_completes_successfully() {
 
     // Enable background indexer to create initial index
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1045,7 +1045,7 @@ async fn graph_crawl_select_works_after_indexing() {
     let ledger_id = "it/graph-crawl-indexed:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1173,7 +1173,7 @@ async fn construct_works_after_indexing() {
     let ledger_id = "it/construct-indexed:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -1266,7 +1266,7 @@ async fn new_namespace_after_indexing_is_queryable() {
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

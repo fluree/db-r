@@ -587,7 +587,7 @@ where
                         "invalid .flpack: Data frame before Header".to_string(),
                     ));
                 }
-                ingest_pack_frame(&cid, &payload, fluree.storage(), &ledger_id)
+                ingest_pack_frame(&cid, &payload, &fluree.backend().admin_storage_cloned().expect("requires managed backend"), &ledger_id)
                     .await
                     .map_err(|e| CliError::Config(format!("failed to ingest object {cid}: {e}")))?;
 

@@ -24,7 +24,6 @@ use crate::format::iri::IriCompactor;
 use crate::graph::Graph;
 use crate::{policy_builder, ApiError, NameService, Result};
 use fluree_db_core::commit::codec::read_commit;
-use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentId, ContentStore, FlakeValue, OverlayProvider, Tracker};
 use fluree_db_novelty::Commit;
 use fluree_db_query::QueryPolicyEnforcer;
@@ -285,8 +284,7 @@ where
         };
 
         // 4. Fetch commit blob from content-addressed storage
-        let content_store =
-            content_store_for(self.graph.fluree.storage().clone(), &self.graph.ledger_id);
+        let content_store = self.graph.fluree.content_store(&self.graph.ledger_id);
         let blob = content_store.get(&commit_id).await.map_err(|e| {
             if matches!(e, fluree_db_core::error::Error::NotFound(_)) {
                 ApiError::NotFound(format!("Commit {} not found", commit_id))

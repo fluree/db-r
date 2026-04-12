@@ -284,9 +284,10 @@ where
         }
 
         // 5) Write required blobs and commit bytes to storage (safe before CAS).
-        let storage = self.storage();
+        let storage = self.backend().admin_storage_cloned()
+            .expect("push_commits requires a managed storage backend");
         write_required_blobs(
-            storage,
+            &storage,
             base_state.ledger_id(),
             &request.blobs,
             &decoded,
@@ -294,7 +295,7 @@ where
         .await
         .map_err(|e| e.into_api_error())?;
 
-        let stored_commits = write_commit_blobs(storage, base_state.ledger_id(), &decoded)
+        let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await
             .map_err(|e| e.into_api_error())?;
 
@@ -1023,7 +1024,6 @@ where
     ) -> Result<ExportCommitsResponse> {
         use fluree_db_core::commit::codec::envelope::decode_envelope;
         use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
-        use fluree_db_core::storage::content_store_for;
         use fluree_db_core::ContentStore;
 
         let effective_limit = request
@@ -1051,7 +1051,7 @@ where
         let head_t = head_ref.t;
 
         // Build a ContentStore bridge for CID-based reads.
-        let content_store = content_store_for(self.storage().clone(), ledger_id);
+        let content_store = self.content_store(ledger_id);
 
         // Determine start cursor CID.
         let start_cid: ContentId = if let Some(cid) = &request.cursor_id {
@@ -1191,7 +1191,8 @@ where
         response: &ExportCommitsResponse,
     ) -> Result<BulkImportResult> {
         let ledger_id = handle.ledger_id();
-        let storage = self.storage();
+        let storage = self.admin_storage()
+            .expect("import_commits_bulk requires a managed storage backend");
         let mut stored = 0usize;
         let mut blobs_stored = 0usize;
 
@@ -1376,9 +1377,10 @@ where
         validate_required_blobs(&decoded, &request.blobs).map_err(|e| e.into_api_error())?;
 
         // 6) Write blobs + commit bytes to local CAS.
-        let storage = self.storage();
+        let storage = self.backend().admin_storage_cloned()
+            .expect("push_commits_strict requires a managed storage backend");
         write_required_blobs(
-            storage,
+            &storage,
             base_state.ledger_id(),
             &request.blobs,
             &decoded,
@@ -1386,7 +1388,7 @@ where
         .await
         .map_err(|e| e.into_api_error())?;
 
-        let stored_commits = write_commit_blobs(storage, base_state.ledger_id(), &decoded)
+        let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await
             .map_err(|e| e.into_api_error())?;
 

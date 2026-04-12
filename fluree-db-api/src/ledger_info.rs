@@ -1119,10 +1119,11 @@ where
                 }
             }
 
-            let storage = self.fluree.storage();
+            let storage = self.fluree.backend().admin_storage_cloned()
+                .expect("ledger_info requires a managed storage backend");
             let json = build_ledger_info_with_options(
                 &ledger,
-                storage,
+                &storage,
                 self.context,
                 self.options,
             )
@@ -1136,8 +1137,9 @@ where
             return Ok(json);
         }
 
-        let storage = self.fluree.storage();
-        build_ledger_info_with_options(&ledger, storage, self.context, self.options)
+        let storage = self.fluree.backend().admin_storage_cloned()
+            .expect("ledger_info requires a managed storage backend");
+        build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
             .await
             .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
     }

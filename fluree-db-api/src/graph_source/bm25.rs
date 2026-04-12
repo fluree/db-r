@@ -10,7 +10,7 @@ use crate::graph_source::result::{
 };
 use crate::Result;
 use fluree_db_core::{
-    ledger_id::split_ledger_id, ContentId, ContentStore, OverlayProvider, Storage, StorageWrite,
+    ledger_id::split_ledger_id, ContentId, ContentStore, OverlayProvider, Storage,
 };
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
@@ -29,7 +29,7 @@ const BM25_IO_CONCURRENCY: usize = 32;
 /// Best-effort deletion of old snapshot blobs from storage.
 /// Derives storage addresses from CIDs using the graph source namespace.
 /// Logs warnings on failure but does not propagate errors.
-async fn delete_old_snapshots<S: Storage>(storage: &S, graph_source_id: &str, cids: &[ContentId]) {
+async fn delete_old_snapshots(storage: &dyn Storage, graph_source_id: &str, cids: &[ContentId]) {
     use fluree_db_core::ContentKind;
     let method = storage.storage_method();
     for cid in cids {
@@ -385,8 +385,11 @@ where
     /// single v3 blob (one read, one decompress). Memory storage uses v4
     /// for test coverage.
     pub(crate) fn should_use_chunked_format(&self) -> bool {
+        let method = self.admin_storage()
+            .map(|s| s.storage_method())
+            .unwrap_or("unknown");
         matches!(
-            self.storage().storage_method(),
+            method,
             fluree_db_core::STORAGE_METHOD_S3 | fluree_db_core::STORAGE_METHOD_MEMORY
         )
     }
@@ -929,8 +932,7 @@ where
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let store =
-            self.content_store(&ledger.snapshot.ledger_id);
+        let store = self.content_store(&ledger.snapshot.ledger_id);
         let stream = trace_commits_by_id(store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 
@@ -1011,7 +1013,9 @@ where
             .await?;
 
         // Best-effort cleanup of old snapshot blobs
-        delete_old_snapshots(self.storage(), graph_source_id, &removed).await;
+        if let Some(storage) = self.admin_storage() {
+            delete_old_snapshots(storage, graph_source_id, &removed).await;
+        }
 
         info!(
             graph_source_id = %graph_source_id,
@@ -1117,7 +1121,9 @@ where
             .await?;
 
         // Best-effort cleanup of old snapshot blobs
-        delete_old_snapshots(self.storage(), graph_source_id, &removed).await;
+        if let Some(storage) = self.admin_storage() {
+            delete_old_snapshots(storage, graph_source_id, &removed).await;
+        }
 
         info!(
             graph_source_id = %graph_source_id,
@@ -1308,7 +1314,9 @@ where
             .await?;
 
         // Best-effort cleanup of old snapshot blobs
-        delete_old_snapshots(self.storage(), graph_source_id, &removed).await;
+        if let Some(storage) = self.admin_storage() {
+            delete_old_snapshots(storage, graph_source_id, &removed).await;
+        }
 
         info!(
             graph_source_id = %graph_source_id,
@@ -1359,8 +1367,7 @@ where
     /// 1. Marks the graph source as retracted in nameservice
     /// 2. Deletes all snapshot files from storage
     pub async fn drop_full_text_index(&self, graph_source_id: &str) -> Result<Bm25DropResult>
-    where
-    {
+where {
         info!(graph_source_id = %graph_source_id, "Dropping BM25 full-text index");
 
         // 1. Look up graph source record to verify it exists
@@ -1408,26 +1415,28 @@ where
         let total = snapshot_ids.len();
 
         // 5. Delete all snapshot files (derive addresses from CIDs)
-        let method = self.storage().storage_method().to_string();
         let mut deleted_snapshots = 0;
-        for cid in &snapshot_ids {
-            let addr = fluree_db_core::content_address(
-                &method,
-                fluree_db_core::ContentKind::GraphSourceSnapshot,
-                graph_source_id,
-                &cid.digest_hex(),
-            );
-            match self.storage().delete(&addr).await {
-                Ok(()) => {
-                    deleted_snapshots += 1;
-                }
-                Err(e) => {
-                    warn!(
-                        graph_source_id = %graph_source_id,
-                        address = %addr,
-                        error = %e,
-                        "Failed to delete snapshot file"
-                    );
+        if let Some(storage) = self.admin_storage() {
+            let method = storage.storage_method().to_string();
+            for cid in &snapshot_ids {
+                let addr = fluree_db_core::content_address(
+                    &method,
+                    fluree_db_core::ContentKind::GraphSourceSnapshot,
+                    graph_source_id,
+                    &cid.digest_hex(),
+                );
+                match storage.delete(&addr).await {
+                    Ok(()) => {
+                        deleted_snapshots += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            graph_source_id = %graph_source_id,
+                            address = %addr,
+                            error = %e,
+                            "Failed to delete snapshot file"
+                        );
+                    }
                 }
             }
         }

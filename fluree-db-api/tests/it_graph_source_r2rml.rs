@@ -519,7 +519,7 @@ async fn e2e_r2rml_query_iceberg_table() {
 #[tokio::test]
 #[ignore = "Requires external Polaris/MinIO infrastructure. Set ICEBERG_E2E=1 to run."]
 async fn e2e_fluree_r2rml_provider_full_flow() {
-    use fluree_db_api::{R2rmlCreateConfig, StorageWrite};
+    use fluree_db_api::R2rmlCreateConfig;
 
     if std::env::var("ICEBERG_E2E").is_err() {
         eprintln!("Skipping E2E test (set ICEBERG_E2E=1 to run)");
@@ -577,7 +577,8 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
     eprintln!("Step 1: Storing R2RML mapping...");
     let mapping_address = "r2rml/airlines-e2e.ttl";
     fluree
-        .storage()
+        .admin_storage()
+        .expect("managed backend")
         .write_bytes(mapping_address, AIRLINES_R2RML.as_bytes())
         .await
         .expect("Failed to store mapping");

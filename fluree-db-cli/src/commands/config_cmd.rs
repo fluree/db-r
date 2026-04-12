@@ -365,8 +365,7 @@ pub async fn run_set_origins(ledger: &str, file: &Path, dirs: &FlureeDir) -> Cli
 
     // Serialize to canonical bytes and store in CAS.
     let canonical_bytes = config.to_bytes();
-    let content_store =
-        fluree.content_store(&ledger_id);
+    let content_store = fluree.content_store(&ledger_id);
     let cid = content_store
         .put(ContentKind::LedgerConfig, &canonical_bytes)
         .await

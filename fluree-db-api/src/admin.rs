@@ -471,7 +471,13 @@ where
         record: Option<&fluree_db_nameservice::NsRecord>,
     ) -> (usize, Vec<String>) {
         let mut warnings = Vec::new();
-        let storage = self.storage();
+        let storage = match self.admin_storage() {
+            Some(s) => s,
+            None => {
+                warnings.push("Artifact deletion skipped: not supported on this backend".to_string());
+                return (0, warnings);
+            }
+        };
         let storage_method = storage.storage_method();
 
         // Build the ledger root prefix: fluree:{method}://{ledger_path}/
@@ -520,7 +526,13 @@ where
         record: Option<&fluree_db_nameservice::NsRecord>,
         warnings: &mut Vec<String>,
     ) -> (usize, Vec<String>) {
-        let storage = self.storage();
+        let storage = match self.backend().admin_storage_cloned() {
+            Some(s) => s,
+            None => {
+                warnings.push("CID-walking drop skipped: not supported on this backend".to_string());
+                return (0, std::mem::take(warnings));
+            }
+        };
         let storage_method = storage.storage_method();
 
         let (commit_head, index_head, config_id, default_context) = match record {
@@ -537,7 +549,7 @@ where
         };
 
         let cids = match fluree_db_indexer::collect_ledger_cids(
-            storage,
+            &storage,
             ledger_id,
             commit_head,
             index_head,
@@ -660,13 +672,15 @@ where
                                 &graph_source_id,
                                 &cid.digest_hex(),
                             );
-                            if let Err(e) = self.storage().delete(&path).await {
-                                report.warnings.push(format!(
-                                    "Failed to delete mapping blob {}: {}",
-                                    mapping.source, e
-                                ));
-                            } else {
-                                report.files_deleted += 1;
+                            if let Some(storage) = self.admin_storage() {
+                                if let Err(e) = storage.delete(&path).await {
+                                    report.warnings.push(format!(
+                                        "Failed to delete mapping blob {}: {}",
+                                        mapping.source, e
+                                    ));
+                                } else {
+                                    report.files_deleted += 1;
+                                }
                             }
                         }
                     }
@@ -1050,7 +1064,18 @@ where
         );
 
         // 6. Spawn async garbage collection (non-blocking)
-        let storage_clone = self.storage().clone();
+        let storage_clone = match self.backend().admin_storage_cloned() {
+            Some(s) => s,
+            None => {
+                tracing::debug!("Skipping GC: not supported on this backend");
+                return Ok(ReindexResult {
+                    ledger_id,
+                    index_t: index_result.index_t,
+                    root_id: index_result.root_id,
+                    stats: index_result.stats,
+                });
+            }
+        };
         let gc_root_id = index_result.root_id.clone();
         let gc_ledger_id = ledger_id.clone();
         let gc_config = CleanGarbageConfig {
@@ -1105,8 +1130,7 @@ where
         let canonical_bytes = config.to_bytes();
 
         // Store blob in CAS.
-        let content_store =
-            fluree_db_core::storage::content_store_for(self.storage().clone(), &ledger_id);
+        let content_store = self.content_store(&ledger_id);
         let cid = content_store
             .put(ContentKind::LedgerConfig, &canonical_bytes)
             .await?;

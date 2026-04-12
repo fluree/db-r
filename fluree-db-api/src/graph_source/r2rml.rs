@@ -259,7 +259,12 @@ where
         address: &str,
         config: &R2rmlCreateConfig,
     ) -> Result<usize> {
-        let bytes = self.storage().read_bytes(address).await.map_err(|e| {
+        let storage = self.admin_storage().ok_or_else(|| {
+            crate::ApiError::Config(format!(
+                "Cannot load R2RML mapping from address '{address}': address-based reads are not supported on this backend"
+            ))
+        })?;
+        let bytes = storage.read_bytes(address).await.map_err(|e| {
             crate::ApiError::Config(format!(
                 "Failed to load R2RML mapping from '{address}': {e}"
             ))
@@ -412,20 +417,23 @@ where
         // Try CID-based content store first (CAS-stored mappings),
         // fall back to raw storage read (legacy address-based mappings).
         let mapping_bytes = if let Ok(cid) = mapping_source.parse::<fluree_db_core::ContentId>() {
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             cs.get(&cid).await.map_err(|e| {
                 QueryError::InvalidQuery(format!(
                     "Failed to load R2RML mapping (CID {mapping_source}): {e}"
                 ))
             })?
         } else {
-            let storage = self.fluree.storage();
+            let storage = self.fluree.admin_storage().ok_or_else(|| {
+                QueryError::InvalidQuery(format!(
+                    "Cannot load R2RML mapping from address '{}': address-based reads are not supported on this backend",
+                    mapping_source,
+                ))
+            })?;
             storage.read_bytes(mapping_source).await.map_err(|e| {
                 QueryError::InvalidQuery(format!(
-                    "Failed to load R2RML mapping from '{}' (storage: {}): {}",
+                    "Failed to load R2RML mapping from '{}': {}",
                     mapping_source,
-                    storage.storage_method(),
                     e
                 ))
             })?

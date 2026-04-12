@@ -1805,7 +1805,7 @@ async fn update_values_wildcard_delete_index_plus_novelty() {
     let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         Default::default(),
     );
@@ -1933,7 +1933,7 @@ async fn update_wildcard_delete_duplicate_facts_across_index_and_novelty() {
     let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         Default::default(),
     );
@@ -2060,7 +2060,7 @@ async fn update_values_wildcard_delete_after_updates_and_indexing() {
     let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         Default::default(),
     );

@@ -33,7 +33,7 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
 
     // Start background indexing worker + handle (LocalSet since worker may be !Send).
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -89,10 +89,16 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
                     assert!(root_id.is_some(), "expected a root_id after indexing");
 
                     let root_cid = root_id.unwrap();
-                    let loaded =
-                        load_ledger_snapshot(fluree.storage(), &root_cid, "it/index-wait:main")
-                            .await
-                            .expect("load_ledger_snapshot(root_cid)");
+                    let loaded = load_ledger_snapshot(
+                        fluree
+                            .backend()
+                            .admin_storage_arc()
+                            .expect("test uses managed backend"),
+                        &root_cid,
+                        "it/index-wait:main",
+                    )
+                    .await
+                    .expect("load_ledger_snapshot(root_cid)");
                     assert!(
                         loaded.t >= commit_t,
                         "loaded db.t ({}) should be >= commit_t ({})",

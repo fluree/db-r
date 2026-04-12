@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use fluree_db_api::tx::IndexingMode;
 use fluree_db_api::{Fluree, IndexerConfig, TriggerIndexOptions};
 use fluree_db_connection::config::ConnectionConfig;
-use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentKind, ContentStore, MemoryStorage, StorageMethod};
 use fluree_db_nameservice::memory::MemoryNameService;
 use serde_json::json;
@@ -128,7 +127,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
         .with_incremental_max_commits(10_000);
 
     let (local, handle) =
-        support::start_background_indexer_local(storage.clone(), nameservice.clone(), indexer_cfg);
+        support::start_background_indexer_local(fluree_db_core::StorageBackend::Managed(std::sync::Arc::new(storage.clone())), nameservice.clone(), indexer_cfg);
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));
 
     local
@@ -214,7 +213,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             assert_ne!(root1, root2, "root CID should change after update");
 
             // Sanity: both roots decode as IndexRoot and the second root remains queryable.
-            let cs = content_store_for(fluree.storage().clone(), ledger_id);
+            let cs = fluree.content_store(ledger_id);
             let bytes1 = cs.get(&root1).await.expect("root1 bytes");
             let bytes2 = cs.get(&root2).await.expect("root2 bytes");
             let v1 = fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes1)

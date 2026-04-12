@@ -165,20 +165,12 @@ where
                 .and_then(|r| r.index_head_id.as_ref())
                 .cloned()
             {
-                let storage = self.storage();
-                let cs = fluree_db_core::content_store_for(
-                    storage.clone(),
-                    &snapshot.snapshot.ledger_id,
-                );
+                let cs = self.content_store(&snapshot.snapshot.ledger_id);
                 let bytes = cs
                     .get(&index_cid)
                     .await
                     .map_err(|e| ApiError::internal(format!("read index root: {}", e)))?;
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
-                    storage.clone(),
-                    &snapshot.snapshot.ledger_id,
-                ));
                 let mut store = BinaryIndexStore::load_from_root_bytes(
                     cs,
                     &bytes,
@@ -217,10 +209,7 @@ where
                 .as_ref()
                 .and_then(|r| r.default_context.as_ref())
             {
-                let cs = fluree_db_core::content_store_for(
-                    self.storage().clone(),
-                    &snapshot.snapshot.ledger_id,
-                );
+                let cs = self.content_store(&snapshot.snapshot.ledger_id);
                 if let Ok(bytes) = cs.get(ctx_id).await {
                     if let Ok(ctx) = serde_json::from_slice(&bytes) {
                         snapshot.default_context = Some(ctx);
@@ -290,8 +279,7 @@ where
             // Use nameservice record (not cached handle) to avoid stale index.
             if let Some(record) = self.nameservice.lookup(ledger_id).await? {
                 if let Some(index_cid) = record.index_head_id.as_ref() {
-                    let storage = self.storage();
-                    let cs = fluree_db_core::content_store_for(storage.clone(), &record.ledger_id);
+                    let cs = self.content_store(&record.ledger_id);
                     let bytes = cs.get(index_cid).await.map_err(|e| {
                         ApiError::internal(format!(
                             "failed to read index root {}: {}",
@@ -299,10 +287,6 @@ where
                         ))
                     })?;
                     let cache_dir = std::env::temp_dir().join("fluree-cache");
-                    let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
-                        storage.clone(),
-                        &record.ledger_id,
-                    ));
                     let mut store = BinaryIndexStore::load_from_root_bytes(
                         cs,
                         &bytes,

@@ -32,7 +32,7 @@ async fn setup_indexed_ledger() -> (
     let mut fluree = FlureeBuilder::file(path.clone()).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

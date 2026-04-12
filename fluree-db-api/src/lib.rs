@@ -2476,23 +2476,6 @@ where
         self.backend.admin_storage()
     }
 
-    /// Get a reference to the raw address-based storage.
-    ///
-    /// **Panics** for `Permanent` (IPFS) backends. Prefer [`content_store`]
-    /// or [`admin_storage`] for code that should support both backend kinds.
-    ///
-    /// This exists as a migration bridge — many call sites still require
-    /// address-based storage and haven't been migrated to use `content_store`
-    /// yet. Over time, those sites should move to the backend-aware APIs.
-    ///
-    /// [`content_store`]: Fluree::content_store
-    /// [`admin_storage`]: Fluree::admin_storage
-    pub fn storage(&self) -> &Arc<dyn Storage> {
-        self.backend
-            .admin_storage_arc()
-            .expect("this operation requires a Managed storage backend; Permanent (IPFS) backends are not supported here")
-    }
-
     /// Get a reference to the R2RML cache
     pub fn r2rml_cache(&self) -> &std::sync::Arc<graph_source::R2rmlCache> {
         &self.r2rml_cache
@@ -3102,19 +3085,21 @@ where
                     // GC old blob if CID changed
                     if let Some(old) = old_cid {
                         if old != new_cid {
-                            let kind = old.content_kind().unwrap_or(ContentKind::LedgerConfig);
-                            let addr = fluree_db_core::content_address(
-                                self.storage().storage_method(),
-                                kind,
-                                canonical_id,
-                                &old.digest_hex(),
-                            );
-                            if let Err(e) = self.storage().delete(&addr).await {
-                                tracing::debug!(
-                                    %e,
-                                    old_addr = %addr,
-                                    "could not GC old default context blob"
+                            if let Some(storage) = self.admin_storage() {
+                                let kind = old.content_kind().unwrap_or(ContentKind::LedgerConfig);
+                                let addr = fluree_db_core::content_address(
+                                    storage.storage_method(),
+                                    kind,
+                                    canonical_id,
+                                    &old.digest_hex(),
                                 );
+                                if let Err(e) = storage.delete(&addr).await {
+                                    tracing::debug!(
+                                        %e,
+                                        old_addr = %addr,
+                                        "could not GC old default context blob"
+                                    );
+                                }
                             }
                         }
                     }
@@ -3136,19 +3121,21 @@ where
         }
 
         // All retries exhausted — best-effort GC the orphan blob we wrote
-        let kind = new_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
-        let addr = fluree_db_core::content_address(
-            self.storage().storage_method(),
-            kind,
-            canonical_id,
-            &new_cid.digest_hex(),
-        );
-        if let Err(e) = self.storage().delete(&addr).await {
-            tracing::debug!(
-                %e,
-                orphan_addr = %addr,
-                "could not GC orphan context blob after conflict"
+        if let Some(storage) = self.admin_storage() {
+            let kind = new_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
+            let addr = fluree_db_core::content_address(
+                storage.storage_method(),
+                kind,
+                canonical_id,
+                &new_cid.digest_hex(),
             );
+            if let Err(e) = storage.delete(&addr).await {
+                tracing::debug!(
+                    %e,
+                    orphan_addr = %addr,
+                    "could not GC orphan context blob after conflict"
+                );
+            }
         }
 
         Ok(SetContextResult::Conflict)

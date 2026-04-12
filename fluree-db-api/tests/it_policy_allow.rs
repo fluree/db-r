@@ -689,7 +689,7 @@ async fn policy_onclass_applies_to_novelty_properties_without_type_restated() {
         .expect("build file fluree");
 
     let (local, handle) = support::start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
