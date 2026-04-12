@@ -90,9 +90,9 @@ async fn background_indexing_trigger_wait_then_load_index_root() {
 
                     let root_cid = root_id.unwrap();
                     let loaded = load_ledger_snapshot(
-                        fluree
+                        &fluree
                             .backend()
-                            .admin_storage_arc()
+                            .admin_storage_cloned()
                             .expect("test uses managed backend"),
                         &root_cid,
                         "it/index-wait:main",

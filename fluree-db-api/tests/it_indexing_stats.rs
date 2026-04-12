@@ -169,7 +169,7 @@ async fn property_and_class_statistics_persist_in_db_root() {
             assert!(index_t >= commit_t);
             let root_cid = root_id.expect("expected root_id after indexing");
 
-            let loaded = load_ledger_snapshot(fluree.backend().admin_storage_arc().expect("test uses managed backend"), &root_cid, ledger_id)
+            let loaded = load_ledger_snapshot(&fluree.backend().admin_storage_cloned().expect("test uses managed backend"), &root_cid, ledger_id)
             .await
             .expect("load_ledger_snapshot(root_cid)");
 
@@ -264,9 +264,9 @@ async fn class_statistics_decrement_after_delete_refresh() {
             let root_cid = root_id.expect("expected root_id");
 
             let loaded2 = load_ledger_snapshot(
-                fluree
+                &fluree
                     .backend()
-                    .admin_storage_arc()
+                    .admin_storage_cloned()
                     .expect("test uses managed backend"),
                 &root_cid,
                 ledger_id,
@@ -326,9 +326,9 @@ async fn statistics_work_with_memory_storage_when_indexed() {
             let root_cid = root_id.expect("expected root_id");
 
             let loaded = load_ledger_snapshot(
-                fluree
+                &fluree
                     .backend()
-                    .admin_storage_arc()
+                    .admin_storage_cloned()
                     .expect("test uses managed backend"),
                 &root_cid,
                 ledger_id,
@@ -1320,9 +1320,9 @@ async fn ndv_cardinality_estimates_are_accurate() {
             let root_cid = root_id.expect("expected root_id");
 
             let loaded = load_ledger_snapshot(
-                fluree
+                &fluree
                     .backend()
-                    .admin_storage_arc()
+                    .admin_storage_cloned()
                     .expect("test uses managed backend"),
                 &root_cid,
                 ledger_id,
@@ -1827,9 +1827,9 @@ async fn large_dataset_statistics_accuracy() {
                     &mut ledger,
                     &root_cid,
                     ledger_id,
-                    fluree
+                    &fluree
                         .backend()
-                        .admin_storage_arc()
+                        .admin_storage_cloned()
                         .expect("test uses managed backend"),
                     &cache_dir,
                 )
@@ -1844,9 +1844,9 @@ async fn large_dataset_statistics_accuracy() {
             let root_cid = root_id.expect("expected root_id");
 
             let loaded = load_ledger_snapshot(
-                fluree
+                &fluree
                     .backend()
-                    .admin_storage_arc()
+                    .admin_storage_cloned()
                     .expect("test uses managed backend"),
                 &root_cid,
                 ledger_id,

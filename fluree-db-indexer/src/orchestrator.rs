@@ -965,8 +965,7 @@ where
                     // Spawn garbage collection (fire-and-forget, non-fatal).
                     // GC requires address-based Storage (deletion), so it only
                     // runs for Managed backends. Permanent backends (IPFS) skip GC.
-                    if let Some(gc_storage) = self.backend.admin_storage_arc() {
-                        let gc_storage = gc_storage.clone();
+                    if let Some(gc_storage) = self.backend.admin_storage_cloned() {
                         let gc_root_id = index_result.root_id.clone();
                         let gc_ledger_id = index_result.ledger_id.clone();
                         let gc_config = crate::gc::CleanGarbageConfig {

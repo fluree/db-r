@@ -668,16 +668,6 @@ impl StorageBackend {
             StorageBackend::Permanent(_) => None,
         }
     }
-
-    /// Get a reference to the admin storage, if available.
-    ///
-    /// Returns `Some(&Arc<dyn Storage>)` for `Managed` backends, `None` for `Permanent`.
-    pub fn admin_storage_arc(&self) -> Option<&Arc<dyn Storage>> {
-        match self {
-            StorageBackend::Managed(storage) => Some(storage),
-            StorageBackend::Permanent(_) => None,
-        }
-    }
 }
 
 impl Debug for StorageBackend {
