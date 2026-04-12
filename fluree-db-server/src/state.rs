@@ -456,10 +456,9 @@ impl FlureeInstance {
         &self,
         ledger_id: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
-        let admin_storage = self
-            .backend()
-            .admin_storage_cloned()
-            .expect("ledger_info requires a managed storage backend");
+        let admin_storage = self.backend().admin_storage_cloned().ok_or_else(|| {
+            fluree_db_api::ApiError::config("ledger_info requires a managed storage backend")
+        })?;
         let handle = match self {
             FlureeInstance::File(f) => f.ledger_cached(ledger_id).await?,
             FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await?,

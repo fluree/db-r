@@ -357,7 +357,7 @@ pub async fn get_block(
     let admin_storage = fluree
         .backend()
         .admin_storage_cloned()
-        .expect("block fetch requires a managed storage backend");
+        .ok_or_else(|| ServerError::internal("block fetch requires a managed storage backend"))?;
     let fetched = block_fetch::fetch_and_decode_block(
         &admin_storage,
         &body.ledger,
@@ -510,7 +510,7 @@ pub async fn get_object_by_cid(
         .fluree
         .backend()
         .admin_storage_cloned()
-        .expect("object fetch requires a managed storage backend");
+        .ok_or_else(|| ServerError::internal("object fetch requires a managed storage backend"))?;
     let method = admin_storage.storage_method();
     let address = fluree_db_core::content_address(method, kind, &query.ledger, &id.digest_hex());
 
