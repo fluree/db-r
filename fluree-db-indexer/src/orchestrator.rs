@@ -44,9 +44,9 @@
 use crate::config::IndexerConfig;
 use crate::error::Result;
 use crate::{publish_index_result, IndexResult};
-use fluree_db_core::StorageBackend;
 #[cfg(feature = "embedded-orchestrator")]
 use fluree_db_core::Storage;
+use fluree_db_core::StorageBackend;
 use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -272,7 +272,7 @@ where
     /// 2. Falls back to full batched rebuild if refresh fails or no index exists
     pub async fn index_ledger(&self, ledger_id: &str) -> Result<IndexResult> {
         crate::build_index_for_ledger(
-            self.backend.content_store_dyn(ledger_id),
+            self.backend.content_store(ledger_id),
             self.nameservice.as_ref(),
             ledger_id,
             self.config.clone(),
@@ -939,7 +939,7 @@ where
             pending_min_t = ?pending_min_t,
             "Starting index build for queued work"
         );
-        let content_store = self.backend.content_store_dyn(ledger_id);
+        let content_store = self.backend.content_store(ledger_id);
         let result =
             crate::build_index_for_record(content_store, &record, self.config.clone()).await;
 
@@ -1381,7 +1381,11 @@ mod tests {
         let ns = Arc::new(MemoryNameService::new());
         ns.create_ledger("test:main").unwrap();
 
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage)), ns.clone(), IndexerConfig::small());
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns.clone(),
+            IndexerConfig::small(),
+        );
 
         // No commits - doesn't need indexing
         let needs = orchestrator.needs_indexing("test:main").await.unwrap();
@@ -1411,7 +1415,11 @@ mod tests {
         let cid = store_commit(&storage, &commit).await;
         ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage)), ns.clone(), IndexerConfig::small());
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns.clone(),
+            IndexerConfig::small(),
+        );
 
         // Has commits but no index - needs indexing
         let needs = orchestrator.needs_indexing("test:main").await.unwrap();
@@ -1443,7 +1451,11 @@ mod tests {
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-current"));
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage.clone())), ns.clone(), config);
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage.clone())),
+            ns.clone(),
+            config,
+        );
 
         // Index the ledger
         let result = orchestrator.index_and_publish("test:main").await.unwrap();
@@ -1479,7 +1491,11 @@ mod tests {
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-behind"));
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage.clone())), ns.clone(), config);
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage.clone())),
+            ns.clone(),
+            config,
+        );
         orchestrator.index_and_publish("test:main").await.unwrap();
 
         // Add another commit
@@ -1530,7 +1546,11 @@ mod tests {
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-ledger"));
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage.clone())), ns.clone(), config);
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage.clone())),
+            ns.clone(),
+            config,
+        );
 
         let result = orchestrator.index_ledger("test:main").await.unwrap();
         assert_eq!(result.index_t, 1);
@@ -1562,7 +1582,11 @@ mod tests {
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-publish"));
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage.clone())), ns.clone(), config);
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage.clone())),
+            ns.clone(),
+            config,
+        );
 
         let result = orchestrator.index_and_publish("test:main").await.unwrap();
         assert_eq!(result.index_t, 1);
@@ -1598,7 +1622,11 @@ mod tests {
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-existing"));
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage.clone())), ns.clone(), config);
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage.clone())),
+            ns.clone(),
+            config,
+        );
 
         // First index
         let result1 = orchestrator.index_and_publish("test:main").await.unwrap();
@@ -1615,7 +1643,11 @@ mod tests {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
 
-        let orchestrator = IndexerOrchestrator::new(StorageBackend::Managed(Arc::new(storage)), ns.clone(), IndexerConfig::small());
+        let orchestrator = IndexerOrchestrator::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns.clone(),
+            IndexerConfig::small(),
+        );
 
         let result = orchestrator.index_ledger("nonexistent:main").await;
         assert!(result.is_err());
@@ -1629,7 +1661,11 @@ mod tests {
     async fn test_handle_trigger_returns_completion() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // Trigger without starting worker - completion should be pending
         let mut completion = handle.trigger("test:main", 1).await;
@@ -1650,7 +1686,11 @@ mod tests {
     async fn test_handle_cancel_resolves_waiters_as_cancelled() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // Trigger and get completion
         let completion = handle.trigger("test:main", 1).await;
@@ -1668,7 +1708,11 @@ mod tests {
     async fn test_handle_cancel_all() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // Trigger multiple ledgers
         let c1 = handle.trigger("test:one", 1).await;
@@ -1686,7 +1730,11 @@ mod tests {
     async fn test_handle_status() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // No status for unknown ledger
         assert!(handle.status("unknown").await.is_none());
@@ -1705,7 +1753,11 @@ mod tests {
     async fn test_handle_is_pending() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         assert!(!handle.is_pending("test:main").await);
 
@@ -1718,7 +1770,11 @@ mod tests {
     async fn test_handle_pending_ledgers() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         assert!(handle.pending_ledgers().await.is_empty());
 
@@ -1735,7 +1791,11 @@ mod tests {
     async fn test_handle_multiple_triggers_coalesce_min_t() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // First trigger with min_t=5
         let _c1 = handle.trigger("test:main", 5).await;
@@ -1753,7 +1813,11 @@ mod tests {
     async fn test_handle_trigger_clears_backoff() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // Ensure ledger state exists.
         let _c1 = handle.trigger("test:main", 1).await;
@@ -1781,7 +1845,11 @@ mod tests {
     async fn test_handle_wait_for_idle_immediate_return() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // Should return immediately for unknown ledger
         handle.wait_for_idle("unknown").await;
@@ -1791,7 +1859,11 @@ mod tests {
     async fn test_handle_wait_all_idle_immediate_return() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         // Should return immediately when nothing pending
         handle.wait_all_idle().await;
@@ -1801,7 +1873,11 @@ mod tests {
     async fn test_index_completion_debug() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(StorageBackend::Managed(Arc::new(storage)), ns, IndexerConfig::small());
+        let (_worker, handle) = BackgroundIndexerWorker::new(
+            StorageBackend::Managed(Arc::new(storage)),
+            ns,
+            IndexerConfig::small(),
+        );
 
         let completion = handle.trigger("test:main", 1).await;
         // Should not panic

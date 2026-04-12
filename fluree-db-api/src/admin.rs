@@ -10,9 +10,7 @@
 //! available on read-only storage.
 
 use crate::{error::ApiError, tx::IndexingMode, Result};
-use fluree_db_core::{
-    address_path::ledger_id_to_path_prefix, format_ledger_id, DEFAULT_BRANCH,
-};
+use fluree_db_core::{address_path::ledger_id_to_path_prefix, format_ledger_id, DEFAULT_BRANCH};
 use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
 use fluree_db_nameservice::{
     AdminPublisher, GraphSourcePublisher, NameService, NsRecord, Publisher,
@@ -474,7 +472,8 @@ where
         let storage = match self.admin_storage() {
             Some(s) => s,
             None => {
-                warnings.push("Artifact deletion skipped: not supported on this backend".to_string());
+                warnings
+                    .push("Artifact deletion skipped: not supported on this backend".to_string());
                 return (0, warnings);
             }
         };
@@ -529,7 +528,8 @@ where
         let storage = match self.backend().admin_storage_cloned() {
             Some(s) => s,
             None => {
-                warnings.push("CID-walking drop skipped: not supported on this backend".to_string());
+                warnings
+                    .push("CID-walking drop skipped: not supported on this backend".to_string());
                 return (0, std::mem::take(warnings));
             }
         };

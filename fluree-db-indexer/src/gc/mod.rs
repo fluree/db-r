@@ -72,7 +72,8 @@ pub struct CleanGarbageResult {
 
 /// Write a garbage record to storage.
 ///
-/// Returns `None` if there are no obsolete CID strings to record.
+/// The caller must ensure `garbage_cid_strings` is non-empty; this function
+/// does not handle the empty case (callers guard with `if !cids.is_empty()`).
 /// The CID strings are sorted and deduplicated before writing.
 /// Includes a wall-clock `created_at_ms` timestamp for time-based GC retention.
 ///
@@ -82,11 +83,8 @@ pub async fn write_garbage_record(
     ledger_id: &str,
     t: i64,
     garbage_cid_strings: Vec<String>,
-) -> Result<Option<ContentId>> {
+) -> Result<ContentId> {
     let mut garbage_cid_strings = garbage_cid_strings;
-    if garbage_cid_strings.is_empty() {
-        return Ok(None);
-    }
 
     // Sort and dedupe for determinism
     garbage_cid_strings.sort();
@@ -107,7 +105,7 @@ pub async fn write_garbage_record(
         .put(ContentKind::GarbageRecord, &bytes)
         .await?;
 
-    Ok(Some(cid))
+    Ok(cid)
 }
 
 /// Load a garbage record from storage.

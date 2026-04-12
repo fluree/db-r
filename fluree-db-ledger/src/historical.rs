@@ -107,7 +107,7 @@ impl HistoricalLedgerView {
             return Self::load_at_with_store(store, record, target_t).await;
         }
 
-        let store = backend.content_store_dyn(&record.ledger_id);
+        let store = backend.content_store(&record.ledger_id);
         Self::load_at_with_store(store, record, target_t).await
     }
 
@@ -572,7 +572,13 @@ mod tests {
         let ns = MemoryNameService::new();
         let storage = MemoryStorage::new();
 
-        let result = HistoricalLedgerView::load_at(&ns, "nonexistent:main", &StorageBackend::Managed(std::sync::Arc::new(storage)), 10).await;
+        let result = HistoricalLedgerView::load_at(
+            &ns,
+            "nonexistent:main",
+            &StorageBackend::Managed(std::sync::Arc::new(storage)),
+            10,
+        )
+        .await;
 
         assert!(matches!(result, Err(LedgerError::NotFound(_))));
     }
@@ -602,7 +608,13 @@ mod tests {
         store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
         // Try to load at t=10 (future)
-        let result = HistoricalLedgerView::load_at(&ns, "test:main", &StorageBackend::Managed(std::sync::Arc::new(storage)), 10).await;
+        let result = HistoricalLedgerView::load_at(
+            &ns,
+            "test:main",
+            &StorageBackend::Managed(std::sync::Arc::new(storage)),
+            10,
+        )
+        .await;
 
         assert!(matches!(result, Err(LedgerError::FutureTime { .. })));
     }
@@ -617,9 +629,14 @@ mod tests {
         store_and_publish_commit(&storage, &ns, "test:main", &commit).await;
 
         // Load at t=5 - should use genesis snapshot since no index exists
-        let view = HistoricalLedgerView::load_at(&ns, "test:main", &StorageBackend::Managed(std::sync::Arc::new(storage)), 5)
-            .await
-            .unwrap();
+        let view = HistoricalLedgerView::load_at(
+            &ns,
+            "test:main",
+            &StorageBackend::Managed(std::sync::Arc::new(storage)),
+            5,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(view.ledger_id(), "test:main");
         assert_eq!(view.to_t(), 5);

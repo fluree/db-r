@@ -26,10 +26,7 @@ use serde_json::json;
 use std::collections::HashSet;
 
 /// Export a ledger to an in-memory `.flpack` byte buffer.
-async fn export_ledger_to_bytes<N>(
-    fluree: &fluree_db_api::Fluree<N>,
-    ledger_id: &str,
-) -> Vec<u8>
+async fn export_ledger_to_bytes<N>(fluree: &fluree_db_api::Fluree<N>, ledger_id: &str) -> Vec<u8>
 where
     N: NameService + Send + Sync,
 {
@@ -176,7 +173,10 @@ async fn import_ledger_from_bytes<N>(
         .expect("create ledger for import");
 
     let mut pos = read_stream_preamble(data).expect("valid preamble");
-    let admin_storage = fluree.backend().admin_storage_cloned().expect("managed backend");
+    let admin_storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .expect("managed backend");
 
     let mut saw_header = false;
     let mut ns_manifest: Option<serde_json::Value> = None;

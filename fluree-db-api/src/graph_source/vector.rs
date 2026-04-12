@@ -497,8 +497,7 @@ where
 
         // 6. Trace commits and collect affected subjects
         let mut affected_sids: HashSet<fluree_db_core::Sid> = HashSet::new();
-        let commit_store =
-            self.content_store(&ledger.snapshot.ledger_id);
+        let commit_store = self.content_store(&ledger.snapshot.ledger_id);
         let stream = trace_commits_by_id(commit_store, head_commit_id.clone(), old_watermark);
         futures::pin_mut!(stream);
 

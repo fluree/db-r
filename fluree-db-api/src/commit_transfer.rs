@@ -284,16 +284,13 @@ where
         }
 
         // 5) Write required blobs and commit bytes to storage (safe before CAS).
-        let storage = self.backend().admin_storage_cloned()
+        let storage = self
+            .backend()
+            .admin_storage_cloned()
             .expect("push_commits requires a managed storage backend");
-        write_required_blobs(
-            &storage,
-            base_state.ledger_id(),
-            &request.blobs,
-            &decoded,
-        )
-        .await
-        .map_err(|e| e.into_api_error())?;
+        write_required_blobs(&storage, base_state.ledger_id(), &request.blobs, &decoded)
+            .await
+            .map_err(|e| e.into_api_error())?;
 
         let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await
@@ -1191,7 +1188,8 @@ where
         response: &ExportCommitsResponse,
     ) -> Result<BulkImportResult> {
         let ledger_id = handle.ledger_id();
-        let storage = self.admin_storage()
+        let storage = self
+            .admin_storage()
             .expect("import_commits_bulk requires a managed storage backend");
         let mut stored = 0usize;
         let mut blobs_stored = 0usize;
@@ -1377,16 +1375,13 @@ where
         validate_required_blobs(&decoded, &request.blobs).map_err(|e| e.into_api_error())?;
 
         // 6) Write blobs + commit bytes to local CAS.
-        let storage = self.backend().admin_storage_cloned()
+        let storage = self
+            .backend()
+            .admin_storage_cloned()
             .expect("push_commits_strict requires a managed storage backend");
-        write_required_blobs(
-            &storage,
-            base_state.ledger_id(),
-            &request.blobs,
-            &decoded,
-        )
-        .await
-        .map_err(|e| e.into_api_error())?;
+        write_required_blobs(&storage, base_state.ledger_id(), &request.blobs, &decoded)
+            .await
+            .map_err(|e| e.into_api_error())?;
 
         let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await

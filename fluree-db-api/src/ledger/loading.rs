@@ -17,12 +17,7 @@ where
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
     pub async fn ledger(&self, ledger_id: &str) -> Result<LedgerState> {
-        let mut state = LedgerState::load(
-            &self.nameservice,
-            ledger_id,
-            self.backend(),
-        )
-        .await?;
+        let mut state = LedgerState::load(&self.nameservice, ledger_id, self.backend()).await?;
 
         // If nameservice has an index address, require that the binary index root is
         // readable and loadable. This ensures `fluree.ledger()` always returns a
@@ -154,8 +149,7 @@ where
                 .as_ref()
                 .map(|r| r.ledger_id.as_str())
                 .unwrap_or(state.snapshot.ledger_id.as_str());
-            let cs =
-                self.content_store(ns_ledger_id);
+            let cs = self.content_store(ns_ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),
@@ -177,13 +171,9 @@ where
         ledger_id: &str,
         target_t: i64,
     ) -> Result<HistoricalLedgerView> {
-        let view = HistoricalLedgerView::load_at(
-            &self.nameservice,
-            ledger_id,
-            self.backend(),
-            target_t,
-        )
-        .await?;
+        let view =
+            HistoricalLedgerView::load_at(&self.nameservice, ledger_id, self.backend(), target_t)
+                .await?;
 
         Ok(view)
     }

@@ -18,10 +18,7 @@ impl GraphDb {
     ///     .jsonld(&query)
     ///     .execute().await?;
     /// ```
-    pub fn query<'a, N: NameService>(
-        &'a self,
-        fluree: &'a Fluree<N>,
-    ) -> ViewQueryBuilder<'a, N> {
+    pub fn query<'a, N: NameService>(&'a self, fluree: &'a Fluree<N>) -> ViewQueryBuilder<'a, N> {
         ViewQueryBuilder::new(fluree, self)
     }
 }

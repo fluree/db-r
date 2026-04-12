@@ -385,7 +385,8 @@ where
     /// single v3 blob (one read, one decompress). Memory storage uses v4
     /// for test coverage.
     pub(crate) fn should_use_chunked_format(&self) -> bool {
-        let method = self.admin_storage()
+        let method = self
+            .admin_storage()
             .map(|s| s.storage_method())
             .unwrap_or("unknown");
         matches!(

@@ -114,12 +114,9 @@ where
         // Compute common ancestor to determine fast-forward eligibility.
         // Build a BranchedContentStore for the source so we can walk both
         // commit chains through parent namespaces.
-        let source_store = LedgerState::build_branched_store(
-            &self.nameservice,
-            &source_record,
-            self.backend(),
-        )
-        .await?;
+        let source_store =
+            LedgerState::build_branched_store(&self.nameservice, &source_record, self.backend())
+                .await?;
 
         let target_head = target_record.commit_head_id.as_ref();
         let ancestor = match target_head {
@@ -298,12 +295,9 @@ where
 
         // Compute target delta. Build a branched store if target is also a branch.
         let target_delta = if target_record.source_branch.is_some() {
-            let target_store = LedgerState::build_branched_store(
-                &self.nameservice,
-                target_record,
-                self.backend(),
-            )
-            .await?;
+            let target_store =
+                LedgerState::build_branched_store(&self.nameservice, target_record, self.backend())
+                    .await?;
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         } else {
             let target_store = self.content_store(target_id);
@@ -327,12 +321,7 @@ where
         }
 
         // Load target state for staging the merge commit.
-        let target_state = LedgerState::load(
-            &self.nameservice,
-            target_id,
-            self.backend(),
-        )
-        .await?;
+        let target_state = LedgerState::load(&self.nameservice, target_id, self.backend()).await?;
 
         // Collect source flakes and metadata: walk source commits from HEAD
         // to ancestor, gathering flakes, namespace deltas, and graph deltas.
@@ -372,8 +361,7 @@ where
             .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
             .await?;
 
-        let content_store =
-            self.content_store(target_id);
+        let content_store = self.content_store(target_id);
 
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,

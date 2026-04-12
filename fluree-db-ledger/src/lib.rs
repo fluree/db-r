@@ -155,7 +155,7 @@ impl LedgerState {
             return Self::load_with_store(store, record).await;
         }
 
-        let store = backend.content_store_dyn(&record.ledger_id);
+        let store = backend.content_store(&record.ledger_id);
         Self::load_with_store(store, record).await
     }
 
@@ -179,11 +179,11 @@ impl LedgerState {
         let parent_store = if parent_record.source_branch.is_some() {
             Box::pin(Self::build_branched_store(ns, &parent_record, backend)).await?
         } else {
-            BranchedContentStore::leaf(backend.content_store_dyn(&parent_id))
+            BranchedContentStore::leaf(backend.content_store(&parent_id))
         };
 
         Ok(BranchedContentStore::with_parents(
-            backend.content_store_dyn(&record.ledger_id),
+            backend.content_store(&record.ledger_id),
             vec![parent_store],
         ))
     }

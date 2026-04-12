@@ -223,4 +223,3 @@ impl ContentStore for IpfsStorage {
         Ok(())
     }
 }
-

@@ -388,7 +388,10 @@ mod tests {
             storage: MemoryStorage::new(),
         };
         assert!(format!("{:?}", handle).contains("MemoryStorage"));
-        assert_eq!(handle.config().parallelism, ConnectionConfig::default().parallelism);
+        assert_eq!(
+            handle.config().parallelism,
+            ConnectionConfig::default().parallelism
+        );
     }
 
     #[test]

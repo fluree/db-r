@@ -258,10 +258,8 @@ pub async fn upload_dicts_from_disk(
                                                     ))
                                                 },
                                             )?;
-                                        let cas_result = content_store
-                                            .put(kind, &bytes)
-                                            .await
-                                            .map_err(|e| {
+                                        let cas_result =
+                                            content_store.put(kind, &bytes).await.map_err(|e| {
                                                 IndexerError::StorageWrite(e.to_string())
                                             })?;
                                         current_pack_refs.push(PackBranchEntry {
@@ -327,10 +325,8 @@ pub async fn upload_dicts_from_disk(
                                                     ))
                                                 },
                                             )?;
-                                        let cas_result = content_store
-                                            .put(kind, &bytes)
-                                            .await
-                                            .map_err(|e| {
+                                        let cas_result =
+                                            content_store.put(kind, &bytes).await.map_err(|e| {
                                                 IndexerError::StorageWrite(e.to_string())
                                             })?;
                                         current_pack_refs.push(PackBranchEntry {
@@ -813,12 +809,10 @@ pub async fn upload_dicts_from_disk(
                                             },
                                         )
                                     {
-                                        let cas_result = content_store
-                                            .put(kind, &leaf_bytes)
-                                            .await
-                                            .map_err(|e| {
-                                                IndexerError::StorageWrite(e.to_string())
-                                            })?;
+                                        let cas_result =
+                                            content_store.put(kind, &leaf_bytes).await.map_err(
+                                                |e| IndexerError::StorageWrite(e.to_string()),
+                                            )?;
                                         let address = cas_result.to_string();
                                         leaf_cids.push(cas_result);
                                         branch_entries.push(BranchLeafEntry {
@@ -865,12 +859,10 @@ pub async fn upload_dicts_from_disk(
                                             },
                                         )
                                     {
-                                        let cas_result = content_store
-                                            .put(kind, &leaf_bytes)
-                                            .await
-                                            .map_err(|e| {
-                                                IndexerError::StorageWrite(e.to_string())
-                                            })?;
+                                        let cas_result =
+                                            content_store.put(kind, &leaf_bytes).await.map_err(
+                                                |e| IndexerError::StorageWrite(e.to_string()),
+                                            )?;
                                         let address = cas_result.to_string();
                                         leaf_cids.push(cas_result);
                                         branch_entries.push(BranchLeafEntry {

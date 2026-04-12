@@ -422,15 +422,7 @@ pub async fn incremental_index(
         .map(|task| {
             let content_store = content_store.clone();
             let cache_dir = cache_dir.clone();
-            async move {
-                execute_phase2_task(
-                    task,
-                    config_ref,
-                    content_store,
-                    cache_dir,
-                )
-                .await
-            }
+            async move { execute_phase2_task(task, config_ref, content_store, cache_dir).await }
         })
         .buffer_unordered(concurrency)
         .collect::<Vec<_>>()

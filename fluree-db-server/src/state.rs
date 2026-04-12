@@ -515,9 +515,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn spawn_leaflet_cache_stats_logger<N>(
-        fluree: Arc<Fluree<N>>,
-    ) -> tokio::task::JoinHandle<()>
+    fn spawn_leaflet_cache_stats_logger<N>(fluree: Arc<Fluree<N>>) -> tokio::task::JoinHandle<()>
     where
         N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
     {

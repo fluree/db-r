@@ -116,8 +116,11 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
     let storage = CountingStorage::new();
     let nameservice = MemoryNameService::new();
 
-    let mut fluree: Fluree<MemoryNameService> =
-        Fluree::new(ConnectionConfig::memory(), storage.clone(), nameservice.clone());
+    let mut fluree: Fluree<MemoryNameService> = Fluree::new(
+        ConnectionConfig::memory(),
+        storage.clone(),
+        nameservice.clone(),
+    );
 
     // Use tiny leaflets/leaves so we can get multi-leaf indexes with small data.
     let indexer_cfg = IndexerConfig::small()
@@ -126,8 +129,11 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
         .with_incremental_enabled(true)
         .with_incremental_max_commits(10_000);
 
-    let (local, handle) =
-        support::start_background_indexer_local(fluree_db_core::StorageBackend::Managed(std::sync::Arc::new(storage.clone())), nameservice.clone(), indexer_cfg);
+    let (local, handle) = support::start_background_indexer_local(
+        fluree_db_core::StorageBackend::Managed(std::sync::Arc::new(storage.clone())),
+        nameservice.clone(),
+        indexer_cfg,
+    );
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));
 
     local

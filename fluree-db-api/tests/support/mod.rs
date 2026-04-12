@@ -27,8 +27,7 @@ use fluree_db_api::{GraphDb, QueryResult};
 // =============================================================================
 
 /// Type alias for memory-backed Fluree instance.
-pub type MemoryFluree =
-    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
+pub type MemoryFluree = fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
 
 /// Type alias for memory-backed ledger state.
 pub type MemoryLedger = LedgerState;

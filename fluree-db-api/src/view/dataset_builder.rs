@@ -411,29 +411,17 @@ mod tests {
     async fn test_is_single_ledger_fast_path() {
         // No time spec - fast path
         let spec = DatasetSpec::new().with_default(GraphSource::new("testdb:main"));
-        assert!(
-            Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(
-                &spec
-            )
-        );
+        assert!(Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
 
         // With time spec - not fast path (needs time resolution)
         let spec = DatasetSpec::new()
             .with_default(GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(5)));
-        assert!(
-            !Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(
-                &spec
-            )
-        );
+        assert!(!Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
 
         // Multiple graphs - not fast path
         let spec = DatasetSpec::new()
             .with_default(GraphSource::new("db1:main"))
             .with_default(GraphSource::new("db2:main"));
-        assert!(
-            !Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(
-                &spec
-            )
-        );
+        assert!(!Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
     }
 }

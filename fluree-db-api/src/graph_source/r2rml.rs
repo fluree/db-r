@@ -433,8 +433,7 @@ where
             storage.read_bytes(mapping_source).await.map_err(|e| {
                 QueryError::InvalidQuery(format!(
                     "Failed to load R2RML mapping from '{}': {}",
-                    mapping_source,
-                    e
+                    mapping_source, e
                 ))
             })?
         };

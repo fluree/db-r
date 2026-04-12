@@ -249,13 +249,8 @@ pub async fn rebuild_index_from_commits_with_store<C>(
 where
     C: ContentStore + Clone + Send + Sync + 'static,
 {
-    build::rebuild::rebuild_index_from_commits_with_store(
-        commit_store,
-        ledger_id,
-        record,
-        config,
-    )
-    .await
+    build::rebuild::rebuild_index_from_commits_with_store(commit_store, ledger_id, record, config)
+        .await
 }
 
 /// Incremental index from an existing FIR6 root.

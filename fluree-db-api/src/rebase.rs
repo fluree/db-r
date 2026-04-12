@@ -168,12 +168,9 @@ where
         }
 
         // Build a BranchedContentStore for reading commits across namespaces.
-        let branch_store = LedgerState::build_branched_store(
-            &self.nameservice,
-            &branch_record,
-            self.backend(),
-        )
-        .await?;
+        let branch_store =
+            LedgerState::build_branched_store(&self.nameservice, &branch_record, self.backend())
+                .await?;
 
         // Compute common ancestor by walking commit chains.
         let branch_head_id = branch_record
@@ -211,8 +208,7 @@ where
             .await?;
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         } else {
-            let source_store =
-                self.content_store(&source_id);
+            let source_store = self.content_store(&source_id);
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         };
 
@@ -297,12 +293,8 @@ where
     /// The actual replay loop + finalization, extracted so the caller can
     /// wrap it in a snapshot/rollback guard.
     async fn run_replay(&self, ctx: &ReplayContext<'_>) -> Result<RebaseReport> {
-        let mut current_state = LedgerState::load(
-            &self.nameservice,
-            ctx.source_id,
-            self.backend(),
-        )
-        .await?;
+        let mut current_state =
+            LedgerState::load(&self.nameservice, ctx.source_id, self.backend()).await?;
 
         current_state.snapshot.ledger_id = ctx.branch_id.to_string();
 
@@ -545,12 +537,9 @@ where
             "building inline index mid-rebase to flush novelty"
         );
 
-        let branch_store = LedgerState::build_branched_store(
-            &self.nameservice,
-            branch_record,
-            self.backend(),
-        )
-        .await?;
+        let branch_store =
+            LedgerState::build_branched_store(&self.nameservice, branch_record, self.backend())
+                .await?;
 
         let record = self
             .nameservice
@@ -573,13 +562,9 @@ where
             .publish_index(branch_id, index_result.index_t, &index_result.root_id)
             .await?;
 
-        LedgerState::load(
-            &self.nameservice,
-            branch_id,
-            self.backend(),
-        )
-        .await
-        .map_err(Into::into)
+        LedgerState::load(&self.nameservice, branch_id, self.backend())
+            .await
+            .map_err(Into::into)
     }
 
     /// Copy index artifacts from source to branch (best-effort).

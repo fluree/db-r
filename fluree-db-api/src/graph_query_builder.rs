@@ -11,8 +11,8 @@ use crate::graph::Graph;
 use crate::query::builder::QueryCore;
 use crate::view::GraphDb;
 use crate::{
-    ApiError, Fluree, NameService, QueryResult, Result, TrackedErrorResponse,
-    TrackedQueryResponse, TrackingOptions,
+    ApiError, Fluree, NameService, QueryResult, Result, TrackedErrorResponse, TrackedQueryResponse,
+    TrackingOptions,
 };
 
 #[cfg(feature = "iceberg")]

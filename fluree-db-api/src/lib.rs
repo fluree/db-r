@@ -1728,10 +1728,7 @@ impl FlureeBuilder {
     /// Note: The input `[u8; 32]` passed to this method is not automatically zeroized;
     /// callers should zeroize their own key copies if needed.
     #[cfg(feature = "native")]
-    pub fn build_encrypted(
-        self,
-        key: [u8; 32],
-    ) -> Result<Fluree<FileNameService>> {
+    pub fn build_encrypted(self, key: [u8; 32]) -> Result<Fluree<FileNameService>> {
         // Always use the explicitly provided key
         self.build_encrypted_internal(key)
     }
@@ -1764,9 +1761,7 @@ impl FlureeBuilder {
     ///     .build_encrypted_from_config()?;
     /// ```
     #[cfg(feature = "native")]
-    pub fn build_encrypted_from_config(
-        self,
-    ) -> Result<Fluree<FileNameService>> {
+    pub fn build_encrypted_from_config(self) -> Result<Fluree<FileNameService>> {
         let key = self.encryption_key.ok_or_else(|| {
             ApiError::config("No encryption key configured. Set via with_encryption_key(), with_encryption_key_base64(), or AES256Key in JSON-LD config")
         })?;
@@ -1775,10 +1770,7 @@ impl FlureeBuilder {
 
     /// Internal helper to build encrypted storage
     #[cfg(feature = "native")]
-    fn build_encrypted_internal(
-        mut self,
-        key: [u8; 32],
-    ) -> Result<Fluree<FileNameService>> {
+    fn build_encrypted_internal(mut self, key: [u8; 32]) -> Result<Fluree<FileNameService>> {
         let path = self
             .storage_path
             .take()
@@ -1832,10 +1824,7 @@ impl FlureeBuilder {
     /// # Arguments
     ///
     /// * `key` - 32-byte AES-256 encryption key
-    pub fn build_memory_encrypted(
-        self,
-        key: [u8; 32],
-    ) -> Fluree<MemoryNameService> {
+    pub fn build_memory_encrypted(self, key: [u8; 32]) -> Fluree<MemoryNameService> {
         let mem_storage = MemoryStorage::new();
         let encryption_key = EncryptionKey::new(key, 0);
         let key_provider = StaticKeyProvider::new(encryption_key);
@@ -1974,7 +1963,13 @@ impl FlureeBuilder {
     pub async fn build_s3_encrypted(
         self,
         key: [u8; 32],
-    ) -> Result<Fluree<StorageNameService<EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>>>> {
+    ) -> Result<
+        Fluree<
+            StorageNameService<
+                EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>,
+            >,
+        >,
+    > {
         use fluree_db_connection::aws;
         use fluree_db_connection::config::S3StorageConfig;
         use fluree_db_storage_aws::{S3Config, S3Storage};
@@ -2385,11 +2380,7 @@ where
     }
 
     /// Create a new Fluree instance from a pre-built `StorageBackend`.
-    pub fn from_backend(
-        config: ConnectionConfig,
-        backend: StorageBackend,
-        nameservice: N,
-    ) -> Self {
+    pub fn from_backend(config: ConnectionConfig, backend: StorageBackend, nameservice: N) -> Self {
         let leaflet_cache = make_leaflet_cache(&config);
         Self {
             config,
@@ -2465,7 +2456,7 @@ where
 
     /// Get a content store scoped to the given namespace/ledger ID.
     pub fn content_store(&self, namespace_id: &str) -> Arc<dyn ContentStore> {
-        self.backend.content_store_dyn(namespace_id)
+        self.backend.content_store(namespace_id)
     }
 
     /// Get the raw address-based storage for admin/GC operations.

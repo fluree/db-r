@@ -1119,16 +1119,15 @@ where
                 }
             }
 
-            let storage = self.fluree.backend().admin_storage_cloned()
+            let storage = self
+                .fluree
+                .backend()
+                .admin_storage_cloned()
                 .expect("ledger_info requires a managed storage backend");
-            let json = build_ledger_info_with_options(
-                &ledger,
-                &storage,
-                self.context,
-                self.options,
-            )
-            .await
-            .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))?;
+            let json =
+                build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
+                    .await
+                    .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))?;
 
             if let Ok(vec) = serde_json::to_vec(&json) {
                 cache.insert_ledger_info(cache_key, vec.into());
@@ -1137,7 +1136,10 @@ where
             return Ok(json);
         }
 
-        let storage = self.fluree.backend().admin_storage_cloned()
+        let storage = self
+            .fluree
+            .backend()
+            .admin_storage_cloned()
             .expect("ledger_info requires a managed storage backend");
         build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
             .await
