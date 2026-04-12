@@ -270,7 +270,10 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
 
     // Resolve local head.
     let fluree = context::build_fluree(dirs)?;
-    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
+    let storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| CliError::Config("sync requires managed storage backend".into()))?;
     let local_ref = fluree
         .nameservice()
         .get_ref(&ledger_id, RefKind::CommitHead)
@@ -1044,7 +1047,10 @@ pub async fn run_clone(
 
     // Create the local ledger.
     let fluree = context::build_fluree(dirs)?;
-    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
+    let storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| CliError::Config("sync requires managed storage backend".into()))?;
     fluree
         .create_ledger(&local_id)
         .await
@@ -1345,7 +1351,10 @@ pub async fn run_clone_origin(
 
     // 4. Create the local ledger.
     let fluree = context::build_fluree(dirs)?;
-    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
+    let storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| CliError::Config("sync requires managed storage backend".into()))?;
     fluree
         .create_ledger(&local_id)
         .await
@@ -1649,7 +1658,10 @@ async fn run_pull_via_origins(
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     let fluree = context::build_fluree(dirs)?;
-    let storage = fluree.backend().admin_storage_cloned().expect("requires managed backend");
+    let storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| CliError::Config("sync requires managed storage backend".into()))?;
 
     let ns_record = fluree
         .nameservice()

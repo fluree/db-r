@@ -473,8 +473,9 @@ where
         stop_at_t: i64,
         target_ledger_id: &str,
     ) -> Result<usize> {
-        let storage = self.admin_storage()
-            .expect("copy_commit_chain requires a managed storage backend");
+        let storage = self
+            .admin_storage()
+            .ok_or_else(|| ApiError::internal("merge requires managed storage backend"))?;
 
         let dag = collect_dag_cids(source_store, head_id, stop_at_t).await?;
         let mut copied = 0;

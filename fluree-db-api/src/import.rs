@@ -779,8 +779,13 @@ where
 
     /// Execute the bulk import pipeline.
     pub async fn execute(self) -> std::result::Result<ImportResult, ImportError> {
-        let storage = self.fluree.backend().admin_storage_cloned()
-            .expect("bulk import requires a managed storage backend");
+        let storage = self
+            .fluree
+            .backend()
+            .admin_storage_cloned()
+            .ok_or_else(|| {
+                ImportError::Storage("bulk import requires a managed storage backend".into())
+            })?;
         run_import_pipeline(
             &storage,
             self.fluree.nameservice(),

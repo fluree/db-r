@@ -361,8 +361,9 @@ where
         use fluree_db_core::storage::content_address;
         use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
 
-        let storage = self.backend().admin_storage_cloned()
-            .expect("copy_index_to_branch requires a managed storage backend");
+        let storage = self.backend().admin_storage_cloned().ok_or_else(|| {
+            ApiError::internal("copy_index_to_branch requires managed storage backend")
+        })?;
         let method = storage.storage_method();
         let source_store = self.content_store(source_id);
 
