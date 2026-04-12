@@ -613,7 +613,7 @@ pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageC
 ///
 /// # Content store access
 ///
-/// Both variants can produce a [`LedgerStore`] scoped to a ledger
+/// Both variants can produce an `Arc<dyn ContentStore>` scoped to a ledger
 /// via [`content_store`]. For `Managed`, this constructs a
 /// [`StorageContentStore`] bridge; for `Permanent`, it returns the inner
 /// store directly (the `namespace_id` is ignored since the backend handles
@@ -634,29 +634,13 @@ pub enum StorageBackend {
 }
 
 impl StorageBackend {
-    /// Create a [`LedgerStore`] scoped to the given namespace
+    /// Create an `Arc<dyn ContentStore>` scoped to the given namespace
     /// (typically a ledger ID).
     ///
     /// For `Managed` backends, this constructs a [`StorageContentStore`] that
     /// maps CIDs to physical addresses under the namespace. For `Permanent`
     /// backends, the inner store is returned directly.
-    pub fn content_store(&self, namespace_id: &str) -> LedgerStore {
-        match self {
-            StorageBackend::Managed(storage) => {
-                LedgerStore::Managed(content_store_for(storage.clone(), namespace_id))
-            }
-            StorageBackend::Permanent(store) => LedgerStore::Permanent(Arc::clone(store)),
-        }
-    }
-
-    /// Create an `Arc<dyn ContentStore>` scoped to the given namespace.
-    ///
-    /// This is the trait-object variant of [`content_store`], useful when
-    /// working with code that needs dynamic dispatch (e.g., constructing
-    /// a [`BranchedContentStore`]).
-    ///
-    /// [`content_store`]: StorageBackend::content_store
-    pub fn content_store_dyn(&self, namespace_id: &str) -> Arc<dyn ContentStore> {
+    pub fn content_store(&self, namespace_id: &str) -> Arc<dyn ContentStore> {
         match self {
             StorageBackend::Managed(storage) => {
                 Arc::new(content_store_for(storage.clone(), namespace_id))
@@ -710,72 +694,6 @@ impl Clone for StorageBackend {
         match self {
             StorageBackend::Managed(s) => StorageBackend::Managed(Arc::clone(s)),
             StorageBackend::Permanent(s) => StorageBackend::Permanent(Arc::clone(s)),
-        }
-    }
-}
-
-/// Content store produced by [`StorageBackend::content_store`].
-///
-/// This is a concrete enum that implements [`ContentStore`] via dispatch
-/// over the two backend kinds, avoiding heap allocation and trait object
-/// indirection.
-pub enum LedgerStore {
-    /// Bridge from address-based storage to content-addressed access.
-    Managed(StorageContentStore<Arc<dyn Storage>>),
-    /// Natively content-addressed store (IPFS).
-    Permanent(Arc<dyn ContentStore>),
-}
-
-#[async_trait]
-impl ContentStore for LedgerStore {
-    async fn has(&self, id: &ContentId) -> Result<bool> {
-        match self {
-            Self::Managed(s) => s.has(id).await,
-            Self::Permanent(s) => s.has(id).await,
-        }
-    }
-
-    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
-        match self {
-            Self::Managed(s) => s.get(id).await,
-            Self::Permanent(s) => s.get(id).await,
-        }
-    }
-
-    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
-        match self {
-            Self::Managed(s) => s.put(kind, bytes).await,
-            Self::Permanent(s) => s.put(kind, bytes).await,
-        }
-    }
-
-    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
-        match self {
-            Self::Managed(s) => s.put_with_id(id, bytes).await,
-            Self::Permanent(s) => s.put_with_id(id, bytes).await,
-        }
-    }
-
-    fn resolve_local_path(&self, id: &ContentId) -> Option<PathBuf> {
-        match self {
-            Self::Managed(s) => s.resolve_local_path(id),
-            Self::Permanent(s) => s.resolve_local_path(id),
-        }
-    }
-
-    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
-        match self {
-            Self::Managed(s) => s.get_range(id, range).await,
-            Self::Permanent(s) => s.get_range(id, range).await,
-        }
-    }
-}
-
-impl Debug for LedgerStore {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Managed(s) => f.debug_tuple("Managed").field(s).finish(),
-            Self::Permanent(s) => f.debug_tuple("Permanent").field(s).finish(),
         }
     }
 }
