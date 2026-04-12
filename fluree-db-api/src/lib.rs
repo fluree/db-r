@@ -3073,7 +3073,10 @@ where
                         "default context updated"
                     );
 
-                    // GC old blob if CID changed
+                    // GC old blob if CID changed.
+                    // TODO: For IPFS, unpin the old CID so Kubo's GC can reclaim
+                    // it. This requires adding a `release` method to `ContentStore`
+                    // (does not exist yet).
                     if let Some(old) = old_cid {
                         if old != new_cid {
                             if let Some(storage) = self.admin_storage() {
@@ -3111,7 +3114,10 @@ where
             }
         }
 
-        // All retries exhausted — best-effort GC the orphan blob we wrote
+        // All retries exhausted — best-effort GC the orphan blob we wrote.
+        // TODO: For IPFS, unpin the orphan CID so Kubo's GC can reclaim
+        // it. This requires adding a `release` method to `ContentStore`
+        // (does not exist yet).
         if let Some(storage) = self.admin_storage() {
             let kind = new_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
             let addr = fluree_db_core::content_address(

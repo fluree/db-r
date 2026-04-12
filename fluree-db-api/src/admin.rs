@@ -472,6 +472,10 @@ where
         let storage = match self.admin_storage() {
             Some(s) => s,
             None => {
+                // TODO: For IPFS, unpin artifacts so Kubo's GC can reclaim them.
+                // This requires adding a `release` method to `ContentStore`
+                // (does not exist yet) with a default no-op, implemented as
+                // `pin_rm` for `IpfsStorage`.
                 warnings
                     .push("Artifact deletion skipped: not supported on this backend".to_string());
                 return (0, warnings);
@@ -528,6 +532,10 @@ where
         let storage = match self.backend().admin_storage_cloned() {
             Some(s) => s,
             None => {
+                // TODO: For IPFS, walk CIDs and unpin so Kubo's GC can reclaim
+                // them. This requires adding a `release` method to `ContentStore`
+                // (does not exist yet) with a default no-op, implemented as
+                // `pin_rm` for `IpfsStorage`.
                 warnings
                     .push("CID-walking drop skipped: not supported on this backend".to_string());
                 return (0, std::mem::take(warnings));
@@ -1067,6 +1075,10 @@ where
         let storage_clone = match self.backend().admin_storage_cloned() {
             Some(s) => s,
             None => {
+                // TODO: For IPFS, unpin replaced CIDs so Kubo's GC can reclaim
+                // stale index artifacts. This requires adding a `release` method
+                // to `ContentStore` (does not exist yet) with a default no-op,
+                // implemented as `pin_rm` for `IpfsStorage`.
                 tracing::debug!("Skipping GC: not supported on this backend");
                 return Ok(ReindexResult {
                     ledger_id,

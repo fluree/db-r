@@ -965,6 +965,10 @@ where
                     // Spawn garbage collection (fire-and-forget, non-fatal).
                     // GC requires address-based Storage (deletion), so it only
                     // runs for Managed backends. Permanent backends (IPFS) skip GC.
+                    // TODO: For IPFS, unpin replaced CIDs so Kubo's GC can reclaim
+                    // stale index artifacts. This requires adding a `release` method
+                    // to `ContentStore` (does not exist yet) with a default no-op,
+                    // implemented as `pin_rm` for `IpfsStorage`.
                     if let Some(gc_storage) = self.backend.admin_storage_cloned() {
                         let gc_root_id = index_result.root_id.clone();
                         let gc_ledger_id = index_result.ledger_id.clone();
