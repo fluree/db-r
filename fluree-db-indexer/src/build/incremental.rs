@@ -2223,7 +2223,7 @@ pub async fn incremental_index(
     // Write garbage manifest.
     if !replaced_cids.is_empty() {
         let garbage_strings: Vec<String> = replaced_cids.iter().map(|c| c.to_string()).collect();
-        let garbage_ref = gc::write_garbage_record(
+        let garbage_cid = gc::write_garbage_record(
             content_store.as_ref(),
             ledger_id,
             new_root.index_t,
@@ -2234,7 +2234,7 @@ pub async fn incremental_index(
 
         // Set garbage on the root before encoding.
         let mut final_root = new_root;
-        final_root.garbage = garbage_ref.map(|id| BinaryGarbageRef { id });
+        final_root.garbage = Some(BinaryGarbageRef { id: garbage_cid });
         if let Some(stats) = final_root.stats.as_mut() {
             stats.size = final_root.total_commit_size;
             if let Some(graphs) = stats.graphs.as_mut() {

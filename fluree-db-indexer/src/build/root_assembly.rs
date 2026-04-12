@@ -105,11 +105,11 @@ pub(crate) async fn encode_and_write_root(
         if !ctx.garbage_cids.is_empty() {
             let garbage_strings: Vec<String> =
                 ctx.garbage_cids.iter().map(|c| c.to_string()).collect();
-            root.garbage =
+            let cid =
                 gc::write_garbage_record(content_store, ledger_id, root.index_t, garbage_strings)
                     .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                    .map(|id| BinaryGarbageRef { id });
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            root.garbage = Some(BinaryGarbageRef { id: cid });
 
             tracing::info!(
                 garbage_count = ctx.garbage_cids.len(),
@@ -328,15 +328,15 @@ pub(crate) async fn encode_and_write_root_v6(
         if !ctx.garbage_cids.is_empty() {
             let garbage_strings: Vec<String> =
                 ctx.garbage_cids.iter().map(|c| c.to_string()).collect();
-            root.garbage = gc::write_garbage_record(
+            let cid = gc::write_garbage_record(
                 content_store,
                 &inputs.ledger_id,
                 inputs.index_t,
                 garbage_strings,
             )
             .await
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-            .map(|id| BinaryGarbageRef { id });
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            root.garbage = Some(BinaryGarbageRef { id: cid });
 
             tracing::info!(
                 garbage_count = ctx.garbage_cids.len(),
