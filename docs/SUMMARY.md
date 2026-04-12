@@ -133,6 +133,7 @@
   - [DynamoDB nameservice](operations/dynamodb-guide.md)
   - [Query peers and replication](operations/query-peers.md)
   - [Telemetry and logging](operations/telemetry.md)
+  - [Pack format: archive and restore](operations/pack-archive-restore.md)
   - [Admin, health, and stats](operations/admin-and-health.md)
 
 - [Troubleshooting](troubleshooting/README.md)
