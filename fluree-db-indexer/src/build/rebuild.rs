@@ -5,7 +5,7 @@
 //! orders, and writes an `IndexRoot` (FIR6) descriptor to storage.
 
 use fluree_db_binary_index::{GraphArenaRefs, RunRecord, VectorDictRef};
-use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore};
 
 use crate::error::{IndexerError, Result};
 use crate::run_index;
@@ -31,32 +31,26 @@ use tracing::Instrument;
 /// 4. Build SPOT from sorted commit files (k-way merge with g_id)
 /// 5. Remap + build secondary indexes (PSOT/POST/OPST)
 /// 6. Upload artifacts to CAS and write BinaryIndexRoot
-pub async fn rebuild_index_from_commits<S>(
-    storage: &S,
+pub async fn rebuild_index_from_commits(
+    content_store: std::sync::Arc<dyn ContentStore>,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
-    rebuild_index_from_commits_with_store(storage, content_store, ledger_id, record, config).await
+) -> Result<IndexResult> {
+    rebuild_index_from_commits_with_store(content_store, ledger_id, record, config).await
 }
 
 /// Like [`rebuild_index_from_commits`], but accepts a caller-provided
 /// [`ContentStore`] for reading commit blobs. Use this when commit history
 /// spans multiple storage namespaces (e.g. rebasing a branch whose commit
 /// chain falls through to parent namespaces via `BranchedContentStore`).
-pub async fn rebuild_index_from_commits_with_store<S, C>(
-    storage: &S,
+pub async fn rebuild_index_from_commits_with_store<C>(
     commit_store: C,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
 ) -> Result<IndexResult>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     C: ContentStore + Clone + Send + Sync + 'static,
 {
     use fluree_db_core::commit::codec::read_commit_envelope;
@@ -89,7 +83,6 @@ where
     );
 
     // Capture values for the blocking task
-    let _ = storage; // storage no longer used directly: all writes go through commit_store
     let ledger_id = ledger_id.to_string();
     let _prev_root_id = record.index_head_id.clone();
     let commit_t = record.commit_t;

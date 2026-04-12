@@ -563,9 +563,7 @@ where
 
         let indexer_config = crate::build_indexer_config(self.config());
 
-        let storage = self.storage();
         let index_result = fluree_db_indexer::rebuild_index_from_commits_with_store(
-            storage,
             branch_store,
             branch_id,
             &record,

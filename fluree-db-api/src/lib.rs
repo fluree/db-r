@@ -1663,12 +1663,13 @@ impl FlureeBuilder {
 
         let storage = FileStorage::new(&path);
         let nameservice = FileNameService::new(&path);
+        let backend = StorageBackend::Managed(Arc::new(storage));
         let index_config = self.derive_indexing();
-        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        Ok(Self::finalize(
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
-            storage,
+            backend,
             nameservice,
             indexing_mode,
             index_config,
@@ -1789,11 +1790,12 @@ impl FlureeBuilder {
         let storage = EncryptedStorage::new(file_storage, key_provider);
         let nameservice = FileNameService::new(&path);
         let index_config = self.derive_indexing();
-        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        Ok(Self::finalize(
+        let backend = StorageBackend::Managed(Arc::new(storage));
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
-            storage,
+            backend,
             nameservice,
             indexing_mode,
             index_config,
@@ -1943,11 +1945,12 @@ impl FlureeBuilder {
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage.clone(), "");
         let index_config = self.derive_indexing();
-        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        Ok(Self::finalize(
+        let backend = StorageBackend::Managed(Arc::new(storage));
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
-            storage,
+            backend,
             nameservice,
             indexing_mode,
             index_config,
@@ -2015,11 +2018,12 @@ impl FlureeBuilder {
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage.clone(), "");
         let index_config = self.derive_indexing();
-        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        Ok(Self::finalize(
+        let backend = StorageBackend::Managed(Arc::new(storage));
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
-            storage,
+            backend,
             nameservice,
             indexing_mode,
             index_config,
@@ -2046,14 +2050,17 @@ impl FlureeBuilder {
     /// Spawn the background indexer worker if configured.
     ///
     /// Must be called within a tokio runtime context.
-    fn start_background_indexing<S, N>(&self, storage: &S, nameservice: &N) -> tx::IndexingMode
+    fn start_background_indexing<N>(
+        &self,
+        backend: &StorageBackend,
+        nameservice: &N,
+    ) -> tx::IndexingMode
     where
-        S: Storage + Clone + Send + Sync + 'static,
         N: NameService + fluree_db_nameservice::Publisher + Clone + 'static,
     {
         if let Some(ref idx_config) = self.indexing_config {
             let (worker, handle) = BackgroundIndexerWorker::new(
-                storage.clone(),
+                backend.clone(),
                 Arc::new(nameservice.clone()),
                 idx_config.indexer_config.clone(),
             );
@@ -2183,11 +2190,12 @@ impl FlureeBuilder {
             AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
         let index_config = self.derive_indexing();
-        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        Ok(Self::finalize(
+        let backend = StorageBackend::Managed(storage);
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
-            storage,
+            backend,
             nameservice,
             indexing_mode,
             index_config,
@@ -2229,11 +2237,12 @@ impl FlureeBuilder {
                 AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
 
             let index_config = self.derive_indexing();
-            let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-            Ok(Self::finalize(
+            let backend = StorageBackend::Managed(storage);
+            let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+            Ok(Self::finalize_with_backend(
                 self.ledger_cache_config,
                 self.config,
-                storage,
+                backend,
                 nameservice,
                 indexing_mode,
                 index_config,
@@ -2273,11 +2282,12 @@ impl FlureeBuilder {
         let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
 
         let index_config = self.derive_indexing();
-        let indexing_mode = self.start_background_indexing(&storage, &nameservice);
-        Ok(Self::finalize(
+        let backend = StorageBackend::Managed(storage);
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             aws_handle.config().clone(),
-            storage,
+            backend,
             nameservice,
             indexing_mode,
             index_config,

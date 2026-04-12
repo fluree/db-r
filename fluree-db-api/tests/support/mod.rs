@@ -257,8 +257,9 @@ where
     S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + Clone + 'static,
 {
+    let backend = fluree_db_core::StorageBackend::Managed(Arc::new(storage));
     let (worker, handle) =
-        fluree_db_api::BackgroundIndexerWorker::new(storage, Arc::new(nameservice), config);
+        fluree_db_api::BackgroundIndexerWorker::new(backend, Arc::new(nameservice), config);
 
     let local = LocalSet::new();
     local.spawn_local(worker.run());

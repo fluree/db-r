@@ -1011,8 +1011,13 @@ where
         let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
-        let index_result =
-            rebuild_index_from_commits(self.storage(), &ledger_id, &record, indexer_config).await?;
+        let index_result = rebuild_index_from_commits(
+            self.content_store(&ledger_id),
+            &ledger_id,
+            &record,
+            indexer_config,
+        )
+        .await?;
 
         info!(
             ledger_id = %ledger_id,
