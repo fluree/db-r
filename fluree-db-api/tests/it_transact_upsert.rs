@@ -6,6 +6,7 @@ mod support;
 
 use fluree_db_api::FlureeBuilder;
 use fluree_db_core::comparator::IndexType;
+use fluree_db_core::{load_commit_by_id, FlakeValue};
 use serde_json::json;
 use support::normalize_rows;
 
@@ -231,6 +232,71 @@ async fn upsert_no_changes() {
 
     assert_eq!(normalize_rows(&jsonld1), normalize_rows(&jsonld2));
     assert_eq!(normalize_rows(&jsonld1), normalize_rows(&jsonld3));
+}
+
+#[tokio::test]
+async fn upsert_typed_string_retract_and_assert_use_same_datatype_sid() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "tx/upsert-typed-string-datatype-sid:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+
+    let initial_txn = json!({
+        "@graph": [
+            {
+                "@id": "http://example.org/s",
+                "http://example.org/p": {
+                    "@value": "before",
+                    "@type": "xsd:string"
+                }
+            }
+        ]
+    });
+    let ledger1 = fluree.insert(ledger0, &initial_txn).await.unwrap().ledger;
+
+    let upsert_txn = json!({
+        "@context": {
+            "ex": "http://example.org/",
+            "xsd": "http://www.w3.org/2001/XMLSchema#"
+        },
+        "@graph": [
+            {
+                "@id": "ex:s",
+                "ex:p": {
+                    "@value": "after",
+                    "@type": "xsd:string"
+                }
+            }
+        ]
+    });
+    let result = fluree.upsert(ledger1, &upsert_txn).await.unwrap();
+
+    let content_store = fluree.content_store(ledger_id);
+    let commit = load_commit_by_id(&content_store, &result.receipt.commit_id)
+        .await
+        .expect("load upsert commit");
+
+    let retract = commit
+        .flakes
+        .iter()
+        .find(|f| {
+            !f.op
+                && matches!(&f.o, FlakeValue::String(s) if s == "before")
+                && f.p.name.as_ref() == "p"
+        })
+        .expect("retract flake for previous typed string");
+    let assert = commit
+        .flakes
+        .iter()
+        .find(|f| {
+            f.op && matches!(&f.o, FlakeValue::String(s) if s == "after")
+                && f.p.name.as_ref() == "p"
+        })
+        .expect("assert flake for replacement typed string");
+
+    assert_eq!(
+        retract.dt, assert.dt,
+        "upsert should reuse the same datatype SID on retract and assert for xsd:string literals"
+    );
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
-use fluree_db_core::LedgerSnapshot;
+use fluree_db_core::{load_commit_by_id, FlakeValue, LedgerSnapshot};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
 
@@ -199,6 +199,90 @@ async fn update_bob_age_when_match() {
     assert_eq!(
         bob,
         json!({"@id":"ex:bob","@type":"ex:User","schema:name":"Bob","schema:age":23})
+    );
+}
+
+#[tokio::test]
+async fn update_where_bound_typed_string_delete_and_insert_use_same_datatype_sid() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "tx/update-typed-string-datatype-sid:main";
+    let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
+
+    let initial_txn = json!({
+        "@graph": [
+            {
+                "@id": "http://example.org/s",
+                "http://example.org/p": {
+                    "@value": "before",
+                    "@type": "xsd:string"
+                }
+            }
+        ]
+    });
+    let ledger1 = fluree.insert(ledger0, &initial_txn).await.unwrap().ledger;
+
+    let update_txn = json!({
+        "@context": {
+            "ex": "http://example.org/",
+            "xsd": "http://www.w3.org/2001/XMLSchema#"
+        },
+        "where": [{
+            "@id": "?s",
+            "ex:p": "?old"
+        }],
+        "delete": [{
+            "@id": "?s",
+            "ex:p": "?old"
+        }],
+        "insert": [{
+            "@id": "?s",
+            "ex:p": {
+                "@value": "after",
+                "@type": "xsd:string"
+            }
+        }]
+    });
+    let txn_opts = TxnOpts {
+        object_var_parsing: Some(true),
+        ..Default::default()
+    };
+    let result = fluree
+        .update_with_opts(
+            ledger1,
+            &update_txn,
+            txn_opts,
+            Default::default(),
+            &Default::default(),
+        )
+        .await
+        .unwrap();
+
+    let content_store = fluree.content_store(ledger_id);
+    let commit = load_commit_by_id(&content_store, &result.receipt.commit_id)
+        .await
+        .expect("load update commit");
+
+    let retract = commit
+        .flakes
+        .iter()
+        .find(|f| {
+            !f.op
+                && matches!(&f.o, FlakeValue::String(s) if s == "before")
+                && f.p.name.as_ref() == "p"
+        })
+        .expect("retract flake for previous typed string");
+    let assert = commit
+        .flakes
+        .iter()
+        .find(|f| {
+            f.op && matches!(&f.o, FlakeValue::String(s) if s == "after")
+                && f.p.name.as_ref() == "p"
+        })
+        .expect("assert flake for replacement typed string");
+
+    assert_eq!(
+        retract.dt, assert.dt,
+        "update where/delete/insert should keep the same datatype SID on retract and assert for xsd:string literals"
     );
 }
 

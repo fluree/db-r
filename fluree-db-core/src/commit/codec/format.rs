@@ -17,18 +17,28 @@ use super::varint::{read_exact, read_u8};
 /// Magic bytes identifying a v2 commit blob.
 pub const MAGIC: [u8; 4] = *b"FCV2";
 
-/// Current format version.
+/// Current (write) format version.
 /// Version 4: no embedded trailing hash. CID is computed as SHA-256(full blob).
 pub const VERSION: u8 = 4;
 
-/// Header size in bytes (fixed).
+/// Legacy format version (read-only support via `legacy_v3` module).
+/// Version 3: carries a trailing 32-byte embedded hash; CID is derived from
+/// SHA-256(body) where body excludes the trailing hash and any signature block.
+pub const VERSION_V3: u8 = 3;
+
+/// Header size in bytes (fixed, shared by v3 and v4).
 pub const HEADER_LEN: usize = 32;
 
 /// Footer size in bytes (fixed, excludes trailing hash).
 /// 5 dictionaries x (offset: u64 + len: u32) = 5 x 12 = 60, plus ops_section_len: u32 = 4.
 pub const FOOTER_LEN: usize = 64;
 
+/// Trailing SHA-256 hash size (v3 only).
+pub const HASH_LEN_V3: usize = 32;
+
 /// Minimum valid commit blob size (v4: no embedded hash).
+/// V3 blobs are always at least `HEADER_LEN + FOOTER_LEN + HASH_LEN_V3 = 128`,
+/// which exceeds this minimum, so this bound works for both versions.
 pub const MIN_COMMIT_LEN: usize = HEADER_LEN + FOOTER_LEN; // 96
 
 // --- Commit-level flags (header) ---
@@ -300,10 +310,14 @@ impl CommitHeader {
 
     /// Read the header from the first 32 bytes of `buf`.
     ///
-    /// Wire layout (v3):
+    /// Wire layout (v3 and v4 share the same header):
     /// `[0..4] magic, [4] version, [5] flags, [6..10] t: u32 LE,
     ///  [10..14] op_count: u32, [14..18] envelope_len: u32,
     ///  [18..20] sig_block_len: u16, [20..32] reserved (12 bytes)`
+    ///
+    /// Accepts both v3 and v4 version bytes. Dispatch to the correct body
+    /// reader based on `header.version` (see top-level `codec` module).
+    /// Unknown versions return `UnsupportedVersion`.
     pub fn read_from(buf: &[u8]) -> Result<Self, CommitCodecError> {
         if buf.len() < HEADER_LEN {
             return Err(CommitCodecError::TooSmall {
@@ -315,7 +329,7 @@ impl CommitHeader {
             return Err(CommitCodecError::InvalidMagic);
         }
         let version = buf[4];
-        if version != VERSION {
+        if version != VERSION && version != VERSION_V3 {
             return Err(CommitCodecError::UnsupportedVersion(version));
         }
         let flags = buf[5];
@@ -464,19 +478,28 @@ mod tests {
             Err(CommitCodecError::UnsupportedVersion(2))
         ));
 
-        // Reject legacy version 3
-        buf[4] = 3;
-        assert!(matches!(
-            CommitHeader::read_from(&buf),
-            Err(CommitCodecError::UnsupportedVersion(3))
-        ));
-
         // Reject future version 99
         buf[4] = 99;
         assert!(matches!(
             CommitHeader::read_from(&buf),
             Err(CommitCodecError::UnsupportedVersion(99))
         ));
+    }
+
+    #[test]
+    fn test_header_accepts_v3_and_v4() {
+        // The header reader is version-agnostic across supported versions;
+        // dispatch to the correct body reader is done by the codec module.
+        let mut buf = [0u8; HEADER_LEN];
+        buf[0..4].copy_from_slice(&MAGIC);
+
+        buf[4] = VERSION_V3;
+        let parsed = CommitHeader::read_from(&buf).unwrap();
+        assert_eq!(parsed.version, VERSION_V3);
+
+        buf[4] = VERSION;
+        let parsed = CommitHeader::read_from(&buf).unwrap();
+        assert_eq!(parsed.version, VERSION);
     }
 
     #[test]

@@ -554,7 +554,15 @@ impl CommitResolver {
                 dt_ns,
                 dt_name,
             } => {
-                // Store the value as a string, with custom datatype
+                // Store the value as a string, with custom datatype.
+                //
+                // NOTE: Legacy v3 datatype canonicalization (rewriting
+                // corrupt shapes like `EMPTY + "xsd:string"` to
+                // canonical `(XSD, "string")`) is applied at decode time
+                // by `legacy_v3::read_commit_v3` / `read_commit_envelope_v3`
+                // before the envelope reaches this point. By the time the
+                // resolver sees `TxnMetaValue::TypedLiteral`, both v3 and
+                // v4 commits carry canonical `(dt_ns, dt_name)` pairs.
                 let str_id = dicts.strings.get_or_insert(value)?;
                 let dt_prefix = self.lookup_prefix(*dt_ns);
                 let dt_id = dicts.datatypes.get_or_insert_parts(dt_prefix, dt_name);
@@ -595,7 +603,12 @@ impl CommitResolver {
         // 3. Resolve predicate
         let p_id = self.resolve_predicate(op.p_ns_code, op.p_name, dicts);
 
-        // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID)
+        // 4. Resolve datatype via dict lookup (lossless -- any IRI gets an ID).
+        //
+        // V3 legacy canonicalization has already been applied at iteration
+        // time by `CommitOps::for_each_op` when the ops came from
+        // `legacy_v3::load_commit_ops_v3`; v4 ops come through clean. Either
+        // way, `(op.dt_ns_code, op.dt_name)` here is guaranteed canonical.
         let prefix = self.lookup_prefix(op.dt_ns_code);
         let dt_id = dicts.datatypes.get_or_insert_parts(prefix, op.dt_name);
         // Bulk import path: enforce u8 dt ids for now (imports are allowed to error here).
@@ -1135,6 +1148,12 @@ impl SharedResolverState {
     }
 
     /// Insert or look up a datatype, recording its ValueTypeTag deterministically.
+    ///
+    /// The caller is responsible for passing a canonical `(ns_code, name)`
+    /// pair. V3 legacy canonicalization is applied at v3 raw-op iteration
+    /// time (see `CommitOps::for_each_op`), so every caller in the rebuild
+    /// pipeline hands this function a clean pair regardless of on-disk
+    /// commit format.
     fn resolve_datatype(&mut self, ns_code: u16, name: &str) -> u32 {
         let prefix = self
             .ns_prefixes
@@ -1939,8 +1958,8 @@ mod tests {
     use fluree_db_core::commit::codec::format::{
         self, CommitFooter, CommitHeader, FOOTER_LEN, HEADER_LEN,
     };
+    use fluree_db_core::commit::codec::load_commit_ops;
     use fluree_db_core::commit::codec::op_codec::{encode_op, CommitDicts};
-    use fluree_db_core::commit::codec::raw_reader::load_commit_ops;
     use fluree_db_core::{Flake, FlakeMeta, FlakeValue, Sid};
 
     /// In-memory V1 record collector for tests.

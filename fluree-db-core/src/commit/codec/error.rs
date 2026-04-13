@@ -38,6 +38,11 @@ pub enum CommitCodecError {
     GIdOutOfRange(u64),
     /// Negative list index (not supported).
     NegativeListIndex(i32),
+    /// V3 embedded trailing hash did not match the computed SHA-256 of the body.
+    HashMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
 }
 
 impl fmt::Display for CommitCodecError {
@@ -92,8 +97,26 @@ impl fmt::Display for CommitCodecError {
             Self::NegativeListIndex(i) => {
                 write!(f, "commit-codec: negative list index {}", i)
             }
+            Self::HashMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "commit-codec: v3 embedded hash mismatch (expected {}, computed {})",
+                    hex_short(expected),
+                    hex_short(actual)
+                )
+            }
         }
     }
+}
+
+/// Short hex formatter for 32-byte hashes (first 8 bytes, e.g. "a1b2c3d4e5f6…").
+fn hex_short(bytes: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(18);
+    for b in &bytes[..8] {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s.push_str("..");
+    s
 }
 
 impl std::error::Error for CommitCodecError {}

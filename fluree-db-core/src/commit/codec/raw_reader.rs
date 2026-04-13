@@ -42,13 +42,54 @@ pub struct CommitOps {
     dicts: ReadDicts,
     /// Decompressed ops bytes (owned). `RawOp` borrows from this + `dicts`.
     ops_data: Vec<u8>,
+    /// When true, [`for_each_op`] canonicalizes legacy v3 datatype shapes
+    /// on each `RawOp` before invoking the user's callback. Set by
+    /// [`super::legacy_v3::load_commit_ops_v3`]; always `false` for v4 ops
+    /// produced by [`load_commit_ops_v4`].
+    legacy_v3_canonicalize: bool,
 }
 
 impl CommitOps {
+    /// Construct a `CommitOps` from its parts, in the v4 (no canonicalization)
+    /// mode. Only used by the codec's reader paths.
+    pub(crate) fn new(
+        envelope: CodecEnvelope,
+        t: i64,
+        op_count: u32,
+        dicts: ReadDicts,
+        ops_data: Vec<u8>,
+    ) -> Self {
+        Self {
+            envelope,
+            t,
+            op_count,
+            dicts,
+            ops_data,
+            legacy_v3_canonicalize: false,
+        }
+    }
+
+    /// Return a `CommitOps` that will canonicalize legacy v3 datatype
+    /// shapes on each iterated `RawOp`. Only called from
+    /// [`super::legacy_v3::load_commit_ops_v3`]; the v4 path leaves the
+    /// flag unset so there is zero legacy-related work in the v4 hot path.
+    pub(in crate::commit::codec) fn with_legacy_v3_canonicalization(mut self) -> Self {
+        self.legacy_v3_canonicalize = true;
+        self
+    }
+
     /// Iterate raw ops, calling `f` for each. No Flake/Sid construction.
     ///
     /// The callback receives a `RawOp` with borrowed `&str` fields from
     /// the commit's string dictionaries and ops buffer.
+    ///
+    /// When `self` was constructed via
+    /// [`with_legacy_v3_canonicalization`](Self::with_legacy_v3_canonicalization),
+    /// each `RawOp`'s `(dt_ns_code, dt_name)` pair is checked against the
+    /// legacy-v3 canonicalization rules before the user's callback runs.
+    /// Known corrupt shapes (empty-prefix CURIEs, JSON-LD shorthands,
+    /// `JSON_LD + "json"` aliases) are rewritten to their canonical form;
+    /// all other pairs pass through unchanged.
     pub fn for_each_op<F>(&self, mut f: F) -> Result<(), CommitCodecError>
     where
         F: FnMut(RawOp<'_>) -> Result<(), CommitCodecError>,
@@ -57,7 +98,17 @@ impl CommitOps {
         let mut pos = 0;
 
         for _ in 0..self.op_count {
-            let raw_op = decode_raw_op(data, &mut pos, &self.dicts)?;
+            let mut raw_op = decode_raw_op(data, &mut pos, &self.dicts)?;
+            if self.legacy_v3_canonicalize {
+                if let Some((new_ns, new_name)) = super::legacy_v3::canonicalize_dt_parts_static(
+                    raw_op.dt_ns_code,
+                    raw_op.dt_name,
+                ) {
+                    raw_op.dt_ns_code = new_ns;
+                    // `&'static str` satisfies `&'a str` for any lifetime.
+                    raw_op.dt_name = new_name;
+                }
+            }
             f(raw_op)?;
         }
 
@@ -239,7 +290,7 @@ impl<'a> TryFrom<RawObject<'a>> for crate::FlakeValue {
 ///
 /// V4 format: no embedded hash. Integrity is guaranteed by the
 /// content-addressed store. CID = SHA-256(full blob).
-pub fn load_commit_ops(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
+pub(crate) fn load_commit_ops_v4(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
     let blob_len = bytes.len();
 
     // 1. Validate minimum size
@@ -307,13 +358,13 @@ pub fn load_commit_ops(bytes: &[u8]) -> Result<CommitOps, CommitCodecError> {
     let mut envelope = envelope;
     envelope.t = header.t;
 
-    Ok(CommitOps {
+    Ok(CommitOps::new(
         envelope,
-        t: header.t,
-        op_count: header.op_count,
+        header.t,
+        header.op_count,
         dicts,
         ops_data,
-    })
+    ))
 }
 
 // ============================================================================
@@ -631,7 +682,7 @@ mod tests {
         );
 
         let blob = build_test_blob(&[flake], 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
 
         assert_eq!(ops.t, 1);
         assert_eq!(ops.op_count, 1);
@@ -765,7 +816,7 @@ mod tests {
         ];
 
         let blob = build_test_blob(&flakes, 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
         assert_eq!(ops.op_count, flakes.len() as u32);
 
         let mut idx = 0;
@@ -842,7 +893,7 @@ mod tests {
         ];
 
         let blob = build_test_blob(&flakes, 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
 
         let mut idx = 0;
         ops.for_each_op(|raw| {
@@ -880,7 +931,7 @@ mod tests {
         );
 
         let blob = build_test_blob(&[flake], 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
 
         ops.for_each_op(|raw| {
             assert!(!raw.op); // retract
@@ -923,7 +974,7 @@ mod tests {
         ];
 
         let blob = build_test_blob(&flakes, 1);
-        let ops = load_commit_ops(&blob).unwrap();
+        let ops = load_commit_ops_v4(&blob).unwrap();
         assert_eq!(ops.op_count, 3);
 
         let mut names = Vec::new();

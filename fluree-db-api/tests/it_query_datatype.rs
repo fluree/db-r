@@ -126,6 +126,90 @@ async fn datatype_query_explicit_typed_value_object_matches() {
     );
 }
 
+#[cfg(feature = "native")]
+#[tokio::test]
+async fn custom_datatype_equality_matches_indexed_and_novelty_rows_after_reindex() {
+    use fluree_db_api::ReindexOptions;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "people:custom-datatype-overlay";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+    let ctx = ctx_datatype();
+
+    let base_insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:s1",
+                "ex:label": {"@value": "Abcdefg", "@type": "ex:mystring"}
+            }
+        ]
+    });
+    let _ledger1 = fluree
+        .insert(ledger0, &base_insert)
+        .await
+        .expect("insert base custom datatype")
+        .ledger;
+
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex");
+
+    let indexed = fluree.ledger(ledger_id).await.expect("load indexed ledger");
+    assert!(
+        indexed.snapshot.range_provider.is_some(),
+        "expected binary range provider after reindex"
+    );
+
+    let novelty_insert = json!({
+        "@context": ctx,
+        "@graph": [
+            {
+                "@id": "ex:s2",
+                "ex:label": {"@value": "Abcdefg", "@type": "ex:mystring"}
+            }
+        ]
+    });
+    let ledger2 = fluree
+        .insert_with_opts(
+            indexed,
+            &novelty_insert,
+            TxnOpts::default(),
+            CommitOpts::default(),
+            &fluree_db_api::IndexConfig {
+                reindex_min_bytes: 1_000_000_000,
+                reindex_max_bytes: 1_000_000_000,
+            },
+        )
+        .await
+        .expect("insert novelty custom datatype")
+        .ledger;
+
+    let q = json!({
+        "@context": ctx,
+        "select": ["?s"],
+        "where": {
+            "@id": "?s",
+            "ex:label": {"@value": "Abcdefg", "@type": "ex:mystring"}
+        }
+    });
+
+    let rows = support::query_jsonld(&fluree, &ledger2, &q)
+        .await
+        .expect("query custom datatype equality")
+        .to_jsonld_async(ledger2.as_graph_db_ref(0))
+        .await
+        .expect("format custom datatype equality");
+
+    assert_eq!(
+        normalize_rows(&rows),
+        normalize_rows(&json!(["ex:s1", "ex:s2"])),
+        "custom typed-string equality should match both indexed and novelty rows"
+    );
+}
+
 #[tokio::test]
 async fn datatype_bind_datatype_function_includes_dt_in_results() {
     // Scenario: datatype-test / datatype() bound to variable and returned

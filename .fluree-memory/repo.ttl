@@ -1736,3 +1736,237 @@ mem:fact-01kn800ps56as4xe2kycr10yq1 a mem:Fact ;
     mem:artifactRef "fluree-db-indexer/src/run_index/build/incremental_resolve.rs" ;
     mem:createdAt "2026-04-02T21:01:33.861145+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01knjakv2d3t3y7av973g38tm7 a mem:Fact ;
+    mem:content "Incremental indexing has two notable gotchas in `fluree-db-indexer`: 1) when incremental fulltext refresh cannot fetch/decode the prior fulltext arena, `build/incremental.rs` starts from `FulltextArena::new()` and then writes a replacement arena built from novelty only, which can drop historical `fulltext()` scoring data for that `(g_id,p_id)`; 2) incremental schema refresh carries forward the base schema if base-store load fails, which leaves `snapshot.schema` stale for reasoning until a later successful refresh/rebuild. Also, `IndexerConfig.incremental_max_commit_bytes` defaults to `None`, and only the embedded orchestrator populates it from `reindex_max_bytes`." ;
+    mem:tag "fulltext" ;
+    mem:tag "incremental-indexing" ;
+    mem:tag "indexer" ;
+    mem:tag "operational-risk" ;
+    mem:tag "reasoning" ;
+    mem:tag "review" ;
+    mem:tag "schema" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-indexer/src/build/incremental.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/config.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/orchestrator.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/reasoning_prep.rs" ;
+    mem:createdAt "2026-04-06T21:19:10.925331+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01knpbtsmpvr9e780t2s3q3rjq a mem:Fact ;
+    mem:content "JSON-LD update transactions in Fluree parse as a single top-level object with one WHERE/DELETE/INSERT set. Staging executes WHERE once against the current ledger snapshot, then instantiates all DELETE and INSERT templates from that one binding set. There is no built-in format for a request body containing multiple ordered update phases that see each other's effects within the same transaction." ;
+    mem:tag "atomicity" ;
+    mem:tag "jsonld" ;
+    mem:tag "snapshot" ;
+    mem:tag "sparql-update" ;
+    mem:tag "transaction" ;
+    mem:tag "update" ;
+    mem:tag "where-delete-insert" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/transactions/update-where-delete-insert.md" ;
+    mem:artifactRef "fluree-db-sparql/src/ast/query.rs" ;
+    mem:artifactRef "fluree-db-transact/src/parse/jsonld.rs" ;
+    mem:artifactRef "fluree-db-transact/src/stage.rs" ;
+    mem:createdAt "2026-04-08T10:57:25.142550+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01knpqrkw6e7af9svt81ajcwnf a mem:Fact ;
+    mem:content "Owned transaction writes in `fluree-db-api` cannot be made gracefully blocking by a per-ledger mutex alone. `OwnedTransactBuilder::execute()` stages from the caller-supplied `LedgerState`, while commit sequencing is verified later against the nameservice head in `fluree-db-transact::commit`. If two independently-loaded owned states race, serializing only stage/commit still leaves the later writer with a stale base and it will hit `CommitConflict`/`CommitIdMismatch` unless the implementation refreshes or restages against the current head." ;
+    mem:tag "api" ;
+    mem:tag "commit-conflict" ;
+    mem:tag "concurrency" ;
+    mem:tag "ledger-state" ;
+    mem:tag "stage-owned" ;
+    mem:tag "transact" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/tx_builder.rs" ;
+    mem:artifactRef "fluree-db-transact/src/commit.rs" ;
+    mem:createdAt "2026-04-08T14:25:56.614537+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01knprmysdkjpzrr21eg89zrac a mem:Fact ;
+    mem:content "Transaction commit publishing now verifies the nameservice head after `publish_commit` and returns `TransactError::PublishLostRace` if the attempted commit did not become the published head. `ApiError::status_code()` maps `CommitConflict`, `CommitIdMismatch`, and `PublishLostRace` to HTTP 409 so callers can detect retryable write races cleanly even though nameservice `publish_commit` remains monotonic/no-op on stale writes." ;
+    mem:tag "api" ;
+    mem:tag "commit" ;
+    mem:tag "concurrency" ;
+    mem:tag "http-409" ;
+    mem:tag "nameservice" ;
+    mem:tag "publish-race" ;
+    mem:tag "transact" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/error.rs" ;
+    mem:artifactRef "fluree-db-transact/src/commit.rs" ;
+    mem:artifactRef "fluree-db-transact/src/error.rs" ;
+    mem:createdAt "2026-04-08T14:41:25.293176+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:decision-01knptda6efn6yhxj44hcnvsxh a mem:Decision ;
+    mem:content "Raw nameservice commit-head publication was removed from the public `Publisher` trait and connection convenience APIs. Commit-head changes now go through `RefPublisher`: normal transaction/merge/rebase paths use `compare_and_set_ref` with the previously validated head, rebase replay uses `fast_forward_commit`, and bulk import tracks the last published `RefValue` so periodic checkpoints CAS against the last published head instead of the immediately previous commit." ;
+    mem:tag "api" ;
+    mem:tag "compare-and-set" ;
+    mem:tag "import" ;
+    mem:tag "merge" ;
+    mem:tag "nameservice" ;
+    mem:tag "rebase" ;
+    mem:tag "refpublisher" ;
+    mem:tag "transact" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/import.rs" ;
+    mem:artifactRef "fluree-db-api/src/merge.rs" ;
+    mem:artifactRef "fluree-db-api/src/rebase.rs" ;
+    mem:artifactRef "fluree-db-connection/src/aws.rs" ;
+    mem:artifactRef "fluree-db-nameservice/src/lib.rs" ;
+    mem:artifactRef "fluree-db-transact/src/commit.rs" ;
+    mem:createdAt "2026-04-08T15:12:11.982180+00:00"^^xsd:dateTime ;
+    mem:rationale "Avoid exposing blind monotonic head publication that can silently no-op on stale writes; require explicit CAS semantics so callers observe conflicts clearly." ;
+    mem:alternatives "Keep publish_commit and verify after write, or deprecate only wrapper APIs while leaving the raw trait public." .
+
+mem:fact-01knpxc3aj4bm0vj0tq03jkfnc a mem:Fact ;
+    mem:content "Background indexing correlation context gap: `fluree-db-indexer` background work is queued through `IndexerHandle::trigger()` into per-ledger state and later executed by the long-lived `BackgroundIndexerWorker::process_ledger()`. The worker has no request span/correlation context by default, so logs during `build_index_for_record()` are not correlated to the originating HTTP request. Avoid storing/cloning the original request `tracing::Span` across the queue boundary because that can distort request-span lifetime; prefer storing lightweight correlation fields (e.g. request_id/trace_id) in `LedgerIndexState` and emitting them from worker logs, with optional feature-gated OTEL context/link propagation if trace parenting is needed." ;
+    mem:tag "background-worker" ;
+    mem:tag "correlation-id" ;
+    mem:tag "indexer" ;
+    mem:tag "logging" ;
+    mem:tag "otel" ;
+    mem:tag "request-id" ;
+    mem:tag "tracing" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/orchestrator.rs" ;
+    mem:artifactRef "fluree-db-server/src/telemetry.rs" ;
+    mem:createdAt "2026-04-08T16:03:57.906921+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01knpyxmdbpkpkp812xmfdpzav a mem:Fact ;
+    mem:content "Mapped Iceberg/R2RML graph sources are supported through the lazy query builders, not the raw materialized GraphDb snapshot path. Use `fluree.graph(alias).query()` for a single target that may be either a native ledger or a mapped graph source, and use `fluree.query_from()` when the query body carries the dataset (`from`, `FROM`, `FROM NAMED`) or combines multiple sources. Avoid documenting `fluree.db(alias).await?` + `fluree.query(&view, ...)` as graph-source-capable; that path assumes a native ledger snapshot and does not perform graph-source resolution." ;
+    mem:tag "api" ;
+    mem:tag "docs" ;
+    mem:tag "graph-sources" ;
+    mem:tag "iceberg" ;
+    mem:tag "query" ;
+    mem:tag "r2rml" ;
+    mem:tag "rust-api" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/cli/server-integration.md" ;
+    mem:artifactRef "docs/getting-started/rust-api.md" ;
+    mem:artifactRef "docs/graph-sources/iceberg.md" ;
+    mem:artifactRef "docs/graph-sources/r2rml.md" ;
+    mem:artifactRef "fluree-db-api/src/graph.rs" ;
+    mem:artifactRef "fluree-db-api/src/graph_query_builder.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/fluree_ext.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:createdAt "2026-04-08T16:31:01.035691+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:fact-01knpz8tevjwyqp67j38nqcwn7 a mem:Fact ;
+    mem:content "`fluree iceberg map` remote support uses the generic remote-server path, not tracked-ledger mode. The CLI already had `RemoteLedgerClient::iceberg_map()` and `run_iceberg_map_remote()`; the missing piece was exposing `--remote` on `IcebergMapArgs` and giving it precedence in `run_iceberg_map()`: explicit `--remote` -> `build_remote_client(...)`, else local-server auto-route, else local execution. A focused CLI regression test can prove dispatch by configuring an unreachable remote and asserting the command fails with a remote connection error instead of falling back to local mapping behavior." ;
+    mem:tag "cli" ;
+    mem:tag "graph-sources" ;
+    mem:tag "iceberg" ;
+    mem:tag "remote" ;
+    mem:tag "remote-client" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/cli/iceberg.md" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/iceberg.rs" ;
+    mem:artifactRef "fluree-db-cli/src/remote_client.rs" ;
+    mem:artifactRef "fluree-db-cli/tests/integration.rs" ;
+    mem:createdAt "2026-04-08T16:37:07.675727+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:fact-01knpzk6s59m6z41xhgtqkkw54 a mem:Fact ;
+    mem:content "Background index correlation has two paths in `fluree-db-indexer::orchestrator`: (1) preferred copied fields via `IndexRequestCorrelation` (`request_id`, `trace_id`, `operation`) when the caller uses `with_index_request_correlation`; (2) best-effort fallback span context for direct/manual `trigger_index()` callers when no explicit correlation is present. The worker enters the stored fallback span for orchestrator log events so embedded Rust API callers still see span ancestry on background indexer logs, while transaction-triggered server paths continue to rely on copied fields to avoid holding HTTP request spans open." ;
+    mem:tag "background-worker" ;
+    mem:tag "correlation-id" ;
+    mem:tag "indexer" ;
+    mem:tag "request-id" ;
+    mem:tag "span-context" ;
+    mem:tag "tracing" ;
+    mem:tag "trigger_index" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/admin.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/orchestrator.rs" ;
+    mem:artifactRef "fluree-db-server/src/routes/transact.rs" ;
+    mem:createdAt "2026-04-08T16:42:47.973885+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01knpzwv3ahtjn3xz7ksg2a8m9 a mem:Fact ;
+    mem:content "The next Iceberg CLI admin slice is implemented as Iceberg-family wrappers over existing graph-source/server functionality: `fluree iceberg list`, `fluree iceberg info`, and `fluree iceberg drop`. These commands intentionally treat both `Iceberg` and `R2RML` graph source types as part of the Iceberg family because `fluree iceberg map` may create either. `iceberg drop` verifies the target is an Iceberg-family graph source before calling the generic remote/local drop path so it will not accidentally delete a ledger of the same name. Remote execution uses `build_remote_client(...)`, and `RemoteLedgerClient` now has `drop_resource()` for POST `/drop`." ;
+    mem:tag "cli" ;
+    mem:tag "drop" ;
+    mem:tag "graph-sources" ;
+    mem:tag "iceberg" ;
+    mem:tag "info" ;
+    mem:tag "list" ;
+    mem:tag "remote" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/cli/iceberg.md" ;
+    mem:artifactRef "fluree-db-cli/src/cli.rs" ;
+    mem:artifactRef "fluree-db-cli/src/commands/iceberg.rs" ;
+    mem:artifactRef "fluree-db-cli/src/lib.rs" ;
+    mem:artifactRef "fluree-db-cli/src/remote_client.rs" ;
+    mem:artifactRef "fluree-db-cli/tests/integration.rs" ;
+    mem:createdAt "2026-04-08T16:48:03.690758+00:00"^^xsd:dateTime ;
+    mem:factKind "api" .
+
+mem:fact-01knq1d8f8prvx6wqghrh5zz9r a mem:Fact ;
+    mem:content "Build-phase index correlation gotcha: wrapping only `fluree-db-indexer::orchestrator` log statements with the stored span is insufficient. The worker must run the entire `build_index_for_record()` future under the stored fallback span, and copied request correlation must be scoped around that future so `build_index_for_record()` can attach `request_id`/`trace_id`/`trigger_operation` to its `index_build` span. Rebuild already propagates `Span::current()` into its top-level `spawn_blocking`, but incremental branch updates needed their own `parent_span.enter()` inside `build/incremental.rs::run_update_branch()`." ;
+    mem:tag "background-worker" ;
+    mem:tag "correlation-id" ;
+    mem:tag "incremental" ;
+    mem:tag "indexer" ;
+    mem:tag "rebuild" ;
+    mem:tag "spawn_blocking" ;
+    mem:tag "tracing" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-indexer/src/build/incremental.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/lib.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/orchestrator.rs" ;
+    mem:createdAt "2026-04-08T17:14:30.248574+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01knspnjf2k7s3x6rym31exsn0 a mem:Fact ;
+    mem:content "Remote graph source gotchas: graph source records currently only recognize kind types f:IndexSource and f:MappedSource in nameservice parsing, and graph source config is exposed verbatim via nameservice JSON-LD/info output (f:graphSourceConfig). That means a new RemoteSource kind requires storage/file nameservice changes, and bearer tokens or other secrets must not be stored directly in graph source config." ;
+    mem:tag "feature-design" ;
+    mem:tag "graph-sources" ;
+    mem:tag "nameservice" ;
+    mem:tag "remote-service" ;
+    mem:tag "security" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "internal" ;
+    mem:artifactRef "fluree-db-api/src/ledger_info.rs" ;
+    mem:artifactRef "fluree-db-nameservice/src/file.rs" ;
+    mem:artifactRef "fluree-db-nameservice/src/storage_ns.rs" ;
+    mem:createdAt "2026-04-09T18:04:31.586698+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kntkdbj9s0akhg36brbre0wa a mem:Fact ;
+    mem:content "Server JSON-LD config support and API Connection JSON-LD are currently two different things. `fluree-db-server`/`fluree server start` only parse top-level `.fluree/config.jsonld` as a serde-friendly config file with a `server` section and ignored `@context`; they do not ingest the API's `Connection`/`Storage`/`Publisher` graph format. Full S3 + split commit/index + DynamoDB nameservice support already exists through `FlureeBuilder::from_json_ld(...).build_client()` / `ConnectionConfig::from_json_ld`, so adding AWS to the server is likely best done by wiring the server to accept a connection JSON-LD source rather than duplicating S3/DynamoDB fields in `ServerConfig`." ;
+    mem:tag "aws" ;
+    mem:tag "cli" ;
+    mem:tag "config" ;
+    mem:tag "json-ld" ;
+    mem:tag "s3" ;
+    mem:tag "server" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "docs/operations/configuration.md" ;
+    mem:artifactRef "docs/reference/connection-config-jsonld.md" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-connection/src/config.rs" ;
+    mem:artifactRef "fluree-db-server/src/config_file.rs" ;
+    mem:artifactRef "fluree-db-server/src/state.rs" ;
+    mem:createdAt "2026-04-10T02:26:51.081621+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

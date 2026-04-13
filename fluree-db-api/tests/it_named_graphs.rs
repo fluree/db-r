@@ -106,6 +106,35 @@ async fn test_trig_named_graph_basic() {
 }
 
 #[tokio::test]
+async fn test_trig_named_graph_typed_literal_without_prefix_errors() {
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger = genesis_ledger(&fluree, "it/named-graph-missing-dt-prefix:main");
+
+    let trig = r#"
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <http://example.org/graphs/audit> {
+            ex:event1 ex:label "User login"^^xsd:string .
+        }
+    "#;
+
+    let err = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(trig)
+        .execute()
+        .await
+        .expect_err("TriG typed literal without xsd prefix should fail");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Undefined prefix: xsd") || msg.contains("undefined prefix: xsd"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn test_trig_multiple_named_graphs() {
     // Insert TriG with multiple GRAPH blocks.
     // Verify each graph is isolated and queryable.
