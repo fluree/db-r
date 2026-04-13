@@ -2240,10 +2240,8 @@ pub mod datatype {
                 xsd_names::G_DAY,
                 xsd_names::G_MONTH_DAY,
             ] {
-                let dt =
-                    KnownDatatype::from_xsd_local(local).unwrap_or_else(|| {
-                        panic!("KnownDatatype::from_xsd_local missed {:?}", local)
-                    });
+                let dt = KnownDatatype::from_xsd_local(local)
+                    .unwrap_or_else(|| panic!("KnownDatatype::from_xsd_local missed {:?}", local));
                 assert_eq!(dt.local_name(), local);
                 // Canonical form should also recognize it.
                 let canon = dt.canonical_form();
@@ -2363,9 +2361,7 @@ pub mod datatype {
         fn unknown_locals_return_none() {
             assert!(KnownDatatype::from_xsd_local("notAType").is_none());
             assert!(KnownDatatype::from_rdf_local("notAType").is_none());
-            assert!(
-                KnownDatatype::from_canonical_form("http://example.org/custom").is_none()
-            );
+            assert!(KnownDatatype::from_canonical_form("http://example.org/custom").is_none());
         }
     }
 }

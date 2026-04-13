@@ -100,12 +100,10 @@ impl CommitOps {
         for _ in 0..self.op_count {
             let mut raw_op = decode_raw_op(data, &mut pos, &self.dicts)?;
             if self.legacy_v3_canonicalize {
-                if let Some((new_ns, new_name)) =
-                    super::legacy_v3::canonicalize_dt_parts_static(
-                        raw_op.dt_ns_code,
-                        raw_op.dt_name,
-                    )
-                {
+                if let Some((new_ns, new_name)) = super::legacy_v3::canonicalize_dt_parts_static(
+                    raw_op.dt_ns_code,
+                    raw_op.dt_name,
+                ) {
                     raw_op.dt_ns_code = new_ns;
                     // `&'static str` satisfies `&'a str` for any lifetime.
                     raw_op.dt_name = new_name;
@@ -360,7 +358,13 @@ pub(crate) fn load_commit_ops_v4(bytes: &[u8]) -> Result<CommitOps, CommitCodecE
     let mut envelope = envelope;
     envelope.t = header.t;
 
-    Ok(CommitOps::new(envelope, header.t, header.op_count, dicts, ops_data))
+    Ok(CommitOps::new(
+        envelope,
+        header.t,
+        header.op_count,
+        dicts,
+        ops_data,
+    ))
 }
 
 // ============================================================================
