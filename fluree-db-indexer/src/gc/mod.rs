@@ -12,7 +12,7 @@
 //! 1. **During build**: Compute `old_root.all_cas_ids() \ new_root.all_cas_ids()`
 //! 2. **After build**: Write a garbage record with the obsolete CID strings
 //! 3. **On-demand cleanup**: Walk the prev-index chain, identify eligible garbage,
-//!    and delete CAS artifacts by deriving storage addresses from CIDs
+//!    and release CAS artifacts via `ContentStore::release`
 //!
 //! ## Garbage Record Format
 //!
@@ -22,8 +22,7 @@
 //! are indexer-specific (not deterministic across concurrent indexers), but this
 //! is harmless since only one indexer wins the publish race.
 //!
-//! The collector resolves CID strings back to storage addresses using
-//! `content_address()` for deletion.
+//! The collector releases CID strings via `ContentStore::release`.
 //!
 //! ## Time-Based Retention
 //!
@@ -40,7 +39,7 @@ pub use collector::clean_garbage;
 pub use record::GarbageRecord;
 
 use crate::error::Result;
-use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore};
 
 /// Default maximum number of old indexes to retain
 pub const DEFAULT_MAX_OLD_INDEXES: u32 = 5;
@@ -106,12 +105,6 @@ pub async fn write_garbage_record(
         .await?;
 
     Ok(cid)
-}
-
-/// Load a garbage record from storage.
-pub async fn load_garbage_record<S: Storage>(storage: &S, address: &str) -> Result<GarbageRecord> {
-    let bytes = storage.read_bytes(address).await?;
-    parse_garbage_record(&bytes)
 }
 
 /// Parse a garbage record from raw bytes.
