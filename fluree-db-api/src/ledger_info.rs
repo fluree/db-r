@@ -977,20 +977,19 @@ use fluree_db_nameservice::NameService;
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct LedgerInfoBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct LedgerInfoBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     ledger_id: String,
     context: Option<&'a JsonValue>,
     options: LedgerInfoOptions,
 }
 
-impl<'a, S, N> LedgerInfoBuilder<'a, S, N>
+impl<'a, N> LedgerInfoBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::ledger_info()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_id: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, ledger_id: String) -> Self {
         Self {
             fluree,
             ledger_id,
@@ -1120,14 +1119,17 @@ where
                 }
             }
 
-            let json = build_ledger_info_with_options(
-                &ledger,
-                self.fluree.storage(),
-                self.context,
-                self.options,
-            )
-            .await
-            .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))?;
+            let storage = self
+                .fluree
+                .backend()
+                .admin_storage_cloned()
+                .ok_or_else(|| {
+                    ApiError::config("ledger_info requires a managed storage backend")
+                })?;
+            let json =
+                build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
+                    .await
+                    .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))?;
 
             if let Ok(vec) = serde_json::to_vec(&json) {
                 cache.insert_ledger_info(cache_key, vec.into());
@@ -1136,7 +1138,12 @@ where
             return Ok(json);
         }
 
-        build_ledger_info_with_options(&ledger, self.fluree.storage(), self.context, self.options)
+        let storage = self
+            .fluree
+            .backend()
+            .admin_storage_cloned()
+            .ok_or_else(|| ApiError::config("ledger_info requires a managed storage backend"))?;
+        build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
             .await
             .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
     }

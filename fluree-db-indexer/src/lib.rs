@@ -67,7 +67,7 @@ pub use run_index::build::build_from_commits::{
     CommitInput, BUILD_STAGE_LINK_RUNS, BUILD_STAGE_MERGE, BUILD_STAGE_REMAP,
 };
 
-use fluree_db_core::{ContentStore, Storage};
+use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{NameService, Publisher};
 use tracing::Instrument;
 
@@ -106,14 +106,11 @@ pub const CURRENT_INDEX_VERSION: i32 = 2;
 /// up-to-date [`fluree_db_nameservice::NsRecord`]. It preserves the same
 /// refresh-first behavior as [`build_index_for_ledger`], but skips the extra
 /// nameservice lookup.
-pub async fn build_index_for_record<S>(
-    storage: &S,
+pub async fn build_index_for_record(
+    content_store: std::sync::Arc<dyn ContentStore>,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
+) -> Result<IndexResult> {
     let ledger_id = record.ledger_id.as_str();
     let span = tracing::debug_span!("index_build", ledger_id = ledger_id);
     async move {
@@ -162,7 +159,8 @@ where
                 "attempting incremental index"
             );
 
-            match incremental_index(storage, ledger_id, record, config.clone()).await {
+            match incremental_index(content_store.clone(), ledger_id, record, config.clone()).await
+            {
                 Ok(result) => {
                     return Ok(result);
                 }
@@ -189,7 +187,7 @@ where
             commit_gap,
             "starting full rebuild path"
         );
-        rebuild_index_from_commits(storage, ledger_id, record, config).await
+        rebuild_index_from_commits(content_store, ledger_id, record, config).await
     }
     .instrument(span)
     .await
@@ -204,14 +202,13 @@ where
 ///
 /// Returns early if the index is already current (no work needed).
 /// Use `rebuild_index_from_commits` directly to force a rebuild regardless.
-pub async fn build_index_for_ledger<S, N>(
-    storage: &S,
+pub async fn build_index_for_ledger<N>(
+    content_store: std::sync::Arc<dyn ContentStore>,
     nameservice: &N,
     ledger_id: &str,
     config: IndexerConfig,
 ) -> Result<IndexResult>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
     let record = nameservice
@@ -220,7 +217,7 @@ where
         .map_err(|e| IndexerError::NameService(e.to_string()))?
         .ok_or_else(|| IndexerError::LedgerNotFound(ledger_id.to_string()))?;
 
-    build_index_for_record(storage, &record, config).await
+    build_index_for_record(content_store, &record, config).await
 }
 
 /// Build a binary index from an existing nameservice record.
@@ -230,79 +227,62 @@ where
 /// the `NsRecord` and want to force a rebuild (e.g., `reindex`).
 ///
 /// See [`build::rebuild::rebuild_index_from_commits`] for the full pipeline.
-pub async fn rebuild_index_from_commits<S>(
-    storage: &S,
+pub async fn rebuild_index_from_commits(
+    content_store: std::sync::Arc<dyn ContentStore>,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    build::rebuild::rebuild_index_from_commits(storage, ledger_id, record, config).await
+) -> Result<IndexResult> {
+    build::rebuild::rebuild_index_from_commits(content_store, ledger_id, record, config).await
 }
 
 /// Like [`rebuild_index_from_commits`], but accepts a caller-provided
 /// [`ContentStore`] for reading commit blobs. Use this when commit history
 /// spans multiple storage namespaces (e.g. rebasing a branch whose commit
 /// chain falls through to parent namespaces via `BranchedContentStore`).
-pub async fn rebuild_index_from_commits_with_store<S, C>(
-    storage: &S,
+pub async fn rebuild_index_from_commits_with_store<C>(
     commit_store: C,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
 ) -> Result<IndexResult>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     C: ContentStore + Clone + Send + Sync + 'static,
 {
-    build::rebuild::rebuild_index_from_commits_with_store(
-        storage,
-        commit_store,
-        ledger_id,
-        record,
-        config,
-    )
-    .await
+    build::rebuild::rebuild_index_from_commits_with_store(commit_store, ledger_id, record, config)
+        .await
 }
 
 /// Incremental index from an existing FIR6 root.
 ///
 /// Loads the existing `IndexRoot`, resolves only new commits, merges
 /// novelty into affected FLI3 leaves, and publishes a new FIR6 root.
-async fn incremental_index<S>(
-    storage: &S,
+async fn incremental_index(
+    content_store: std::sync::Arc<dyn fluree_db_core::ContentStore>,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    build::incremental::incremental_index(storage, ledger_id, record, config).await
+) -> Result<IndexResult> {
+    build::incremental::incremental_index(content_store, ledger_id, record, config).await
 }
 
 /// Upload index artifacts (FLI3 leaves, FHS1 sidecars, FBR3 branches) to CAS.
-pub async fn upload_indexes_to_cas<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub async fn upload_indexes_to_cas(
+    content_store: &dyn fluree_db_core::ContentStore,
     build_result: &BuildResult,
 ) -> Result<UploadedIndexes> {
-    build::upload::upload_indexes_to_cas(storage, ledger_id, build_result).await
+    build::upload::upload_indexes_to_cas(content_store, build_result).await
 }
 
 /// Upload dictionary artifacts from persisted flat files to CAS.
-pub async fn upload_dicts_from_disk<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub async fn upload_dicts_from_disk(
+    content_store: &dyn fluree_db_core::ContentStore,
     run_dir: &std::path::Path,
     namespace_codes: &std::collections::HashMap<u16, String>,
     trust_sorted_order_invariants: bool,
 ) -> Result<UploadedDicts> {
     build::upload_dicts::upload_dicts_from_disk(
-        storage,
-        ledger_id,
+        content_store,
         run_dir,
         namespace_codes,
         trust_sorted_order_invariants,

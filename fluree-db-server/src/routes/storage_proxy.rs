@@ -27,7 +27,7 @@ use axum::{
     Json,
 };
 use fluree_db_api::block_fetch::{self, BlockContent, EnforcementMode, LedgerBlockContext};
-use fluree_db_api::{verify_commit_blob, NameService, StorageRead};
+use fluree_db_api::{verify_commit_blob, NameService, StorageMethod, StorageRead};
 use fluree_db_core::flake::Flake;
 use fluree_db_core::ContentKind;
 use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
@@ -354,8 +354,12 @@ pub async fn get_block(
     };
 
     // 5. Fetch and decode with enforcement
+    let admin_storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| ServerError::internal("block fetch requires a managed storage backend"))?;
     let fetched = block_fetch::fetch_and_decode_block(
-        fluree.storage(),
+        &admin_storage,
         &body.ledger,
         &cid,
         Some(&ledger_ctx),
@@ -502,13 +506,15 @@ pub async fn get_object_by_cid(
     }
 
     // 4. Resolve CID → storage address and read bytes
-    let method = fluree_db_core::StorageMethod::storage_method(state.fluree.as_file().storage());
+    let admin_storage = state
+        .fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| ServerError::internal("object fetch requires a managed storage backend"))?;
+    let method = admin_storage.storage_method();
     let address = fluree_db_core::content_address(method, kind, &query.ledger, &id.digest_hex());
 
-    let bytes = state
-        .fluree
-        .as_file()
-        .storage()
+    let bytes = admin_storage
         .read_bytes(&address)
         .await
         .map_err(|e| match e {

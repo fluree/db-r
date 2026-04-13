@@ -208,7 +208,7 @@ async fn geo_search_time_travel_different_results_at_different_t() {
     let alias = "it/geo-search-time-travel:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -265,7 +265,7 @@ async fn geo_search_retraction_removes_point_from_results() {
     let alias = "it/geo-search-retraction:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -326,7 +326,7 @@ async fn geo_search_dedup_returns_min_distance_per_subject() {
     let alias = "it/geo-search-dedup:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -411,7 +411,7 @@ async fn geo_search_returns_correct_distances() {
     let alias = "it/geo-search-distance:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -490,7 +490,7 @@ async fn geo_search_respects_limit_returns_nearest() {
     let alias = "it/geo-search-limit:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -588,7 +588,7 @@ async fn geo_search_respects_named_graph_boundaries() {
     let alias = "it/geo-named-graph:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -730,7 +730,7 @@ async fn sparql_geof_distance_uses_geo_index() {
     let alias = "it/geo-search-sparql:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

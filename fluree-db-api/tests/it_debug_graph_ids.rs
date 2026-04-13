@@ -16,7 +16,7 @@ async fn debug_graph_ids_after_named_graph_index() {
     let ledger_id = "it/debug-graph-ids:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -50,7 +50,7 @@ async fn debug_graph_ids_after_named_graph_index() {
                 .expect("ledger exists");
             let root_id = ns.index_head_id.expect("index head id");
 
-            let cs = fluree_db_core::content_store_for(fluree.storage().clone(), ledger_id);
+            let cs = fluree.content_store(ledger_id);
             let bytes = cs.get(&root_id).await.expect("fetch root");
             let root =
                 fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes).unwrap();

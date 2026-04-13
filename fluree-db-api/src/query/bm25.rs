@@ -3,14 +3,13 @@ use serde_json::Value as JsonValue;
 use crate::query::helpers::{parse_dataset_spec, tracker_for_limits};
 use crate::{
     ApiError, DataSetDb, ExecutableQuery, Fluree, FlureeIndexProvider, QueryResult, Result,
-    Storage, StorageWrite, VarRegistry,
+    VarRegistry,
 };
 
 use fluree_db_query::parse::parse_query;
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: crate::NameService
         + crate::Publisher
         + crate::GraphSourcePublisher

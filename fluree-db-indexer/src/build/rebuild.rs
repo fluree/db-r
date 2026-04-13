@@ -5,13 +5,12 @@
 //! orders, and writes an `IndexRoot` (FIR6) descriptor to storage.
 
 use fluree_db_binary_index::{GraphArenaRefs, RunRecord, VectorDictRef};
-use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore};
 
 use crate::error::{IndexerError, Result};
 use crate::run_index;
 use crate::{IndexResult, IndexStats, IndexerConfig};
 
-use super::upload::cid_from_write;
 use super::upload_dicts::upload_dicts_from_disk;
 
 use tracing::Instrument;
@@ -32,32 +31,26 @@ use tracing::Instrument;
 /// 4. Build SPOT from sorted commit files (k-way merge with g_id)
 /// 5. Remap + build secondary indexes (PSOT/POST/OPST)
 /// 6. Upload artifacts to CAS and write BinaryIndexRoot
-pub async fn rebuild_index_from_commits<S>(
-    storage: &S,
+pub async fn rebuild_index_from_commits(
+    content_store: std::sync::Arc<dyn ContentStore>,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
-    let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
-    rebuild_index_from_commits_with_store(storage, content_store, ledger_id, record, config).await
+) -> Result<IndexResult> {
+    rebuild_index_from_commits_with_store(content_store, ledger_id, record, config).await
 }
 
 /// Like [`rebuild_index_from_commits`], but accepts a caller-provided
 /// [`ContentStore`] for reading commit blobs. Use this when commit history
 /// spans multiple storage namespaces (e.g. rebasing a branch whose commit
 /// chain falls through to parent namespaces via `BranchedContentStore`).
-pub async fn rebuild_index_from_commits_with_store<S, C>(
-    storage: &S,
+pub async fn rebuild_index_from_commits_with_store<C>(
     commit_store: C,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
 ) -> Result<IndexResult>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     C: ContentStore + Clone + Send + Sync + 'static,
 {
     use fluree_db_core::commit::codec::read_commit_envelope;
@@ -90,7 +83,6 @@ where
     );
 
     // Capture values for the blocking task
-    let storage = storage.clone();
     let ledger_id = ledger_id.to_string();
     let _prev_root_id = record.index_head_id.clone();
     let commit_t = record.commit_t;
@@ -697,14 +689,13 @@ where
                     let sketch_bytes = sketch_blob.to_json_bytes().map_err(|e| {
                         IndexerError::StorageWrite(format!("sketch serialize: {e}"))
                     })?;
-                    let sketch_wr = storage
-                        .content_write_bytes(ContentKind::StatsSketch, &ledger_id, &sketch_bytes)
+                    let cid = content_store
+                        .put(ContentKind::StatsSketch, &sketch_bytes)
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                    let cid = cid_from_write(ContentKind::StatsSketch, &sketch_wr);
                     tracing::info!(
                         %cid,
-                        bytes = sketch_wr.size_bytes,
+                        bytes = sketch_bytes.len(),
                         entries = sketch_blob.entries.len(),
                         "Phase D-V3 stats: HLL sketch uploaded"
                     );
@@ -843,14 +834,13 @@ where
             );
 
             // Phase E-V3: Upload V3 artifacts to CAS.
-            let v3_uploaded =
-                super::upload::upload_indexes_to_cas(&storage, &ledger_id, &v3_result)
-                    .instrument(tracing::debug_span!("upload_v3_indexes"))
-                    .await?;
+            let v3_uploaded = super::upload::upload_indexes_to_cas(&content_store, &v3_result)
+                .instrument(tracing::debug_span!("upload_v3_indexes"))
+                .await?;
 
             // Phase F-V3: Upload dicts + assemble FIR6 root.
             let uploaded_dicts =
-                upload_dicts_from_disk(&storage, &ledger_id, &run_dir, &shared.ns_prefixes, false)
+                upload_dicts_from_disk(&content_store, &run_dir, &shared.ns_prefixes, false)
                     .instrument(tracing::debug_span!("upload_dicts_v3"))
                     .await?;
 
@@ -948,7 +938,7 @@ where
             };
 
             let result = super::root_assembly::encode_and_write_root_v6(
-                &storage,
+                &content_store,
                 fir6_inputs,
                 None, // GC chain deferred for V3 milestone.
                 IndexStats {

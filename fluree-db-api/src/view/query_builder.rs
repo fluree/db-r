@@ -5,7 +5,7 @@
 
 use crate::query::builder::{DatasetQueryBuilder, ViewQueryBuilder};
 use crate::view::{DataSetDb, GraphDb};
-use crate::{Fluree, NameService, Storage};
+use crate::{Fluree, NameService};
 
 impl GraphDb {
     /// Create a query builder for this graph/view.
@@ -18,10 +18,7 @@ impl GraphDb {
     ///     .jsonld(&query)
     ///     .execute().await?;
     /// ```
-    pub fn query<'a, S: Storage + Clone + Send + Sync + 'static, N: NameService>(
-        &'a self,
-        fluree: &'a Fluree<S, N>,
-    ) -> ViewQueryBuilder<'a, S, N> {
+    pub fn query<'a, N: NameService>(&'a self, fluree: &'a Fluree<N>) -> ViewQueryBuilder<'a, N> {
         ViewQueryBuilder::new(fluree, self)
     }
 }
@@ -39,10 +36,10 @@ impl DataSetDb {
     ///     .jsonld(&query)
     ///     .execute().await?;
     /// ```
-    pub fn query<'a, S: Storage + Clone + Send + Sync + 'static, N: NameService>(
+    pub fn query<'a, N: NameService>(
         &'a self,
-        fluree: &'a Fluree<S, N>,
-    ) -> DatasetQueryBuilder<'a, S, N> {
+        fluree: &'a Fluree<N>,
+    ) -> DatasetQueryBuilder<'a, N> {
         DatasetQueryBuilder::new(fluree, self)
     }
 }

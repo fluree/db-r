@@ -117,7 +117,7 @@ async fn commit_t_resolves_indexed_commit_from_txn_meta_post_lookup() {
     let ledger_id = "it/graph-commit-t-indexed:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

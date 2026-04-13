@@ -23,6 +23,7 @@ use async_trait::async_trait;
 use sha2::Digest;
 use std::fmt::Debug;
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error;
 
 // ============================================================================
@@ -116,7 +117,7 @@ pub trait StorageRead: Debug + Send + Sync {
     /// smaller than `range.end`.
     ///
     /// The default implementation fetches the full object and slices.
-    /// Backends that support native range reads (S3, HTTP) should override
+    /// StorageBackends that support native range reads (S3, HTTP) should override
     /// for efficiency.
     async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         if range.start >= range.end {
@@ -238,6 +239,69 @@ pub trait Storage: StorageRead + ContentAddressedWrite + StorageMethod {}
 impl<T: StorageRead + ContentAddressedWrite + StorageMethod> Storage for T {}
 
 // ============================================================================
+// Arc<dyn Storage> delegation (enables type-erased storage)
+// ============================================================================
+
+#[async_trait]
+impl StorageRead for Arc<dyn Storage> {
+    async fn read_bytes(&self, address: &str) -> Result<Vec<u8>> {
+        self.as_ref().read_bytes(address).await
+    }
+
+    async fn read_bytes_hint(&self, address: &str, hint: ReadHint) -> Result<Vec<u8>> {
+        self.as_ref().read_bytes_hint(address, hint).await
+    }
+
+    async fn read_byte_range(&self, address: &str, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        self.as_ref().read_byte_range(address, range).await
+    }
+
+    async fn exists(&self, address: &str) -> Result<bool> {
+        self.as_ref().exists(address).await
+    }
+
+    async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
+        self.as_ref().list_prefix(prefix).await
+    }
+
+    fn resolve_local_path(&self, address: &str) -> Option<PathBuf> {
+        self.as_ref().resolve_local_path(address)
+    }
+}
+
+#[async_trait]
+impl StorageWrite for Arc<dyn Storage> {
+    async fn write_bytes(&self, address: &str, bytes: &[u8]) -> Result<()> {
+        self.as_ref().write_bytes(address, bytes).await
+    }
+
+    async fn delete(&self, address: &str) -> Result<()> {
+        self.as_ref().delete(address).await
+    }
+}
+
+#[async_trait]
+impl ContentAddressedWrite for Arc<dyn Storage> {
+    async fn content_write_bytes_with_hash(
+        &self,
+        kind: ContentKind,
+        ledger_id: &str,
+        content_hash_hex: &str,
+        bytes: &[u8],
+    ) -> Result<ContentWriteResult> {
+        self.as_ref()
+            .content_write_bytes_with_hash(kind, ledger_id, content_hash_hex, bytes)
+            .await
+    }
+}
+
+impl StorageMethod for Arc<dyn Storage> {
+    fn storage_method(&self) -> &str {
+        self.as_ref().storage_method()
+    }
+}
+
+// ============================================================================
 // ContentStore Trait (CID-first storage abstraction)
 // ============================================================================
 
@@ -288,7 +352,7 @@ pub trait ContentStore: Debug + Send + Sync {
     /// smaller than `range.end`.
     ///
     /// The default implementation fetches the full object and slices.
-    /// Backends that support native range reads (S3, HTTP) should override
+    /// StorageBackends that support native range reads (S3, HTTP) should override
     /// for efficiency.
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let full = self.get(id).await?;
@@ -298,6 +362,36 @@ pub trait ContentStore: Debug + Send + Sync {
             return Ok(Vec::new());
         }
         Ok(full[start..end].to_vec())
+    }
+}
+
+// Blanket `ContentStore` impl for `Arc<dyn ContentStore>`, so callers can pass
+// a dynamically-dispatched content store anywhere a `C: ContentStore` bound is
+// expected.
+#[async_trait]
+impl ContentStore for Arc<dyn ContentStore> {
+    async fn has(&self, id: &ContentId) -> Result<bool> {
+        self.as_ref().has(id).await
+    }
+
+    async fn get(&self, id: &ContentId) -> Result<Vec<u8>> {
+        self.as_ref().get(id).await
+    }
+
+    async fn put(&self, kind: ContentKind, bytes: &[u8]) -> Result<ContentId> {
+        self.as_ref().put(kind, bytes).await
+    }
+
+    async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
+        self.as_ref().put_with_id(id, bytes).await
+    }
+
+    fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
+        self.as_ref().resolve_local_path(id)
+    }
+
+    async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
+        self.as_ref().get_range(id, range).await
     }
 }
 
@@ -501,6 +595,78 @@ pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageC
 }
 
 // ============================================================================
+// StorageBackend (unified storage backend abstraction)
+// ============================================================================
+
+/// Unified storage backend.
+///
+/// Wraps a type-erased [`Storage`] implementation behind `Arc<dyn Storage>`,
+/// providing both content-addressed access (via [`content_store`]) and
+/// raw address-based admin operations (via [`admin_storage`]).
+///
+/// Currently the only variant is `Managed` (file, S3, memory). The enum
+/// is designed to be extended with append-only backends (e.g. IPFS) that
+/// implement [`ContentStore`] directly without full [`Storage`] support.
+///
+/// [`content_store`]: StorageBackend::content_store
+/// [`admin_storage`]: StorageBackend::admin_storage
+pub enum StorageBackend {
+    /// Storage with full lifecycle control including deletion (file, S3, memory).
+    Managed(Arc<dyn Storage>),
+}
+
+impl StorageBackend {
+    /// Create an `Arc<dyn ContentStore>` scoped to the given namespace
+    /// (typically a ledger ID).
+    ///
+    /// Constructs a [`StorageContentStore`] that maps CIDs to physical
+    /// addresses under the namespace.
+    pub fn content_store(&self, namespace_id: &str) -> Arc<dyn ContentStore> {
+        match self {
+            StorageBackend::Managed(storage) => {
+                Arc::new(content_store_for(storage.clone(), namespace_id))
+            }
+        }
+    }
+
+    /// Get the underlying raw storage for admin operations (delete, list).
+    ///
+    /// Returns `Some` for `Managed` backends. Future append-only backends
+    /// (e.g. IPFS) would return `None`.
+    pub fn admin_storage(&self) -> Option<&dyn Storage> {
+        match self {
+            StorageBackend::Managed(storage) => Some(storage.as_ref()),
+        }
+    }
+
+    /// Clone the admin storage as an owned `Arc<dyn Storage>`, if available.
+    ///
+    /// Returns `Some` for `Managed` backends. Future append-only backends
+    /// (e.g. IPFS) would return `None`.
+    pub fn admin_storage_cloned(&self) -> Option<Arc<dyn Storage>> {
+        match self {
+            StorageBackend::Managed(storage) => Some(Arc::clone(storage)),
+        }
+    }
+}
+
+impl Debug for StorageBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StorageBackend::Managed(s) => f.debug_tuple("Managed").field(s).finish(),
+        }
+    }
+}
+
+impl Clone for StorageBackend {
+    fn clone(&self) -> Self {
+        match self {
+            StorageBackend::Managed(s) => StorageBackend::Managed(Arc::clone(s)),
+        }
+    }
+}
+
+// ============================================================================
 // BranchedContentStore (fallback from branch namespace to parent namespace)
 // ============================================================================
 
@@ -511,37 +677,44 @@ pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageC
 /// namespace first, then recurse into parent stores. The recursive structure
 /// supports both linear branching (branch from branch) and future merge
 /// scenarios where a branch has multiple parents.
-#[derive(Debug, Clone)]
-pub struct BranchedContentStore<S: Storage> {
+#[derive(Clone)]
+pub struct BranchedContentStore {
     /// Store scoped to this branch's own namespace
-    branch_store: StorageContentStore<S>,
+    branch_store: Arc<dyn ContentStore>,
     /// Parent stores to fall back to on read misses. Typically one parent
     /// for a simple branch; multiple parents after a merge.
-    parents: Vec<BranchedContentStore<S>>,
+    parents: Vec<BranchedContentStore>,
 }
 
-impl<S: Storage + Clone> BranchedContentStore<S> {
+impl BranchedContentStore {
     /// Create a leaf content store with no parents (equivalent to a root branch).
-    pub fn leaf(storage: S, namespace_id: &str) -> Self {
-        let method = storage.storage_method().to_string();
+    pub fn leaf(store: Arc<dyn ContentStore>) -> Self {
         Self {
-            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            branch_store: store,
             parents: Vec::new(),
         }
     }
 
     /// Create a branched content store with parent fallbacks.
-    pub fn with_parents(storage: S, namespace_id: &str, parents: Vec<Self>) -> Self {
-        let method = storage.storage_method().to_string();
+    pub fn with_parents(store: Arc<dyn ContentStore>, parents: Vec<Self>) -> Self {
         Self {
-            branch_store: StorageContentStore::new(storage, namespace_id, method),
+            branch_store: store,
             parents,
         }
     }
 }
 
+impl Debug for BranchedContentStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BranchedContentStore")
+            .field("branch_store", &self.branch_store)
+            .field("parents", &self.parents)
+            .finish()
+    }
+}
+
 #[async_trait]
-impl<S: Storage + Send + Sync> ContentStore for BranchedContentStore<S> {
+impl ContentStore for BranchedContentStore {
     async fn has(&self, id: &ContentId) -> Result<bool> {
         if self.branch_store.has(id).await? {
             return Ok(true);

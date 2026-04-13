@@ -17,7 +17,7 @@
 //!   to a remote search service via HTTP.
 
 use async_trait::async_trait;
-use fluree_db_core::{ContentStore, Storage, StorageWrite};
+use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{GraphSourcePublisher, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result as QueryResult};
@@ -56,18 +56,18 @@ use fluree_db_query::vector::{VectorIndexProvider, VectorSearchHit, VectorSearch
 /// let mut ctx = ExecutionContext::new(&db, &vars);
 /// ctx.bm25_provider = Some(&provider);
 /// ```
-pub struct FlureeIndexProvider<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, N>,
+pub struct FlureeIndexProvider<'a, N> {
+    fluree: &'a crate::Fluree<N>,
 }
 
-impl<'a, S: Storage + 'static, N> FlureeIndexProvider<'a, S, N> {
+impl<'a, N> FlureeIndexProvider<'a, N> {
     /// Create a new index provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
         Self { fluree }
     }
 }
 
-impl<S: Storage + 'static, N> std::fmt::Debug for FlureeIndexProvider<'_, S, N> {
+impl<N> std::fmt::Debug for FlureeIndexProvider<'_, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeIndexProvider")
             .finish_non_exhaustive()
@@ -75,9 +75,8 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeIndexProvider<'_, S, N> 
 }
 
 #[async_trait]
-impl<S, N> Bm25IndexProvider for FlureeIndexProvider<'_, S, N>
+impl<N> Bm25IndexProvider for FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Load a BM25 index for query execution with time-travel support.
@@ -121,8 +120,7 @@ where
 
         // If we have a suitable snapshot, load and return it
         if let Some(entry) = selection {
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             let bytes = cs
                 .get(&entry.snapshot_id)
                 .await
@@ -164,10 +162,7 @@ where
             let selection = manifest.select_snapshot(effective_as_of_t);
 
             if let Some(entry) = selection {
-                let cs = fluree_db_core::content_store_for(
-                    self.fluree.storage().clone(),
-                    graph_source_id,
-                );
+                let cs = self.fluree.content_store(graph_source_id);
                 let bytes = cs
                     .get(&entry.snapshot_id)
                     .await
@@ -214,9 +209,8 @@ where
 }
 
 #[async_trait]
-impl<S, N> Bm25SearchProvider for FlureeIndexProvider<'_, S, N>
+impl<N> Bm25SearchProvider for FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Execute a BM25 search with time-travel support.
@@ -292,9 +286,8 @@ where
     }
 }
 
-impl<'a, S, N> FlureeIndexProvider<'a, S, N>
+impl<'a, N> FlureeIndexProvider<'a, N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Get deployment configuration for a graph source.
@@ -325,9 +318,8 @@ where
     }
 }
 
-impl<S, N> FlureeIndexProvider<'_, S, N>
+impl<N> FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Selective search for v4 chunked snapshots.
@@ -356,8 +348,7 @@ where
 
         // Load snapshot bytes
         let snapshot_bytes = if let Some(entry) = selection {
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             cs.get(&entry.snapshot_id)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
@@ -381,8 +372,7 @@ where
                 ))
             })?;
 
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             cs.get(&entry.snapshot_id)
                 .await
                 .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
@@ -436,9 +426,8 @@ fn parse_deployment_from_gs_config(config_json: &str) -> QueryResult<SearchDeplo
 
 #[cfg(feature = "vector")]
 #[async_trait]
-impl<S, N> VectorIndexProvider for FlureeIndexProvider<'_, S, N>
+impl<N> VectorIndexProvider for FlureeIndexProvider<'_, N>
 where
-    S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
 {
     /// Execute a vector similarity search with deployment routing and time-travel support.
@@ -506,9 +495,8 @@ where
 }
 
 #[cfg(feature = "vector")]
-impl<'a, S, N> FlureeIndexProvider<'a, S, N>
+impl<'a, N> FlureeIndexProvider<'a, N>
 where
-    S: Storage + StorageWrite + Clone + Send + Sync + 'static,
     N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
 {
     /// Embedded vector search implementation (head-only).
@@ -585,7 +573,7 @@ where
         };
 
         // Load and deserialize via content store
-        let cs = fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+        let cs = self.fluree.content_store(graph_source_id);
         let bytes = cs
             .get(&index_id)
             .await

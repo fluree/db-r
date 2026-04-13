@@ -10,7 +10,7 @@ use crate::graph_source::config::{CatalogMode, IcebergCreateConfig, R2rmlCreateC
 use crate::graph_source::result::{IcebergCreateResult, R2rmlCreateResult};
 use crate::Result;
 use async_trait::async_trait;
-use fluree_db_core::{ContentStore, Storage};
+use fluree_db_core::ContentStore;
 use fluree_db_iceberg::{
     catalog::{RestCatalogClient, RestCatalogConfig, SendCatalogClient},
     io::{ColumnBatch, S3IcebergStorage, SendIcebergStorage, SendParquetReader},
@@ -29,9 +29,8 @@ use tracing::{debug, info, warn};
 // Iceberg/R2RML Graph Source Creation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + fluree_db_core::StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Create an Iceberg graph source.
@@ -122,7 +121,7 @@ where
                 let compiled = Self::compile_r2rml_content(content, &config)?;
                 let count = compiled.len();
                 let gs_id = config.graph_source_id();
-                let cs = fluree_db_core::content_store_for(self.storage().clone(), &gs_id);
+                let cs = self.content_store(&gs_id);
                 let cid = cs
                     .put(
                         fluree_db_core::ContentKind::GraphSourceMapping,
@@ -260,7 +259,12 @@ where
         address: &str,
         config: &R2rmlCreateConfig,
     ) -> Result<usize> {
-        let bytes = self.storage().read_bytes(address).await.map_err(|e| {
+        let storage = self.admin_storage().ok_or_else(|| {
+            crate::ApiError::Config(format!(
+                "Cannot load R2RML mapping from address '{address}': address-based reads are not supported on this backend"
+            ))
+        })?;
+        let bytes = storage.read_bytes(address).await.map_err(|e| {
             crate::ApiError::Config(format!(
                 "Failed to load R2RML mapping from '{address}': {e}"
             ))
@@ -291,18 +295,18 @@ where
 /// let ctx = ExecutionContext::new(&db, &vars)
 ///     .with_r2rml_providers(&provider, &provider);
 /// ```
-pub struct FlureeR2rmlProvider<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, N>,
+pub struct FlureeR2rmlProvider<'a, N> {
+    fluree: &'a crate::Fluree<N>,
 }
 
-impl<'a, S: Storage + 'static, N> FlureeR2rmlProvider<'a, S, N> {
+impl<'a, N> FlureeR2rmlProvider<'a, N> {
     /// Create a new R2RML provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
         Self { fluree }
     }
 }
 
-impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> {
+impl<N> std::fmt::Debug for FlureeR2rmlProvider<'_, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeR2rmlProvider")
             .finish_non_exhaustive()
@@ -310,9 +314,8 @@ impl<S: Storage + 'static, N> std::fmt::Debug for FlureeR2rmlProvider<'_, S, N> 
 }
 
 #[async_trait]
-impl<S, N> R2rmlProvider for FlureeR2rmlProvider<'_, S, N>
+impl<N> R2rmlProvider for FlureeR2rmlProvider<'_, N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Check if a graph source has an R2RML mapping.
@@ -414,21 +417,23 @@ where
         // Try CID-based content store first (CAS-stored mappings),
         // fall back to raw storage read (legacy address-based mappings).
         let mapping_bytes = if let Ok(cid) = mapping_source.parse::<fluree_db_core::ContentId>() {
-            let cs =
-                fluree_db_core::content_store_for(self.fluree.storage().clone(), graph_source_id);
+            let cs = self.fluree.content_store(graph_source_id);
             cs.get(&cid).await.map_err(|e| {
                 QueryError::InvalidQuery(format!(
                     "Failed to load R2RML mapping (CID {mapping_source}): {e}"
                 ))
             })?
         } else {
-            let storage = self.fluree.storage();
+            let storage = self.fluree.admin_storage().ok_or_else(|| {
+                QueryError::InvalidQuery(format!(
+                    "Cannot load R2RML mapping from address '{}': address-based reads are not supported on this backend",
+                    mapping_source,
+                ))
+            })?;
             storage.read_bytes(mapping_source).await.map_err(|e| {
                 QueryError::InvalidQuery(format!(
-                    "Failed to load R2RML mapping from '{}' (storage: {}): {}",
-                    mapping_source,
-                    storage.storage_method(),
-                    e
+                    "Failed to load R2RML mapping from '{}': {}",
+                    mapping_source, e
                 ))
             })?
         };
@@ -490,9 +495,8 @@ where
 }
 
 #[async_trait]
-impl<S, N> R2rmlTableProvider for FlureeR2rmlProvider<'_, S, N>
+impl<N> R2rmlTableProvider for FlureeR2rmlProvider<'_, N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Scan an Iceberg table and return column batches.

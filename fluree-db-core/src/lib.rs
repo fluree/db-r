@@ -159,6 +159,7 @@ pub use storage::{
     MemoryStorage,
     ReadHint,
     Storage,
+    StorageBackend,
     StorageCas,
     StorageContentStore,
     StorageDelete,

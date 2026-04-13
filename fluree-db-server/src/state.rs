@@ -25,14 +25,13 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fluree_db_api::FileStorage;
 use fluree_db_nameservice::file::FileNameService;
 
 /// File-backed Fluree instance type (transaction server or peer with shared storage)
-pub type FileFluree = Fluree<FileStorage, FileNameService>;
+pub type FileFluree = Fluree<FileNameService>;
 
 /// Proxy-backed Fluree instance type (peer with proxy storage access)
-pub type ProxyFluree = Fluree<ProxyStorage, ProxyNameService>;
+pub type ProxyFluree = Fluree<ProxyNameService>;
 
 /// Unified Fluree instance wrapper
 ///
@@ -82,6 +81,14 @@ impl FlureeInstance {
         match self {
             FlureeInstance::Proxy(p) => p,
             FlureeInstance::File(_) => panic!("Expected proxy-backed Fluree instance"),
+        }
+    }
+
+    /// Get the storage backend from whichever variant is active.
+    pub fn backend(&self) -> &fluree_db_core::StorageBackend {
+        match self {
+            FlureeInstance::File(f) => f.backend(),
+            FlureeInstance::Proxy(p) => p.backend(),
         }
     }
 
@@ -449,22 +456,17 @@ impl FlureeInstance {
         &self,
         ledger_id: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::File(f) => {
-                let handle = f.ledger_cached(ledger_id).await?;
-                let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, f.storage(), None)
-                    .await
-                    .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
-            }
-            FlureeInstance::Proxy(p) => {
-                let handle = p.ledger_cached(ledger_id).await?;
-                let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, p.storage(), None)
-                    .await
-                    .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
-            }
-        }
+        let admin_storage = self.backend().admin_storage_cloned().ok_or_else(|| {
+            fluree_db_api::ApiError::config("ledger_info requires a managed storage backend")
+        })?;
+        let handle = match self {
+            FlureeInstance::File(f) => f.ledger_cached(ledger_id).await?,
+            FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await?,
+        };
+        let ledger_state = handle.snapshot().await.to_ledger_state();
+        fluree_db_api::ledger_info::build_ledger_info(&ledger_state, &admin_storage, None)
+            .await
+            .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
     }
 }
 
@@ -512,11 +514,8 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn spawn_leaflet_cache_stats_logger<S, N>(
-        fluree: Arc<Fluree<S, N>>,
-    ) -> tokio::task::JoinHandle<()>
+    fn spawn_leaflet_cache_stats_logger<N>(fluree: Arc<Fluree<N>>) -> tokio::task::JoinHandle<()>
     where
-        S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
         N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
     {
         // Keep logging lightweight and periodic: one line per minute.
@@ -659,7 +658,7 @@ impl AppState {
         }
 
         let fluree = Arc::new(builder.build()?);
-        let handle = Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
+        let handle = Self::spawn_leaflet_cache_stats_logger::<_>(Arc::clone(&fluree));
         Ok((FlureeInstance::File(fluree), handle))
     }
 
@@ -683,7 +682,7 @@ impl AppState {
 
         tracing::info!("Initialized peer with proxy storage mode");
         let fluree = Arc::new(fluree);
-        let handle = Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
+        let handle = Self::spawn_leaflet_cache_stats_logger::<_>(Arc::clone(&fluree));
         Ok((FlureeInstance::Proxy(fluree), handle))
     }
 

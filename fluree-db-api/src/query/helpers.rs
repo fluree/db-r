@@ -146,7 +146,7 @@ pub(crate) fn build_query_result(
 /// # Usage
 ///
 /// ```ignore
-/// // In a method on Fluree<S, N>
+/// // In a method on Fluree<N>
 /// let r2rml_provider = r2rml_provider!(self);
 /// ```
 ///

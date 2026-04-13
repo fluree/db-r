@@ -11,7 +11,7 @@ mod support;
 
 use fluree_db_api::{DropMode, DropStatus, FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
-use fluree_db_core::{LedgerSnapshot, StorageRead};
+use fluree_db_core::LedgerSnapshot;
 use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
@@ -65,7 +65,8 @@ async fn drop_ledger_soft_mode_retracts_only() {
         ledger_id_to_path_prefix(ledger_id).unwrap()
     );
     let files = fluree
-        .storage()
+        .admin_storage()
+        .expect("managed backend")
         .list_prefix(&commit_prefix)
         .await
         .expect("list");
@@ -99,7 +100,8 @@ async fn drop_ledger_hard_mode_deletes_files() {
         ledger_id_to_path_prefix(ledger_id).unwrap()
     );
     let files_before = fluree
-        .storage()
+        .admin_storage()
+        .expect("managed backend")
         .list_prefix(&commit_prefix)
         .await
         .expect("list");
@@ -133,7 +135,8 @@ async fn drop_ledger_hard_mode_deletes_files() {
 
     // Verify commit files deleted
     let files_after = fluree
-        .storage()
+        .admin_storage()
+        .expect("managed backend")
         .list_prefix(&commit_prefix)
         .await
         .expect("list");
@@ -232,7 +235,7 @@ async fn drop_ledger_cancels_pending_indexing() {
     let mut fluree = FlureeBuilder::file(&path).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -294,12 +297,14 @@ async fn drop_ledger_cancels_pending_indexing() {
             let index_prefix = format!("fluree:file://{}/index/", prefix);
 
             let commit_files = fluree
-                .storage()
+                .admin_storage()
+                .expect("managed backend")
                 .list_prefix(&commit_prefix)
                 .await
                 .expect("list commit");
             let index_files = fluree
-                .storage()
+                .admin_storage()
+                .expect("managed backend")
                 .list_prefix(&index_prefix)
                 .await
                 .expect("list index");
@@ -348,7 +353,8 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
         ledger_id_to_path_prefix(ledger_id).unwrap()
     );
     let files_before = fluree
-        .storage()
+        .admin_storage()
+        .expect("managed backend")
         .list_prefix(&commit_prefix)
         .await
         .expect("list");
@@ -370,7 +376,8 @@ async fn drop_ledger_hard_mode_deletes_even_when_retracted() {
 
     // Verify files deleted
     let files_after = fluree
-        .storage()
+        .admin_storage()
+        .expect("managed backend")
         .list_prefix(&commit_prefix)
         .await
         .expect("list");

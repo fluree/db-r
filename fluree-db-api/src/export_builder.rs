@@ -15,14 +15,14 @@
 use crate::export::{self, ExportConfig, ExportFormat, ExportStats, PrefixMap};
 use crate::{time_resolve, ApiError, Fluree, Result, TimeSpec};
 use fluree_db_binary_index::BinaryIndexStore;
-use fluree_db_core::{GraphRegistry, Storage};
+use fluree_db_core::GraphRegistry;
 use fluree_db_nameservice::{ConfigPublisher, NameService};
 use std::io::{self, BufWriter, Write};
 use std::sync::Arc;
 
 /// Builder for configuring and executing a streaming export.
-pub struct ExportBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct ExportBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     ledger_id: String,
     format: ExportFormat,
     all_graphs: bool,
@@ -31,12 +31,11 @@ pub struct ExportBuilder<'a, S: Storage + 'static, N> {
     time_spec: Option<TimeSpec>,
 }
 
-impl<'a, S, N> ExportBuilder<'a, S, N>
+impl<'a, N> ExportBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + ConfigPublisher + Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_id: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, ledger_id: String) -> Self {
         Self {
             fluree,
             ledger_id,

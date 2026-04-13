@@ -100,12 +100,14 @@ async fn loads_fixture_database_and_scans_triples() {
         }
     };
 
-    let db = match conn {
-        ConnectionHandle::File(c) => c
-            .load_ledger_snapshot_fresh_cache(&root_id, TEST_LEDGER_ID)
-            .await
-            .unwrap(),
-        _ => panic!("Expected FileConnection"),
+    let db = match &conn {
+        ConnectionHandle::File { storage, .. } => {
+            let fresh = fluree_db_core::FileStorage::new(storage.base_path());
+            fluree_db_core::load_ledger_snapshot(&fresh, &root_id, TEST_LEDGER_ID)
+                .await
+                .unwrap()
+        }
+        _ => panic!("Expected File connection"),
     };
 
     // Execute query via execute_pattern (bypasses JSON query parser)

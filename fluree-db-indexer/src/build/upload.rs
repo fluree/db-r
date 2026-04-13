@@ -1,71 +1,53 @@
 //! CAS upload primitives and index artifact upload.
 //!
-//! Contains low-level helpers for writing content to CAS (`cid_from_write`,
-//! `upload_dict_blob`, `upload_dict_file`) and the bounded-parallelism
+//! Contains low-level helpers for writing content to a `ContentStore`
+//! (`upload_dict_blob`, `upload_dict_file`) and the bounded-parallelism
 //! `upload_indexes_to_cas` function for uploading index branches and leaves.
 
 use fluree_db_binary_index::RunSortOrder;
-use fluree_db_core::{ContentId, ContentKind, ContentWriteResult, GraphId, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore, GraphId};
 
 use crate::error::{IndexerError, Result};
 
 use super::types::UploadedIndexes;
 
-/// Derive a `ContentId` from a `ContentWriteResult`.
-///
-/// Every `content_write_bytes{,_with_hash}` call returns a SHA-256 hex digest.
-/// This helper wraps `ContentId::from_hex_digest` so callers don't repeat
-/// the pattern.
-pub(crate) fn cid_from_write(kind: ContentKind, result: &ContentWriteResult) -> ContentId {
-    ContentId::from_hex_digest(kind.to_codec(), &result.content_hash)
-        .expect("storage produced a valid SHA-256 hex digest")
-}
-
-/// Upload a single dict blob (already in memory) to CAS and return (cid, write_result).
-pub(crate) async fn upload_dict_blob<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+/// Upload a single dict blob (already in memory) to the content store and return its CID.
+pub(crate) async fn upload_dict_blob(
+    cs: &dyn ContentStore,
     dict: fluree_db_core::DictKind,
     bytes: &[u8],
     msg: &'static str,
-) -> Result<(ContentId, ContentWriteResult)> {
+) -> Result<ContentId> {
     let kind = ContentKind::DictBlob { dict };
-    let result = storage
-        .content_write_bytes(kind, ledger_id, bytes)
+    let cid = cs
+        .put(kind, bytes)
         .await
         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-    tracing::debug!(
-        address = %result.address,
-        bytes = result.size_bytes,
-        "{msg}"
-    );
-    let cid = cid_from_write(kind, &result);
-    Ok((cid, result))
+    tracing::debug!(cid = %cid, bytes = bytes.len(), "{msg}");
+    Ok(cid)
 }
 
-/// Read a dict artifact file from disk and upload it to CAS.
-pub(crate) async fn upload_dict_file<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+/// Read a dict artifact file from disk and upload it to the content store.
+pub(crate) async fn upload_dict_file(
+    cs: &dyn ContentStore,
     path: &std::path::Path,
     dict: fluree_db_core::DictKind,
     msg: &'static str,
-) -> Result<(ContentId, ContentWriteResult)> {
+) -> Result<ContentId> {
     let bytes = tokio::fs::read(path)
         .await
         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", path.display(), e)))?;
-    let (cid, wr) = upload_dict_blob(storage, ledger_id, dict, &bytes, msg).await?;
+    let cid = upload_dict_blob(cs, dict, &bytes, msg).await?;
     tracing::debug!(path = %path.display(), "dict artifact source path");
-    Ok((cid, wr))
+    Ok(cid)
 }
 
-/// Upload index artifacts (FLI3 leaves, FHS1 sidecars, FBR3 branches) to CAS.
+/// Upload index artifacts (FLI3 leaves, FHS1 sidecars, FBR3 branches) to the content store.
 ///
 /// Default graph (g_id=0) collects inline `LeafEntry` for root embedding.
 /// Named graphs upload branch manifests and return branch CIDs.
-pub(crate) async fn upload_indexes_to_cas<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub(crate) async fn upload_indexes_to_cas(
+    cs: &dyn ContentStore,
     build_result: &crate::BuildResult,
 ) -> Result<UploadedIndexes> {
     use fluree_db_binary_index::format::branch::LeafEntry;
@@ -104,13 +86,7 @@ pub(crate) async fn upload_indexes_to_cas<S: Storage>(
                     let sc_bytes = tokio::fs::read(sc_path).await.map_err(|e| {
                         IndexerError::StorageRead(format!("read {}: {}", sc_path.display(), e))
                     })?;
-                    storage
-                        .content_write_bytes_with_hash(
-                            ContentKind::HistorySidecar,
-                            ledger_id,
-                            &sc_cid.digest_hex(),
-                            &sc_bytes,
-                        )
+                    cs.put_with_id(sc_cid, &sc_bytes)
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 }
@@ -123,13 +99,7 @@ pub(crate) async fn upload_indexes_to_cas<S: Storage>(
                         e
                     ))
                 })?;
-                storage
-                    .content_write_bytes_with_hash(
-                        ContentKind::IndexLeaf,
-                        ledger_id,
-                        &leaf_info.leaf_cid.digest_hex(),
-                        &leaf_bytes,
-                    )
+                cs.put_with_id(&leaf_info.leaf_cid, &leaf_bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             }
@@ -143,13 +113,7 @@ pub(crate) async fn upload_indexes_to_cas<S: Storage>(
                         e
                     ))
                 })?;
-                storage
-                    .content_write_bytes_with_hash(
-                        ContentKind::IndexBranch,
-                        ledger_id,
-                        &graph.branch_cid.digest_hex(),
-                        &branch_bytes,
-                    )
+                cs.put_with_id(&graph.branch_cid, &branch_bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 Some(graph.branch_cid.clone())

@@ -7,7 +7,7 @@
 
 use fluree_db_binary_index::format::index_root::{DefaultGraphOrder, IndexRoot};
 use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef, DictRefs, GraphArenaRefs};
-use fluree_db_core::{ContentId, ContentKind, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore};
 use std::collections::BTreeMap;
 
 use super::types::{UploadedDicts, UploadedIndexes};
@@ -89,8 +89,8 @@ pub(crate) struct GarbageContext {
 // Kept for: shared root finalization for both rebuild and incremental pipelines.
 // Use when: rebuild.rs Phase F is refactored to use this shared helper.
 #[expect(dead_code)]
-pub(crate) async fn encode_and_write_root<S: Storage>(
-    storage: &S,
+pub(crate) async fn encode_and_write_root(
+    content_store: &dyn ContentStore,
     ledger_id: &str,
     mut root: IndexRoot,
     garbage_ctx: Option<GarbageContext>,
@@ -105,11 +105,11 @@ pub(crate) async fn encode_and_write_root<S: Storage>(
         if !ctx.garbage_cids.is_empty() {
             let garbage_strings: Vec<String> =
                 ctx.garbage_cids.iter().map(|c| c.to_string()).collect();
-            root.garbage =
-                gc::write_garbage_record(storage, ledger_id, root.index_t, garbage_strings)
+            let cid =
+                gc::write_garbage_record(content_store, ledger_id, root.index_t, garbage_strings)
                     .await
-                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-                    .map(|id| BinaryGarbageRef { id });
+                    .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            root.garbage = Some(BinaryGarbageRef { id: cid });
 
             tracing::info!(
                 garbage_count = ctx.garbage_cids.len(),
@@ -127,22 +127,10 @@ pub(crate) async fn encode_and_write_root<S: Storage>(
 
     // Encode and write root.
     let root_bytes = root.encode();
-    let write_result = storage
-        .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
+    let root_id = content_store
+        .put(ContentKind::IndexRoot, &root_bytes)
         .await
         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-    // Derive ContentId from the root's content hash.
-    let root_id = ContentId::from_hex_digest(
-        fluree_db_core::CODEC_FLUREE_INDEX_ROOT,
-        &write_result.content_hash,
-    )
-    .ok_or_else(|| {
-        IndexerError::StorageWrite(format!(
-            "invalid content_hash from write result: {}",
-            write_result.content_hash
-        ))
-    })?;
 
     tracing::info!(
         %root_id,
@@ -235,8 +223,8 @@ pub(crate) struct Fir6Inputs {
 /// and derives the CID.
 ///
 /// `gc_ctx` is `None` for this milestone (V3 GC chain is deferred).
-pub(crate) async fn encode_and_write_root_v6<S: Storage>(
-    storage: &S,
+pub(crate) async fn encode_and_write_root_v6(
+    content_store: &dyn ContentStore,
     inputs: Fir6Inputs,
     gc_ctx: Option<GarbageContext>,
     result_stats: IndexStats,
@@ -340,15 +328,15 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
         if !ctx.garbage_cids.is_empty() {
             let garbage_strings: Vec<String> =
                 ctx.garbage_cids.iter().map(|c| c.to_string()).collect();
-            root.garbage = gc::write_garbage_record(
-                storage,
+            let cid = gc::write_garbage_record(
+                content_store,
                 &inputs.ledger_id,
                 inputs.index_t,
                 garbage_strings,
             )
             .await
-            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?
-            .map(|id| BinaryGarbageRef { id });
+            .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+            root.garbage = Some(BinaryGarbageRef { id: cid });
 
             tracing::info!(
                 garbage_count = ctx.garbage_cids.len(),
@@ -367,20 +355,10 @@ pub(crate) async fn encode_and_write_root_v6<S: Storage>(
 
     // Encode and write root.
     let root_bytes = root.encode();
-    let write_result = storage
-        .content_write_bytes(ContentKind::IndexRoot, &inputs.ledger_id, &root_bytes)
+    let root_id = content_store
+        .put(ContentKind::IndexRoot, &root_bytes)
         .await
         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-    let root_id = ContentId::from_hex_digest(
-        fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
-        &write_result.content_hash,
-    )
-    .ok_or_else(|| {
-        IndexerError::StorageWrite(format!(
-            "invalid root digest for FIR6: {}",
-            write_result.content_hash
-        ))
-    })?;
 
     tracing::info!(
         %root_id,

@@ -7,15 +7,14 @@ use crate::query::helpers::{
 use crate::view::{DataSetDb, GraphDb};
 use crate::{
     ApiError, DatasetSpec, Fluree, FormatterConfig, PolicyContext, QueryConnectionOptions,
-    QueryResult, Result, Storage,
+    QueryResult, Result,
 };
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 
 type TrackedResult<T> = std::result::Result<T, crate::query::TrackedErrorResponse>;
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + Clone + Send + Sync + 'static,
 {
     async fn prepare_single_view_for_connection(

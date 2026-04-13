@@ -36,7 +36,7 @@ async fn policy_class_survives_indexing() {
     let mut fluree = FlureeBuilder::file(path).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

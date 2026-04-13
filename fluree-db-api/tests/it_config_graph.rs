@@ -1345,10 +1345,7 @@ async fn merge_shacl_opts_unit_test() {
 
 /// Helper: write config enabling unique enforcement with default graph as constraint source.
 async fn write_unique_config(
-    fluree: &fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     ledger: fluree_db_ledger::LedgerState,
     ledger_id: &str,
 ) -> fluree_db_api::tx::TransactResult {
