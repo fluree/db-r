@@ -428,6 +428,7 @@ fn build_ledger_block(
     };
 
     // Build named-graphs list (include per-graph flakes/size when available).
+    // The "iri" is the full graph IRI, usable directly in FROM / FROM NAMED clauses.
     let mut named_graphs = Vec::new();
     // Always include default graph
     let (default_flakes, default_size) = graph_totals(0);
@@ -437,13 +438,9 @@ fn build_ledger_block(
         "flakes": default_flakes,
         "size": default_size,
     }));
-    // Add named graphs from binary store
+    // Add named graphs from binary store (including txn-meta and config)
     if let Some(store) = store {
         for (g_id, iri) in store.graph_entries() {
-            // Skip txn-meta (g_id=1) from the public list
-            if g_id == 1 {
-                continue;
-            }
             let (flakes, size) = graph_totals(g_id);
             named_graphs.push(json!({
                 "iri": iri,

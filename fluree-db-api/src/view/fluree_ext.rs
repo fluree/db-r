@@ -38,11 +38,18 @@ where
 {
     /// Split a graph reference like `ledger:main#txn-meta` into (ledger_id, graph_ref).
     ///
+    /// Accepts both alias form (`mydb:main#txn-meta`) and full IRI form
+    /// (`urn:fluree:mydb:main#txn-meta`). The `urn:fluree:` prefix is stripped
+    /// so the ledger_id always matches the nameservice alias.
+    ///
     /// Supported fragments:
     /// - *(none)* → default graph (g_id = 0)
     /// - `#txn-meta` → txn metadata graph (g_id = 1)
     /// - `#<iri>` → user-defined named graph by exact IRI
     fn parse_graph_ref(ledger_id: &str) -> Result<(&str, GraphRef)> {
+        // Strip urn:fluree: prefix so full IRIs resolve to the same ledger alias.
+        let ledger_id = ledger_id.strip_prefix("urn:fluree:").unwrap_or(ledger_id);
+
         match ledger_id.split_once('#') {
             None => Ok((ledger_id, GraphRef::Default)),
             Some((ledger_id, frag)) => {

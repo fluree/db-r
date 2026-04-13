@@ -1515,3 +1515,92 @@ async fn test_insert_with_id_and_graph_and_txn_meta() {
         })
         .await;
 }
+
+// =============================================================================
+// Full IRI in FROM clause
+// =============================================================================
+
+#[tokio::test]
+async fn test_txn_meta_full_iri_in_from() {
+    // The info endpoint reports graph IRIs in the full `urn:fluree:{ledger}#txn-meta` form.
+    // Verify that using the full IRI in a JSON-LD "from" clause resolves correctly.
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/txn-meta-full-iri:main";
+
+    let (local, handle) = start_background_indexer_local(
+        fluree.backend().clone(),
+        (*fluree.nameservice()).clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async move {
+            let ledger = genesis_ledger(&fluree, ledger_id);
+
+            // Insert with envelope-form metadata
+            let tx = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}],
+                "ex:source": "full-iri-test"
+            });
+
+            let result = fluree.insert(ledger, &tx).await.expect("insert");
+            trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
+
+            // Query using the full urn:fluree: IRI (same form the info endpoint reports)
+            let full_iri = format!("urn:fluree:{}#txn-meta", ledger_id);
+            let query = json!({
+                "from": full_iri,
+                "select": ["?p", "?o"],
+                "where": { "@id": "?s", "?p": "?o" }
+            });
+
+            let results = fluree
+                .query_connection(&query)
+                .await
+                .expect("query with full IRI");
+            let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
+            let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+            let arr = results.as_array().expect("results should be array");
+
+            let has_source = arr.iter().any(|row| {
+                row.as_array()
+                    .map(|r| r.iter().any(|v| v.as_str() == Some("full-iri-test")))
+                    .unwrap_or(false)
+            });
+            assert!(
+                has_source,
+                "full urn:fluree: IRI in FROM should resolve txn-meta graph, got: {:?}",
+                arr
+            );
+
+            // Also verify the short alias form still works (regression guard)
+            let short_query = json!({
+                "from": format!("{}#txn-meta", ledger_id),
+                "select": ["?p", "?o"],
+                "where": { "@id": "?s", "?p": "?o" }
+            });
+            let short_results = fluree
+                .query_connection(&short_query)
+                .await
+                .expect("query with alias");
+            let short_results = short_results
+                .to_jsonld(&ledger.snapshot)
+                .expect("to_jsonld");
+            let short_arr = short_results.as_array().expect("array");
+
+            let short_has_source = short_arr.iter().any(|row| {
+                row.as_array()
+                    .map(|r| r.iter().any(|v| v.as_str() == Some("full-iri-test")))
+                    .unwrap_or(false)
+            });
+            assert!(
+                short_has_source,
+                "short alias form should still work, got: {:?}",
+                short_arr
+            );
+        })
+        .await;
+}
