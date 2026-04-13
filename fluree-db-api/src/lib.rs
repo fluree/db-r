@@ -3578,7 +3578,6 @@ mod tests {
             .await
             .unwrap());
     }
-
 }
 
 #[cfg(all(test, feature = "shacl"))]
