@@ -1841,47 +1841,6 @@ impl FlureeBuilder {
         )
     }
 
-    /// Build an IPFS-backed Fluree instance with an in-memory nameservice.
-    ///
-    /// Stores content-addressed data (commits, indexes) in IPFS via the Kubo
-    /// HTTP RPC API. The nameservice is in-memory only — ledger heads and
-    /// branch metadata do not persist across restarts. For persistent
-    /// nameservice, compose your own with [`build_with`] using
-    /// [`fluree_db_storage_ipfs::IpfsStorage`].
-    ///
-    /// # Arguments
-    ///
-    /// * `api_url` - Kubo RPC API base URL (e.g., `"http://127.0.0.1:5001"`)
-    ///
-    /// # Notes
-    ///
-    /// - Requires the `ipfs` feature.
-    /// - IPFS does not support delete or list operations; admin/GC paths
-    ///   that need these will return errors.
-    ///
-    /// [`build_with`]: FlureeBuilder::build_with
-    #[cfg(feature = "ipfs")]
-    pub fn build_ipfs(self, api_url: impl Into<String>) -> Fluree<MemoryNameService> {
-        use fluree_db_storage_ipfs::{IpfsConfig, IpfsStorage};
-        let ipfs_store = IpfsStorage::new(IpfsConfig {
-            api_url: api_url.into(),
-            pin_on_put: true,
-        });
-        let backend = StorageBackend::Permanent(Arc::new(ipfs_store));
-        let nameservice = MemoryNameService::new();
-        let index_config = self.derive_indexing();
-        // Note: background indexing is disabled for IPFS — the indexer
-        // still requires a Storage-trait backend.
-        Self::finalize_with_backend(
-            self.ledger_cache_config,
-            self.config,
-            backend,
-            nameservice,
-            tx::IndexingMode::Disabled,
-            index_config,
-        )
-    }
-
     /// Build an S3-backed Fluree instance (storage-backed nameservice).
     ///
     /// Convenience wrapper around JSON-LD config for S3-backed storage.
@@ -3620,19 +3579,6 @@ mod tests {
             .unwrap());
     }
 
-    #[test]
-    #[cfg(feature = "ipfs")]
-    fn test_build_ipfs_constructs_fluree() {
-        // No real Kubo node needed — this only verifies the type plumbing.
-        let fluree = FlureeBuilder::memory().build_ipfs("http://127.0.0.1:5001");
-        // Backend should be Permanent (IPFS), not Managed.
-        assert!(matches!(
-            fluree.backend(),
-            fluree_db_core::StorageBackend::Permanent(_)
-        ));
-        // Admin storage should be None for IPFS (no raw Storage interface).
-        assert!(fluree.admin_storage().is_none());
-    }
 }
 
 #[cfg(all(test, feature = "shacl"))]

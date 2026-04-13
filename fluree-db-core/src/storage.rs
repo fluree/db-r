@@ -600,72 +600,52 @@ pub fn content_store_for<S: Storage>(storage: S, namespace_id: &str) -> StorageC
 
 /// Unified storage backend.
 ///
-/// Represents the two kinds of storage backends Fluree supports:
+/// Wraps a type-erased [`Storage`] implementation behind `Arc<dyn Storage>`,
+/// providing both content-addressed access (via [`content_store`]) and
+/// raw address-based admin operations (via [`admin_storage`]).
 ///
-/// - **Managed**: Address-based backends (file, S3, memory) where Fluree
-///   controls the full data lifecycle including deletion. These implement
-///   the [`Storage`] trait and get content-addressing via
-///   [`StorageContentStore`].
-///
-/// - **Permanent**: Natively content-addressed backends (IPFS) where data
-///   is append-only and cannot be deleted. These implement [`ContentStore`]
-///   directly.
-///
-/// # Content store access
-///
-/// Both variants can produce an `Arc<dyn ContentStore>` scoped to a ledger
-/// via [`content_store`]. For `Managed`, this constructs a
-/// [`StorageContentStore`] bridge; for `Permanent`, it returns the inner
-/// store directly (the `namespace_id` is ignored since the backend handles
-/// its own addressing).
-///
-/// # Admin operations
-///
-/// Only `Managed` backends support admin operations (deletion, listing).
-/// Use [`admin_storage`] to get the underlying raw storage, if available.
+/// Currently the only variant is `Managed` (file, S3, memory). The enum
+/// is designed to be extended with append-only backends (e.g. IPFS) that
+/// implement [`ContentStore`] directly without full [`Storage`] support.
 ///
 /// [`content_store`]: StorageBackend::content_store
 /// [`admin_storage`]: StorageBackend::admin_storage
 pub enum StorageBackend {
     /// Storage with full lifecycle control including deletion (file, S3, memory).
     Managed(Arc<dyn Storage>),
-    /// Append-only content-addressed storage (IPFS).
-    Permanent(Arc<dyn ContentStore>),
 }
 
 impl StorageBackend {
     /// Create an `Arc<dyn ContentStore>` scoped to the given namespace
     /// (typically a ledger ID).
     ///
-    /// For `Managed` backends, this constructs a [`StorageContentStore`] that
-    /// maps CIDs to physical addresses under the namespace. For `Permanent`
-    /// backends, the inner store is returned directly.
+    /// Constructs a [`StorageContentStore`] that maps CIDs to physical
+    /// addresses under the namespace.
     pub fn content_store(&self, namespace_id: &str) -> Arc<dyn ContentStore> {
         match self {
             StorageBackend::Managed(storage) => {
                 Arc::new(content_store_for(storage.clone(), namespace_id))
             }
-            StorageBackend::Permanent(store) => Arc::clone(store),
         }
     }
 
     /// Get the underlying raw storage for admin operations (delete, list).
     ///
-    /// Returns `Some` for `Managed` backends, `None` for `Permanent`.
+    /// Returns `Some` for `Managed` backends. Future append-only backends
+    /// (e.g. IPFS) would return `None`.
     pub fn admin_storage(&self) -> Option<&dyn Storage> {
         match self {
             StorageBackend::Managed(storage) => Some(storage.as_ref()),
-            StorageBackend::Permanent(_) => None,
         }
     }
 
     /// Clone the admin storage as an owned `Arc<dyn Storage>`, if available.
     ///
-    /// Returns `Some` for `Managed` backends, `None` for `Permanent`.
+    /// Returns `Some` for `Managed` backends. Future append-only backends
+    /// (e.g. IPFS) would return `None`.
     pub fn admin_storage_cloned(&self) -> Option<Arc<dyn Storage>> {
         match self {
             StorageBackend::Managed(storage) => Some(Arc::clone(storage)),
-            StorageBackend::Permanent(_) => None,
         }
     }
 }
@@ -674,7 +654,6 @@ impl Debug for StorageBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             StorageBackend::Managed(s) => f.debug_tuple("Managed").field(s).finish(),
-            StorageBackend::Permanent(s) => f.debug_tuple("Permanent").field(s).finish(),
         }
     }
 }
@@ -683,7 +662,6 @@ impl Clone for StorageBackend {
     fn clone(&self) -> Self {
         match self {
             StorageBackend::Managed(s) => StorageBackend::Managed(Arc::clone(s)),
-            StorageBackend::Permanent(s) => StorageBackend::Permanent(Arc::clone(s)),
         }
     }
 }
