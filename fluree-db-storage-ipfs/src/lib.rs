@@ -15,21 +15,16 @@
 //! Unlike file/S3/memory backends, IPFS does **not** implement the address-based
 //! [`Storage`] trait. IPFS is natively content-addressed and cannot meaningfully
 //! support arbitrary address-based writes or prefix listing. It is therefore
-//! represented as a [`StorageBackend::Permanent`] in the Fluree API, which
-//! disables admin operations (drop, GC, list) and background indexing.
+//! represented as a [`StorageBackend::Permanent`] in the Fluree API.
 //!
 //! ## Limitations
 //!
-//! - **No deletion**: IPFS content is immutable. "Deletion" can only be
-//!   approximated by unpinning a block, which makes it eligible for Kubo's
-//!   garbage collector — but even then the block may persist if reachable from
-//!   other pins or pinned remotely. True deletion is not possible.
+//! - **No true deletion**: IPFS content is immutable. [`ContentStore::release`]
+//!   unpins a block, making it eligible for Kubo's garbage collector — but the
+//!   block may persist if reachable from other pins or pinned remotely.
 //! - **No prefix listing**: IPFS has no concept of enumeration. Admin
-//!   operations (drop ledger, GC old indexes) that depend on listing require
-//!   manifest-based tracking, which this backend does not provide.
-//! - **No background indexing**: The indexer pipeline currently requires a
-//!   `Storage`-trait backend. Ledgers stored in IPFS accumulate novelty
-//!   without automatic index rebuild.
+//!   operations that depend on listing (e.g., fast-path ledger drop) fall back
+//!   to CID-walking, which is slower but correct.
 //! - **No mutable nameservice**: `IpfsStorage` is suitable for storing
 //!   content-addressed data (commits, indexes) but not for nameservice records
 //!   that require mutable, address-based writes. Pair it with a separate
