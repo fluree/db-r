@@ -345,6 +345,13 @@ pub trait ContentStore: Debug + Send + Sync {
         None
     }
 
+    /// Signal that this content is no longer needed and may be reclaimed.
+    ///
+    /// Implementations should make a best effort to free the underlying
+    /// resources associated with `id`. The content may or may not become
+    /// immediately unavailable after this call, depending on the backend.
+    async fn release(&self, id: &ContentId) -> Result<()>;
+
     /// Retrieve a byte range from an object by CID.
     ///
     /// The range is `[start, end)` in bytes. Returns the bytes within
@@ -388,6 +395,10 @@ impl ContentStore for Arc<dyn ContentStore> {
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
         self.as_ref().resolve_local_path(id)
+    }
+
+    async fn release(&self, id: &ContentId) -> Result<()> {
+        self.as_ref().release(id).await
     }
 
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
@@ -525,6 +536,11 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
         }
         let address = self.cid_to_address(id)?;
         self.storage.write_bytes(&address, bytes).await
+    }
+
+    async fn release(&self, id: &ContentId) -> Result<()> {
+        let address = self.cid_to_address(id)?;
+        self.storage.delete(&address).await
     }
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
@@ -772,6 +788,10 @@ impl ContentStore for BranchedContentStore {
 
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
         self.branch_store.put_with_id(id, bytes).await
+    }
+
+    async fn release(&self, id: &ContentId) -> Result<()> {
+        self.branch_store.release(id).await
     }
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {

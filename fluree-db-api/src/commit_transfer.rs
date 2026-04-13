@@ -284,9 +284,10 @@ where
         }
 
         // 5) Write required blobs and commit bytes to storage (safe before CAS).
-        let storage = self.backend().admin_storage_cloned().ok_or_else(|| {
-            ApiError::config("push_commits requires a managed storage backend")
-        })?;
+        let storage = self
+            .backend()
+            .admin_storage_cloned()
+            .ok_or_else(|| ApiError::config("push_commits requires a managed storage backend"))?;
         write_required_blobs(&storage, base_state.ledger_id(), &request.blobs, &decoded)
             .await
             .map_err(|e| e.into_api_error())?;

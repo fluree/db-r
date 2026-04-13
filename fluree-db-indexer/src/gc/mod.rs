@@ -111,6 +111,11 @@ pub async fn write_garbage_record(
 /// Load a garbage record from storage.
 pub async fn load_garbage_record<S: Storage>(storage: &S, address: &str) -> Result<GarbageRecord> {
     let bytes = storage.read_bytes(address).await?;
-    let record: GarbageRecord = serde_json::from_slice(&bytes)?;
+    parse_garbage_record(&bytes)
+}
+
+/// Parse a garbage record from raw bytes.
+pub fn parse_garbage_record(bytes: &[u8]) -> Result<GarbageRecord> {
+    let record: GarbageRecord = serde_json::from_slice(bytes)?;
     Ok(record)
 }

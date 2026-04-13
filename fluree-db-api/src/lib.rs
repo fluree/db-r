@@ -3074,26 +3074,15 @@ where
                     );
 
                     // GC old blob if CID changed.
-                    // TODO: For IPFS, unpin the old CID so Kubo's GC can reclaim
-                    // it. This requires adding a `release` method to `ContentStore`
-                    // (does not exist yet).
                     if let Some(old) = old_cid {
                         if old != new_cid {
-                            if let Some(storage) = self.admin_storage() {
-                                let kind = old.content_kind().unwrap_or(ContentKind::LedgerConfig);
-                                let addr = fluree_db_core::content_address(
-                                    storage.storage_method(),
-                                    kind,
-                                    canonical_id,
-                                    &old.digest_hex(),
+                            let cs = self.content_store(canonical_id);
+                            if let Err(e) = cs.release(&old).await {
+                                tracing::debug!(
+                                    %e,
+                                    old_cid = %old,
+                                    "could not release old default context blob"
                                 );
-                                if let Err(e) = storage.delete(&addr).await {
-                                    tracing::debug!(
-                                        %e,
-                                        old_addr = %addr,
-                                        "could not GC old default context blob"
-                                    );
-                                }
                             }
                         }
                     }
@@ -3115,24 +3104,13 @@ where
         }
 
         // All retries exhausted — best-effort GC the orphan blob we wrote.
-        // TODO: For IPFS, unpin the orphan CID so Kubo's GC can reclaim
-        // it. This requires adding a `release` method to `ContentStore`
-        // (does not exist yet).
-        if let Some(storage) = self.admin_storage() {
-            let kind = new_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
-            let addr = fluree_db_core::content_address(
-                storage.storage_method(),
-                kind,
-                canonical_id,
-                &new_cid.digest_hex(),
+        let cs = self.content_store(canonical_id);
+        if let Err(e) = cs.release(&new_cid).await {
+            tracing::debug!(
+                %e,
+                orphan_cid = %new_cid,
+                "could not release orphan context blob after conflict"
             );
-            if let Err(e) = storage.delete(&addr).await {
-                tracing::debug!(
-                    %e,
-                    orphan_addr = %addr,
-                    "could not GC orphan context blob after conflict"
-                );
-            }
         }
 
         Ok(SetContextResult::Conflict)

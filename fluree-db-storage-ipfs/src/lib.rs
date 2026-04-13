@@ -195,6 +195,15 @@ impl ContentStore for IpfsStorage {
         Ok(expected_id)
     }
 
+    async fn release(&self, id: &ContentId) -> fluree_db_core::error::Result<()> {
+        let cid_str = id.to_string();
+        let raw_cid = Self::to_raw_cid(&cid_str).map_err(fluree_db_core::error::Error::storage)?;
+        self.kubo
+            .pin_rm(&raw_cid)
+            .await
+            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))
+    }
+
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::error::Result<()> {
         if !id.verify(bytes) {
             return Err(fluree_db_core::error::Error::storage(format!(

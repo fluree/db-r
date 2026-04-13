@@ -472,13 +472,11 @@ where
         let storage = match self.admin_storage() {
             Some(s) => s,
             None => {
-                // TODO: For IPFS, unpin artifacts so Kubo's GC can reclaim them.
-                // This requires adding a `release` method to `ContentStore`
-                // (does not exist yet) with a default no-op, implemented as
-                // `pin_rm` for `IpfsStorage`.
-                warnings
-                    .push("Artifact deletion skipped: not supported on this backend".to_string());
-                return (0, warnings);
+                // Permanent backend (IPFS): no list_prefix or delete — use
+                // CID-walk + release to unpin artifacts.
+                return self
+                    .drop_artifacts_by_cid_walk(ledger_id, record, &mut warnings)
+                    .await;
             }
         };
         let storage_method = storage.storage_method();
@@ -510,7 +508,7 @@ where
                 (count, warnings)
             }
             Err(e) => {
-                // Slow path: walk CID chains (IPFS, or any backend without list_prefix)
+                // Slow path: walk CID chains (any backend without list_prefix)
                 info!(
                     error = %e,
                     "list_prefix unavailable, falling back to CID-walking drop"
@@ -522,34 +520,20 @@ where
     }
 
     /// Slow-path artifact deletion: walk commit + index chains to collect CIDs,
-    /// derive storage addresses, and delete each.
+    /// then release each via `ContentStore::release`.
+    ///
+    /// For managed backends, `release` deletes by derived address. For permanent
+    /// backends (IPFS), it unpins the CID so Kubo's GC can reclaim the block.
     async fn drop_artifacts_by_cid_walk(
         &self,
         ledger_id: &str,
         record: Option<&fluree_db_nameservice::NsRecord>,
         warnings: &mut Vec<String>,
     ) -> (usize, Vec<String>) {
-        let storage = match self.backend().admin_storage_cloned() {
-            Some(s) => s,
-            None => {
-                // TODO: For IPFS, walk CIDs and unpin so Kubo's GC can reclaim
-                // them. This requires adding a `release` method to `ContentStore`
-                // (does not exist yet) with a default no-op, implemented as
-                // `pin_rm` for `IpfsStorage`.
-                warnings
-                    .push("CID-walking drop skipped: not supported on this backend".to_string());
-                return (0, std::mem::take(warnings));
-            }
-        };
-        let storage_method = storage.storage_method();
+        let content_store = self.content_store(ledger_id);
 
-        let (commit_head, index_head, config_id, default_context) = match record {
-            Some(r) => (
-                r.commit_head_id.as_ref(),
-                r.index_head_id.as_ref(),
-                r.config_id.as_ref(),
-                r.default_context.as_ref(),
-            ),
+        let record = match record {
+            Some(r) => r,
             None => {
                 warnings.push("No NsRecord available for CID-walking drop".to_string());
                 return (0, std::mem::take(warnings));
@@ -557,12 +541,11 @@ where
         };
 
         let cids = match fluree_db_indexer::collect_ledger_cids(
-            &storage,
-            ledger_id,
-            commit_head,
-            index_head,
-            config_id,
-            default_context,
+            content_store.as_ref(),
+            record.commit_head_id.as_ref(),
+            record.index_head_id.as_ref(),
+            record.config_id.as_ref(),
+            record.default_context.as_ref(),
         )
         .await
         {
@@ -578,27 +561,16 @@ where
 
         let mut count = 0;
         for cid in &cids {
-            let kind = match cid.content_kind() {
-                Some(k) => k,
-                None => {
-                    warnings.push(format!("Unknown content kind for CID {}", cid));
-                    continue;
-                }
-            };
-            let addr =
-                fluree_db_core::content_address(storage_method, kind, ledger_id, &cid.digest_hex());
-            if let Err(e) = storage.delete(&addr).await {
+            if let Err(e) = content_store.release(cid).await {
                 let msg = e.to_string();
                 if msg.contains("not found")
                     || msg.contains("No such file")
                     || msg.contains("not pinned")
                 {
-                    // Expected: GC or a prior drop already removed this artifact
-                    tracing::debug!(addr = %addr, error = %e, "artifact already removed");
+                    tracing::debug!(cid = %cid, error = %e, "artifact already removed");
                 } else {
-                    // Unexpected: connection failure, permission error, etc.
-                    warn!(addr = %addr, error = %e, "unexpected error deleting artifact");
-                    warnings.push(format!("Delete failed for {}: {}", addr, e));
+                    warn!(cid = %cid, error = %e, "unexpected error releasing artifact");
+                    warnings.push(format!("Release failed for {}: {}", cid, e));
                 }
             } else {
                 count += 1;
@@ -1075,11 +1047,10 @@ where
         let storage_clone = match self.backend().admin_storage_cloned() {
             Some(s) => s,
             None => {
-                // TODO: For IPFS, unpin replaced CIDs so Kubo's GC can reclaim
-                // stale index artifacts. This requires adding a `release` method
-                // to `ContentStore` (does not exist yet) with a default no-op,
-                // implemented as `pin_rm` for `IpfsStorage`.
-                tracing::debug!("Skipping GC: not supported on this backend");
+                // Permanent backends (IPFS): clean_garbage requires address-based
+                // Storage for deletion. A content-store-based GC that uses
+                // ContentStore::release is needed to unpin replaced CIDs.
+                tracing::debug!("Skipping GC: clean_garbage requires address-based Storage");
                 return Ok(ReindexResult {
                     ledger_id,
                     index_t: index_result.index_t,

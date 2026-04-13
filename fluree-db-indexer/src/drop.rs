@@ -15,12 +15,10 @@ use fluree_db_binary_index::format::branch::read_branch_from_bytes;
 use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_id::ContentId;
-use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::storage::ContentStore;
-use fluree_db_core::Storage;
 
 use crate::error::Result;
-use crate::gc::collector::{derive_address, walk_prev_index_chain};
+use crate::gc::collector::IndexChainEntry;
 
 /// Collect all CAS content IDs belonging to a ledger.
 ///
@@ -28,10 +26,10 @@ use crate::gc::collector::{derive_address, walk_prev_index_chain};
 /// graph branch → leaf expansion), and extra NsRecord references to build a
 /// complete, deduplicated set of CIDs.
 ///
-/// Callers can then derive storage addresses from these CIDs and delete them.
-pub async fn collect_ledger_cids<S: Storage + Clone>(
-    storage: &S,
-    ledger_id: &str,
+/// Callers can then delete or release these CIDs depending on the storage
+/// backend (address-based deletion for managed backends, unpinning for IPFS).
+pub async fn collect_ledger_cids(
+    store: &dyn ContentStore,
     commit_head_id: Option<&ContentId>,
     index_head_id: Option<&ContentId>,
     config_id: Option<&ContentId>,
@@ -41,12 +39,12 @@ pub async fn collect_ledger_cids<S: Storage + Clone>(
 
     // 1. Walk commit chain: collect commit CIDs + txn CIDs
     if let Some(head) = commit_head_id {
-        collect_commit_chain_cids(storage, head, ledger_id, &mut cids).await?;
+        collect_commit_chain_cids(store, head, &mut cids).await?;
     }
 
     // 2. Walk index chain: collect root CIDs, all CAS artifacts, garbage, branches → leaves
     if let Some(head) = index_head_id {
-        collect_index_chain_cids(storage, head, ledger_id, &mut cids).await?;
+        collect_index_chain_cids(store, head, &mut cids).await?;
     }
 
     // 3. Extra NsRecord references
@@ -61,16 +59,13 @@ pub async fn collect_ledger_cids<S: Storage + Clone>(
 }
 
 /// Walk the commit chain backward from `head`, collecting commit and txn CIDs.
-async fn collect_commit_chain_cids<S: Storage + Clone>(
-    storage: &S,
+async fn collect_commit_chain_cids(
+    store: &dyn ContentStore,
     head: &ContentId,
-    ledger_id: &str,
     cids: &mut HashSet<ContentId>,
 ) -> Result<()> {
-    let content_store = fluree_db_core::storage::content_store_for(storage.clone(), ledger_id);
-
     // Collect all commit CIDs via DAG walk (stop_at_t=0 means collect all).
-    let dag = fluree_db_core::collect_dag_cids(&content_store, head, 0)
+    let dag = fluree_db_core::collect_dag_cids(store, head, 0)
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -86,7 +81,7 @@ async fn collect_commit_chain_cids<S: Storage + Clone>(
         cids.insert(commit_id.clone());
 
         // Load each commit envelope to extract txn references.
-        let bytes = match content_store.get(commit_id).await {
+        let bytes = match store.get(commit_id).await {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(
@@ -118,30 +113,84 @@ async fn collect_commit_chain_cids<S: Storage + Clone>(
     Ok(())
 }
 
-/// Walk the index chain, collecting all CAS CIDs from each root.
-async fn collect_index_chain_cids<S: Storage>(
-    storage: &S,
+/// Walk the prev-index chain using `ContentStore::get` (CID-based).
+///
+/// Equivalent to `gc::collector::walk_prev_index_chain` but operates through
+/// the `ContentStore` trait instead of address-based `Storage`, so it works
+/// with both managed and permanent (IPFS) backends.
+async fn walk_prev_index_chain_via_content_store(
+    store: &dyn ContentStore,
     head: &ContentId,
-    ledger_id: &str,
+) -> Result<Vec<IndexChainEntry>> {
+    let mut chain = Vec::new();
+    let mut current_id = head.clone();
+
+    loop {
+        let bytes = match store.get(&current_id).await {
+            Ok(b) => b,
+            Err(e) => {
+                if chain.is_empty() {
+                    return Err(e.into());
+                } else {
+                    tracing::debug!(
+                        root_id = %current_id,
+                        "prev_index not found, chain ends here (prior GC)"
+                    );
+                    break;
+                }
+            }
+        };
+
+        let root = match IndexRoot::decode(&bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                if chain.is_empty() {
+                    return Err(crate::error::IndexerError::Serialization(format!(
+                        "index root FIR6: {e}"
+                    )));
+                } else {
+                    tracing::debug!(
+                        root_id = %current_id,
+                        error = %e,
+                        "failed to decode index root, chain ends here"
+                    );
+                    break;
+                }
+            }
+        };
+
+        let next_id = root.prev_index.map(|p| p.id);
+        let garbage_id = root.garbage.map(|g| g.id);
+
+        chain.push(IndexChainEntry {
+            t: root.index_t,
+            root_id: current_id,
+            garbage_id,
+        });
+
+        match next_id {
+            Some(id) => current_id = id,
+            None => break,
+        }
+    }
+
+    Ok(chain)
+}
+
+/// Walk the index chain, collecting all CAS CIDs from each root.
+async fn collect_index_chain_cids(
+    store: &dyn ContentStore,
+    head: &ContentId,
     cids: &mut HashSet<ContentId>,
 ) -> Result<()> {
-    let storage_method = storage.storage_method();
-
-    // Walk the chain to get all root entries
-    let chain = walk_prev_index_chain(storage, head, ledger_id).await?;
+    let chain = walk_prev_index_chain_via_content_store(store, head).await?;
 
     for entry in &chain {
         // Add the root CID itself
         cids.insert(entry.root_id.clone());
 
         // Load the full IndexRoot to get all CAS artifacts
-        let root_addr = derive_address(
-            &entry.root_id,
-            ContentKind::IndexRoot,
-            storage_method,
-            ledger_id,
-        );
-        let root_bytes = match storage.read_bytes(&root_addr).await {
+        let root_bytes = match store.get(&entry.root_id).await {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(
@@ -174,13 +223,7 @@ async fn collect_index_chain_cids<S: Storage>(
         // (all_cas_ids includes the branch CID but not the leaves within)
         for ng in &root.named_graphs {
             for (_, branch_cid) in &ng.orders {
-                let branch_addr = derive_address(
-                    branch_cid,
-                    ContentKind::IndexBranch,
-                    storage_method,
-                    ledger_id,
-                );
-                match storage.read_bytes(&branch_addr).await {
+                match store.get(branch_cid).await {
                     Ok(branch_bytes) => match read_branch_from_bytes(&branch_bytes) {
                         Ok(manifest) => {
                             for leaf in &manifest.leaves {
@@ -210,20 +253,23 @@ async fn collect_index_chain_cids<S: Storage>(
         if let Some(ref garbage_id) = entry.garbage_id {
             cids.insert(garbage_id.clone());
 
-            let garbage_addr = derive_address(
-                garbage_id,
-                ContentKind::GarbageRecord,
-                storage_method,
-                ledger_id,
-            );
-            match crate::gc::load_garbage_record(storage, &garbage_addr).await {
-                Ok(record) => {
-                    for item_str in &record.garbage {
-                        if let Ok(item_cid) = item_str.parse::<ContentId>() {
-                            cids.insert(item_cid);
+            match store.get(garbage_id).await {
+                Ok(garbage_bytes) => match crate::gc::parse_garbage_record(&garbage_bytes) {
+                    Ok(record) => {
+                        for item_str in &record.garbage {
+                            if let Ok(item_cid) = item_str.parse::<ContentId>() {
+                                cids.insert(item_cid);
+                            }
                         }
                     }
-                }
+                    Err(e) => {
+                        tracing::warn!(
+                            garbage_id = %garbage_id,
+                            error = %e,
+                            "failed to parse garbage record during drop, skipping"
+                        );
+                    }
+                },
                 Err(e) => {
                     tracing::warn!(
                         garbage_id = %garbage_id,
@@ -245,7 +291,9 @@ mod tests {
         BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
     use fluree_db_core::commit::codec::write_commit;
+    use fluree_db_core::content_kind::ContentKind;
     use fluree_db_core::prelude::*;
+    use fluree_db_core::storage::content_store_for;
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::BTreeMap;
 
@@ -344,10 +392,16 @@ mod tests {
         cid
     }
 
+    /// Build a content store from MemoryStorage for testing.
+    fn test_store(storage: &MemoryStorage) -> impl ContentStore + '_ {
+        content_store_for(storage.clone(), LEDGER)
+    }
+
     #[tokio::test]
     async fn test_collect_empty_ledger() {
         let storage = MemoryStorage::new();
-        let cids = collect_ledger_cids(&storage, LEDGER, None, None, None, None)
+        let store = test_store(&storage);
+        let cids = collect_ledger_cids(&store, None, None, None, None)
             .await
             .unwrap();
         assert!(cids.is_empty());
@@ -363,7 +417,8 @@ mod tests {
         let c1 = write_test_commit(&storage, 1, None, Some(txn1.clone())).await;
         let c2 = write_test_commit(&storage, 2, Some(&c1), Some(txn2.clone())).await;
 
-        let cids = collect_ledger_cids(&storage, LEDGER, Some(&c2), None, None, None)
+        let store = test_store(&storage);
+        let cids = collect_ledger_cids(&store, Some(&c2), None, None, None)
             .await
             .unwrap();
 
@@ -402,7 +457,8 @@ mod tests {
             .await
             .unwrap();
 
-        let cids = collect_ledger_cids(&storage, LEDGER, None, Some(&root2_cid), None, None)
+        let store = test_store(&storage);
+        let cids = collect_ledger_cids(&store, None, Some(&root2_cid), None, None)
             .await
             .unwrap();
 
@@ -441,7 +497,8 @@ mod tests {
         );
         storage.write_bytes(&root_addr, &root_bytes).await.unwrap();
 
-        let cids = collect_ledger_cids(&storage, LEDGER, None, Some(&root_cid), None, None)
+        let store = test_store(&storage);
+        let cids = collect_ledger_cids(&store, None, Some(&root_cid), None, None)
             .await
             .unwrap();
 
@@ -462,16 +519,10 @@ mod tests {
         let config_cid = ContentId::new(ContentKind::LedgerConfig, b"config");
         let context_cid = ContentId::new(ContentKind::Commit, b"context");
 
-        let cids = collect_ledger_cids(
-            &storage,
-            LEDGER,
-            None,
-            None,
-            Some(&config_cid),
-            Some(&context_cid),
-        )
-        .await
-        .unwrap();
+        let store = test_store(&storage);
+        let cids = collect_ledger_cids(&store, None, None, Some(&config_cid), Some(&context_cid))
+            .await
+            .unwrap();
 
         assert_eq!(cids.len(), 2);
         assert!(cids.contains(&config_cid));
@@ -505,7 +556,8 @@ mod tests {
             .await
             .unwrap();
 
-        let cids = collect_ledger_cids(&storage, LEDGER, None, Some(&root2_cid), None, None)
+        let store = test_store(&storage);
+        let cids = collect_ledger_cids(&store, None, Some(&root2_cid), None, None)
             .await
             .unwrap();
 
