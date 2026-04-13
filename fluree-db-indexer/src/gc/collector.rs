@@ -239,7 +239,7 @@ pub async fn clean_garbage(
 /// **Tolerant behavior**: If a prev_index link cannot be loaded (e.g., it was
 /// released by prior GC), the walk stops gracefully at that point rather than
 /// returning an error. This ensures GC is idempotent.
-async fn walk_prev_index_chain_cs(
+pub(crate) async fn walk_prev_index_chain_cs(
     store: &dyn ContentStore,
     current_root_id: &ContentId,
 ) -> Result<Vec<IndexChainEntry>> {

@@ -18,7 +18,7 @@ use fluree_db_core::content_id::ContentId;
 use fluree_db_core::storage::ContentStore;
 
 use crate::error::Result;
-use crate::gc::collector::IndexChainEntry;
+use crate::gc::collector::walk_prev_index_chain_cs;
 
 /// Collect all CAS content IDs belonging to a ledger.
 ///
@@ -113,77 +113,13 @@ async fn collect_commit_chain_cids(
     Ok(())
 }
 
-/// Walk the prev-index chain using `ContentStore::get` (CID-based).
-///
-/// Equivalent to `gc::collector::walk_prev_index_chain` but operates through
-/// the `ContentStore` trait instead of address-based `Storage`, so it works
-/// with both managed and permanent (IPFS) backends.
-async fn walk_prev_index_chain_via_content_store(
-    store: &dyn ContentStore,
-    head: &ContentId,
-) -> Result<Vec<IndexChainEntry>> {
-    let mut chain = Vec::new();
-    let mut current_id = head.clone();
-
-    loop {
-        let bytes = match store.get(&current_id).await {
-            Ok(b) => b,
-            Err(e) => {
-                if chain.is_empty() {
-                    return Err(e.into());
-                } else {
-                    tracing::debug!(
-                        root_id = %current_id,
-                        "prev_index not found, chain ends here (prior GC)"
-                    );
-                    break;
-                }
-            }
-        };
-
-        let root = match IndexRoot::decode(&bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                if chain.is_empty() {
-                    return Err(crate::error::IndexerError::Serialization(format!(
-                        "index root FIR6: {e}"
-                    )));
-                } else {
-                    tracing::debug!(
-                        root_id = %current_id,
-                        error = %e,
-                        "failed to decode index root, chain ends here"
-                    );
-                    break;
-                }
-            }
-        };
-
-        let next_id = root.prev_index.map(|p| p.id);
-        let garbage_id = root.garbage.map(|g| g.id);
-
-        chain.push(IndexChainEntry {
-            t: root.index_t,
-            root_id: current_id,
-            garbage_id,
-        });
-
-        match next_id {
-            Some(id) => current_id = id,
-            None => break,
-        }
-    }
-
-    Ok(chain)
-}
-
 /// Walk the index chain, collecting all CAS CIDs from each root.
 async fn collect_index_chain_cids(
     store: &dyn ContentStore,
     head: &ContentId,
     cids: &mut HashSet<ContentId>,
 ) -> Result<()> {
-    let chain = walk_prev_index_chain_via_content_store(store, head).await?;
+    let chain = walk_prev_index_chain_cs(store, head).await?;
 
     for entry in &chain {
         // Add the root CID itself
