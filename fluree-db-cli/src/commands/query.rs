@@ -389,9 +389,9 @@ pub async fn run(
             let view = match at {
                 Some(at_str) => {
                     let spec = parse_time_spec(at_str);
-                    fluree.db_at(&alias, spec).await?
+                    fluree.db_at_with_default_context(&alias, spec).await?
                 }
-                None => fluree.db(&alias).await?,
+                None => fluree.db_with_default_context(&alias).await?,
             };
 
             if explain {

@@ -1005,7 +1005,8 @@ async fn execute_query(
 
     // Shared storage mode: use load_ledger_for_query with freshness checking
     let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
-    let graph = GraphDb::from_ledger_state(&ledger);
+    let graph = GraphDb::from_ledger_state(&ledger)
+        .with_default_context(ledger.default_context.clone());
 
     /// Helper macro to dispatch `graph.query(fluree)` across FlureeInstance variants.
     ///
@@ -1599,7 +1600,8 @@ async fn execute_sparql_ledger(
             .inspect_err(|_| {
                 set_span_error_code(&span, "error:LedgerLoad");
             })?;
-        let graph = GraphDb::from_ledger_state(&ledger);
+        let graph = GraphDb::from_ledger_state(&ledger)
+            .with_default_context(ledger.default_context.clone());
 
         /// Helper macro to dispatch `graph.query(fluree)` across FlureeInstance variants.
         macro_rules! dispatch_sparql {

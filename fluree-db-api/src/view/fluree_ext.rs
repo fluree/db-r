@@ -158,7 +158,11 @@ where
     ///
     /// This is the internal loading method. For the public API, use
     /// [`graph()`](Self::graph) which returns a lazy [`Graph`](crate::Graph) handle.
-    pub(crate) async fn load_graph_db(&self, ledger_id: &str) -> Result<GraphDb> {
+    pub(crate) async fn load_graph_db_impl(
+        &self,
+        ledger_id: &str,
+        include_default_context: bool,
+    ) -> Result<GraphDb> {
         let handle = self.ledger_cached(ledger_id).await?;
         let mut snapshot = handle.snapshot().await;
 
@@ -226,12 +230,29 @@ where
         }
 
         let binary_store = snapshot.binary_store.clone();
+        let default_context = snapshot.default_context.clone();
         let ledger = snapshot.to_ledger_state();
-        let view = GraphDb::from_ledger_state(&ledger);
+        let mut view = GraphDb::from_ledger_state(&ledger);
+        if include_default_context {
+            view = view.with_default_context(default_context);
+        }
         Ok(match binary_store {
             Some(store) => view.with_binary_store(store),
             None => view,
         })
+    }
+
+    /// Load a view at current head (no default context injection).
+    pub(crate) async fn load_graph_db(&self, ledger_id: &str) -> Result<GraphDb> {
+        self.load_graph_db_impl(ledger_id, false).await
+    }
+
+    /// Load a view at current head with the ledger's default context attached.
+    pub(crate) async fn load_graph_db_with_default_context(
+        &self,
+        ledger_id: &str,
+    ) -> Result<GraphDb> {
+        self.load_graph_db_impl(ledger_id, true).await
     }
 
     /// Load a historical view at a specific transaction time.
@@ -466,6 +487,36 @@ where
         let view = self.load_graph_db_at(ledger_id, spec).await?;
         let view = Self::select_graph(view, graph_ref)?;
         self.resolve_and_attach_config(view).await
+    }
+
+    /// Like [`db()`](Self::db) but includes the ledger's default context.
+    ///
+    /// Use this at compatibility entrypoints (server HTTP, CLI) where queries
+    /// that omit `@context` / `PREFIX` should still resolve prefixes from the
+    /// ledger's stored default context.
+    pub async fn db_with_default_context(&self, ledger_id: &str) -> Result<GraphDb> {
+        let (ledger_id, graph_ref) = Self::parse_graph_ref(ledger_id)?;
+        let view = self.load_graph_db_with_default_context(ledger_id).await?;
+        let view = Self::select_graph(view, graph_ref)?;
+        self.resolve_and_attach_config(view).await
+    }
+
+    /// Like [`db_at()`](Self::db_at) but includes the ledger's default context.
+    pub async fn db_at_with_default_context(
+        &self,
+        ledger_id: &str,
+        spec: TimeSpec,
+    ) -> Result<GraphDb> {
+        let (parsed_id, _) = Self::parse_graph_ref(ledger_id)?;
+        let mut view = self.db_at(ledger_id, spec).await?;
+        // Historical views don't carry default_context through their own load
+        // path, so fetch it from the current head's cached ledger state.
+        if view.default_context.is_none() {
+            let handle = self.ledger_cached(parsed_id).await?;
+            let snap = handle.snapshot().await;
+            view = view.with_default_context(snap.default_context.clone());
+        }
+        Ok(view)
     }
 
     /// Apply a graph selector from a dataset GraphSource to a view.

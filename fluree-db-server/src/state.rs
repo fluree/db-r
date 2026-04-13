@@ -342,12 +342,14 @@ impl FlureeInstance {
         match self {
             FlureeInstance::Direct(f) => {
                 let ledger = f.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
+                    .with_default_context(ledger.default_context.clone());
                 f.explain(&db, query_json).await
             }
             FlureeInstance::Proxy(p) => {
                 let ledger = p.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
+                    .with_default_context(ledger.default_context.clone());
                 p.explain(&db, query_json).await
             }
         }
@@ -362,12 +364,14 @@ impl FlureeInstance {
         match self {
             FlureeInstance::Direct(f) => {
                 let ledger = f.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
+                    .with_default_context(ledger.default_context.clone());
                 f.explain_sparql(&db, sparql).await
             }
             FlureeInstance::Proxy(p) => {
                 let ledger = p.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
+                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
+                    .with_default_context(ledger.default_context.clone());
                 p.explain_sparql(&db, sparql).await
             }
         }

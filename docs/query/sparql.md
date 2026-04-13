@@ -20,7 +20,7 @@ WHERE {
 
 ### Default Prefixes
 
-If a ledger has a [default context](../concepts/iri-and-context.md#default-context), its prefix mappings are available in SPARQL queries without explicit `PREFIX` declarations. For example, if the default context includes `{"ex": "http://example.org/ns/"}`, this query works without a `PREFIX` line:
+When querying via the **Fluree HTTP server or CLI**, a ledger's [default context](../concepts/iri-and-context.md#default-context) prefix mappings are injected into SPARQL queries that have no explicit `PREFIX` declarations. For example, if the default context includes `{"ex": "http://example.org/ns/"}`, this query works without a `PREFIX` line:
 
 ```sparql
 SELECT ?name ?age
@@ -31,6 +31,8 @@ WHERE {
 ```
 
 If a query includes any `PREFIX` declarations, the default context is not used — you must declare every prefix you need. To explicitly opt out of the default context without defining any real prefix, use `PREFIX : <>`. See [opting out of the default context](../concepts/iri-and-context.md#opting-out-of-the-default-context) for details.
+
+> **Note:** When using `fluree-db-api` directly (embedded), queries must declare their own `PREFIX` declarations. The default context is not injected automatically by the core API. Use `db_with_default_context()` or `GraphDb::with_default_context()` to opt in. See [Default Context](../concepts/iri-and-context.md#default-context) for details.
 
 You can view and manage the default context with `fluree context get/set` or `GET/PUT /fluree/context/:ledger`.
 

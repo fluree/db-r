@@ -267,7 +267,6 @@ impl GraphDb {
             .binary_store
             .as_ref()
             .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
-        gdb.default_context = ledger.default_context.clone();
         gdb
     }
 
@@ -541,6 +540,32 @@ impl GraphDb {
     /// Check if queries can override datalog config settings.
     pub fn datalog_override_allowed(&self) -> bool {
         self.datalog_override_allowed
+    }
+}
+
+// ============================================================================
+// Default Context
+// ============================================================================
+
+impl GraphDb {
+    /// Attach a default JSON-LD context for queries that don't provide their own.
+    ///
+    /// When set, queries without an `@context` (JSON-LD) or `PREFIX` (SPARQL)
+    /// will use this context for prefix resolution. When `None` (the default),
+    /// queries must supply their own context or use full IRIs.
+    ///
+    /// `GraphDb::from_ledger_state()` does **not** copy the ledger's default
+    /// context — call this method explicitly to opt in.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let view = GraphDb::from_ledger_state(&ledger)
+    ///     .with_default_context(ledger.default_context.clone());
+    /// ```
+    pub fn with_default_context(mut self, ctx: Option<serde_json::Value>) -> Self {
+        self.default_context = ctx;
+        self
     }
 }
 

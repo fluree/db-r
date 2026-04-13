@@ -36,7 +36,9 @@ The `@context` defines namespace mappings for IRI expansion/compaction:
 }
 ```
 
-If omitted, the ledger's [default context](../concepts/iri-and-context.md#default-context) is used. To opt out of the default context and get full IRIs in results, pass an empty object: `"@context": {}`. See [opting out of the default context](../concepts/iri-and-context.md#opting-out-of-the-default-context).
+When querying via the **Fluree HTTP server or CLI**, omitting `@context` causes the ledger's [default context](../concepts/iri-and-context.md#default-context) to be injected automatically. To opt out and get full IRIs in results, pass an empty object: `"@context": {}`. See [opting out of the default context](../concepts/iri-and-context.md#opting-out-of-the-default-context).
+
+> **Note:** When using `fluree-db-api` directly (embedded), `@context` is not injected automatically. Queries must supply their own context or use full IRIs. Use `db_with_default_context()` or `GraphDb::with_default_context()` to opt in.
 
 ### select
 
