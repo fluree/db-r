@@ -47,6 +47,7 @@ pub mod splitter;
 pub use compact::ContextCompactor;
 pub use context::{Container, ContextEntry, ParsedContext, TypeValue};
 pub use error::{JsonLdError, Result};
+pub use iri::UnresolvedIriDisposition;
 pub use normalize::{Algorithm, Format, NormalizeOptions};
 
 use serde_json::Value as JsonValue;
@@ -140,6 +141,32 @@ pub fn details_with_vocab(
     expand::details(compact_iri, context, vocab)
 }
 
+/// Like [`expand_iri`] but rejects unresolved compact-looking IRIs.
+///
+/// Returns an error if the IRI looks like a compact IRI (e.g. `ex:Person`)
+/// but the prefix is not defined in `@context` and is not a recognised
+/// absolute IRI scheme.
+pub fn expand_iri_checked(compact_iri: &str, context: &ParsedContext) -> Result<String> {
+    expand::iri_checked(compact_iri, context, true)
+}
+
+/// Like [`details`] but rejects unresolved compact-looking IRIs.
+pub fn details_checked(
+    compact_iri: &str,
+    context: &ParsedContext,
+) -> Result<(String, Option<ContextEntry>)> {
+    expand::details_checked(compact_iri, context, true)
+}
+
+/// Like [`details_with_vocab`] but rejects unresolved compact-looking IRIs.
+pub fn details_with_vocab_checked(
+    compact_iri: &str,
+    context: &ParsedContext,
+    vocab: bool,
+) -> Result<(String, Option<ContextEntry>)> {
+    expand::details_checked(compact_iri, context, vocab)
+}
+
 /// Expand a JSON-LD document.
 ///
 /// Expands all compact IRIs to their full forms and processes @value, @list, @set, etc.
@@ -169,6 +196,22 @@ pub fn expand(node_map: &JsonValue) -> Result<JsonValue> {
 /// Expand a JSON-LD document with a pre-parsed context.
 pub fn expand_with_context(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> {
     expand::node(node_map, context)
+}
+
+/// Expand a JSON-LD document with strict compact-IRI checking.
+///
+/// Rejects unresolved compact-looking IRIs at every IRI position.
+/// Use this at Fluree's JSON-LD parsing boundaries (queries and transactions).
+pub fn expand_checked(node_map: &JsonValue) -> Result<JsonValue> {
+    expand::node_checked(node_map, &ParsedContext::new())
+}
+
+/// Expand a JSON-LD document with a pre-parsed context and strict compact-IRI checking.
+pub fn expand_with_context_checked(
+    node_map: &JsonValue,
+    context: &ParsedContext,
+) -> Result<JsonValue> {
+    expand::node_checked(node_map, context)
 }
 
 /// Compact an IRI using a context.

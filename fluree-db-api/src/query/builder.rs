@@ -1309,11 +1309,12 @@ mod tests {
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
         // Insert data so the query has something to find
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let _result = fluree.update(ledger, &data).await.unwrap();
 
         let view = fluree.db("testdb:main").await.unwrap();
         let query = json!({
+            "@context": {"ex": "http://example.org/"},
             "select": ["?s"],
             "where": [{"@id": "?s", "ex:name": "?name"}]
         });
@@ -1359,10 +1360,11 @@ mod tests {
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
         // Insert data so the query has something to find
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let _result = fluree.update(ledger, &data).await.unwrap();
 
         let query = json!({
+            "@context": {"ex": "http://example.org/"},
             "from": "testdb:main",
             "select": ["?s"],
             "where": [{"@id": "?s", "ex:name": "?name"}]
@@ -1383,12 +1385,14 @@ mod tests {
 
         // Insert some data
         let data = json!({
+            "@context": {"ex": "http://example.org/"},
             "insert": [{"@id": "ex:a", "ex:name": "Alice"}]
         });
         let result = fluree.update(ledger, &data).await.unwrap();
         let ledger = result.ledger;
 
         let query = json!({
+            "@context": {"ex": "http://example.org/"},
             "select": ["?name"],
             "where": [{"@id": "?s", "ex:name": "?name"}]
         });

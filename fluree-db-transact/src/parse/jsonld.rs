@@ -19,7 +19,9 @@ use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::FlakeValue;
 use fluree_db_query::parse::{parse_where_with_counters, PathAliasMap, UnresolvedQuery};
 use fluree_db_query::VarRegistry;
-use fluree_graph_json_ld::{details, expand_with_context, parse_context, ParsedContext};
+use fluree_graph_json_ld::{
+    details_checked, expand_with_context_checked, parse_context, ParsedContext,
+};
 use fluree_vocab::{
     rdf::{self, TYPE},
     rdf_names,
@@ -115,7 +117,7 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
 
     // Expand the document
-    let expanded = expand_with_context(json, &context)?;
+    let expanded = expand_with_context_checked(json, &context)?;
 
     let empty_aliases = HashMap::new();
     let mut ctx = TemplateParseCtx::new(
@@ -159,7 +161,7 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Extract transaction metadata (only from envelope-form documents with @graph)
     let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
 
-    let expanded = expand_with_context(json, &context)?;
+    let expanded = expand_with_context_checked(json, &context)?;
 
     let empty_aliases = HashMap::new();
     let mut ctx = TemplateParseCtx::new(
@@ -542,7 +544,7 @@ fn expand_update_graph_iri(v: &Value, context: &ParsedContext) -> Result<String>
         }
     };
 
-    let expanded = expand_with_context(&selector, context)?;
+    let expanded = expand_with_context_checked(&selector, context)?;
     let iri = match &expanded {
         Value::Array(arr) => arr
             .first()
@@ -602,7 +604,7 @@ fn parse_update_default_graph(
         }
     };
 
-    let expanded = expand_with_context(&selector, context)?;
+    let expanded = expand_with_context_checked(&selector, context)?;
     let iri = match &expanded {
         Value::Array(arr) => arr
             .first()
@@ -678,7 +680,7 @@ fn parse_update_templates_with_ctx(
                     .ok_or_else(|| {
                         TransactError::Parse("graph wrapper requires a graph IRI".to_string())
                     })?;
-                    let expanded = expand_with_context(&arr[2], ctx.context)?;
+                    let expanded = expand_with_context_checked(&arr[2], ctx.context)?;
                     let prev_default = ctx.default_graph_id;
                     ctx.default_graph_id = Some(graph.0);
                     let templates = parse_expanded_triples_with_ctx(&expanded, ctx)?;
@@ -691,7 +693,7 @@ fn parse_update_templates_with_ctx(
         }
 
         if !plain_items.is_empty() {
-            let expanded = expand_with_context(&Value::Array(plain_items), ctx.context)?;
+            let expanded = expand_with_context_checked(&Value::Array(plain_items), ctx.context)?;
             let templates = parse_expanded_triples_with_ctx(&expanded, ctx)?;
             out.extend(templates);
         }
@@ -700,7 +702,7 @@ fn parse_update_templates_with_ctx(
     }
 
     // Non-array templates: parse normally.
-    let expanded = expand_with_context(val, ctx.context)?;
+    let expanded = expand_with_context_checked(val, ctx.context)?;
     parse_expanded_triples_with_ctx(&expanded, ctx)
 }
 
@@ -713,18 +715,24 @@ fn extract_context(json: &Value) -> Result<ParsedContext> {
     }
 }
 
-pub(crate) fn expand_datatype_iri(type_iri: &str, context: &ParsedContext) -> String {
-    let (expanded, _) = details(type_iri, context);
-    if expanded != type_iri {
-        return expanded;
+pub(crate) fn expand_datatype_iri(
+    type_iri: &str,
+    context: &ParsedContext,
+) -> std::result::Result<String, fluree_graph_json_ld::JsonLdError> {
+    // Try context resolution first (unchecked — we have builtin fallbacks below)
+    let (expanded, entry) = fluree_graph_json_ld::details(type_iri, context);
+    if entry.is_some() {
+        return Ok(expanded);
     }
 
+    // Builtin xsd: fallback (common in transactions without explicit xsd context)
     if let Some(local) = type_iri.strip_prefix("xsd:") {
         if let Some(full) = expand_builtin_xsd_datatype(local) {
-            return full.to_string();
+            return Ok(full.to_string());
         }
     }
 
+    // Builtin rdf: fallback
     if let Some(local) = type_iri.strip_prefix("rdf:") {
         let full = match local {
             rdf_names::JSON => Some(rdf::JSON),
@@ -732,11 +740,13 @@ pub(crate) fn expand_datatype_iri(type_iri: &str, context: &ParsedContext) -> St
             _ => None,
         };
         if let Some(full) = full {
-            return full.to_string();
+            return Ok(full.to_string());
         }
     }
 
-    expanded
+    // No resolution path succeeded — apply strict guard
+    details_checked(type_iri, context)?;
+    Ok(expanded)
 }
 
 fn expand_builtin_xsd_datatype(local: &str) -> Option<&'static str> {
@@ -899,7 +909,7 @@ fn parse_values_cell(
                 let id_str = id_val.as_str().ok_or_else(|| {
                     TransactError::Parse("@id in values must be a string".to_string())
                 })?;
-                let (expanded, _) = details(id_str, context);
+                let (expanded, _) = details_checked(id_str, context)?;
                 if expanded.starts_with("_:") {
                     return Ok(TemplateTerm::BlankNode(expanded.to_string()));
                 }
@@ -917,11 +927,11 @@ fn parse_values_cell(
                             "@value must be a string when @type is @id".to_string(),
                         )
                     })?;
-                    let (expanded, _) = details(id_str, context);
+                    let (expanded, _) = details_checked(id_str, context)?;
                     return Ok(TemplateTerm::Sid(ns_registry.sid_for_iri(&expanded)));
                 }
 
-                let expanded_type = expand_datatype_iri(type_val, context);
+                let expanded_type = expand_datatype_iri(type_val, context)?;
                 let parsed = coerce_value_with_datatype(value_val, &expanded_type, ns_registry)?;
                 return Ok(parsed.term);
             }
@@ -1012,10 +1022,11 @@ fn parse_expanded_object_with_ctx(
             }),
             _ => None,
         })
-        .map(|raw| {
-            let resolved = resolve_graph_selector_str_for_templates(raw, ctx);
-            ctx.graph_ids.get_or_assign(&resolved)
-        });
+        .map(|raw| -> Result<u16> {
+            let resolved = resolve_graph_selector_str_for_templates(raw, ctx)?;
+            Ok(ctx.graph_ids.get_or_assign(&resolved))
+        })
+        .transpose()?;
     let graph_id = graph_id.or(ctx.default_graph_id);
 
     // Get subject from @id (already expanded IRI or variable)
@@ -1104,12 +1115,15 @@ fn parse_expanded_object_with_ctx(
     Ok((subject, templates))
 }
 
-fn resolve_graph_selector_str_for_templates(raw: &str, ctx: &TemplateParseCtx<'_>) -> String {
+fn resolve_graph_selector_str_for_templates(
+    raw: &str,
+    ctx: &TemplateParseCtx<'_>,
+) -> Result<String> {
     if let Some(iri) = ctx.from_named_aliases.get(raw) {
-        return iri.clone();
+        return Ok(iri.clone());
     }
-    let (expanded, _) = details(raw, ctx.context);
-    expanded
+    let (expanded, _) = details_checked(raw, ctx.context)?;
+    Ok(expanded)
 }
 
 /// Parse an expanded @id value
@@ -1320,9 +1334,11 @@ fn parse_expanded_value_with_ctx(
                 // Fluree extension: treat compact IRIs and absolute IRIs
                 // as references in templates, even when JSON-LD expansion didn't coerce
                 // the value to an `{"@id": ...}` object (i.e., property isn't typed @id).
+                // Uses unchecked expansion since this is a heuristic — values that don't
+                // resolve to known IRI schemes fall through to the literal string path.
                 let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
                 if looks_like_iri {
-                    let (expanded, _) = details(s, ctx.context);
+                    let (expanded, _) = fluree_graph_json_ld::details(s, ctx.context);
                     if expanded.starts_with("http://")
                         || expanded.starts_with("https://")
                         || expanded.starts_with("did:")
@@ -1403,7 +1419,7 @@ fn parse_literal_value_with_meta(
     // Check for @type first - always route through typed coercion when present
     if let Some(type_val) = obj.get("@type") {
         if let Some(type_iri) = type_val.as_str() {
-            let expanded_type = expand_datatype_iri(type_iri, context);
+            let expanded_type = expand_datatype_iri(type_iri, context)?;
 
             // Handle @json specially
             if type_iri == "@json" || expanded_type == rdf::JSON {
@@ -1459,9 +1475,11 @@ fn parse_literal_value_with_meta(
             // Fluree extension: treat compact IRIs and absolute IRIs
             // as references in templates, even when JSON-LD expansion didn't coerce
             // the value to an `{"@id": ...}` object (i.e., property isn't typed @id).
+            // Uses unchecked expansion since this is a heuristic — values that don't
+            // resolve to known IRI schemes fall through to the literal string path.
             let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
             if looks_like_iri {
-                let (expanded, _) = details(s, context);
+                let (expanded, _) = fluree_graph_json_ld::details(s, context);
                 if expanded.starts_with("http://")
                     || expanded.starts_with("https://")
                     || expanded.starts_with("did:")
@@ -1695,9 +1713,10 @@ fn parse_single_list_item_with_ctx(
                 Ok(ParsedValue::new(TemplateTerm::Var(var_id)))
             } else {
                 // Same IRI heuristic as `parse_expanded_value` for list items.
+                // Uses unchecked expansion — heuristic, falls through to literal.
                 let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
                 if looks_like_iri {
-                    let (expanded, _) = details(s, ctx.context);
+                    let (expanded, _) = fluree_graph_json_ld::details(s, ctx.context);
                     if expanded.starts_with("http://")
                         || expanded.starts_with("https://")
                         || expanded.starts_with("did:")

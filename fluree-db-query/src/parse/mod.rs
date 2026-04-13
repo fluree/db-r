@@ -51,7 +51,7 @@ pub use where_clause::parse_where_with_counters;
 use crate::ir::Expression;
 use crate::var_registry::VarRegistry;
 use ast::UnresolvedPathExpr;
-use fluree_graph_json_ld::{details, parse_context, ParsedContext};
+use fluree_graph_json_ld::{details_checked, parse_context, ParsedContext};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -835,7 +835,7 @@ fn parse_graph_select_object(
         UnresolvedRoot::Var(Arc::from(root_str.as_str()))
     } else {
         // IRI constant root - expand via @context
-        let (expanded, _) = details(root_str, context);
+        let (expanded, _) = details_checked(root_str, context)?;
         UnresolvedRoot::Iri(expanded)
     };
 
@@ -902,7 +902,7 @@ fn parse_selection_specs(arr: &[JsonValue], context: &ParsedContext) -> Result<S
             }
             // Property name: "ex:name"
             JsonValue::String(s) => {
-                let (expanded, entry) = details(s, context);
+                let (expanded, entry) = details_checked(s, context)?;
                 // Check if this is a reverse property from @context
                 // (reverse field is Option<String> with the reversed property IRI)
                 if let Some(e) = entry {
@@ -931,7 +931,7 @@ fn parse_selection_specs(arr: &[JsonValue], context: &ParsedContext) -> Result<S
                 }
 
                 let (pred_str, sub_specs_val) = map.iter().next().unwrap();
-                let (expanded, entry) = details(pred_str, context);
+                let (expanded, entry) = details_checked(pred_str, context)?;
 
                 let sub_arr = sub_specs_val.as_array().ok_or_else(|| {
                     ParseError::InvalidSelect("nested selection value must be an array".to_string())

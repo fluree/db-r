@@ -2005,3 +2005,10 @@ mem:fact-01knymjwzpn6s9rysnwv6hcd0j a mem:Fact ;
     mem:artifactRef "fluree-db-sparql/src/parse/query/tests.rs" ;
     mem:branch "misc/fixes" ;
     mem:createdAt "2026-04-11T16:04:19.062797+00:00"^^xsd:dateTime .
+
+mem:fact-01kp44ka6rpf7qd2ddpq65mywd a mem:Fact ;
+    mem:content "Strict compact-IRI guard implemented for JSON-LD parsing surfaces.\n\nWhat: Unresolved compact-looking IRIs (e.g. ex:Person when ex is not in @context) are rejected at parse time on JSON-LD boundaries. The guard uses a single split_once(':') plus a small allowlist of known schemes.\n\nWhere the guard lives:\n- Shared helper: fluree-graph-json-ld/src/iri.rs — check_unresolved_iri() and UnresolvedIriDisposition enum\n- Checked expansion fns: expand::details_checked(), expand::iri_checked(), expand::node_checked()\n- Public API: expand_iri_checked(), details_checked(), details_with_vocab_checked(), expand_with_context_checked()\n\nWhere it's wired in (JSON-LD boundaries only):\n- Query parser (fluree-db-query/src/parse/): node_map.rs, mod.rs, path_expr.rs, values.rs — all use details_checked / expand_iri_checked\n- Transaction expansion (fluree-db-transact/src/parse/jsonld.rs): uses expand_with_context_checked for JSON-LD expansion pass, and details_checked at specific IRI positions\n- Transaction datatype IRI: expand_datatype_iri() has builtin xsd:/rdf: fallbacks, only applies guard after all fallbacks fail\n\nNOT wired into (by design):\n- Generic expand() / expand_with_context() — remain permissive (used by connection-config parsing etc.)\n- Heuristic \"looks like IRI\" detection in transact parser — use unchecked details() since they have fallback to literal strings\n- SPARQL / Turtle / other syntaxes\n\nKnown scheme allowlist: urn, did, mailto, tel, data, ipfs, ipns, geo, blob, magnet, fluree. Compared case-insensitively.\n\nThe strict flag pattern: expand_node_internal and helpers accept strict: bool. node() passes false (permissive default), node_checked() passes true." ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-13T19:20:21.976979+00:00"^^xsd:dateTime .

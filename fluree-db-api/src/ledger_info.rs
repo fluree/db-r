@@ -369,6 +369,14 @@ fn resolve_graph_selector(
             if iri == "urn:default" {
                 return Ok(0);
             }
+            // Recognize well-known system graph IRIs so resolution works even
+            // without a binary store (e.g. pre-index).
+            if iri.ends_with("#txn-meta") {
+                return Ok(1);
+            }
+            if iri.ends_with("#config") {
+                return Ok(2);
+            }
             if let Some(store) = store {
                 store
                     .graph_id_for_iri(iri)
@@ -578,7 +586,9 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
         .map(|(ledger, _branch)| ledger)
         .unwrap_or_else(|_| record.name.clone());
 
-    let canonical_id = format_ledger_id(&ledger_name, &record.branch);
+    // Use f: prefix so the @id resolves through the @context below, avoiding
+    // bare "name:branch" strings that look like unresolved compact IRIs.
+    let canonical_id = format!("f:{}", format_ledger_id(&ledger_name, &record.branch));
 
     let status = if record.retracted {
         "retracted"
@@ -616,7 +626,7 @@ pub fn ns_record_to_jsonld(record: &NsRecord) -> JsonValue {
 
 /// Convert GraphSourceRecord to JSON-LD format for nameservice queries.
 pub fn gs_record_to_jsonld(record: &GraphSourceRecord) -> JsonValue {
-    let canonical_id = format_ledger_id(&record.name, &record.branch);
+    let canonical_id = format!("f:{}", format_ledger_id(&record.name, &record.branch));
 
     let status = if record.retracted {
         "retracted"
@@ -1192,7 +1202,7 @@ mod tests {
 
         let json = ns_record_to_jsonld(&record);
 
-        assert_eq!(json["@id"], "mydb:main");
+        assert_eq!(json["@id"], "f:mydb:main");
         assert_eq!(json["@type"], json!(["f:LedgerSource"]));
         assert_eq!(json["f:ledger"]["@id"], "mydb");
         assert_eq!(json["f:branch"], "main");
@@ -1243,7 +1253,7 @@ mod tests {
 
         let json = gs_record_to_jsonld(&record);
 
-        assert_eq!(json["@id"], "my-search:main");
+        assert_eq!(json["@id"], "f:my-search:main");
         assert_eq!(json["@type"], json!(["f:IndexSource", "f:Bm25Index"]));
         assert_eq!(json["f:name"], "my-search");
         assert_eq!(json["f:branch"], "main");

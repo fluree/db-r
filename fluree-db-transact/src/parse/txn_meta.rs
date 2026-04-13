@@ -35,7 +35,7 @@ use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use crate::parse::jsonld::expand_datatype_iri;
 use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES};
-use fluree_graph_json_ld::{details, ParsedContext};
+use fluree_graph_json_ld::{details_checked, ParsedContext};
 use serde_json::Value;
 
 /// Reserved keys that are never transaction metadata
@@ -74,7 +74,7 @@ pub fn extract_txn_meta(
         }
 
         // Expand key to full IRI using context
-        let (expanded_iri, _) = details(key, context);
+        let (expanded_iri, _) = details_checked(key, context)?;
 
         // Split to ns_code + local name via registry
         let sid = ns_registry.sid_for_iri(&expanded_iri);
@@ -161,7 +161,7 @@ fn json_to_single_txn_meta_value(
                 let id_str = id_val.as_str().ok_or_else(|| {
                     TransactError::Parse("@id in txn-meta must be a string".to_string())
                 })?;
-                let (expanded, _) = details(id_str, context);
+                let (expanded, _) = details_checked(id_str, context)?;
                 let sid = ns_registry.sid_for_iri(&expanded);
                 return Ok(TxnMetaValue::Ref {
                     ns: sid.namespace_code,
@@ -204,7 +204,7 @@ fn parse_value_object(
         })?;
 
         // Expand the datatype IRI
-        let expanded_type = expand_datatype_iri(type_iri, context);
+        let expanded_type = expand_datatype_iri(type_iri, context)?;
         let dt_sid = ns_registry.sid_for_iri(&expanded_type);
 
         // Get the string value

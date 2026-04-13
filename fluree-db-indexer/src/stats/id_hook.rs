@@ -206,9 +206,8 @@ fn otype_to_value_type_tag(ot: fluree_db_core::o_type::OType) -> ValueTypeTag {
 /// Result from `IdStatsHook::finalize()`.
 pub struct IdStatsResult {
     /// Per-graph stats entries (authoritative, ID-keyed).
-    /// Excludes txn-meta graph (g_id=1).
     pub graphs: Vec<GraphStatsEntry>,
-    /// Total flake count (excluding txn-meta).
+    /// Total flake count across all graphs.
     pub total_flakes: u64,
 }
 
@@ -565,8 +564,8 @@ impl IdStatsHook {
 
     /// Produce per-graph stats and aggregate property stats.
     ///
-    /// Excludes txn-meta graph (g_id=1) from both `graphs` and aggregate
-    /// `properties`. Clamps all signed deltas to 0.
+    /// Includes all graphs (default, txn-meta, config, user named graphs).
+    /// Clamps all signed deltas to 0.
     pub fn finalize(self) -> IdStatsResult {
         // Group by g_id, then by p_id
         let mut graph_map: HashMap<GraphId, Vec<(&GraphPropertyKey, &IdPropertyHll)>> =
@@ -575,15 +574,10 @@ impl IdStatsHook {
             graph_map.entry(key.g_id).or_default().push((key, hll));
         }
 
-        // Build per-graph entries (excluding g_id=1 txn-meta)
+        // Build per-graph entries
         let mut graphs: Vec<GraphStatsEntry> = Vec::new();
 
         for (&g_id, entries) in &graph_map {
-            // Skip txn-meta graph from output
-            if g_id == 1 {
-                continue;
-            }
-
             let mut props: Vec<GraphPropertyStatEntry> = Vec::new();
             for (key, hll) in entries {
                 // Clamp count to 0
@@ -623,11 +617,9 @@ impl IdStatsHook {
         // Sort graphs by g_id for determinism
         graphs.sort_by_key(|g| g.g_id);
 
-        // Total flakes excluding txn-meta
         let total_flakes: u64 = self
             .graph_flakes
             .iter()
-            .filter(|(&g_id, _)| g_id != 1)
             .map(|(_, &delta)| delta.max(0) as u64)
             .sum();
 
@@ -685,7 +677,7 @@ impl IdStatsHook {
     /// - `class_properties`: `(g_id, class_sid64) -> HashSet<p_id>`
     /// - `class_ref_targets`: `(g_id, class_sid64) -> p_id -> target_class_sid64 -> delta`
     ///
-    /// Excludes txn-meta graph (g_id=1) from both per-graph and aggregate results.
+    /// Includes all graphs (default, txn-meta, config, user named graphs).
     #[allow(clippy::type_complexity)]
     pub fn finalize_with_aggregate_properties(
         self,
@@ -696,12 +688,9 @@ impl IdStatsHook {
         HashMap<(GraphId, u64), HashSet<u32>>,
         HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>>,
     ) {
-        // Aggregate by p_id across all graphs (excluding txn-meta g_id=1)
+        // Aggregate by p_id across all graphs
         let mut agg: HashMap<u32, IdPropertyHll> = HashMap::new();
         for (key, hll) in &self.properties {
-            if key.g_id == 1 {
-                continue;
-            }
             agg.entry(key.p_id)
                 .or_insert_with(IdPropertyHll::new)
                 .merge_from(hll);
@@ -732,11 +721,11 @@ impl IdStatsHook {
         // Deterministic ordering
         properties.sort_by_key(|p| p.p_id);
 
-        // Extract class counts ((g_id, sid64) → count), clamped to 0, excluding g_id=1
+        // Extract class counts ((g_id, sid64) → count), clamped to 0
         let mut class_counts: Vec<(GraphId, u64, u64)> = self
             .class_counts
             .iter()
-            .filter(|(&(g_id, _), &delta)| g_id != 1 && delta > 0)
+            .filter(|(_, &delta)| delta > 0)
             .map(|(&(g_id, sid64), &delta)| (g_id, sid64, delta as u64))
             .collect();
         class_counts.sort_by_key(|&(g_id, sid64, _)| (g_id, sid64));
@@ -744,9 +733,6 @@ impl IdStatsHook {
         // Derive current (g_id, subject) → classes from rdf:type deltas (net membership).
         let mut subject_classes: HashMap<(GraphId, u64), Vec<u64>> = HashMap::new();
         for (&(g_id, subj_sid64), class_map) in &self.subject_class_deltas {
-            if g_id == 1 {
-                continue;
-            }
             let mut classes: Vec<u64> = class_map
                 .iter()
                 .filter_map(|(&class_sid64, &d)| (d > 0).then_some(class_sid64))
@@ -761,9 +747,6 @@ impl IdStatsHook {
         // Compute class→property presence from subject_props + current classes (graph-scoped).
         let mut class_properties: HashMap<(GraphId, u64), HashSet<u32>> = HashMap::new();
         for (&(g_id, subj_sid64), props) in &self.subject_props {
-            if g_id == 1 {
-                continue;
-            }
             let Some(classes) = subject_classes.get(&(g_id, subj_sid64)) else {
                 continue;
             };
@@ -780,9 +763,6 @@ impl IdStatsHook {
         let mut class_ref_targets: HashMap<(GraphId, u64), HashMap<u32, HashMap<u64, i64>>> =
             HashMap::new();
         for (&(g_id, subj_sid64), per_prop) in &self.subject_ref_history {
-            if g_id == 1 {
-                continue;
-            }
             let Some(subj_classes) = subject_classes.get(&(g_id, subj_sid64)) else {
                 continue;
             };

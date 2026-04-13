@@ -751,7 +751,7 @@ mod tests {
 
         // Create and transact
         let ledger = fluree.create_ledger("testdb").await.unwrap();
-        let txn = json!({ "insert": [{"@id": "ex:a", "ex:name": "Alice"}] });
+        let txn = json!({ "@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}] });
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Load at t=0 (before transaction)

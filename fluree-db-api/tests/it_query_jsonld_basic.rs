@@ -358,40 +358,53 @@ async fn jsonld_basic_single_subject_graph_crawl_with_depth_and_subselection() {
 
 #[tokio::test]
 async fn jsonld_query_with_faux_compact_iri_ids() {
-    // Mirrors `query-with-faux-compact-iri`:
-    // subjects can have ids that look compact ("foaf:bar") without being real IRIs.
+    // Strict compact-IRI guard: "foaf:bar" without `foaf` in @context is
+    // now rejected at parse time because it looks like a compact IRI with
+    // a missing prefix. If the user really wants a literal IRI-like string
+    // as an @id, they must define the prefix in @context first.
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/jsonld-basic:faux-compact";
 
     let ledger0 = genesis_ledger(&fluree, ledger_id);
 
-    let tx = json!({
+    // ── Part 1: undefined prefix is rejected ──
+    let tx_bad = json!({
         "@context": ctx(),
         "@graph": [
             {"id":"foo","ex:name":"Foo"},
             {"id":"foaf:bar","ex:name":"Bar"}
         ]
     });
+    let err = fluree
+        .insert(ledger0.clone(), &tx_bad)
+        .await
+        .expect_err("should reject undefined compact IRI");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("foaf") && msg.contains("not defined"),
+        "error should mention the unresolved prefix: {msg}"
+    );
 
-    let _committed = fluree.insert(ledger0, &tx).await.expect("insert faux ids");
+    // ── Part 2: with foaf defined in context, it works ──
+    let tx_ok = json!({
+        "@context": {
+            "schema": "http://schema.org/",
+            "ex": "http://example.org/ns/",
+            "foaf": "http://xmlns.com/foaf/0.1/",
+            "id": "@id"
+        },
+        "@graph": [
+            {"id":"foo","ex:name":"Foo"},
+            {"id":"foaf:bar","ex:name":"Bar"}
+        ]
+    });
+    let _committed = fluree
+        .insert(ledger0, &tx_ok)
+        .await
+        .expect("insert with defined prefix");
     let loaded = fluree.ledger(ledger_id).await.expect("reload ledger");
 
-    // Analytical SELECT (order not guaranteed; normalize)
-    let q1 = json!({
-        "@context": ctx(),
-        "select": ["?f","?n"],
-        "where": {"id":"?f","ex:name":"?n"}
-    });
-
-    let r1 = support::query_jsonld(&fluree, &loaded, &q1)
-        .await
-        .expect("query select");
-    let mut rows = r1.to_jsonld(&loaded.snapshot).expect("to_jsonld");
-    let arr = rows.as_array_mut().expect("rows array");
-    arr.sort_by_key(|a| a.to_string());
-    assert_eq!(rows, json!([["foaf:bar", "Bar"], ["foo", "Foo"]]));
-
-    // Subject crawl SELECT
+    // Subject crawl SELECT (bare word "foo" has no colon so is accepted)
     let q2 = json!({
         "@context": ctx(),
         "select": {"foo": ["*"]}

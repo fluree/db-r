@@ -323,7 +323,7 @@ mod tests {
         let ledger = fluree.create_ledger("dataset_max_t_test").await.unwrap();
 
         // Transact to get t=1 (use same pattern as working test)
-        let txn = json!({ "insert": [{"@id": "ex:a", "ex:name": "Alice"}] });
+        let txn = json!({ "@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}] });
         let _ledger = fluree.update(ledger, &txn).await.unwrap().ledger;
 
         // Use explicit t values to test max_t logic

@@ -11,7 +11,9 @@ use super::ast::{
 };
 use super::error::{ParseError, Result};
 use super::PathAliasMap;
-use fluree_graph_json_ld::{details, details_with_vocab, expand_iri, ParsedContext, TypeValue};
+use fluree_graph_json_ld::{
+    details_checked, details_with_vocab_checked, expand_iri, ParsedContext, TypeValue,
+};
 use fluree_vocab::search_iris;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -590,7 +592,7 @@ fn parse_subject(id_val: &JsonValue, context: &ParsedContext) -> Result<Unresolv
         Ok(UnresolvedTerm::var(id_str))
     } else {
         // Expand IRI using context with vocab=false to use @base for subject IRIs
-        let (expanded, _) = details_with_vocab(id_str, context, false);
+        let (expanded, _) = details_with_vocab_checked(id_str, context, false)?;
         Ok(UnresolvedTerm::iri(expanded))
     }
 }
@@ -674,7 +676,7 @@ fn parse_property(
         (UnresolvedTerm::var(key), None, false)
     } else {
         // Expand the property IRI and get context entry
-        let (expanded_iri, entry) = details(key, ctx.context);
+        let (expanded_iri, entry) = details_checked(key, ctx.context)?;
 
         // If the term is defined with @reverse in @context, interpret this predicate as reversed:
         // {"@id":"?s","parent":"?x"} where parent is @reverse ex:child
@@ -926,7 +928,7 @@ fn parse_value_object(
                 (Some(Arc::from("@id")), None)
             } else {
                 // @type is a constant IRI - expand and normalize it
-                let (expanded, _) = details(dt, context);
+                let (expanded, _) = details_checked(dt, context)?;
                 (
                     Some(Arc::from(normalize_numeric_datatype(expanded.as_str()))),
                     None,
@@ -1147,7 +1149,7 @@ fn parse_object_value(
         }
     } else {
         // Expand as IRI
-        let (expanded, _) = details(s, context);
+        let (expanded, _) = details_checked(s, context)?;
         Ok(UnresolvedTerm::iri(expanded))
     }
 }
@@ -1169,7 +1171,7 @@ fn parse_json_value(
                 }
             } else if is_ref_type {
                 // This is a reference - expand as IRI
-                let (expanded, _) = details(s, context);
+                let (expanded, _) = details_checked(s, context)?;
                 Ok(UnresolvedTerm::iri(expanded))
             } else {
                 // Plain string literal
@@ -1237,7 +1239,7 @@ fn parse_path_alias_usage(
                 UnresolvedTerm::var(s)
             } else {
                 // Treat as IRI reference (property paths traverse refs)
-                let (expanded, _) = details(s, context);
+                let (expanded, _) = details_checked(s, context)?;
                 UnresolvedTerm::iri(expanded)
             }
         }
@@ -1256,7 +1258,7 @@ fn parse_path_alias_usage(
             if is_variable(id_str) {
                 UnresolvedTerm::var(id_str)
             } else {
-                let (expanded, _) = details(id_str, context);
+                let (expanded, _) = details_checked(id_str, context)?;
                 UnresolvedTerm::iri(expanded)
             }
         }

@@ -209,6 +209,7 @@ async fn update_where_bound_typed_string_delete_and_insert_use_same_datatype_sid
     let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let initial_txn = json!({
+        "@context": {"xsd": "http://www.w3.org/2001/XMLSchema#"},
         "@graph": [
             {
                 "@id": "http://example.org/s",

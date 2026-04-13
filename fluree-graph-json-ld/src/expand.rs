@@ -1,6 +1,6 @@
 use crate::context::{Container, ContextEntry, ParsedContext, TypeValue};
 use crate::error::{JsonLdError, Result};
-use crate::iri;
+use crate::iri::{self, UnresolvedIriDisposition};
 use serde_json::{json, Map, Value as JsonValue};
 
 /// Check if a value is a variable (starts with ?)
@@ -109,6 +109,68 @@ pub fn iri(compact_iri: &str, context: &ParsedContext, vocab: bool) -> String {
     details(compact_iri, context, vocab).0
 }
 
+/// Reject an unresolved IRI if it looks like a compact IRI with a missing prefix.
+fn guard_unresolved(value: &str) -> Result<()> {
+    if let UnresolvedIriDisposition::RejectLikelyCompact { prefix } =
+        iri::check_unresolved_iri(value)
+    {
+        Err(JsonLdError::UnresolvedCompactIri {
+            value: value.to_string(),
+            prefix,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// Like [`details`] but rejects unresolved compact-looking IRIs.
+///
+/// Use this at JSON-LD boundaries where every IRI position should either
+/// resolve through `@context` or be a recognisable absolute IRI.
+pub fn details_checked(
+    compact_iri: &str,
+    context: &ParsedContext,
+    vocab: bool,
+) -> Result<(String, Option<ContextEntry>)> {
+    let result = details(compact_iri, context, vocab);
+    if result.1.is_none() {
+        guard_unresolved(&result.0)?;
+    }
+    Ok(result)
+}
+
+/// Like [`iri`] but rejects unresolved compact-looking IRIs.
+pub fn iri_checked(compact_iri: &str, context: &ParsedContext, vocab: bool) -> Result<String> {
+    let (expanded, entry) = details(compact_iri, context, vocab);
+    if entry.is_none() {
+        guard_unresolved(&expanded)?;
+    }
+    Ok(expanded)
+}
+
+// ── Internal dispatch: strict=true → checked, strict=false → unchecked ──
+
+fn iri_dispatch(s: &str, ctx: &ParsedContext, vocab: bool, strict: bool) -> Result<String> {
+    if strict {
+        iri_checked(s, ctx, vocab)
+    } else {
+        Ok(iri(s, ctx, vocab))
+    }
+}
+
+fn details_dispatch(
+    s: &str,
+    ctx: &ParsedContext,
+    vocab: bool,
+    strict: bool,
+) -> Result<(String, Option<ContextEntry>)> {
+    if strict {
+        details_checked(s, ctx, vocab)
+    } else {
+        Ok(details(s, ctx, vocab))
+    }
+}
+
 /// Check if map is a @list container
 fn is_list_item(map: &Map<String, JsonValue>) -> bool {
     (map.contains_key("@list") || map.contains_key("list"))
@@ -129,6 +191,7 @@ fn parse_node_value(
     entry: Option<&ContextEntry>,
     context: &ParsedContext,
     idx: &[JsonValue],
+    strict: bool,
 ) -> Result<Vec<JsonValue>> {
     let type_val = entry.and_then(|e| e.type_.as_ref());
     let id_val = entry.and_then(|e| e.id.as_deref());
@@ -157,13 +220,16 @@ fn parse_node_value(
         JsonValue::String(s) => {
             // Check for @id or @type expansion
             if id_val == Some("@id") || id_val == Some("@type") {
-                return Ok(vec![json!(iri(s, context, false))]);
+                return Ok(vec![json!(iri_dispatch(s, context, false, strict)?)]);
             }
 
             // Check if type is @id (value should be expanded as IRI)
             if type_val == Some(&TypeValue::Id) {
                 let mut obj = Map::new();
-                obj.insert("@id".to_string(), json!(iri(s, context, false)));
+                obj.insert(
+                    "@id".to_string(),
+                    json!(iri_dispatch(s, context, false, strict)?),
+                );
                 return Ok(vec![JsonValue::Object(obj)]);
             }
 
@@ -203,12 +269,12 @@ fn parse_node_value(
                 let expanded = if item.is_object() {
                     let map = item.as_object().unwrap();
                     if map.contains_key("@value") || map.contains_key("value") {
-                        parse_node_value(item, entry, context, &new_idx)?
+                        parse_node_value(item, entry, context, &new_idx, strict)?
                     } else {
-                        vec![expand_node_internal(item, context, &new_idx)?]
+                        vec![expand_node_internal(item, context, &new_idx, strict)?]
                     }
                 } else {
-                    parse_node_value(item, entry, context, &new_idx)?
+                    parse_node_value(item, entry, context, &new_idx, strict)?
                 };
                 results.extend(expanded);
             }
@@ -241,7 +307,7 @@ fn parse_node_value(
                 let list_val = map.get("@list").or_else(|| map.get("list")).unwrap();
                 let mut new_idx = idx.to_vec();
                 new_idx.push(json!("@list"));
-                let expanded = parse_node_value(list_val, entry, context, &new_idx)?;
+                let expanded = parse_node_value(list_val, entry, context, &new_idx, strict)?;
                 let mut obj = Map::new();
                 obj.insert("@list".to_string(), JsonValue::Array(expanded));
                 return Ok(vec![JsonValue::Object(obj)]);
@@ -252,12 +318,12 @@ fn parse_node_value(
                 let set_val = map.get("@set").or_else(|| map.get("set")).unwrap();
                 let mut new_idx = idx.to_vec();
                 new_idx.push(json!("@set"));
-                return parse_node_value(set_val, entry, context, &new_idx);
+                return parse_node_value(set_val, entry, context, &new_idx, strict);
             }
 
             // Check for @value
             if map.contains_key("@value") || map.contains_key("value") {
-                return parse_value_object(map, entry, context);
+                return parse_value_object(map, entry, context, strict);
             }
 
             // Check for @container: @language
@@ -309,7 +375,7 @@ fn parse_node_value(
                 context.clone()
             };
 
-            Ok(vec![expand_node_internal(value, &ctx, idx)?])
+            Ok(vec![expand_node_internal(value, &ctx, idx, strict)?])
         }
     }
 }
@@ -319,15 +385,19 @@ fn parse_value_object(
     map: &Map<String, JsonValue>,
     entry: Option<&ContextEntry>,
     context: &ParsedContext,
+    strict: bool,
 ) -> Result<Vec<JsonValue>> {
     let val = map.get("@value").or_else(|| map.get("value")).unwrap();
 
     // Check for explicit @type
-    let explicit_type = map
+    let explicit_type = match map
         .get("@type")
         .or_else(|| map.get("type"))
         .and_then(|t| t.as_str())
-        .map(|t| iri(t, context, true));
+    {
+        Some(t) => Some(iri_dispatch(t, context, true, strict)?),
+        None => None,
+    };
 
     // Get type from entry if not explicit
     let type_iri = explicit_type.or_else(|| {
@@ -350,10 +420,10 @@ fn parse_value_object(
     let mut obj = Map::new();
 
     if type_iri.as_deref() == Some("@id") {
-        let iri_val = val
-            .as_str()
-            .map(|s| iri(s, context, false))
-            .unwrap_or_default();
+        let iri_val = match val.as_str() {
+            Some(s) => iri_dispatch(s, context, false, strict)?,
+            None => String::new(),
+        };
         obj.insert("@id".to_string(), json!(iri_val));
     } else {
         obj.insert("@value".to_string(), val.clone());
@@ -375,7 +445,8 @@ fn parse_value_object(
 fn parse_type(
     node_map: &Map<String, JsonValue>,
     context: &ParsedContext,
-) -> (Vec<String>, ParsedContext) {
+    strict: bool,
+) -> Result<(Vec<String>, ParsedContext)> {
     let type_key = &context.type_key;
     let type_id = context.get(type_key).and_then(|e| e.id.clone());
 
@@ -385,12 +456,16 @@ fn parse_type(
 
     if let Some(type_val) = type_val {
         let types: Vec<String> = match type_val {
-            JsonValue::String(s) => vec![iri(s, context, true)],
-            JsonValue::Array(arr) => arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| iri(s, context, true))
-                .collect(),
+            JsonValue::String(s) => vec![iri_dispatch(s, context, true, strict)?],
+            JsonValue::Array(arr) => {
+                let mut result = Vec::with_capacity(arr.len());
+                for v in arr {
+                    if let Some(s) = v.as_str() {
+                        result.push(iri_dispatch(s, context, true, strict)?);
+                    }
+                }
+                result
+            }
             _ => vec![],
         };
 
@@ -414,9 +489,9 @@ fn parse_type(
             }
         }
 
-        (types, updated_context)
+        Ok((types, updated_context))
     } else {
-        (vec![], context.clone())
+        Ok((vec![], context.clone()))
     }
 }
 
@@ -430,6 +505,7 @@ fn expand_node_internal(
     node_map: &JsonValue,
     context: &ParsedContext,
     idx: &[JsonValue],
+    strict: bool,
 ) -> Result<JsonValue> {
     match node_map {
         JsonValue::Array(arr) => {
@@ -439,7 +515,7 @@ fn expand_node_internal(
                 .map(|(i, item)| {
                     let mut new_idx = idx.to_vec();
                     new_idx.push(json!(i));
-                    expand_node_internal(item, context, &new_idx)
+                    expand_node_internal(item, context, &new_idx, strict)
                 })
                 .collect();
             Ok(JsonValue::Array(expanded?))
@@ -455,7 +531,7 @@ fn expand_node_internal(
             };
 
             // Parse @type and get updated context
-            let (types, context_with_types) = parse_type(map, &merged_context);
+            let (types, context_with_types) = parse_type(map, &merged_context, strict)?;
 
             // Build result
             let mut result = Map::new();
@@ -481,11 +557,12 @@ fn expand_node_internal(
                 let mut key_idx = idx.to_vec();
                 key_idx.push(json!(k));
 
-                let (expanded_key, entry) = details(k, &context_with_types, true);
+                let (expanded_key, entry) = details_dispatch(k, &context_with_types, true, strict)?;
 
                 // Handle @graph
                 if expanded_key == "@graph" || k == "@graph" || k == "graph" {
-                    let graph_expanded = expand_node_internal(v, &context_with_types, &key_idx)?;
+                    let graph_expanded =
+                        expand_node_internal(v, &context_with_types, &key_idx, strict)?;
                     result.insert("@graph".to_string(), graph_expanded);
                     continue;
                 }
@@ -493,14 +570,17 @@ fn expand_node_internal(
                 // Handle @id
                 if expanded_key == "@id" || k == "@id" {
                     if let JsonValue::String(s) = v {
-                        result.insert("@id".to_string(), json!(iri(s, &context_with_types, false)));
+                        result.insert(
+                            "@id".to_string(),
+                            json!(iri_dispatch(s, &context_with_types, false, strict)?),
+                        );
                     }
                     continue;
                 }
 
                 // Expand value
                 let expanded_values =
-                    parse_node_value(v, entry.as_ref(), &context_with_types, &key_idx)?;
+                    parse_node_value(v, entry.as_ref(), &context_with_types, &key_idx, strict)?;
 
                 if !expanded_values.is_empty() {
                     // Check for @reverse
@@ -529,8 +609,8 @@ fn expand_node_internal(
     }
 }
 
-/// Expand a JSON-LD node (document)
-pub fn node(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> {
+/// Shared implementation for node expansion with configurable strictness.
+fn node_impl(node_map: &JsonValue, context: &ParsedContext, strict: bool) -> Result<JsonValue> {
     let idx = vec![];
 
     match node_map {
@@ -540,7 +620,7 @@ pub fn node(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> 
                 .enumerate()
                 .map(|(i, item)| {
                     let new_idx = vec![json!(i)];
-                    expand_node_internal(item, context, &new_idx)
+                    expand_node_internal(item, context, &new_idx, strict)
                 })
                 .collect();
             Ok(JsonValue::Array(expanded?))
@@ -578,16 +658,32 @@ pub fn node(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> 
 
                     if let Some(graph) = map.get(gk) {
                         let new_idx = vec![json!(gk)];
-                        return expand_node_internal(graph, &merged_context, &new_idx);
+                        return expand_node_internal(graph, &merged_context, &new_idx, strict);
                     }
                 }
             }
 
-            expand_node_internal(node_map, context, &idx)
+            expand_node_internal(node_map, context, &idx, strict)
         }
 
         _ => Ok(node_map.clone()),
     }
+}
+
+/// Expand a JSON-LD node (document).
+///
+/// Permissive: unresolved compact-looking IRIs pass through silently.
+pub fn node(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> {
+    node_impl(node_map, context, false)
+}
+
+/// Expand a JSON-LD node (document) with strict compact-IRI checking.
+///
+/// Rejects unresolved compact-looking IRIs (e.g. `ex:Person` when `ex` is
+/// not defined in `@context`) at every IRI position. Use this at Fluree's
+/// JSON-LD parsing boundaries (queries and transactions).
+pub fn node_checked(node_map: &JsonValue, context: &ParsedContext) -> Result<JsonValue> {
+    node_impl(node_map, context, true)
 }
 
 #[cfg(test)]

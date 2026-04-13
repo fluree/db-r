@@ -20,7 +20,7 @@
 
 use super::ast::UnresolvedPathExpr;
 use super::error::{ParseError, Result};
-use fluree_graph_json_ld::{expand_iri, ParsedContext};
+use fluree_graph_json_ld::{expand_iri_checked, ParsedContext};
 use fluree_vocab::rdf;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -176,7 +176,7 @@ fn parse_primary(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<Un
         if name == "a" {
             Ok(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE)))
         } else {
-            let expanded = expand_iri(&name, ctx);
+            let expanded = expand_iri_checked(&name, ctx)?;
             Ok(UnresolvedPathExpr::Iri(Arc::from(expanded.as_str())))
         }
     }
@@ -323,7 +323,7 @@ fn parse_array_operand(val: &JsonValue, context: &ParsedContext) -> Result<Unres
             if s == "a" {
                 Ok(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE)))
             } else {
-                let expanded = expand_iri(s, context);
+                let expanded = expand_iri_checked(s, context)?;
                 Ok(UnresolvedPathExpr::Iri(Arc::from(expanded.as_str())))
             }
         }

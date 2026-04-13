@@ -1091,8 +1091,10 @@ mod tests {
 
     #[test]
     fn test_transact_core_double_operation_conflict() {
-        let json1 = json!({"@id": "ex:a", "ex:name": "Alice"});
-        let json2 = json!({"@id": "ex:b", "ex:name": "Bob"});
+        let json1 =
+            json!({"@context": {"ex": "http://example.org/"}, "@id": "ex:a", "ex:name": "Alice"});
+        let json2 =
+            json!({"@context": {"ex": "http://example.org/"}, "@id": "ex:b", "ex:name": "Bob"});
         let mut core = TransactCore::new();
         core.set_operation(TransactOperation::InsertJson(&json1));
         core.set_operation(TransactOperation::UpsertJson(&json2));
@@ -1110,7 +1112,8 @@ mod tests {
 
     #[test]
     fn test_transact_core_valid_insert() {
-        let json = json!({"@id": "ex:a", "ex:name": "Alice"});
+        let json =
+            json!({"@context": {"ex": "http://example.org/"}, "@id": "ex:a", "ex:name": "Alice"});
         let mut core = TransactCore::new();
         core.set_operation(TransactOperation::InsertJson(&json));
         let result = core.validate();
@@ -1136,8 +1139,8 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let data1 = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
-        let data2 = json!({"insert": [{"@id": "ex:b", "ex:name": "Bob"}]});
+        let data1 = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data2 = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:b", "ex:name": "Bob"}]});
 
         let result = fluree
             .stage_owned(ledger)
@@ -1158,7 +1161,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let result = fluree.stage_owned(ledger).insert(&data).execute().await;
         assert!(result.is_ok());
         let txn_result = result.unwrap();
@@ -1170,7 +1173,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let result = fluree.stage_owned(ledger).upsert(&data).execute().await;
         assert!(result.is_ok());
     }
@@ -1180,7 +1183,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let result = fluree
             .stage_owned(ledger)
             .insert(&data)
@@ -1196,7 +1199,7 @@ mod tests {
 
         // Via convenience method
         let ledger1 = fluree.create_ledger("testdb1").await.unwrap();
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let result1 = fluree.insert(ledger1, &data).await.unwrap();
 
         // Via builder
@@ -1218,7 +1221,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let staged = fluree.stage_owned(ledger).insert(&data).stage().await;
         assert!(staged.is_ok());
         let staged = staged.unwrap();
@@ -1280,7 +1283,7 @@ mod tests {
         let fluree = FlureeBuilder::memory().build_memory();
         let ledger = fluree.create_ledger("testdb").await.unwrap();
 
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
 
         // Valid builder
         let builder = fluree.stage_owned(ledger).insert(&data);
@@ -1293,7 +1296,7 @@ mod tests {
         let _ledger = fluree.create_ledger("testdb").await.unwrap();
         let handle = fluree.ledger_cached("testdb:main").await.unwrap();
 
-        let data = json!({"insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
+        let data = json!({"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:a", "ex:name": "Alice"}]});
         let result = fluree.stage(&handle).insert(&data).execute().await;
         assert!(result.is_ok());
         let txn_result = result.unwrap();

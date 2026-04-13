@@ -3533,6 +3533,7 @@ mod tests {
 
         // Do a transaction using stage builder (updates cache in place)
         let txn = json!({
+            "@context": {"ex": "http://example.org/"},
             "insert": [{"@id": "ex:test", "ex:name": "test"}]
         });
         let _result = fluree.stage(&handle).update(&txn).execute().await.unwrap();

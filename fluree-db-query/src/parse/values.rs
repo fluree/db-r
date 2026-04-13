@@ -34,7 +34,7 @@
 
 use super::ast::{LiteralValue, UnresolvedDatatypeConstraint, UnresolvedPattern, UnresolvedValue};
 use super::error::{ParseError, Result};
-use fluree_graph_json_ld::{details, ParsedContext};
+use fluree_graph_json_ld::{details_checked, ParsedContext};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -201,7 +201,7 @@ fn parse_iri_binding(id_val: &JsonValue, context: &ParsedContext) -> Result<Unre
     let id_str = id_val
         .as_str()
         .ok_or_else(|| ParseError::InvalidWhere("@id in values must be a string".to_string()))?;
-    let (expanded, _) = details(id_str, context);
+    let (expanded, _) = details_checked(id_str, context)?;
     Ok(UnresolvedValue::Iri(Arc::from(expanded)))
 }
 
@@ -216,14 +216,14 @@ fn parse_typed_literal(
 
     let lang = map.get("@language").and_then(|v| v.as_str()).map(Arc::from);
 
-    let dt_iri = map.get("@type").and_then(|v| v.as_str()).map(|t| {
-        if t == "@id" {
-            Arc::from("@id")
-        } else {
-            let (expanded, _) = details(t, context);
-            Arc::from(expanded)
+    let dt_iri = match map.get("@type").and_then(|v| v.as_str()) {
+        Some("@id") => Some(Arc::from("@id")),
+        Some(t) => {
+            let (expanded, _) = details_checked(t, context)?;
+            Some(Arc::from(expanded))
         }
-    });
+        None => None,
+    };
 
     // If datatype is @id, treat @value as IRI string
     if matches!(dt_iri.as_deref(), Some("@id")) {
@@ -243,7 +243,7 @@ fn parse_iri_from_value(value_val: &JsonValue, context: &ParsedContext) -> Resul
     let s = value_val.as_str().ok_or_else(|| {
         ParseError::InvalidWhere("@value must be a string when @type is @id".to_string())
     })?;
-    let (expanded, _) = details(s, context);
+    let (expanded, _) = details_checked(s, context)?;
     Ok(UnresolvedValue::Iri(Arc::from(expanded)))
 }
 
