@@ -350,6 +350,10 @@ pub trait ContentStore: Debug + Send + Sync {
     /// Implementations should make a best effort to free the underlying
     /// resources associated with `id`. The content may or may not become
     /// immediately unavailable after this call, depending on the backend.
+    ///
+    /// Releasing a non-existent CID is **not** an error — implementations
+    /// must be idempotent. This allows callers (e.g., GC) to retry without
+    /// tracking which releases have already succeeded.
     async fn release(&self, id: &ContentId) -> Result<()>;
 
     /// Retrieve a byte range from an object by CID.
@@ -540,7 +544,11 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
 
     async fn release(&self, id: &ContentId) -> Result<()> {
         let address = self.cid_to_address(id)?;
-        self.storage.delete(&address).await
+        match self.storage.delete(&address).await {
+            Ok(()) => Ok(()),
+            Err(crate::error::Error::NotFound(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     fn resolve_local_path(&self, id: &ContentId) -> Option<std::path::PathBuf> {
