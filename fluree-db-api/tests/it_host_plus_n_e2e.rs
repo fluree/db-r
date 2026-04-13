@@ -46,7 +46,7 @@ async fn host_plus_n_insert_index_reload_query() {
     let mut fluree = FlureeBuilder::file(path.clone()).build().expect("build");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

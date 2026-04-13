@@ -2,13 +2,10 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
-use crate::{
-    ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result, Storage,
-};
+use crate::{ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result};
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: crate::NameService + GraphSourcePublisher + Clone + Send + Sync + 'static,
 {
     /// Create a builder for querying nameservice metadata.
@@ -47,7 +44,7 @@ where
     /// - `f:branch` - Branch name
     /// - `f:graphSourceConfig` - Configuration
     /// - `f:graphSourceDependencies` - Source ledgers
-    pub fn nameservice_query(&self) -> NameserviceQueryBuilder<'_, S, N> {
+    pub fn nameservice_query(&self) -> NameserviceQueryBuilder<'_, N> {
         NameserviceQueryBuilder::new(self)
     }
 

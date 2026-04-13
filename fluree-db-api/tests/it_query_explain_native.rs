@@ -14,10 +14,7 @@ use serde_json::json;
 use support::{graphdb_from_ledger, start_background_indexer_local};
 
 async fn index_and_load_db(
-    fluree: &fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     handle: &fluree_db_indexer::IndexerHandle,
     ledger: LedgerState,
     t: i64,
@@ -32,9 +29,16 @@ async fn index_and_load_db(
         fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
     };
 
-    let loaded = load_ledger_snapshot(fluree.storage(), &root_id, &ledger_id)
-        .await
-        .expect("load_ledger_snapshot(root)");
+    let loaded = load_ledger_snapshot(
+        &fluree
+            .backend()
+            .admin_storage_cloned()
+            .expect("test uses managed backend"),
+        &root_id,
+        &ledger_id,
+    )
+    .await
+    .expect("load_ledger_snapshot(root)");
     LedgerState::new(loaded, Novelty::new(0))
 }
 
@@ -43,7 +47,7 @@ async fn explain_no_optimization_when_equal_selectivity() {
     // Scenario: explain-no-optimization-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -111,7 +115,7 @@ async fn explain_reorders_bound_object_email_first() {
     // Scenario: explain-value-lookup-optimization-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -175,7 +179,7 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
     // Scenario: explain-property-count-optimization-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -238,7 +242,7 @@ async fn explain_includes_inputs_fields_and_flags() {
     // Scenario: explain-inputs-field-test
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

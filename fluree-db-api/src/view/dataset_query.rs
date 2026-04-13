@@ -9,8 +9,7 @@ use crate::query::helpers::{
 };
 use crate::view::{DataSetDb, QueryInput};
 use crate::{
-    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Storage, Tracker,
-    TrackingOptions,
+    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Tracker, TrackingOptions,
 };
 use fluree_db_query::execute::{
     execute_prepared, prepare_execution_with_binary_store, ContextConfig,
@@ -21,9 +20,8 @@ use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 // Dataset Query Execution
 // ============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
     /// Execute a query against a dataset view (multi-ledger).
@@ -504,7 +502,7 @@ where
 
     /// Execute against dataset with explicit R2RML provider.
     ///
-    /// Used by callers that have access to the full `Fluree<S, N>` instance
+    /// Used by callers that have access to the full `Fluree<N>` instance
     /// with `N: GraphSourcePublisher` (e.g., server query handlers with iceberg support).
     pub(crate) async fn execute_dataset_internal_with_r2rml<'b>(
         &self,

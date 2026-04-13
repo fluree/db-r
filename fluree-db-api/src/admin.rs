@@ -10,9 +10,7 @@
 //! available on read-only storage.
 
 use crate::{error::ApiError, tx::IndexingMode, Result};
-use fluree_db_core::{
-    address_path::ledger_id_to_path_prefix, format_ledger_id, Storage, DEFAULT_BRANCH,
-};
+use fluree_db_core::{address_path::ledger_id_to_path_prefix, format_ledger_id, DEFAULT_BRANCH};
 use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
 use fluree_db_nameservice::{
     AdminPublisher, GraphSourcePublisher, NameService, NsRecord, Publisher,
@@ -208,10 +206,9 @@ fn normalize_ledger_id(ledger_id: &str) -> String {
 // Fluree Drop Implementation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
     // NOTE: Storage trait provides full read/write/delete capabilities.
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + Send + Sync + 'static,
 {
     /// Drop a ledger
@@ -472,7 +469,18 @@ where
         record: Option<&fluree_db_nameservice::NsRecord>,
     ) -> (usize, Vec<String>) {
         let mut warnings = Vec::new();
-        let storage = self.storage();
+        let storage = match self.admin_storage() {
+            Some(s) => s,
+            None => {
+                // TODO: For IPFS, unpin artifacts so Kubo's GC can reclaim them.
+                // This requires adding a `release` method to `ContentStore`
+                // (does not exist yet) with a default no-op, implemented as
+                // `pin_rm` for `IpfsStorage`.
+                warnings
+                    .push("Artifact deletion skipped: not supported on this backend".to_string());
+                return (0, warnings);
+            }
+        };
         let storage_method = storage.storage_method();
 
         // Build the ledger root prefix: fluree:{method}://{ledger_path}/
@@ -521,7 +529,18 @@ where
         record: Option<&fluree_db_nameservice::NsRecord>,
         warnings: &mut Vec<String>,
     ) -> (usize, Vec<String>) {
-        let storage = self.storage();
+        let storage = match self.backend().admin_storage_cloned() {
+            Some(s) => s,
+            None => {
+                // TODO: For IPFS, walk CIDs and unpin so Kubo's GC can reclaim
+                // them. This requires adding a `release` method to `ContentStore`
+                // (does not exist yet) with a default no-op, implemented as
+                // `pin_rm` for `IpfsStorage`.
+                warnings
+                    .push("CID-walking drop skipped: not supported on this backend".to_string());
+                return (0, std::mem::take(warnings));
+            }
+        };
         let storage_method = storage.storage_method();
 
         let (commit_head, index_head, config_id, default_context) = match record {
@@ -538,7 +557,7 @@ where
         };
 
         let cids = match fluree_db_indexer::collect_ledger_cids(
-            storage,
+            &storage,
             ledger_id,
             commit_head,
             index_head,
@@ -595,9 +614,8 @@ where
 // Graph Source Drop Implementation
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Drop a graph source
@@ -662,13 +680,15 @@ where
                                 &graph_source_id,
                                 &cid.digest_hex(),
                             );
-                            if let Err(e) = self.storage().delete(&path).await {
-                                report.warnings.push(format!(
-                                    "Failed to delete mapping blob {}: {}",
-                                    mapping.source, e
-                                ));
-                            } else {
-                                report.files_deleted += 1;
+                            if let Some(storage) = self.admin_storage() {
+                                if let Err(e) = storage.delete(&path).await {
+                                    report.warnings.push(format!(
+                                        "Failed to delete mapping blob {}: {}",
+                                        mapping.source, e
+                                    ));
+                                } else {
+                                    report.files_deleted += 1;
+                                }
                             }
                         }
                     }
@@ -691,9 +711,8 @@ where
 // Index Status and Trigger (minimal bounds - not native-only)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Get current indexing status for a ledger
@@ -964,9 +983,8 @@ where
 // Reindex (requires AdminPublisher for allow-equal publish)
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + AdminPublisher,
 {
     /// Full offline reindex from commit history
@@ -1015,8 +1033,13 @@ where
         let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
 
-        let index_result =
-            rebuild_index_from_commits(self.storage(), &ledger_id, &record, indexer_config).await?;
+        let index_result = rebuild_index_from_commits(
+            self.content_store(&ledger_id),
+            &ledger_id,
+            &record,
+            indexer_config,
+        )
+        .await?;
 
         info!(
             ledger_id = %ledger_id,
@@ -1049,7 +1072,22 @@ where
         );
 
         // 6. Spawn async garbage collection (non-blocking)
-        let storage_clone = self.storage().clone();
+        let storage_clone = match self.backend().admin_storage_cloned() {
+            Some(s) => s,
+            None => {
+                // TODO: For IPFS, unpin replaced CIDs so Kubo's GC can reclaim
+                // stale index artifacts. This requires adding a `release` method
+                // to `ContentStore` (does not exist yet) with a default no-op,
+                // implemented as `pin_rm` for `IpfsStorage`.
+                tracing::debug!("Skipping GC: not supported on this backend");
+                return Ok(ReindexResult {
+                    ledger_id,
+                    index_t: index_result.index_t,
+                    root_id: index_result.root_id,
+                    stats: index_result.stats,
+                });
+            }
+        };
         let gc_root_id = index_result.root_id.clone();
         let gc_ledger_id = ledger_id.clone();
         let gc_config = CleanGarbageConfig {
@@ -1083,9 +1121,8 @@ where
 // Ledger Config
 // =============================================================================
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + fluree_db_nameservice::ConfigPublisher,
 {
     /// Store a `LedgerConfig` blob in CAS and update the config_id on the
@@ -1105,8 +1142,7 @@ where
         let canonical_bytes = config.to_bytes();
 
         // Store blob in CAS.
-        let content_store =
-            fluree_db_core::storage::content_store_for(self.storage().clone(), &ledger_id);
+        let content_store = self.content_store(&ledger_id);
         let cid = content_store
             .put(ContentKind::LedgerConfig, &canonical_bytes)
             .await?;

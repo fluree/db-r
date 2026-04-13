@@ -1,17 +1,15 @@
 use std::sync::Arc;
 
 use crate::{
-    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, Storage,
-    TypeErasedStore,
+    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, TypeErasedStore,
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
 use fluree_db_core::DictNovelty;
 use fluree_db_nameservice::{NameServiceError, NsRecord, Publisher};
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// Load a ledger by address (e.g., "mydb:main")
@@ -19,12 +17,7 @@ where
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
     pub async fn ledger(&self, ledger_id: &str) -> Result<LedgerState> {
-        let mut state = LedgerState::load(
-            &self.nameservice,
-            ledger_id,
-            self.connection.storage().clone(),
-        )
-        .await?;
+        let mut state = LedgerState::load(&self.nameservice, ledger_id, self.backend()).await?;
 
         // If nameservice has an index address, require that the binary index root is
         // readable and loadable. This ensures `fluree.ledger()` always returns a
@@ -39,7 +32,6 @@ where
             .cloned()
         {
             if state.snapshot.range_provider.is_none() || state.binary_store.is_none() {
-                let storage = self.connection.storage();
                 // Use the NsRecord's ledger_id (canonical namespace) rather than
                 // snapshot.ledger_id, which may reflect the source ledger after
                 // a pack import/clone into a differently-named destination.
@@ -48,7 +40,7 @@ where
                     .as_ref()
                     .map(|r| r.ledger_id.as_str())
                     .unwrap_or(state.snapshot.ledger_id.as_str());
-                let cs = fluree_db_core::content_store_for(storage.clone(), ns_ledger_id);
+                let cs = self.content_store(ns_ledger_id);
                 let bytes = cs.get(&index_cid).await.map_err(|e| {
                     ApiError::internal(format!(
                         "failed to read binary index root for {}: {}",
@@ -57,12 +49,10 @@ where
                 })?;
 
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
-                let cs = std::sync::Arc::new(cs);
 
                 // Load BinaryIndexStore from FIR6 root.
-                let cs_dyn: Arc<dyn fluree_db_core::ContentStore> = Arc::clone(&cs) as _;
                 let mut binary_index_store = BinaryIndexStore::load_from_root_bytes(
-                    cs_dyn,
+                    Arc::clone(&cs),
                     &bytes,
                     &cache_dir,
                     Some(Arc::clone(&self.leaflet_cache)),
@@ -159,8 +149,7 @@ where
                 .as_ref()
                 .map(|r| r.ledger_id.as_str())
                 .unwrap_or(state.snapshot.ledger_id.as_str());
-            let cs =
-                fluree_db_core::content_store_for(self.connection.storage().clone(), ns_ledger_id);
+            let cs = self.content_store(ns_ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),
@@ -182,13 +171,9 @@ where
         ledger_id: &str,
         target_t: i64,
     ) -> Result<HistoricalLedgerView> {
-        let view = HistoricalLedgerView::load_at(
-            &self.nameservice,
-            ledger_id,
-            self.connection.storage().clone(),
-            target_t,
-        )
-        .await?;
+        let view =
+            HistoricalLedgerView::load_at(&self.nameservice, ledger_id, self.backend(), target_t)
+                .await?;
 
         Ok(view)
     }
@@ -198,9 +183,8 @@ where
 // Ledger Creation
 // =============================================================================
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService + Publisher,
 {
     /// Create a new empty ledger with genesis state
@@ -367,9 +351,11 @@ where
         use fluree_db_core::storage::content_address;
         use fluree_db_core::CODEC_FLUREE_DICT_BLOB;
 
-        let storage = self.connection.storage().clone();
+        let storage = self.backend().admin_storage_cloned().ok_or_else(|| {
+            ApiError::internal("copy_index_to_branch requires managed storage backend")
+        })?;
         let method = storage.storage_method();
-        let source_store = fluree_db_core::content_store_for(storage.clone(), source_id);
+        let source_store = self.content_store(source_id);
 
         // Read and parse the index root
         let root_bytes = source_store.get(index_cid).await.map_err(|e| {
@@ -458,9 +444,8 @@ where
     }
 }
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + 'static,
     N: NameService,
 {
     /// List all non-retracted branches for a ledger.

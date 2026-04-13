@@ -24,7 +24,7 @@ pub async fn run_index(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> 
     let config = fluree_db_indexer::IndexerConfig::default();
 
     let result = fluree_db_indexer::build_index_for_ledger(
-        fluree.storage(),
+        fluree.content_store(&ledger_id),
         fluree.nameservice(),
         &ledger_id,
         config,

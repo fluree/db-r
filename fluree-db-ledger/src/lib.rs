@@ -34,9 +34,8 @@ pub use historical::HistoricalLedgerView;
 pub use staged::LedgerView;
 
 use fluree_db_core::{
-    content_store_for, format_ledger_id, BranchedContentStore, ContentId, ContentStore,
-    DictNovelty, Flake, GraphDbRef, GraphId, LedgerSnapshot, RuntimeSmallDicts, Storage,
-    TXN_META_GRAPH_ID,
+    format_ledger_id, BranchedContentStore, ContentId, ContentStore, DictNovelty, Flake,
+    GraphDbRef, GraphId, LedgerSnapshot, RuntimeSmallDicts, StorageBackend, TXN_META_GRAPH_ID,
 };
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::{
@@ -137,10 +136,10 @@ impl LedgerState {
     ///
     /// This is resilient to missing index - if the nameservice has commits
     /// but no index yet, it creates a genesis LedgerSnapshot and loads all commits as novelty.
-    pub async fn load<S: Storage + Clone + 'static, N: NameService>(
+    pub async fn load<N: NameService>(
         ns: &N,
         ledger_id: &str,
-        storage: S,
+        backend: &StorageBackend,
     ) -> Result<Self> {
         let record = ns
             .lookup(ledger_id)
@@ -152,11 +151,11 @@ impl LedgerState {
         // commit chain when creating a branch — reads fall through to
         // ancestor namespaces for pre-branch-point content.
         if record.source_branch.is_some() {
-            let store = Self::build_branched_store(ns, &record, &storage).await?;
+            let store = Self::build_branched_store(ns, &record, backend).await?;
             return Self::load_with_store(store, record).await;
         }
 
-        let store = content_store_for(storage, &record.ledger_id);
+        let store = backend.content_store(&record.ledger_id);
         Self::load_with_store(store, record).await
     }
 
@@ -164,11 +163,11 @@ impl LedgerState {
     ///
     /// Each branch gets its own namespace store with its parent(s) as fallbacks.
     /// Currently branches have a single parent; merges will add multiple parents.
-    pub async fn build_branched_store<S: Storage + Clone + 'static, N: NameService>(
+    pub async fn build_branched_store<N: NameService>(
         ns: &N,
         record: &NsRecord,
-        storage: &S,
-    ) -> Result<BranchedContentStore<S>> {
+        backend: &StorageBackend,
+    ) -> Result<BranchedContentStore> {
         let source = record.source_branch.as_ref().expect("called on non-branch");
         let parent_id = format_ledger_id(&record.name, source);
 
@@ -178,14 +177,13 @@ impl LedgerState {
             .ok_or_else(|| LedgerError::not_found(&parent_id))?;
 
         let parent_store = if parent_record.source_branch.is_some() {
-            Box::pin(Self::build_branched_store(ns, &parent_record, storage)).await?
+            Box::pin(Self::build_branched_store(ns, &parent_record, backend)).await?
         } else {
-            BranchedContentStore::leaf(storage.clone(), &parent_id)
+            BranchedContentStore::leaf(backend.content_store(&parent_id))
         };
 
         Ok(BranchedContentStore::with_parents(
-            storage.clone(),
-            &record.ledger_id,
+            backend.content_store(&record.ledger_id),
             vec![parent_store],
         ))
     }
@@ -809,7 +807,9 @@ impl LedgerState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluree_db_core::{ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid};
+    use fluree_db_core::{
+        content_store_for, ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid,
+    };
     use fluree_db_nameservice::memory::MemoryNameService;
     use std::collections::HashMap;
 
@@ -965,7 +965,8 @@ mod tests {
         ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         // Load ledger - should use genesis since no index exists
-        let state = LedgerState::load(&ns, "test:main", storage).await.unwrap();
+        let backend = StorageBackend::Managed(std::sync::Arc::new(storage));
+        let state = LedgerState::load(&ns, "test:main", &backend).await.unwrap();
 
         assert_eq!(state.ledger_id(), "test:main");
         assert_eq!(state.index_t(), 0); // Genesis

@@ -491,7 +491,7 @@ async fn vector_search_post_indexing() {
     let ledger_id = "it/vector-post-index:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -612,7 +612,7 @@ async fn vector_search_novelty_plus_indexed() {
     let ledger_id = "it/vector-novelty-plus-index:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -799,7 +799,7 @@ async fn vector_cosine_normalized_optimization() {
     let ledger_id = "it/vector-cosine-norm:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

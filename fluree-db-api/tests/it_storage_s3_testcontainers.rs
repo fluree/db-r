@@ -9,7 +9,7 @@ mod support;
 
 use aws_config::meta::region::RegionProviderChain;
 use fluree_db_api::{tx, Fluree};
-use fluree_db_connection::{Connection, ConnectionConfig};
+use fluree_db_connection::ConnectionConfig;
 use fluree_db_indexer::IndexerConfig;
 use fluree_db_nameservice::NameService;
 use fluree_db_storage_aws::{DynamoDbConfig, DynamoDbNameService, S3Config, S3Storage};
@@ -136,10 +136,8 @@ async fn start_localstack(
 fn build_fluree(
     storage: S3Storage,
     nameservice: DynamoDbNameService,
-) -> Fluree<S3Storage, DynamoDbNameService> {
-    let cfg = ConnectionConfig::default();
-    let conn = Connection::new(cfg, storage);
-    Fluree::new(conn, nameservice)
+) -> Fluree<DynamoDbNameService> {
+    Fluree::new(ConnectionConfig::default(), storage, nameservice)
 }
 
 async fn list_object_keys(sdk_config: &aws_config::SdkConfig, bucket: &str) -> Vec<String> {
@@ -296,7 +294,7 @@ async fn s3_testcontainers_indexing_test() {
 
     // Start background indexing worker + handle (LocalSet since worker may be !Send)
     let (local, handle) = support::start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         IndexerConfig::small(),
     );

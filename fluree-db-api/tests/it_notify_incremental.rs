@@ -193,7 +193,7 @@ async fn notify_index_only_trims_novelty() {
 
     // Start a background indexer
     let (local, indexer_handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

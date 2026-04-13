@@ -21,8 +21,8 @@ use crate::format::FormatterConfig;
 use crate::query::helpers::parse_dataset_spec;
 use crate::view::{DataSetDb, GraphDb, QueryInput};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, Storage,
-    TrackedErrorResponse, TrackedQueryResponse, TrackingOptions,
+    ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, TrackedErrorResponse,
+    TrackedQueryResponse, TrackingOptions,
 };
 
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
@@ -180,19 +180,18 @@ impl<'a> QueryCore<'a> {
 ///     .jsonld(&query)
 ///     .execute().await?;
 /// ```
-pub struct ViewQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct ViewQueryBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     view: &'a GraphDb,
     core: QueryCore<'a>,
 }
 
-impl<'a, S, N> ViewQueryBuilder<'a, S, N>
+impl<'a, N> ViewQueryBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
     /// Create a new builder (called by `GraphDb::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, view: &'a GraphDb) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, view: &'a GraphDb) -> Self {
         Self {
             fluree,
             view,
@@ -430,19 +429,18 @@ where
 ///     .jsonld(&query)
 ///     .execute().await?;
 /// ```
-pub struct DatasetQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct DatasetQueryBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     dataset: &'a DataSetDb,
     core: QueryCore<'a>,
 }
 
-impl<'a, S, N> DatasetQueryBuilder<'a, S, N>
+impl<'a, N> DatasetQueryBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService,
 {
     /// Create a new builder (called by `DataSetDb::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, dataset: &'a DataSetDb) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, dataset: &'a DataSetDb) -> Self {
         Self {
             fluree,
             dataset,
@@ -689,19 +687,18 @@ where
 ///     .policy(ctx)
 ///     .execute().await?;
 /// ```
-pub struct FromQueryBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct FromQueryBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     core: QueryCore<'a>,
     policy: Option<Arc<PolicyContext>>,
 }
 
-impl<'a, S, N> FromQueryBuilder<'a, S, N>
+impl<'a, N> FromQueryBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Fluree::query_from()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>) -> Self {
         Self {
             fluree,
             core: QueryCore::new(),

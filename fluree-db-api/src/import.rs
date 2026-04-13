@@ -649,16 +649,15 @@ fn resolve_chunk_source(
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct ImportBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a super::Fluree<S, N>,
+pub struct ImportBuilder<'a, N> {
+    fluree: &'a super::Fluree<N>,
     ledger_id: String,
     import_path: PathBuf,
     config: ImportConfig,
 }
 
-impl<'a, S, N> ImportBuilder<'a, S, N>
+impl<'a, N> ImportBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
         + fluree_db_nameservice::ConfigPublisher
@@ -668,7 +667,7 @@ where
         + 'static,
 {
     pub(crate) fn new(
-        fluree: &'a super::Fluree<S, N>,
+        fluree: &'a super::Fluree<N>,
         ledger_id: String,
         import_path: PathBuf,
     ) -> Self {
@@ -780,8 +779,15 @@ where
 
     /// Execute the bulk import pipeline.
     pub async fn execute(self) -> std::result::Result<ImportResult, ImportError> {
+        let storage = self
+            .fluree
+            .backend()
+            .admin_storage_cloned()
+            .ok_or_else(|| {
+                ImportError::Storage("bulk import requires a managed storage backend".into())
+            })?;
         run_import_pipeline(
-            self.fluree.storage(),
+            &storage,
             self.fluree.nameservice(),
             &self.ledger_id,
             &self.import_path,
@@ -798,24 +804,22 @@ where
 /// Intermediate builder returned by `fluree.create("mydb")`.
 ///
 /// Supports `.import(path)` for bulk import, or `.execute()` for empty ledger creation.
-pub struct CreateBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a super::Fluree<S, N>,
+pub struct CreateBuilder<'a, N> {
+    fluree: &'a super::Fluree<N>,
     ledger_id: String,
 }
 
-impl<'a, S, N> CreateBuilder<'a, S, N>
+impl<'a, N> CreateBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(fluree: &'a super::Fluree<S, N>, ledger_id: String) -> Self {
+    pub(crate) fn new(fluree: &'a super::Fluree<N>, ledger_id: String) -> Self {
         Self { fluree, ledger_id }
     }
 }
 
-impl<'a, S, N> CreateBuilder<'a, S, N>
+impl<'a, N> CreateBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
         + fluree_db_nameservice::ConfigPublisher
@@ -828,7 +832,7 @@ where
     ///
     /// `path` can be a directory containing `.ttl`/`.trig`/`.jsonld` files
     /// (sorted lexicographically), or a single `.ttl`/`.jsonld` file.
-    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, S, N> {
+    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, N> {
         ImportBuilder::new(self.fluree, self.ledger_id, path.as_ref().to_path_buf())
     }
 }
@@ -1421,7 +1425,7 @@ where
         commit_metas: &mut Vec<CommitMeta>,
     ) -> std::result::Result<usize, ImportError>
     where
-        S: Storage + Clone + Send + Sync + 'static,
+        S: Storage,
         N: NameService + Publisher,
     {
         // Serial commit loop: receive parsed chunks, reorder, finalize in order.
@@ -2760,15 +2764,19 @@ where
         );
     }
 
+    // Shared content store for dict upload, index upload, and other CAS operations.
+    let content_store: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
+        fluree_db_core::storage::content_store_for(storage.clone(), alias),
+    );
+
     // Start dict upload (reads flat files from run_dir, builds CoW trees, uploads to CAS).
     // This runs concurrently with the index builds below.
     let dict_upload_handle = {
-        let storage = storage.clone();
-        let alias = alias.to_string();
+        let content_store = content_store.clone();
         let run_dir = input.run_dir.to_path_buf();
         let namespace_codes = input.namespace_codes.clone();
         tokio::spawn(async move {
-            upload_dicts_from_disk(&storage, &alias, &run_dir, &namespace_codes, true).await
+            upload_dicts_from_disk(content_store.as_ref(), &run_dir, &namespace_codes, true).await
         })
     };
 
@@ -3051,9 +3059,10 @@ where
             stage: "Uploading index artifacts",
         });
         let upload_indexes_start = Instant::now();
-        let v3_uploaded = fluree_db_indexer::upload_indexes_to_cas(storage, alias, &v3_result)
-            .await
-            .map_err(|e| ImportError::Upload(e.to_string()))?;
+        let v3_uploaded =
+            fluree_db_indexer::upload_indexes_to_cas(content_store.as_ref(), &v3_result)
+                .await
+                .map_err(|e| ImportError::Upload(e.to_string()))?;
         tracing::info!(
             elapsed_ms = upload_indexes_start.elapsed().as_millis(),
             default_orders = v3_uploaded.default_graph_orders.len(),

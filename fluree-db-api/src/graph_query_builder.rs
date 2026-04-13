@@ -11,8 +11,8 @@ use crate::graph::Graph;
 use crate::query::builder::QueryCore;
 use crate::view::GraphDb;
 use crate::{
-    ApiError, Fluree, NameService, QueryResult, Result, Storage, TrackedErrorResponse,
-    TrackedQueryResponse, TrackingOptions,
+    ApiError, Fluree, NameService, QueryResult, Result, TrackedErrorResponse, TrackedQueryResponse,
+    TrackingOptions,
 };
 
 #[cfg(feature = "iceberg")]
@@ -39,21 +39,20 @@ use std::sync::Arc;
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct GraphQueryBuilder<'a, 'g, S: Storage + 'static, N> {
-    graph: &'g Graph<'a, S, N>,
+pub struct GraphQueryBuilder<'a, 'g, N> {
+    graph: &'g Graph<'a, N>,
     core: QueryCore<'g>,
     #[cfg(feature = "iceberg")]
     /// When true, use graph source fallback for resolution (set by `with_r2rml()`).
     graph_source_fallback: bool,
 }
 
-impl<'a, 'g, S, N> GraphQueryBuilder<'a, 'g, S, N>
+impl<'a, 'g, N> GraphQueryBuilder<'a, 'g, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder (called by `Graph::query()`).
-    pub(crate) fn new(graph: &'g Graph<'a, S, N>) -> Self {
+    pub(crate) fn new(graph: &'g Graph<'a, N>) -> Self {
         Self {
             graph,
             core: QueryCore::new(),
@@ -281,19 +280,18 @@ where
 /// let snapshot = fluree.graph("mydb:main").load().await?;
 /// let result = snapshot.query().jsonld(&q).execute().await?;
 /// ```
-pub struct GraphSnapshotQueryBuilder<'a, 'v, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct GraphSnapshotQueryBuilder<'a, 'v, N> {
+    fluree: &'a Fluree<N>,
     view: &'v GraphDb,
     core: QueryCore<'v>,
 }
 
-impl<'a: 'v, 'v, S, N> GraphSnapshotQueryBuilder<'a, 'v, S, N>
+impl<'a: 'v, 'v, N> GraphSnapshotQueryBuilder<'a, 'v, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new builder from a fluree reference and a view.
-    pub fn new_from_parts(fluree: &'a Fluree<S, N>, view: &'v GraphDb) -> Self {
+    pub fn new_from_parts(fluree: &'a Fluree<N>, view: &'v GraphDb) -> Self {
         Self {
             fluree,
             view,

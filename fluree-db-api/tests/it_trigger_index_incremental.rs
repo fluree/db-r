@@ -6,8 +6,6 @@ use async_trait::async_trait;
 use fluree_db_api::tx::IndexingMode;
 use fluree_db_api::{Fluree, IndexerConfig, TriggerIndexOptions};
 use fluree_db_connection::config::ConnectionConfig;
-use fluree_db_connection::Connection;
-use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentKind, ContentStore, MemoryStorage, StorageMethod};
 use fluree_db_nameservice::memory::MemoryNameService;
 use serde_json::json;
@@ -61,9 +59,26 @@ impl fluree_db_core::StorageRead for CountingStorage {
     }
 }
 
+impl CountingStorage {
+    /// Increment the appropriate counter based on what kind of artifact the
+    /// address points at. Used by both `write_bytes` and
+    /// `content_write_bytes_with_hash` so writes are counted regardless of
+    /// which entry point the indexer uses to upload a CAS blob.
+    fn note_address(&self, address: &str) {
+        if address.contains("/index/objects/leaves/") {
+            self.index_leaf_writes.fetch_add(1, Ordering::Relaxed);
+        } else if address.contains("/index/objects/branches/") {
+            self.index_branch_writes.fetch_add(1, Ordering::Relaxed);
+        } else if address.contains("/index/roots/") {
+            self.index_root_writes.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
 #[async_trait]
 impl fluree_db_core::StorageWrite for CountingStorage {
     async fn write_bytes(&self, address: &str, bytes: &[u8]) -> fluree_db_core::error::Result<()> {
+        self.note_address(address);
         self.inner.write_bytes(address, bytes).await
     }
 
@@ -87,21 +102,12 @@ impl fluree_db_core::ContentAddressedWrite for CountingStorage {
         content_hash_hex: &str,
         bytes: &[u8],
     ) -> fluree_db_core::error::Result<fluree_db_core::storage::ContentWriteResult> {
-        match kind {
-            ContentKind::IndexLeaf => {
-                self.index_leaf_writes.fetch_add(1, Ordering::Relaxed);
-            }
-            ContentKind::IndexBranch => {
-                self.index_branch_writes.fetch_add(1, Ordering::Relaxed);
-            }
-            ContentKind::IndexRoot => {
-                self.index_root_writes.fetch_add(1, Ordering::Relaxed);
-            }
-            _ => {}
-        }
-        self.inner
+        let result = self
+            .inner
             .content_write_bytes_with_hash(kind, ledger_id, content_hash_hex, bytes)
-            .await
+            .await?;
+        self.note_address(&result.address);
+        Ok(result)
     }
 }
 
@@ -110,9 +116,11 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
     let storage = CountingStorage::new();
     let nameservice = MemoryNameService::new();
 
-    let conn = Connection::new(ConnectionConfig::memory(), storage.clone());
-    let mut fluree: Fluree<CountingStorage, MemoryNameService> =
-        Fluree::new(conn, nameservice.clone());
+    let mut fluree: Fluree<MemoryNameService> = Fluree::new(
+        ConnectionConfig::memory(),
+        storage.clone(),
+        nameservice.clone(),
+    );
 
     // Use tiny leaflets/leaves so we can get multi-leaf indexes with small data.
     let indexer_cfg = IndexerConfig::small()
@@ -121,8 +129,11 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
         .with_incremental_enabled(true)
         .with_incremental_max_commits(10_000);
 
-    let (local, handle) =
-        support::start_background_indexer_local(storage.clone(), nameservice.clone(), indexer_cfg);
+    let (local, handle) = support::start_background_indexer_local(
+        fluree_db_core::StorageBackend::Managed(std::sync::Arc::new(storage.clone())),
+        nameservice.clone(),
+        indexer_cfg,
+    );
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));
 
     local
@@ -154,12 +165,12 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             ledger = r1.ledger;
 
             // First trigger builds the initial full index (no prior root).
-            let before1 = fluree.storage().snapshot_counts();
+            let before1 = storage.snapshot_counts();
             let res1 = fluree
                 .trigger_index(ledger_id, TriggerIndexOptions::default())
                 .await
                 .expect("trigger_index #1");
-            let after1 = fluree.storage().snapshot_counts();
+            let after1 = storage.snapshot_counts();
             let delta1_leaf = after1.0 - before1.0;
             assert!(
                 delta1_leaf >= 8,
@@ -182,12 +193,12 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             let r2 = fluree.insert(ledger, &tx2).await.expect("update insert");
             ledger = r2.ledger;
 
-            let before2 = fluree.storage().snapshot_counts();
+            let before2 = storage.snapshot_counts();
             let res2 = fluree
                 .trigger_index(ledger_id, TriggerIndexOptions::default())
                 .await
                 .expect("trigger_index #2");
-            let after2 = fluree.storage().snapshot_counts();
+            let after2 = storage.snapshot_counts();
             let delta2_leaf = after2.0 - before2.0;
             // Second run should be incremental: it should write *far fewer* index leaves
             // than the initial full build.
@@ -208,7 +219,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
             assert_ne!(root1, root2, "root CID should change after update");
 
             // Sanity: both roots decode as IndexRoot and the second root remains queryable.
-            let cs = content_store_for(fluree.storage().clone(), ledger_id);
+            let cs = fluree.content_store(ledger_id);
             let bytes1 = cs.get(&root1).await.expect("root1 bytes");
             let bytes2 = cs.get(&root2).await.expect("root2 bytes");
             let v1 = fluree_db_binary_index::format::index_root::IndexRoot::decode(&bytes1)

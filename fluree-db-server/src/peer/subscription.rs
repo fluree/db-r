@@ -293,13 +293,12 @@ impl PeerSubscriptionTask {
         };
     }
 
-    async fn notify_mgr<S, N>(
+    async fn notify_mgr<N>(
         &self,
-        mgr: &Arc<fluree_db_api::LedgerManager<S, N>>,
+        mgr: &Arc<fluree_db_api::LedgerManager<N>>,
         record: &LedgerRecord,
         ns_record: NsRecord,
     ) where
-        S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
         N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
     {
         match mgr

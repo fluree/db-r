@@ -4,18 +4,15 @@
 //! new subjects or strings are added during incremental indexing.
 
 use fluree_db_binary_index::DictTreeRefs;
-use fluree_db_core::{ContentId, ContentKind, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore};
 
 use crate::error::{IndexerError, Result};
 
 use super::types::UpdatedReverseTree;
-use super::upload::cid_from_write;
 
-pub(crate) async fn upload_incremental_reverse_tree_async<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub(crate) async fn upload_incremental_reverse_tree_async(
+    content_store: &dyn ContentStore,
     dict: fluree_db_core::DictKind,
-    content_store: &std::sync::Arc<dyn fluree_db_core::storage::ContentStore>,
     existing_refs: &DictTreeRefs,
     new_subjects: Vec<(u16, u64, Vec<u8>)>,
 ) -> Result<UpdatedReverseTree> {
@@ -30,15 +27,7 @@ pub(crate) async fn upload_incremental_reverse_tree_async<S: Storage>(
         .collect();
     entries.sort_by(|a, b| a.key.cmp(&b.key));
 
-    upload_incremental_reverse_tree_core(
-        storage,
-        ledger_id,
-        dict,
-        content_store,
-        existing_refs,
-        entries,
-    )
-    .await
+    upload_incremental_reverse_tree_core(content_store, dict, existing_refs, entries).await
 }
 
 /// Async version of reverse tree upload for **string** dictionaries.
@@ -46,11 +35,9 @@ pub(crate) async fn upload_incremental_reverse_tree_async<S: Storage>(
 /// Builds `ReverseEntry` from `(string_id, value)`, pre-fetches affected
 /// leaves, runs the CPU-bound CoW update in `spawn_blocking`, then
 /// async-uploads new artifacts.
-pub(crate) async fn upload_incremental_reverse_tree_async_strings<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+pub(crate) async fn upload_incremental_reverse_tree_async_strings(
+    content_store: &dyn ContentStore,
     dict: fluree_db_core::DictKind,
-    content_store: &std::sync::Arc<dyn fluree_db_core::storage::ContentStore>,
     existing_refs: &DictTreeRefs,
     new_strings: Vec<(u32, Vec<u8>)>,
 ) -> Result<UpdatedReverseTree> {
@@ -65,24 +52,14 @@ pub(crate) async fn upload_incremental_reverse_tree_async_strings<S: Storage>(
         .collect();
     entries.sort_by(|a, b| a.key.cmp(&b.key));
 
-    upload_incremental_reverse_tree_core(
-        storage,
-        ledger_id,
-        dict,
-        content_store,
-        existing_refs,
-        entries,
-    )
-    .await
+    upload_incremental_reverse_tree_core(content_store, dict, existing_refs, entries).await
 }
 
 /// Core async reverse tree upload: pre-fetch affected leaves, spawn_blocking
 /// for CoW update, async-upload new artifacts.
-async fn upload_incremental_reverse_tree_core<S: Storage>(
-    storage: &S,
-    ledger_id: &str,
+async fn upload_incremental_reverse_tree_core(
+    content_store: &dyn ContentStore,
     dict: fluree_db_core::DictKind,
-    content_store: &std::sync::Arc<dyn fluree_db_core::storage::ContentStore>,
     existing_refs: &DictTreeRefs,
     entries: Vec<fluree_db_binary_index::dict::reverse_leaf::ReverseEntry>,
 ) -> Result<UpdatedReverseTree> {
@@ -141,16 +118,20 @@ async fn upload_incremental_reverse_tree_core<S: Storage>(
     .map_err(|e| IndexerError::StorageWrite(format!("incremental reverse tree: {e}")))?;
 
     // 5. Async upload new leaf artifacts.
+    //
+    // Use CID strings as the "address" placeholder fed into `finalize_branch`
+    // since the CAS layer is content-addressed only — there is no distinct
+    // storage address.
     let mut hash_to_address: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for leaf_art in &tree_result.new_leaves {
-        let cas_result = storage
-            .content_write_bytes(kind, ledger_id, &leaf_art.bytes)
+        let cid = content_store
+            .put(kind, &leaf_art.bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-        let cid = cid_from_write(kind, &cas_result);
-        address_to_cid.insert(cas_result.address.clone(), cid);
-        hash_to_address.insert(leaf_art.hash.clone(), cas_result.address);
+        let cid_str = cid.to_string();
+        address_to_cid.insert(cid_str.clone(), cid);
+        hash_to_address.insert(leaf_art.hash.clone(), cid_str);
     }
 
     // 6. Finalize branch (replace pending:hash → real addresses).
@@ -162,11 +143,10 @@ async fn upload_incremental_reverse_tree_core<S: Storage>(
         .map_err(|e| IndexerError::StorageWrite(format!("finalize reverse branch: {e}")))?;
 
     // 7. Async upload finalized branch.
-    let branch_result = storage
-        .content_write_bytes(kind, ledger_id, &finalized_bytes)
+    let new_branch_cid = content_store
+        .put(kind, &finalized_bytes)
         .await
         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-    let new_branch_cid = cid_from_write(kind, &branch_result);
 
     // 8. Build leaf CID list from finalized branch.
     let mut leaf_cids: Vec<ContentId> = Vec::with_capacity(finalized_branch.leaves.len());

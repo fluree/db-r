@@ -20,7 +20,7 @@ async fn policy_applies_to_named_graph_queries() {
     let ledger_id = "policy/named-graphs:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
