@@ -424,6 +424,249 @@ async fn jsonld_query_with_faux_compact_iri_ids() {
 }
 
 #[tokio::test]
+async fn jsonld_opts_strict_compact_iri_false_allows_undefined_prefix() {
+    // `opts.strictCompactIri: false` opts out of the strict compact-IRI guard
+    // for both insert and query, allowing "foaf:bar" through as a literal IRI
+    // even when `foaf` is not defined in @context.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/jsonld-basic:strict-opt-out";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    // Insert with strict guard disabled
+    let tx = json!({
+        "@context": ctx(),
+        "opts": {"strictCompactIri": false},
+        "@graph": [
+            {"id":"foo","ex:name":"Foo"},
+            {"id":"foaf:bar","ex:name":"Bar"}
+        ]
+    });
+    let _committed = fluree
+        .insert(ledger0, &tx)
+        .await
+        .expect("insert should succeed with strict guard disabled");
+    let loaded = fluree.ledger(ledger_id).await.expect("reload ledger");
+
+    // Query also with strict guard disabled — count both subjects
+    let q = json!({
+        "@context": ctx(),
+        "opts": {"strictCompactIri": false},
+        "select": ["?f", "?n"],
+        "where": {"id": "?f", "ex:name": "?n"}
+    });
+    let r = support::query_jsonld(&fluree, &loaded, &q)
+        .await
+        .expect("query select");
+    let mut rows = r.to_jsonld(&loaded.snapshot).expect("to_jsonld");
+    let arr = rows.as_array_mut().expect("rows array");
+    arr.sort_by_key(|a| a.to_string());
+    assert_eq!(rows, json!([["foaf:bar", "Bar"], ["foo", "Foo"]]));
+}
+
+#[tokio::test]
+async fn jsonld_opts_strict_compact_iri_true_explicit() {
+    // Setting `opts.strictCompactIri: true` explicitly matches the default
+    // behavior — undefined prefixes are still rejected.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/jsonld-basic:strict-opt-in";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    let tx = json!({
+        "@context": ctx(),
+        "opts": {"strictCompactIri": true},
+        "@graph": [{"id":"foaf:bar","ex:name":"Bar"}]
+    });
+    let err = fluree
+        .insert(ledger0, &tx)
+        .await
+        .expect_err("strict mode should still reject undefined prefix");
+    assert!(err.to_string().contains("foaf"));
+}
+
+#[tokio::test]
+async fn jsonld_single_object_insert_opts_does_not_leak_as_data() {
+    // Regression: single-object form (no @graph) feeds the raw object into
+    // the JSON-LD expander. `opts` must be stripped before expansion so it
+    // is never stored as data.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/jsonld-basic:opts-no-leak-single-object";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    // Single-object insert (no @graph) with top-level opts
+    let tx = json!({
+        "@context": ctx(),
+        "opts": {"strictCompactIri": true},
+        "@id": "ex:alice",
+        "ex:name": "Alice"
+    });
+    let _committed = fluree
+        .insert(ledger0, &tx)
+        .await
+        .expect("single-object insert with opts should succeed");
+    let loaded = fluree.ledger(ledger_id).await.expect("reload ledger");
+
+    // Subject crawl — verify "opts" was NOT stored as a property of ex:alice
+    let q = json!({
+        "@context": ctx(),
+        "select": {"ex:alice": ["*"]}
+    });
+    let r = support::query_jsonld(&fluree, &loaded, &q)
+        .await
+        .expect("query crawl");
+    let json_out = r
+        .to_jsonld_async(loaded.as_graph_db_ref(0))
+        .await
+        .expect("to_jsonld_async");
+    let arr = json_out.as_array().expect("array");
+    assert_eq!(arr.len(), 1);
+    let obj = arr[0].as_object().expect("object");
+
+    // Primary assertion: no "opts" field made it onto the entity
+    assert!(
+        !obj.keys().any(|k| k == "opts" || k.ends_with(":opts")),
+        "'opts' must not be stored as data; got keys: {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+    // Sanity: the real data is there
+    assert_eq!(obj.get("ex:name").and_then(|v| v.as_str()), Some("Alice"));
+}
+
+#[tokio::test]
+async fn jsonld_path_alias_honors_strict_opt_out() {
+    // Regression: @path expressions inside @context are parsed BEFORE the
+    // main query body, but they must still honor `opts.strictCompactIri`.
+    // A @path referencing an undefined prefix should:
+    //   - default (strict=true): REJECT at parse time
+    //   - opts.strictCompactIri=false: ACCEPT (pass through)
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/jsonld-basic:path-alias-opt-out";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    // Seed minimal data
+    let seed = json!({
+        "@context": ctx(),
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+    });
+    let _ = fluree.insert(ledger0, &seed).await.expect("seed insert");
+    let loaded = fluree.ledger(ledger_id).await.expect("reload");
+
+    // Strict (default): @path with undefined `foo:` prefix should be rejected
+    let q_strict = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "id": "@id",
+            "chain": {"@path": "foo:step1/foo:step2"}
+        },
+        "select": ["?s"],
+        "where": {"id": "?s", "chain": "?o"}
+    });
+    let err = support::query_jsonld(&fluree, &loaded, &q_strict)
+        .await
+        .expect_err("strict mode should reject undefined prefix inside @path");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("foo") && msg.contains("not defined"),
+        "error should mention undefined prefix inside @path: {msg}"
+    );
+
+    // Opt-out: same @path expression should parse successfully
+    let q_relaxed = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "id": "@id",
+            "chain": {"@path": "foo:step1/foo:step2"}
+        },
+        "opts": {"strictCompactIri": false},
+        "select": ["?s"],
+        "where": {"id": "?s", "chain": "?o"}
+    });
+    // Should parse without error. Empty result set is fine — we're verifying
+    // the parse phase honors the opt-out, not execution semantics.
+    let _result = support::query_jsonld(&fluree, &loaded, &q_relaxed)
+        .await
+        .expect("opt-out should allow undefined prefix inside @path");
+}
+
+#[tokio::test]
+async fn jsonld_typed_literal_datatype_honors_strict_opt_out() {
+    // Regression: @type on a @value object is a datatype IRI. It must honor
+    // opts.strictCompactIri when the prefix isn't in @context.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/jsonld-basic:typed-literal-opt-out";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    // Strict (default): undefined datatype prefix rejected
+    let tx_strict = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{
+            "@id": "ex:alice",
+            "ex:age": {"@value": "42", "@type": "mydt:customInt"}
+        }]
+    });
+    let err = fluree
+        .insert(ledger0.clone(), &tx_strict)
+        .await
+        .expect_err("strict mode should reject undefined datatype prefix");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("mydt") && msg.contains("not defined"),
+        "error should mention undefined datatype prefix: {msg}"
+    );
+
+    // Opt-out: undefined datatype prefix passes through
+    let tx_relaxed = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "opts": {"strictCompactIri": false},
+        "@graph": [{
+            "@id": "ex:alice",
+            "ex:age": {"@value": "42", "@type": "mydt:customInt"}
+        }]
+    });
+    let _committed = fluree
+        .insert(ledger0, &tx_relaxed)
+        .await
+        .expect("opt-out should allow undefined datatype prefix");
+}
+
+#[tokio::test]
+async fn jsonld_txn_meta_datatype_honors_strict_opt_out() {
+    // Regression: txn-meta top-level predicates can carry @value objects
+    // with a @type datatype IRI. That datatype resolution must also honor
+    // opts.strictCompactIri.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/jsonld-basic:txn-meta-datatype-opt-out";
+    let ledger0 = genesis_ledger(&fluree, ledger_id);
+
+    // Strict (default): undefined datatype prefix in txn-meta → reject
+    let tx_strict = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}],
+        "ex:meta": {"@value": "v1", "@type": "mydt:customStr"}
+    });
+    let err = fluree
+        .insert(ledger0.clone(), &tx_strict)
+        .await
+        .expect_err("strict mode should reject undefined txn-meta datatype prefix");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("mydt") && msg.contains("not defined"),
+        "error should mention undefined datatype prefix in txn-meta: {msg}"
+    );
+
+    // Opt-out: undefined datatype prefix in txn-meta passes through
+    let tx_relaxed = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "opts": {"strictCompactIri": false},
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}],
+        "ex:meta": {"@value": "v1", "@type": "mydt:customStr"}
+    });
+    let _committed = fluree
+        .insert(ledger0, &tx_relaxed)
+        .await
+        .expect("opt-out should allow undefined datatype prefix in txn-meta");
+}
+
+#[tokio::test]
 async fn jsonld_expanding_literal_nodes_wildcard() {
     // Mirrors "expanding literal nodes - with wildcard"
     let (fluree, ledger) = seed_movie_graph().await;

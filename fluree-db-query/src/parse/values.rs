@@ -34,7 +34,7 @@
 
 use super::ast::{LiteralValue, UnresolvedDatatypeConstraint, UnresolvedPattern, UnresolvedValue};
 use super::error::{ParseError, Result};
-use fluree_graph_json_ld::{details_checked, ParsedContext};
+use super::policy::JsonLdParseCtx;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
@@ -56,10 +56,7 @@ fn validate_var_name(name: &str) -> Result<()> {
 ///
 /// The JSON input `["?x", [1, 2, 3]]` produces a values pattern binding
 /// `?x` to three rows.
-pub fn parse_values_clause(
-    values: &JsonValue,
-    context: &ParsedContext,
-) -> Result<UnresolvedPattern> {
+pub fn parse_values_clause(values: &JsonValue, ctx: &JsonLdParseCtx) -> Result<UnresolvedPattern> {
     let arr = values.as_array().ok_or_else(|| {
         ParseError::InvalidWhere("values must be a 2-element array: [vars, vals]".to_string())
     })?;
@@ -123,7 +120,7 @@ pub fn parse_values_clause(
 
         let mut out_row = Vec::with_capacity(var_count);
         for cell in cells {
-            out_row.push(parse_values_cell(cell, context)?);
+            out_row.push(parse_values_cell(cell, ctx)?);
         }
         rows.push(out_row);
     }
@@ -142,7 +139,7 @@ pub fn parse_values_clause(
 /// - Objects with `@value` and `@type` → Typed literal
 /// - Objects with `@language` → Language-tagged string
 /// - Arrays (only for vector type) → Vector literal
-fn parse_values_cell(cell: &JsonValue, context: &ParsedContext) -> Result<UnresolvedValue> {
+fn parse_values_cell(cell: &JsonValue, ctx: &JsonLdParseCtx) -> Result<UnresolvedValue> {
     match cell {
         JsonValue::Null => Ok(UnresolvedValue::Unbound),
         JsonValue::Bool(b) => Ok(UnresolvedValue::Literal {
@@ -171,7 +168,7 @@ fn parse_values_cell(cell: &JsonValue, context: &ParsedContext) -> Result<Unreso
             value: LiteralValue::String(Arc::from(s.as_str())),
             dtc: None,
         }),
-        JsonValue::Object(map) => parse_jsonld_object(map, context),
+        JsonValue::Object(map) => parse_jsonld_object(map, ctx),
         JsonValue::Array(_) => Err(ParseError::InvalidWhere(
             "values cell cannot be an array (rows use arrays)".to_string(),
         )),
@@ -185,30 +182,30 @@ fn parse_values_cell(cell: &JsonValue, context: &ParsedContext) -> Result<Unreso
 /// - `{"@value": ..., "@type": ..., "@language": ...}` - Typed literal
 fn parse_jsonld_object(
     map: &serde_json::Map<String, JsonValue>,
-    context: &ParsedContext,
+    ctx: &JsonLdParseCtx,
 ) -> Result<UnresolvedValue> {
     // Handle @id shorthand
     if let Some(id_val) = map.get("@id") {
-        return parse_iri_binding(id_val, context);
+        return parse_iri_binding(id_val, ctx);
     }
 
     // Handle @value with @type and @language
-    parse_typed_literal(map, context)
+    parse_typed_literal(map, ctx)
 }
 
 /// Parse IRI binding from `{"@id": "..."}`
-fn parse_iri_binding(id_val: &JsonValue, context: &ParsedContext) -> Result<UnresolvedValue> {
+fn parse_iri_binding(id_val: &JsonValue, ctx: &JsonLdParseCtx) -> Result<UnresolvedValue> {
     let id_str = id_val
         .as_str()
         .ok_or_else(|| ParseError::InvalidWhere("@id in values must be a string".to_string()))?;
-    let (expanded, _) = details_checked(id_str, context)?;
+    let (expanded, _) = ctx.expand_vocab(id_str)?;
     Ok(UnresolvedValue::Iri(Arc::from(expanded)))
 }
 
 /// Parse typed literal from `{"@value": ..., "@type": ..., "@language": ...}`
 fn parse_typed_literal(
     map: &serde_json::Map<String, JsonValue>,
-    context: &ParsedContext,
+    ctx: &JsonLdParseCtx,
 ) -> Result<UnresolvedValue> {
     let value_val = map.get("@value").ok_or_else(|| {
         ParseError::InvalidWhere("values object must contain @id or @value/@type".to_string())
@@ -219,7 +216,7 @@ fn parse_typed_literal(
     let dt_iri = match map.get("@type").and_then(|v| v.as_str()) {
         Some("@id") => Some(Arc::from("@id")),
         Some(t) => {
-            let (expanded, _) = details_checked(t, context)?;
+            let (expanded, _) = ctx.expand_vocab(t)?;
             Some(Arc::from(expanded))
         }
         None => None,
@@ -227,7 +224,7 @@ fn parse_typed_literal(
 
     // If datatype is @id, treat @value as IRI string
     if matches!(dt_iri.as_deref(), Some("@id")) {
-        return parse_iri_from_value(value_val, context);
+        return parse_iri_from_value(value_val, ctx);
     }
 
     // Otherwise, parse as literal
@@ -239,11 +236,11 @@ fn parse_typed_literal(
 }
 
 /// Parse IRI from @value when @type is @id
-fn parse_iri_from_value(value_val: &JsonValue, context: &ParsedContext) -> Result<UnresolvedValue> {
+fn parse_iri_from_value(value_val: &JsonValue, ctx: &JsonLdParseCtx) -> Result<UnresolvedValue> {
     let s = value_val.as_str().ok_or_else(|| {
         ParseError::InvalidWhere("@value must be a string when @type is @id".to_string())
     })?;
-    let (expanded, _) = details_checked(s, context)?;
+    let (expanded, _) = ctx.expand_vocab(s)?;
     Ok(UnresolvedValue::Iri(Arc::from(expanded)))
 }
 
@@ -298,8 +295,10 @@ fn parse_vector_literal(arr: &[JsonValue], dt_iri: Option<&str>) -> Result<Liter
 
 #[cfg(test)]
 mod tests {
+    use super::super::policy::JsonLdParsePolicy;
+    use super::super::PathAliasMap;
     use super::*;
-    use fluree_graph_json_ld::parse_context;
+    use fluree_graph_json_ld::{parse_context, ParsedContext};
     use serde_json::json;
 
     fn test_context() -> ParsedContext {
@@ -310,11 +309,20 @@ mod tests {
         parse_context(&ctx_json).unwrap()
     }
 
+    fn test_parse_ctx(context: &ParsedContext) -> JsonLdParseCtx {
+        JsonLdParseCtx::new(
+            context.clone(),
+            PathAliasMap::new(),
+            JsonLdParsePolicy::default(),
+        )
+    }
+
     #[test]
     fn test_parse_values_single_var() {
         let context = test_context();
+        let ctx = test_parse_ctx(&context);
         let values_json = json!(["?x", [1, 2, 3]]);
-        let pattern = parse_values_clause(&values_json, &context).unwrap();
+        let pattern = parse_values_clause(&values_json, &ctx).unwrap();
 
         match pattern {
             UnresolvedPattern::Values { vars, rows } => {
@@ -329,8 +337,9 @@ mod tests {
     #[test]
     fn test_parse_values_multiple_vars() {
         let context = test_context();
+        let ctx = test_parse_ctx(&context);
         let values_json = json!([["?x", "?y"], [[1, "Alice"], [2, "Bob"]]]);
-        let pattern = parse_values_clause(&values_json, &context).unwrap();
+        let pattern = parse_values_clause(&values_json, &ctx).unwrap();
 
         match pattern {
             UnresolvedPattern::Values { vars, rows } => {
@@ -345,8 +354,9 @@ mod tests {
     #[test]
     fn test_parse_values_with_null() {
         let context = test_context();
+        let ctx = test_parse_ctx(&context);
         let values_json = json!(["?x", [1, null, 3]]);
-        let pattern = parse_values_clause(&values_json, &context).unwrap();
+        let pattern = parse_values_clause(&values_json, &ctx).unwrap();
 
         match pattern {
             UnresolvedPattern::Values { vars: _, rows } => {
@@ -359,11 +369,12 @@ mod tests {
     #[test]
     fn test_parse_values_with_iri() {
         let context = test_context();
+        let ctx = test_parse_ctx(&context);
         let values_json = json!([
             "?x",
             [{"@id": "ex:alice"}, {"@id": "ex:bob"}]
         ]);
-        let pattern = parse_values_clause(&values_json, &context).unwrap();
+        let pattern = parse_values_clause(&values_json, &ctx).unwrap();
 
         match pattern {
             UnresolvedPattern::Values { vars: _, rows } => match &rows[0][0] {
@@ -379,19 +390,21 @@ mod tests {
     #[test]
     fn test_parse_values_mismatched_columns() {
         let context = test_context();
+        let ctx = test_parse_ctx(&context);
         let values_json = json!([
             ["?x", "?y"],
             [[1, "Alice"], [2]] // Second row has wrong length
         ]);
-        let result = parse_values_clause(&values_json, &context);
+        let result = parse_values_clause(&values_json, &ctx);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_parse_values_invalid_var_name() {
         let context = test_context();
+        let ctx = test_parse_ctx(&context);
         let values_json = json!(["x", [1, 2]]); // Missing '?'
-        let result = parse_values_clause(&values_json, &context);
+        let result = parse_values_clause(&values_json, &ctx);
         assert!(result.is_err());
     }
 }

@@ -990,6 +990,25 @@ Note: `f:*` keys used for graph source queries should be defined in your `@conte
 }
 ```
 
+## Parse Options
+
+JSON-LD queries accept parse-time options under a top-level `opts` object. These control how the query is parsed (not what it returns).
+
+### `strictCompactIri`
+
+By default, JSON-LD queries reject unresolved compact-looking IRIs (`prefix:suffix` where the prefix is not in `@context`) at parse time. To opt out:
+
+```json
+{
+  "@context": {"ex": "http://example.org/ns/"},
+  "opts": {"strictCompactIri": false},
+  "select": ["?id", "?name"],
+  "where": {"@id": "?id", "ex:name": "?name"}
+}
+```
+
+The default is `true`. Disable only when you are intentionally working with bare `prefix:suffix` strings as opaque identifiers. See [IRIs and @context — Strict Compact-IRI Guard](../concepts/iri-and-context.md#strict-compact-iri-guard) for the full policy.
+
 ## Best Practices
 
 1. **Always Provide @context**: Makes queries readable and maintainable
@@ -1005,3 +1024,4 @@ Note: `f:*` keys used for graph source queries should be defined in your `@conte
 - [Time Travel](../concepts/time-travel.md): Historical queries
 - [Graph Sources](../concepts/graph-sources.md): Graph source queries
 - [Output Formats](output-formats.md): Query result formats
+- [IRIs and @context](../concepts/iri-and-context.md): IRI resolution and the strict compact-IRI guard

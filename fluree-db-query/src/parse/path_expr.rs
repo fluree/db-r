@@ -20,7 +20,7 @@
 
 use super::ast::UnresolvedPathExpr;
 use super::error::{ParseError, Result};
-use fluree_graph_json_ld::{expand_iri_checked, ParsedContext};
+use super::policy::JsonLdParseCtx;
 use fluree_vocab::rdf;
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -41,7 +41,7 @@ use std::sync::Arc;
 /// ```
 ///
 /// Compact IRIs are expanded using the provided context.
-pub fn parse_path_string(input: &str, context: &ParsedContext) -> Result<UnresolvedPathExpr> {
+pub fn parse_path_string(input: &str, ctx: &JsonLdParseCtx) -> Result<UnresolvedPathExpr> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(ParseError::InvalidContext(
@@ -49,7 +49,7 @@ pub fn parse_path_string(input: &str, context: &ParsedContext) -> Result<Unresol
         ));
     }
     let mut pos = 0;
-    let result = parse_alternative(trimmed, &mut pos, context)?;
+    let result = parse_alternative(trimmed, &mut pos, ctx)?;
     skip_ws(trimmed, &mut pos);
     if pos < trimmed.len() {
         return Err(ParseError::InvalidContext(format!(
@@ -65,7 +65,7 @@ pub fn parse_path_string(input: &str, context: &ParsedContext) -> Result<Unresol
 fn parse_alternative(
     input: &str,
     pos: &mut usize,
-    ctx: &ParsedContext,
+    ctx: &JsonLdParseCtx,
 ) -> Result<UnresolvedPathExpr> {
     let mut parts = vec![parse_sequence(input, pos, ctx)?];
     loop {
@@ -85,7 +85,11 @@ fn parse_alternative(
 }
 
 /// Sequence (`/`)
-fn parse_sequence(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<UnresolvedPathExpr> {
+fn parse_sequence(
+    input: &str,
+    pos: &mut usize,
+    ctx: &JsonLdParseCtx,
+) -> Result<UnresolvedPathExpr> {
     let mut parts = vec![parse_elt_or_inverse(input, pos, ctx)?];
     loop {
         skip_ws(input, pos);
@@ -107,7 +111,7 @@ fn parse_sequence(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<U
 fn parse_elt_or_inverse(
     input: &str,
     pos: &mut usize,
-    ctx: &ParsedContext,
+    ctx: &JsonLdParseCtx,
 ) -> Result<UnresolvedPathExpr> {
     skip_ws(input, pos);
     if peek(input, *pos) == Some('^') {
@@ -120,7 +124,7 @@ fn parse_elt_or_inverse(
 }
 
 /// Element with optional postfix modifier (`+`, `*`, `?`)
-fn parse_elt(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<UnresolvedPathExpr> {
+fn parse_elt(input: &str, pos: &mut usize, ctx: &JsonLdParseCtx) -> Result<UnresolvedPathExpr> {
     let primary = parse_primary(input, pos, ctx)?;
     // Allow optional whitespace before modifier (SPARQL tokenization allows it)
     skip_ws(input, pos);
@@ -142,7 +146,7 @@ fn parse_elt(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<Unreso
 }
 
 /// Primary: full IRI, prefixed name, `a`, or parenthesized group
-fn parse_primary(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<UnresolvedPathExpr> {
+fn parse_primary(input: &str, pos: &mut usize, ctx: &JsonLdParseCtx) -> Result<UnresolvedPathExpr> {
     skip_ws(input, pos);
     if *pos >= input.len() {
         return Err(ParseError::InvalidContext(
@@ -176,7 +180,7 @@ fn parse_primary(input: &str, pos: &mut usize, ctx: &ParsedContext) -> Result<Un
         if name == "a" {
             Ok(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE)))
         } else {
-            let expanded = expand_iri_checked(&name, ctx)?;
+            let expanded = ctx.expand_iri(&name)?;
             Ok(UnresolvedPathExpr::Iri(Arc::from(expanded.as_str())))
         }
     }
@@ -255,7 +259,7 @@ fn peek(input: &str, pos: usize) -> Option<char> {
 /// Operands can be:
 /// - String: expanded as a compact IRI via context
 /// - Array: recursively parsed as a nested S-expression
-pub fn parse_path_array(arr: &[JsonValue], context: &ParsedContext) -> Result<UnresolvedPathExpr> {
+pub fn parse_path_array(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<UnresolvedPathExpr> {
     if arr.is_empty() {
         return Err(ParseError::InvalidContext(
             "@path array must not be empty".to_string(),
@@ -278,7 +282,7 @@ pub fn parse_path_array(arr: &[JsonValue], context: &ParsedContext) -> Result<Un
                     arr.len() - 1,
                 )));
             }
-            let operand = parse_array_operand(&arr[1], context)?;
+            let operand = parse_array_operand(&arr[1], ctx)?;
             match op {
                 "+" => Ok(UnresolvedPathExpr::OneOrMore(Box::new(operand))),
                 "*" => Ok(UnresolvedPathExpr::ZeroOrMore(Box::new(operand))),
@@ -298,7 +302,7 @@ pub fn parse_path_array(arr: &[JsonValue], context: &ParsedContext) -> Result<Un
             }
             let operands: Vec<UnresolvedPathExpr> = arr[1..]
                 .iter()
-                .map(|v| parse_array_operand(v, context))
+                .map(|v| parse_array_operand(v, ctx))
                 .collect::<Result<_>>()?;
             match op {
                 "/" => Ok(UnresolvedPathExpr::Sequence(operands)),
@@ -317,17 +321,17 @@ pub fn parse_path_array(arr: &[JsonValue], context: &ParsedContext) -> Result<Un
 ///
 /// - String: expanded as a compact IRI (`"a"` becomes rdf:type)
 /// - Array: recursively parsed
-fn parse_array_operand(val: &JsonValue, context: &ParsedContext) -> Result<UnresolvedPathExpr> {
+fn parse_array_operand(val: &JsonValue, ctx: &JsonLdParseCtx) -> Result<UnresolvedPathExpr> {
     match val {
         JsonValue::String(s) => {
             if s == "a" {
                 Ok(UnresolvedPathExpr::Iri(Arc::from(rdf::TYPE)))
             } else {
-                let expanded = expand_iri_checked(s, context)?;
+                let expanded = ctx.expand_iri(s)?;
                 Ok(UnresolvedPathExpr::Iri(Arc::from(expanded.as_str())))
             }
         }
-        JsonValue::Array(arr) => parse_path_array(arr, context),
+        JsonValue::Array(arr) => parse_path_array(arr, ctx),
         _ => Err(ParseError::InvalidContext(
             "@path array: operands must be strings (IRIs) or arrays (nested expressions)"
                 .to_string(),
@@ -341,23 +345,26 @@ fn parse_array_operand(val: &JsonValue, context: &ParsedContext) -> Result<Unres
 
 #[cfg(test)]
 mod tests {
+    use super::super::policy::JsonLdParsePolicy;
+    use super::super::PathAliasMap;
     use super::*;
     use fluree_graph_json_ld::parse_context;
     use serde_json::json;
 
-    fn test_context() -> ParsedContext {
-        parse_context(&json!({
+    fn test_ctx() -> JsonLdParseCtx {
+        let context = parse_context(&json!({
             "ex": "http://example.org/",
             "schema": "http://schema.org/"
         }))
-        .unwrap()
+        .unwrap();
+        JsonLdParseCtx::new(context, PathAliasMap::new(), JsonLdParsePolicy::default())
     }
 
     // -- String parser tests --
 
     #[test]
     fn string_simple_plus() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:friend+", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -369,7 +376,7 @@ mod tests {
 
     #[test]
     fn string_simple_star() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:friend*", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -381,7 +388,7 @@ mod tests {
 
     #[test]
     fn string_simple_question() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:friend?", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -393,7 +400,7 @@ mod tests {
 
     #[test]
     fn string_inverse() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("^ex:parent", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -405,7 +412,7 @@ mod tests {
 
     #[test]
     fn string_sequence() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:friend/ex:name", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -418,7 +425,7 @@ mod tests {
 
     #[test]
     fn string_alternative() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:friend|ex:colleague", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -431,7 +438,7 @@ mod tests {
 
     #[test]
     fn string_grouped_alternative_plus() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("(ex:a|ex:b)+", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -444,7 +451,7 @@ mod tests {
 
     #[test]
     fn string_full_iri() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("<http://example.org/foo>+", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -456,7 +463,7 @@ mod tests {
 
     #[test]
     fn string_a_keyword() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("a+", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -467,7 +474,7 @@ mod tests {
     #[test]
     fn string_complex_path() {
         // ^ex:parent/ex:child+
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("^ex:parent/ex:child+", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -485,7 +492,7 @@ mod tests {
     #[test]
     fn string_precedence_seq_over_alt() {
         // ex:a/ex:b|ex:c => Alternative([Sequence([a, b]), c])
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:a/ex:b|ex:c", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -501,7 +508,7 @@ mod tests {
 
     #[test]
     fn string_whitespace_tolerance() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("  ex:a / ex:b  ", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -514,7 +521,7 @@ mod tests {
 
     #[test]
     fn string_whitespace_before_modifier() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:knows +", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -526,7 +533,7 @@ mod tests {
 
     #[test]
     fn string_three_part_sequence() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let expr = parse_path_string("ex:a/ex:b/ex:c", &ctx).unwrap();
         assert_eq!(
             expr,
@@ -540,19 +547,19 @@ mod tests {
 
     #[test]
     fn string_empty_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         assert!(parse_path_string("", &ctx).is_err());
     }
 
     #[test]
     fn string_unmatched_paren_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         assert!(parse_path_string("(ex:a|ex:b", &ctx).is_err());
     }
 
     #[test]
     fn string_trailing_garbage_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         assert!(parse_path_string("ex:a ex:b", &ctx).is_err());
     }
 
@@ -560,7 +567,7 @@ mod tests {
 
     #[test]
     fn array_plus() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["+", "ex:knows"]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -573,7 +580,7 @@ mod tests {
 
     #[test]
     fn array_star() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["*", "ex:knows"]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -586,7 +593,7 @@ mod tests {
 
     #[test]
     fn array_inverse() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["^", "ex:parent"]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -599,7 +606,7 @@ mod tests {
 
     #[test]
     fn array_sequence() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["/", "ex:friend", "ex:name"]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -613,7 +620,7 @@ mod tests {
 
     #[test]
     fn array_alternative() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["|", "ex:friend", "ex:colleague"]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -627,7 +634,7 @@ mod tests {
 
     #[test]
     fn array_nested() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["/", "ex:a", ["+", "ex:b"]]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -643,7 +650,7 @@ mod tests {
 
     #[test]
     fn array_multi_operand_sequence() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["/", "ex:a", "ex:b", "ex:c"]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -658,7 +665,7 @@ mod tests {
 
     #[test]
     fn array_a_keyword() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["+", "a"]);
         let expr = parse_path_array(arr.as_array().unwrap(), &ctx).unwrap();
         assert_eq!(
@@ -669,21 +676,21 @@ mod tests {
 
     #[test]
     fn array_empty_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr: Vec<JsonValue> = vec![];
         assert!(parse_path_array(&arr, &ctx).is_err());
     }
 
     #[test]
     fn array_unknown_operator_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["!", "ex:a"]);
         assert!(parse_path_array(arr.as_array().unwrap(), &ctx).is_err());
     }
 
     #[test]
     fn array_unary_arity_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         // + needs exactly 1 operand
         let arr = json!(["+", "ex:a", "ex:b"]);
         assert!(parse_path_array(arr.as_array().unwrap(), &ctx).is_err());
@@ -691,7 +698,7 @@ mod tests {
 
     #[test]
     fn array_binary_arity_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         // / needs at least 2 operands
         let arr = json!(["/", "ex:a"]);
         assert!(parse_path_array(arr.as_array().unwrap(), &ctx).is_err());
@@ -699,7 +706,7 @@ mod tests {
 
     #[test]
     fn array_invalid_operand_type_error() {
-        let ctx = test_context();
+        let ctx = test_ctx();
         let arr = json!(["+", 42]);
         assert!(parse_path_array(arr.as_array().unwrap(), &ctx).is_err());
     }

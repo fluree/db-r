@@ -88,9 +88,12 @@ where
 
         // 1. Parse to common IR (using primary db for namespace resolution).
         let (vars, mut parsed) = match &input {
-            QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())?
-            }
+            QueryInput::JsonLd(json) => parse_jsonld_query(
+                json,
+                &primary.snapshot,
+                primary.default_context.as_ref(),
+                None,
+            )?,
             QueryInput::Sparql(sparql) => {
                 // For dataset view, SPARQL FROM/FROM NAMED are allowed
                 // (they were validated when building the dataset)
@@ -179,9 +182,12 @@ where
 
         // 1. Parse to common IR (using primary db for namespace resolution).
         let (vars, mut parsed) = match &input {
-            QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())?
-            }
+            QueryInput::JsonLd(json) => parse_jsonld_query(
+                json,
+                &primary.snapshot,
+                primary.default_context.as_ref(),
+                None,
+            )?,
             QueryInput::Sparql(sparql) => {
                 parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())?
             }
@@ -260,12 +266,15 @@ where
 
         // Parse
         let (vars, mut parsed) = match &input {
-            QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())
-                    .map_err(|e| {
-                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                    })?
-            }
+            QueryInput::JsonLd(json) => parse_jsonld_query(
+                json,
+                &primary.snapshot,
+                primary.default_context.as_ref(),
+                None,
+            )
+            .map_err(|e| {
+                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+            })?,
             QueryInput::Sparql(sparql) => {
                 parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())
                     .map_err(|e| {
@@ -371,12 +380,15 @@ where
         })?;
 
         let (vars, mut parsed) = match &input {
-            QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &primary.snapshot, primary.default_context.as_ref())
-                    .map_err(|e| {
-                        crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
-                    })?
-            }
+            QueryInput::JsonLd(json) => parse_jsonld_query(
+                json,
+                &primary.snapshot,
+                primary.default_context.as_ref(),
+                None,
+            )
+            .map_err(|e| {
+                crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
+            })?,
             QueryInput::Sparql(sparql) => {
                 parse_sparql_to_ir(sparql, &primary.snapshot, primary.default_context.as_ref())
                     .map_err(|e| {

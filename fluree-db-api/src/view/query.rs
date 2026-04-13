@@ -84,7 +84,7 @@ where
         let parse_start = std::time::Instant::now();
         let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref())?
+                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref(), None)?
             }
             QueryInput::Sparql(sparql) => {
                 // Validate no dataset clauses
@@ -150,7 +150,7 @@ where
         // 1. Parse to common IR
         let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref())?
+                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref(), None)?
             }
             QueryInput::Sparql(sparql) => {
                 // Validate no dataset clauses
@@ -252,7 +252,7 @@ where
         // Parse
         let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref()).map_err(
+                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref(), None).map_err(
                     |e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                     },
@@ -360,7 +360,7 @@ where
 
         let (vars, mut parsed) = match &input {
             QueryInput::JsonLd(json) => {
-                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref()).map_err(
+                parse_jsonld_query(json, &db.snapshot, db.default_context.as_ref(), None).map_err(
                     |e| {
                         crate::query::TrackedErrorResponse::new(400, e.to_string(), tracker.tally())
                     },

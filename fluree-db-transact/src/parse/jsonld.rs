@@ -17,11 +17,11 @@ use crate::ir::{InlineValues, TemplateTerm, TripleTemplate, Txn, TxnOpts, TxnTyp
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::FlakeValue;
-use fluree_db_query::parse::{parse_where_with_counters, PathAliasMap, UnresolvedQuery};
-use fluree_db_query::VarRegistry;
-use fluree_graph_json_ld::{
-    details_checked, expand_with_context_checked, parse_context, ParsedContext,
+use fluree_db_query::parse::{
+    parse_where_with_counters, JsonLdParseCtx, JsonLdParsePolicy, PathAliasMap, UnresolvedQuery,
 };
+use fluree_db_query::VarRegistry;
+use fluree_graph_json_ld::{expand_with_context_policy, parse_context, ParsedContext};
 use fluree_vocab::{
     rdf::{self, TYPE},
     rdf_names,
@@ -113,11 +113,22 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Parse and merge context
     let context = extract_context(json)?;
 
-    // Extract transaction metadata (only from envelope-form documents with @graph)
-    let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
+    // Resolve strict compact-IRI policy
+    let strict = opts
+        .strict_compact_iri
+        .or_else(|| {
+            use fluree_db_query::parse::policy::parse_strict_compact_iri_opt;
+            json.as_object().and_then(parse_strict_compact_iri_opt)
+        })
+        .unwrap_or(true);
 
+    // Extract transaction metadata (only from envelope-form documents with @graph)
+    let txn_meta = extract_txn_meta(json, &context, ns_registry, strict)?;
+
+    // Strip top-level `opts` so it is not expanded as data (single-object form)
+    let json_for_expand = strip_opts_for_expansion(json);
     // Expand the document
-    let expanded = expand_with_context_checked(json, &context)?;
+    let expanded = expand_with_context_policy(&json_for_expand, &context, strict)?;
 
     let empty_aliases = HashMap::new();
     let mut ctx = TemplateParseCtx::new(
@@ -125,6 +136,7 @@ fn parse_insert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         &mut vars,
         ns_registry,
         false,
+        strict,
         &mut graph_ids,
         None,
         &empty_aliases,
@@ -158,10 +170,21 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
 
     let context = extract_context(json)?;
 
-    // Extract transaction metadata (only from envelope-form documents with @graph)
-    let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
+    // Resolve strict compact-IRI policy
+    let strict = opts
+        .strict_compact_iri
+        .or_else(|| {
+            use fluree_db_query::parse::policy::parse_strict_compact_iri_opt;
+            json.as_object().and_then(parse_strict_compact_iri_opt)
+        })
+        .unwrap_or(true);
 
-    let expanded = expand_with_context_checked(json, &context)?;
+    // Extract transaction metadata (only from envelope-form documents with @graph)
+    let txn_meta = extract_txn_meta(json, &context, ns_registry, strict)?;
+
+    // Strip top-level `opts` so it is not expanded as data (single-object form)
+    let json_for_expand = strip_opts_for_expansion(json);
+    let expanded = expand_with_context_policy(&json_for_expand, &context, strict)?;
 
     let empty_aliases = HashMap::new();
     let mut ctx = TemplateParseCtx::new(
@@ -169,6 +192,7 @@ fn parse_upsert(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         &mut vars,
         ns_registry,
         false,
+        strict,
         &mut graph_ids,
         None,
         &empty_aliases,
@@ -209,8 +233,17 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     // Parse context from the outer document
     let context = extract_context(json)?;
 
+    // Resolve strict compact-IRI policy
+    let strict = opts
+        .strict_compact_iri
+        .or_else(|| {
+            use fluree_db_query::parse::policy::parse_strict_compact_iri_opt;
+            parse_strict_compact_iri_opt(obj)
+        })
+        .unwrap_or(true);
+
     // Extract transaction metadata (only from envelope-form documents with @graph)
-    let txn_meta = extract_txn_meta(json, &context, ns_registry)?;
+    let txn_meta = extract_txn_meta(json, &context, ns_registry, strict)?;
 
     // Optional WHERE dataset scoping using query-style dataset keys.
     // - `from.graph` (or `"from": "<graph IRI>"`, or `"from": ["<g1>", "<g2>"]`) scopes WHERE
@@ -219,6 +252,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     let where_named_graphs = parse_update_where_named_graphs(
         obj.get("fromNamed").or_else(|| obj.get("from-named")),
         &context,
+        strict,
     )?;
     let from_named_aliases: HashMap<String, String> = where_named_graphs
         .as_ref()
@@ -238,16 +272,21 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         &context,
         &from_named_aliases,
         &mut graph_ids,
+        strict,
     )?;
 
-    let where_default_graph_iris =
-        parse_update_where_default_graph_iris(obj.get("from"), &context, &from_named_aliases)?
-            .unwrap_or_else(|| {
-                template_default_graph
-                    .as_ref()
-                    .map(|(_, iri)| vec![iri.clone()])
-                    .unwrap_or_default()
-            });
+    let where_default_graph_iris = parse_update_where_default_graph_iris(
+        obj.get("from"),
+        &context,
+        &from_named_aliases,
+        strict,
+    )?
+    .unwrap_or_else(|| {
+        template_default_graph
+            .as_ref()
+            .map(|(_, iri)| vec![iri.clone()])
+            .unwrap_or_default()
+    });
 
     let has_where = obj.get("where").is_some();
     let has_values = obj.get("values").is_some();
@@ -262,11 +301,13 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
         let mut query = UnresolvedQuery::new(context.clone());
         let mut subject_counter: u32 = 0;
         let mut nested_counter: u32 = 0;
-        let no_path_aliases = PathAliasMap::new();
+        let parse_policy = JsonLdParsePolicy {
+            strict_compact_iri: strict,
+        };
+        let ctx = JsonLdParseCtx::new(context.clone(), PathAliasMap::new(), parse_policy);
         parse_where_with_counters(
             where_val,
-            &context,
-            &no_path_aliases,
+            &ctx,
             &mut query,
             &mut subject_counter,
             &mut nested_counter,
@@ -287,6 +328,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
             &mut vars,
             ns_registry,
             object_var_parsing,
+            strict,
             &mut graph_ids,
             template_default_graph.as_ref().map(|(g_id, _)| *g_id),
             &from_named_aliases,
@@ -317,6 +359,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
             &mut vars,
             ns_registry,
             object_var_parsing,
+            strict,
             &mut graph_ids,
             template_default_graph.as_ref().map(|(g_id, _)| *g_id),
             &from_named_aliases,
@@ -345,7 +388,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
     txn.update_where_named_graphs = where_named_graphs;
 
     if let Some(values_val) = obj.get("values") {
-        let values = parse_inline_values(values_val, &context, &mut txn.vars, ns_registry)?;
+        let values = parse_inline_values(values_val, &context, &mut txn.vars, ns_registry, strict)?;
         txn = txn.with_values(values);
     }
 
@@ -357,6 +400,7 @@ fn parse_update_template_default_graph(
     context: &ParsedContext,
     from_named_aliases: &HashMap<String, String>,
     graph_ids: &mut GraphIdAssigner,
+    strict: bool,
 ) -> Result<Option<(u16, String)>> {
     let Some(v) = graph_val else {
         return Ok(None);
@@ -375,13 +419,14 @@ fn parse_update_template_default_graph(
     }
 
     let resolved = resolve_graph_selector_value_for_update(v, from_named_aliases);
-    parse_update_default_graph(Some(&resolved), context, graph_ids)
+    parse_update_default_graph(Some(&resolved), context, graph_ids, strict)
 }
 
 fn parse_update_where_default_graph_iris(
     from_val: Option<&Value>,
     context: &ParsedContext,
     from_named_aliases: &HashMap<String, String>,
+    strict: bool,
 ) -> Result<Option<Vec<String>>> {
     let Some(v) = from_val else {
         return Ok(None);
@@ -398,7 +443,7 @@ fn parse_update_where_default_graph_iris(
                 "from: \"txn-meta\" is not currently supported as a default graph selector in updates"
                     .to_string(),
             )),
-            _ => Ok(Some(expand_update_graph_iri(&resolved, context)?)),
+            _ => Ok(Some(expand_update_graph_iri(&resolved, context, strict)?)),
         }
     };
 
@@ -421,7 +466,7 @@ fn parse_update_where_default_graph_iris(
         // Object form: allow {"graph": ...} and ignore other dataset fields.
         Value::Object(obj) => {
             if let Some(graph) = obj.get("graph") {
-                parse_update_where_default_graph_iris(Some(graph), context, from_named_aliases)
+                parse_update_where_default_graph_iris(Some(graph), context, from_named_aliases, strict)
             } else {
                 Ok(None)
             }
@@ -449,6 +494,7 @@ fn resolve_graph_selector_value_for_update(
 fn parse_update_where_named_graphs(
     from_named_val: Option<&Value>,
     context: &ParsedContext,
+    strict: bool,
 ) -> Result<Option<Vec<crate::ir::UpdateNamedGraph>>> {
     let Some(v) = from_named_val else {
         return Ok(None);
@@ -479,7 +525,7 @@ fn parse_update_where_named_graphs(
                     // This makes `fromNamed: ["ex:g2"]` usable as `["graph", "ex:g2", ...]`
                     // in WHERE patterns even though GRAPH names are not expanded via @context.
                     let implicit_alias = graph_val.as_str().map(|s| s.to_string());
-                    let iri = expand_update_graph_iri(graph_val, context)?;
+                    let iri = expand_update_graph_iri(graph_val, context, strict)?;
                     out.push(crate::ir::UpdateNamedGraph {
                         iri,
                         alias: explicit_alias.or(implicit_alias),
@@ -487,7 +533,7 @@ fn parse_update_where_named_graphs(
                 } else {
                     // String shorthand (or other selector shape): treat as graph IRI
                     let implicit_alias = item.as_str().map(|s| s.to_string());
-                    let iri = expand_update_graph_iri(&item, context)?;
+                    let iri = expand_update_graph_iri(&item, context, strict)?;
                     out.push(crate::ir::UpdateNamedGraph {
                         iri,
                         alias: implicit_alias,
@@ -505,7 +551,7 @@ fn parse_update_where_named_graphs(
     Ok(Some(out))
 }
 
-fn expand_update_graph_iri(v: &Value, context: &ParsedContext) -> Result<String> {
+fn expand_update_graph_iri(v: &Value, context: &ParsedContext, strict: bool) -> Result<String> {
     let selector = match v {
         Value::String(s) => Value::Object({
             let mut m = serde_json::Map::new();
@@ -544,7 +590,7 @@ fn expand_update_graph_iri(v: &Value, context: &ParsedContext) -> Result<String>
         }
     };
 
-    let expanded = expand_with_context_checked(&selector, context)?;
+    let expanded = expand_with_context_policy(&selector, context, strict)?;
     let iri = match &expanded {
         Value::Array(arr) => arr
             .first()
@@ -567,6 +613,7 @@ fn parse_update_default_graph(
     graph_val: Option<&Value>,
     context: &ParsedContext,
     graph_ids: &mut GraphIdAssigner,
+    strict: bool,
 ) -> Result<Option<(u16, String)>> {
     let Some(v) = graph_val else {
         return Ok(None);
@@ -604,7 +651,7 @@ fn parse_update_default_graph(
         }
     };
 
-    let expanded = expand_with_context_checked(&selector, context)?;
+    let expanded = expand_with_context_policy(&selector, context, strict)?;
     let iri = match &expanded {
         Value::Array(arr) => arr
             .first()
@@ -629,6 +676,7 @@ struct TemplateParseCtx<'a> {
     vars: &'a mut VarRegistry,
     ns_registry: &'a mut NamespaceRegistry,
     object_var_parsing: bool,
+    strict_compact_iri: bool,
     graph_ids: &'a mut GraphIdAssigner,
     default_graph_id: Option<u16>,
     from_named_aliases: &'a HashMap<String, String>,
@@ -636,11 +684,13 @@ struct TemplateParseCtx<'a> {
 }
 
 impl<'a> TemplateParseCtx<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         context: &'a ParsedContext,
         vars: &'a mut VarRegistry,
         ns_registry: &'a mut NamespaceRegistry,
         object_var_parsing: bool,
+        strict_compact_iri: bool,
         graph_ids: &'a mut GraphIdAssigner,
         default_graph_id: Option<u16>,
         from_named_aliases: &'a HashMap<String, String>,
@@ -650,11 +700,51 @@ impl<'a> TemplateParseCtx<'a> {
             vars,
             ns_registry,
             object_var_parsing,
+            strict_compact_iri,
             graph_ids,
             default_graph_id,
             from_named_aliases,
             blank_counter: 0,
         }
+    }
+
+    /// Expand a predicate or @type value (uses @vocab), respecting strict policy.
+    fn expand_vocab(
+        &self,
+        s: &str,
+    ) -> std::result::Result<(String, Option<fluree_graph_json_ld::ContextEntry>), TransactError>
+    {
+        Ok(fluree_graph_json_ld::details_with_policy(
+            s,
+            self.context,
+            self.strict_compact_iri,
+        )?)
+    }
+
+    /// Expand a subject @id (uses @base), respecting strict policy.
+    // Kept for: pre-expansion @id validation (not yet wired in template parsing).
+    // Use when: template subjects need strict compact-IRI checking before expansion.
+    #[expect(dead_code)]
+    fn expand_id(
+        &self,
+        s: &str,
+    ) -> std::result::Result<(String, Option<fluree_graph_json_ld::ContextEntry>), TransactError>
+    {
+        Ok(fluree_graph_json_ld::details_with_vocab_policy(
+            s,
+            self.context,
+            false,
+            self.strict_compact_iri,
+        )?)
+    }
+
+    /// Expand a JSON-LD document, respecting strict policy.
+    fn expand_document(&self, json: &Value) -> std::result::Result<Value, TransactError> {
+        Ok(expand_with_context_policy(
+            json,
+            self.context,
+            self.strict_compact_iri,
+        )?)
     }
 }
 
@@ -676,11 +766,12 @@ fn parse_update_templates_with_ctx(
                         Some(&resolved_graph),
                         ctx.context,
                         ctx.graph_ids,
+                        ctx.strict_compact_iri,
                     )?
                     .ok_or_else(|| {
                         TransactError::Parse("graph wrapper requires a graph IRI".to_string())
                     })?;
-                    let expanded = expand_with_context_checked(&arr[2], ctx.context)?;
+                    let expanded = ctx.expand_document(&arr[2])?;
                     let prev_default = ctx.default_graph_id;
                     ctx.default_graph_id = Some(graph.0);
                     let templates = parse_expanded_triples_with_ctx(&expanded, ctx)?;
@@ -693,7 +784,7 @@ fn parse_update_templates_with_ctx(
         }
 
         if !plain_items.is_empty() {
-            let expanded = expand_with_context_checked(&Value::Array(plain_items), ctx.context)?;
+            let expanded = ctx.expand_document(&Value::Array(plain_items))?;
             let templates = parse_expanded_triples_with_ctx(&expanded, ctx)?;
             out.extend(templates);
         }
@@ -702,7 +793,7 @@ fn parse_update_templates_with_ctx(
     }
 
     // Non-array templates: parse normally.
-    let expanded = expand_with_context_checked(val, ctx.context)?;
+    let expanded = ctx.expand_document(val)?;
     parse_expanded_triples_with_ctx(&expanded, ctx)
 }
 
@@ -715,9 +806,37 @@ fn extract_context(json: &Value) -> Result<ParsedContext> {
     }
 }
 
+/// Strip the top-level `opts` key from a JSON-LD transaction document so it
+/// is not interpreted as data by the JSON-LD expander.
+///
+/// `opts` is reserved for parse-time options (e.g. `opts.strictCompactIri`).
+/// In envelope form (with `@graph`), the expander already ignores extra
+/// top-level keys — only the single-object form leaks `opts` as a property.
+///
+/// Returns `Cow::Borrowed` when no stripping is needed, `Cow::Owned` otherwise.
+fn strip_opts_for_expansion(json: &Value) -> std::borrow::Cow<'_, Value> {
+    match json.as_object() {
+        Some(obj) if obj.contains_key("opts") => {
+            let mut cloned = obj.clone();
+            cloned.remove("opts");
+            std::borrow::Cow::Owned(Value::Object(cloned))
+        }
+        _ => std::borrow::Cow::Borrowed(json),
+    }
+}
+
 pub(crate) fn expand_datatype_iri(
     type_iri: &str,
     context: &ParsedContext,
+    strict: bool,
+) -> std::result::Result<String, fluree_graph_json_ld::JsonLdError> {
+    expand_datatype_iri_with_policy(type_iri, context, strict)
+}
+
+fn expand_datatype_iri_with_policy(
+    type_iri: &str,
+    context: &ParsedContext,
+    strict: bool,
 ) -> std::result::Result<String, fluree_graph_json_ld::JsonLdError> {
     // Try context resolution first (unchecked — we have builtin fallbacks below)
     let (expanded, entry) = fluree_graph_json_ld::details(type_iri, context);
@@ -745,7 +864,7 @@ pub(crate) fn expand_datatype_iri(
     }
 
     // No resolution path succeeded — apply strict guard
-    details_checked(type_iri, context)?;
+    fluree_graph_json_ld::details_with_policy(type_iri, context, strict)?;
     Ok(expanded)
 }
 
@@ -809,6 +928,7 @@ fn parse_inline_values(
     context: &ParsedContext,
     vars: &mut VarRegistry,
     ns_registry: &mut NamespaceRegistry,
+    strict: bool,
 ) -> Result<InlineValues> {
     let arr = value.as_array().ok_or_else(|| {
         TransactError::Parse("values must be a 2-element array: [vars, rows]".to_string())
@@ -873,7 +993,7 @@ fn parse_inline_values(
 
         let mut out_row = Vec::with_capacity(var_count);
         for cell in cells {
-            out_row.push(parse_values_cell(cell, context, ns_registry)?);
+            out_row.push(parse_values_cell(cell, context, ns_registry, strict)?);
         }
         rows.push(out_row);
     }
@@ -885,6 +1005,7 @@ fn parse_values_cell(
     cell: &Value,
     context: &ParsedContext,
     ns_registry: &mut NamespaceRegistry,
+    strict: bool,
 ) -> Result<TemplateTerm> {
     match cell {
         Value::Null => Err(TransactError::Parse(
@@ -909,7 +1030,8 @@ fn parse_values_cell(
                 let id_str = id_val.as_str().ok_or_else(|| {
                     TransactError::Parse("@id in values must be a string".to_string())
                 })?;
-                let (expanded, _) = details_checked(id_str, context)?;
+                let (expanded, _) =
+                    fluree_graph_json_ld::details_with_policy(id_str, context, strict)?;
                 if expanded.starts_with("_:") {
                     return Ok(TemplateTerm::BlankNode(expanded.to_string()));
                 }
@@ -927,11 +1049,12 @@ fn parse_values_cell(
                             "@value must be a string when @type is @id".to_string(),
                         )
                     })?;
-                    let (expanded, _) = details_checked(id_str, context)?;
+                    let (expanded, _) =
+                        fluree_graph_json_ld::details_with_policy(id_str, context, strict)?;
                     return Ok(TemplateTerm::Sid(ns_registry.sid_for_iri(&expanded)));
                 }
 
-                let expanded_type = expand_datatype_iri(type_val, context)?;
+                let expanded_type = expand_datatype_iri(type_val, context, strict)?;
                 let parsed = coerce_value_with_datatype(value_val, &expanded_type, ns_registry)?;
                 return Ok(parsed.term);
             }
@@ -1122,7 +1245,7 @@ fn resolve_graph_selector_str_for_templates(
     if let Some(iri) = ctx.from_named_aliases.get(raw) {
         return Ok(iri.clone());
     }
-    let (expanded, _) = details_checked(raw, ctx.context)?;
+    let (expanded, _) = ctx.expand_vocab(raw)?;
     Ok(expanded)
 }
 
@@ -1166,6 +1289,7 @@ fn parse_expanded_id(
         &context,
         vars,
         ns_registry,
+        true,
         true,
         &mut graph_ids,
         None,
@@ -1275,6 +1399,7 @@ fn parse_expanded_value_with_ctx(
                     ctx.vars,
                     ctx.ns_registry,
                     ctx.object_var_parsing,
+                    ctx.strict_compact_iri,
                 );
             }
 
@@ -1397,6 +1522,7 @@ fn parse_expanded_value(
         vars,
         ns_registry,
         object_var_parsing,
+        true,
         graph_ids,
         default_graph_id,
         from_named_aliases,
@@ -1408,6 +1534,7 @@ fn parse_expanded_value(
 }
 
 /// Parse a literal value with optional @type or @language, returning full metadata
+#[allow(clippy::too_many_arguments)]
 fn parse_literal_value_with_meta(
     val: &Value,
     obj: &serde_json::Map<String, Value>,
@@ -1415,11 +1542,12 @@ fn parse_literal_value_with_meta(
     vars: &mut VarRegistry,
     ns_registry: &mut NamespaceRegistry,
     object_var_parsing: bool,
+    strict: bool,
 ) -> Result<ParsedValue> {
     // Check for @type first - always route through typed coercion when present
     if let Some(type_val) = obj.get("@type") {
         if let Some(type_iri) = type_val.as_str() {
-            let expanded_type = expand_datatype_iri(type_iri, context)?;
+            let expanded_type = expand_datatype_iri(type_iri, context, strict)?;
 
             // Handle @json specially
             if type_iri == "@json" || expanded_type == rdf::JSON {
@@ -1674,6 +1802,7 @@ fn parse_list_values(
         vars,
         ns_registry,
         object_var_parsing,
+        true,
         graph_ids,
         default_graph_id,
         from_named_aliases,
@@ -2174,6 +2303,7 @@ mod tests {
             &mut vars,
             &mut ns_registry,
             true,
+            true,
             &mut graph_ids,
             None,
             &empty_aliases,
@@ -2226,6 +2356,7 @@ mod tests {
             &mut vars,
             &mut ns_registry,
             false,
+            true,
             &mut graph_ids,
             None,
             &empty_aliases,
@@ -2291,6 +2422,7 @@ mod tests {
             &mut vars,
             &mut ns_registry,
             false,
+            true,
             &mut graph_ids,
             None,
             &empty_aliases,
@@ -2343,6 +2475,7 @@ mod tests {
             &mut vars,
             &mut ns_registry,
             false,
+            true,
             &mut graph_ids,
             None,
             &empty_aliases,

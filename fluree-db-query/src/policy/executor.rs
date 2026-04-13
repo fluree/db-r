@@ -167,11 +167,9 @@ impl<'a> QueryPolicyExecutor<'a> {
             vars.get_or_insert(var_name);
         }
 
-        let parsed =
-            crate::parse::parse_query(&query_json, self.snapshot, &mut vars).map_err(|e| {
-                fluree_db_policy::PolicyError::QueryExecution {
-                    message: format!("Failed to parse policy query: {}", e),
-                }
+        let parsed = crate::parse::parse_query(&query_json, self.snapshot, &mut vars, None)
+            .map_err(|e| fluree_db_policy::PolicyError::QueryExecution {
+                message: format!("Failed to parse policy query: {}", e),
             })?;
 
         let patterns = parsed.patterns;

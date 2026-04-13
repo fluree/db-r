@@ -245,7 +245,7 @@ where
     ) -> Result<Vec<JsonValue>> {
         // Parse the query
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, &ledger.snapshot, &mut vars)?;
+        let parsed = parse_query(query_json, &ledger.snapshot, &mut vars, None)?;
 
         // Execute with a wildcard select so the operator pipeline does not project away
         // bindings we need for indexing

@@ -314,7 +314,7 @@ pub async fn explain_jsonld(
     query_json: &JsonValue,
 ) -> Result<JsonValue> {
     let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_json, snapshot, &mut vars)
+    let parsed = parse_query(query_json, snapshot, &mut vars, None)
         .map_err(|e| ApiError::query(format!("Explain parse error: {e}")))?;
 
     let query_obj = query_json
@@ -334,7 +334,7 @@ pub async fn explain_jsonld_with_default_context(
     query_json: &JsonValue,
     default_context: Option<&JsonValue>,
 ) -> Result<JsonValue> {
-    let (vars, parsed) = parse_jsonld_query(query_json, snapshot, default_context)?;
+    let (vars, parsed) = parse_jsonld_query(query_json, snapshot, default_context, None)?;
 
     let query_obj = query_json
         .as_object()

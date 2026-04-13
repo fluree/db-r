@@ -73,6 +73,7 @@ where
             query_json,
             &ledger.snapshot,
             ledger.default_context.as_ref(),
+            None,
         )?;
         let executable = ExecutableQuery::simple(parsed.clone());
 

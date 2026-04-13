@@ -35,11 +35,16 @@ use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
 use crate::parse::jsonld::expand_datatype_iri;
 use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES};
-use fluree_graph_json_ld::{details_checked, ParsedContext};
+use fluree_graph_json_ld::{details_with_policy, ParsedContext};
 use serde_json::Value;
 
-/// Reserved keys that are never transaction metadata
-const RESERVED_KEYS: &[&str] = &["@context", "@graph", "@id", "@type", "@base", "@vocab"];
+/// Reserved keys that are never transaction metadata.
+///
+/// `opts` is a Fluree-specific reserved key for parse-time options
+/// (e.g., `opts.strictCompactIri`). It must never be confused with metadata.
+const RESERVED_KEYS: &[&str] = &[
+    "@context", "@graph", "@id", "@type", "@base", "@vocab", "opts",
+];
 
 /// Extract transaction metadata from a JSON-LD document.
 ///
@@ -58,6 +63,7 @@ pub fn extract_txn_meta(
     json: &Value,
     context: &ParsedContext,
     ns_registry: &mut NamespaceRegistry,
+    strict: bool,
 ) -> Result<Vec<TxnMetaEntry>> {
     // 1. Check for envelope form (must have @graph)
     let obj = match json.as_object() {
@@ -74,7 +80,7 @@ pub fn extract_txn_meta(
         }
 
         // Expand key to full IRI using context
-        let (expanded_iri, _) = details_checked(key, context)?;
+        let (expanded_iri, _) = details_with_policy(key, context, strict)?;
 
         // Split to ns_code + local name via registry
         let sid = ns_registry.sid_for_iri(&expanded_iri);
@@ -82,7 +88,7 @@ pub fn extract_txn_meta(
         let predicate_name = sid.name.to_string();
 
         // Convert value(s) to TxnMetaValue(s)
-        let meta_values = json_to_txn_meta_values(value, context, ns_registry)?;
+        let meta_values = json_to_txn_meta_values(value, context, ns_registry, strict)?;
 
         for mv in meta_values {
             entries.push(TxnMetaEntry::new(predicate_ns, predicate_name.clone(), mv));
@@ -100,12 +106,18 @@ fn json_to_txn_meta_values(
     value: &Value,
     context: &ParsedContext,
     ns_registry: &mut NamespaceRegistry,
+    strict: bool,
 ) -> Result<Vec<TxnMetaValue>> {
     match value {
         Value::Array(arr) => {
             let mut results = Vec::with_capacity(arr.len());
             for item in arr {
-                results.push(json_to_single_txn_meta_value(item, context, ns_registry)?);
+                results.push(json_to_single_txn_meta_value(
+                    item,
+                    context,
+                    ns_registry,
+                    strict,
+                )?);
             }
             Ok(results)
         }
@@ -113,6 +125,7 @@ fn json_to_txn_meta_values(
             value,
             context,
             ns_registry,
+            strict,
         )?]),
     }
 }
@@ -122,6 +135,7 @@ fn json_to_single_txn_meta_value(
     value: &Value,
     context: &ParsedContext,
     ns_registry: &mut NamespaceRegistry,
+    strict: bool,
 ) -> Result<TxnMetaValue> {
     match value {
         Value::Null => Err(TransactError::Parse(
@@ -161,7 +175,7 @@ fn json_to_single_txn_meta_value(
                 let id_str = id_val.as_str().ok_or_else(|| {
                     TransactError::Parse("@id in txn-meta must be a string".to_string())
                 })?;
-                let (expanded, _) = details_checked(id_str, context)?;
+                let (expanded, _) = details_with_policy(id_str, context, strict)?;
                 let sid = ns_registry.sid_for_iri(&expanded);
                 return Ok(TxnMetaValue::Ref {
                     ns: sid.namespace_code,
@@ -171,7 +185,7 @@ fn json_to_single_txn_meta_value(
 
             // @value object → literal with optional @type or @language
             if let Some(val) = obj.get("@value") {
-                return parse_value_object(val, obj, context, ns_registry);
+                return parse_value_object(val, obj, context, ns_registry, strict);
             }
 
             // Other object shapes not supported in txn-meta
@@ -196,6 +210,7 @@ fn parse_value_object(
     obj: &serde_json::Map<String, Value>,
     context: &ParsedContext,
     ns_registry: &mut NamespaceRegistry,
+    strict: bool,
 ) -> Result<TxnMetaValue> {
     // @type present → typed literal
     if let Some(type_val) = obj.get("@type") {
@@ -204,7 +219,7 @@ fn parse_value_object(
         })?;
 
         // Expand the datatype IRI
-        let expanded_type = expand_datatype_iri(type_iri, context)?;
+        let expanded_type = expand_datatype_iri(type_iri, context, strict)?;
         let dt_sid = ns_registry.sid_for_iri(&expanded_type);
 
         // Get the string value
@@ -331,7 +346,7 @@ mod tests {
             "http://example.org/name": "Alice"
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert!(result.is_empty());
     }
 
@@ -346,7 +361,7 @@ mod tests {
             "http://example.org/batchId": 42
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 2);
 
         // Find machine entry
@@ -379,7 +394,7 @@ mod tests {
             "http://example.org/keep": "this one"
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].predicate_name, "keep");
     }
@@ -394,7 +409,7 @@ mod tests {
             "http://example.org/active": true
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0].value, TxnMetaValue::Boolean(true)));
     }
@@ -409,7 +424,7 @@ mod tests {
             "http://example.org/ratio": 1.23
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         if let TxnMetaValue::Double(f) = &result[0].value {
             assert!((f - 1.23).abs() < 0.001);
@@ -428,7 +443,7 @@ mod tests {
             "http://example.org/tags": ["a", "b", "c"]
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 3);
         assert!(result.iter().all(|e| e.predicate_name == "tags"));
     }
@@ -443,7 +458,7 @@ mod tests {
             "http://example.org/author": { "@id": "http://example.org/alice" }
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         if let TxnMetaValue::Ref { name, .. } = &result[0].value {
             assert_eq!(name, "alice");
@@ -464,7 +479,7 @@ mod tests {
             "http://example.org/related": "http://example.org/bob"
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         // Should be a string, not a ref
         assert!(
@@ -482,7 +497,7 @@ mod tests {
             "http://example.org/note": "hello world"
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0].value, TxnMetaValue::String(s) if s == "hello world"));
     }
@@ -500,7 +515,7 @@ mod tests {
             }
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         if let TxnMetaValue::TypedLiteral { value, dt_name, .. } = &result[0].value {
             assert_eq!(value, "2025-01-15");
@@ -523,7 +538,7 @@ mod tests {
             }
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         if let TxnMetaValue::LangString { value, lang } = &result[0].value {
             assert_eq!(value, "Bonjour");
@@ -545,7 +560,7 @@ mod tests {
             }
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns);
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("nested objects not supported"));
@@ -561,7 +576,7 @@ mod tests {
             "http://example.org/bad": null
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns);
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("null"));
     }
@@ -579,7 +594,7 @@ mod tests {
         }
         let json = Value::Object(obj);
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns);
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
     }
@@ -599,7 +614,7 @@ mod tests {
             "ex:machine": "server-01"
         });
 
-        let result = extract_txn_meta(&json, &ctx, &mut ns).unwrap();
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].predicate_name, "machine");
         // The ns code should be for http://example.org/

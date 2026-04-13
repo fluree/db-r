@@ -156,6 +156,24 @@ Contains the entities being asserted:
 }
 ```
 
+### opts
+
+Top-level parse-time options. These control how the transaction is parsed (not what it writes).
+
+```json
+{
+  "@context": {"ex": "http://example.org/ns/"},
+  "opts": {"strictCompactIri": false},
+  "@graph": [{"@id": "legacy:bob", "ex:name": "Bob"}]
+}
+```
+
+Currently supported keys:
+
+- **`strictCompactIri`** (bool, default `true`): Reject unresolved compact-looking IRIs (`prefix:suffix` where the prefix is missing from `@context`). Disable only for legacy data where bare `prefix:suffix` strings are intentional. See [IRIs and @context — Strict Compact-IRI Guard](../concepts/iri-and-context.md#strict-compact-iri-guard).
+
+Programmatic Rust callers can override `strictCompactIri` via `TxnOpts.strict_compact_iri`, which takes precedence over the JSON `opts` value.
+
 ### WHERE/DELETE/INSERT
 
 For updates, specify what to match, delete, and insert:

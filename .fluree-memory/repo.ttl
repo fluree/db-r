@@ -2012,3 +2012,20 @@ mem:fact-01kp44ka6rpf7qd2ddpq65mywd a mem:Fact ;
     mem:sensitivity "public" ;
     mem:branch "misc/fixes" ;
     mem:createdAt "2026-04-13T19:20:21.976979+00:00"^^xsd:dateTime .
+
+mem:fact-01kp4g1wa8yyty4sd2p03k6bg9 a mem:Fact ;
+    mem:content "Strict compact-IRI opt-out wiring has two easy-to-miss edge cases: (1) JSON-LD query `@path` alias extraction currently happens before parse-policy resolution, so `opts.strictCompactIri:false` will not relax undefined-prefix checks inside `@context` `@path` expressions; (2) JSON-LD transaction parse-time `opts` must be stripped before single-object insert/upsert expansion, otherwise `opts` can be treated as normal data because only top-level envelope `@graph` form skips extra keys before expansion." ;
+    mem:tag "jsonld" ;
+    mem:tag "opts" ;
+    mem:tag "path-alias" ;
+    mem:tag "query" ;
+    mem:tag "strict-compact-iri" ;
+    mem:tag "transaction" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/parse/mod.rs" ;
+    mem:artifactRef "fluree-db-query/src/parse/policy.rs" ;
+    mem:artifactRef "fluree-db-transact/src/parse/jsonld.rs" ;
+    mem:artifactRef "fluree-graph-json-ld/src/expand.rs" ;
+    mem:createdAt "2026-04-13T22:40:33.608461+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

@@ -143,6 +143,52 @@ cat query.json | jq .
 {"@id": "ex:alice%20smith"}
 ```
 
+## UNRESOLVED_COMPACT_IRI
+
+```text
+Unresolved compact IRI 'ex:Person': prefix 'ex' is not defined in @context.
+If this is intended as an absolute IRI, use a full form (e.g. http://...)
+or add the prefix to @context.
+```
+
+This error fires from the JSON-LD strict compact-IRI guard. A value that *looks* like a compact IRI (`prefix:suffix`) appeared in an IRI position, but `prefix` is not defined in `@context` and is not a recognised absolute scheme.
+
+### Causes
+
+1. Forgotten `@context` on a query or transaction
+2. Misspelled or missing prefix in `@context`
+3. Intentionally using a bare `prefix:suffix` string as an opaque identifier
+
+### Solutions
+
+**Add the missing prefix to @context** (most common fix):
+```json
+{
+  "@context": {"ex": "http://example.org/ns/"},
+  "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+}
+```
+
+**Use a full absolute IRI** instead of the compact form:
+```json
+{
+  "@graph": [
+    {"@id": "http://example.org/ns/alice", "http://example.org/ns/name": "Alice"}
+  ]
+}
+```
+
+**Opt out of the guard** for legacy data where bare `prefix:suffix` strings are intentional:
+```json
+{
+  "@context": {"ex": "http://example.org/ns/"},
+  "opts": {"strictCompactIri": false},
+  "@graph": [{"@id": "legacy:alice", "ex:name": "Alice"}]
+}
+```
+
+The opt-out applies to both queries and transactions. See [IRIs and @context — Strict Compact-IRI Guard](../concepts/iri-and-context.md#strict-compact-iri-guard) for the full policy.
+
 ## QUERY_TIMEOUT
 
 ```json

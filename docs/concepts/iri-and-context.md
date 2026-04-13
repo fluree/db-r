@@ -160,6 +160,66 @@ These expand using @context:
 These are resolved relative to a base IRI:
 - `alice` → `http://example.org/ns/alice` (if base is `http://example.org/ns/`)
 
+## Strict Compact-IRI Guard
+
+JSON-LD parsing in Fluree (queries and transactions) is **strict by default** about compact IRIs. If you write a value that *looks* like a compact IRI — `prefix:suffix` — but the prefix is not defined in `@context`, Fluree rejects the request at parse time with a clear error:
+
+```text
+Unresolved compact IRI 'ex:Person': prefix 'ex' is not defined in @context.
+If this is intended as an absolute IRI, use a full form (e.g. http://...)
+or add the prefix to @context.
+```
+
+### Why strict by default
+
+Without the guard, a missing or misspelled prefix passes through silently — `ex:Person` gets stored as the literal string `"ex:Person"` instead of being expanded to a real IRI like `http://example.org/Person`. This produces incorrect data and confusing query results that are very hard to diagnose later.
+
+The guard catches the most common cause of these bugs: forgetting an `@context`.
+
+### What the guard accepts
+
+- IRIs that resolve through `@context` (the normal happy path).
+- Hierarchical absolute IRIs whose suffix starts with `//` — `http://...`, `https://...`, `ftp://...`, etc.
+- A small allowlist of well-known non-hierarchical schemes — `urn:`, `did:`, `mailto:`, `tel:`, `data:`, `ipfs:`, `ipns:`, `geo:`, `blob:`, `magnet:`, `fluree:`. Scheme names are matched case-insensitively per RFC 3986.
+- Variables (`?x`) and blank nodes (`_:b0`) bypass the guard entirely.
+
+### Where the guard applies
+
+The guard runs at every position that semantically expects an IRI in JSON-LD:
+
+- `@id`, `@type`, predicates / property names
+- Datatype IRIs in `@type` of `@value` objects
+- Graph names and graph-crawl roots
+- Selection predicates (forward and reverse)
+- VALUES `@id` cells
+- `@path` aliases inside `@context`
+
+It does **not** apply to:
+
+- SPARQL queries
+- Turtle / TriG transactions
+- Literal string values (only IRI positions)
+- Other consumers of the underlying JSON-LD expander (e.g. connection-config parsing)
+
+### Opting out per request
+
+If you really need to accept unresolved compact-looking strings — for example, when migrating legacy data that uses bare `prefix:suffix` strings as opaque identifiers — set `opts.strictCompactIri: false` in the JSON-LD payload itself:
+
+```json
+{
+  "@context": {"ex": "http://example.org/ns/"},
+  "opts": {"strictCompactIri": false},
+  "@graph": [
+    {"@id": "ex:alice", "ex:name": "Alice"},
+    {"@id": "legacy:bob", "ex:name": "Bob"}
+  ]
+}
+```
+
+The same key works on both queries and transactions. The default is `true`. Keep it on unless you have a concrete reason to disable it.
+
+For programmatic use from Rust, transactions can also set `TxnOpts.strict_compact_iri` directly; that takes precedence over `opts.strictCompactIri` in the JSON.
+
 ## Blank Nodes and Anonymous Entities
 
 **Blank nodes** represent entities without global identifiers:

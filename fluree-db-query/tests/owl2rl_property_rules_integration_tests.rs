@@ -298,7 +298,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         "select": ["?x"],
         "where": { "@id": "?x", "@type": "ex:Person" }
     });
-    let parsed_a = parse_query(&q_type, &encoder, &mut vars_a).unwrap();
+    let parsed_a = parse_query(&q_type, &encoder, &mut vars_a, None).unwrap();
 
     // Run without owl2rl: should be empty (no explicit rdf:type triples).
     let exec_no = ExecutableQuery::new(
@@ -363,7 +363,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
         "select": ["?o"],
         "where": { "@id": "ex:alice", "ex:grandparentOf": "?o" }
     });
-    let parsed_b = parse_query(&q_chain, &encoder, &mut vars_b).unwrap();
+    let parsed_b = parse_query(&q_chain, &encoder, &mut vars_b, None).unwrap();
 
     let exec_chain = ExecutableQuery::new(
         parsed_b,

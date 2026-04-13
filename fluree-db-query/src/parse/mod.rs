@@ -27,6 +27,7 @@ pub mod lower;
 pub mod node_map;
 pub mod options;
 pub mod path_expr;
+pub mod policy;
 pub mod sexpr_tokenize;
 pub mod values;
 pub mod where_clause;
@@ -46,12 +47,13 @@ pub use lower::{
     lower_unresolved_pattern, lower_unresolved_patterns, ConstructTemplate, GraphSelectSpec,
     NestedSelectSpec, ParsedQuery, QueryOutput, Root, SelectionSpec,
 };
+pub use policy::{JsonLdParseCtx, JsonLdParsePolicy};
 pub use where_clause::parse_where_with_counters;
 
 use crate::ir::Expression;
 use crate::var_registry::VarRegistry;
 use ast::UnresolvedPathExpr;
-use fluree_graph_json_ld::{details_checked, parse_context, ParsedContext};
+use fluree_graph_json_ld::{parse_context, ParsedContext};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -78,18 +80,27 @@ use node_map::is_variable;
 ///
 /// A tuple of `(UnresolvedQuery, SelectMode)` where the mode is derived from
 /// the query's select/selectOne/construct/ask key.
-pub(crate) fn parse_query_ast(json: &JsonValue) -> Result<(UnresolvedQuery, SelectMode)> {
+pub(crate) fn parse_query_ast(
+    json: &JsonValue,
+    strict_override: Option<bool>,
+) -> Result<(UnresolvedQuery, SelectMode)> {
     // Use shared counters so nested subqueries can generate unique implicit vars
     // across the full query tree (prevents collisions like ?__s0 between parent/subquery).
     let mut subject_counter: u32 = 0;
     let mut nested_counter: u32 = 0;
-    parse_query_ast_internal(json, &mut subject_counter, &mut nested_counter)
+    parse_query_ast_internal(
+        json,
+        &mut subject_counter,
+        &mut nested_counter,
+        strict_override,
+    )
 }
 
 fn parse_query_ast_internal(
     json: &JsonValue,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
+    strict_override: Option<bool>,
 ) -> Result<(UnresolvedQuery, SelectMode)> {
     let obj = json
         .as_object()
@@ -102,7 +113,12 @@ fn parse_query_ast_internal(
         .unwrap_or(&JsonValue::Null);
 
     let context = parse_context(&normalize_context_value(context_val))?;
-    let path_aliases = extract_path_aliases(context_val, &context)?;
+
+    // Resolve parse policy BEFORE extracting path aliases so that any
+    // compact IRIs inside @path expressions honor `opts.strictCompactIri`.
+    let parse_policy = policy::resolve_parse_policy(strict_override, obj);
+    let path_aliases = extract_path_aliases(context_val, &context, parse_policy)?;
+    let ctx = JsonLdParseCtx::new(context.clone(), path_aliases, parse_policy);
 
     let mut query = UnresolvedQuery::new(context.clone());
 
@@ -116,8 +132,7 @@ fn parse_query_ast_internal(
         return parse_construct_query(
             obj,
             construct_val,
-            &context,
-            &path_aliases,
+            &ctx,
             query,
             subject_counter,
             nested_counter,
@@ -137,8 +152,7 @@ fn parse_query_ast_internal(
         let object_var_parsing = options::parse_object_var_parsing(obj);
         where_clause::parse_where_with_counters(
             ask_val,
-            &context,
-            &path_aliases,
+            &ctx,
             &mut query,
             subject_counter,
             nested_counter,
@@ -180,7 +194,7 @@ fn parse_query_ast_internal(
 
     // Parse select clause (skip for wildcard)
     if select_mode != SelectMode::Wildcard {
-        parse_select(select, &context, &mut query)?;
+        parse_select(select, &ctx, &mut query)?;
     }
 
     // Parse depth parameter and apply to graph_select if present
@@ -191,7 +205,7 @@ fn parse_query_ast_internal(
     // Parse top-level VALUES (optional) - mirrors the `:values` initial solution seed.
     if let Some(values_val) = obj.get("values") {
         if !values_val.is_null() {
-            let values_pat = values::parse_values_clause(values_val, &context)?;
+            let values_pat = values::parse_values_clause(values_val, &ctx)?;
             // Place VALUES first so it seeds the pipeline before WHERE patterns.
             query.patterns.insert(0, values_pat);
         }
@@ -205,8 +219,7 @@ fn parse_query_ast_internal(
     if let Some(where_clause) = obj.get("where") {
         where_clause::parse_where_with_counters(
             where_clause,
-            &context,
-            &path_aliases,
+            &ctx,
             &mut query,
             subject_counter,
             nested_counter,
@@ -308,16 +321,21 @@ fn normalize_context_value(context_val: &JsonValue) -> JsonValue {
 fn extract_path_aliases(
     context_val: &JsonValue,
     parsed_context: &ParsedContext,
+    policy: JsonLdParsePolicy,
 ) -> Result<PathAliasMap> {
     let mut aliases = PathAliasMap::new();
-    extract_path_aliases_into(context_val, parsed_context, &mut aliases)?;
+    // Build a temporary JsonLdParseCtx for path alias extraction. Aliases are
+    // extracted before the real ctx is built, but we use the resolved policy
+    // so @path expressions honor `opts.strictCompactIri`.
+    let tmp_ctx = JsonLdParseCtx::new(parsed_context.clone(), PathAliasMap::new(), policy);
+    extract_path_aliases_into(context_val, &tmp_ctx, &mut aliases)?;
     Ok(aliases)
 }
 
 /// Recursive helper that accumulates path aliases from a context value.
 fn extract_path_aliases_into(
     context_val: &JsonValue,
-    parsed_context: &ParsedContext,
+    ctx: &JsonLdParseCtx,
     aliases: &mut PathAliasMap,
 ) -> Result<()> {
     match context_val {
@@ -343,12 +361,8 @@ fn extract_path_aliases_into(
                         }
 
                         let path_expr = match path_val {
-                            JsonValue::String(s) => {
-                                path_expr::parse_path_string(s, parsed_context)?
-                            }
-                            JsonValue::Array(arr) => {
-                                path_expr::parse_path_array(arr, parsed_context)?
-                            }
+                            JsonValue::String(s) => path_expr::parse_path_string(s, ctx)?,
+                            JsonValue::Array(arr) => path_expr::parse_path_array(arr, ctx)?,
                             _ => {
                                 return Err(ParseError::InvalidContext(format!(
                                     "term '{}': @path must be a string or array, got {}",
@@ -368,7 +382,7 @@ fn extract_path_aliases_into(
         JsonValue::Array(arr) => {
             // Array of contexts — process in order, last wins
             for item in arr {
-                extract_path_aliases_into(item, parsed_context, aliases)?;
+                extract_path_aliases_into(item, ctx, aliases)?;
             }
             Ok(())
         }
@@ -400,8 +414,7 @@ fn json_type_name(val: &JsonValue) -> &'static str {
 fn parse_construct_query(
     obj: &serde_json::Map<String, JsonValue>,
     construct_val: &JsonValue,
-    context: &ParsedContext,
-    path_aliases: &PathAliasMap,
+    ctx: &JsonLdParseCtx,
     mut query: UnresolvedQuery,
     subject_counter: &mut u32,
     nested_counter: &mut u32,
@@ -413,8 +426,7 @@ fn parse_construct_query(
     let object_var_parsing = options::parse_object_var_parsing(obj);
     where_clause::parse_where_with_counters(
         where_clause,
-        context,
-        path_aliases,
+        ctx,
         &mut query,
         subject_counter,
         nested_counter,
@@ -439,7 +451,7 @@ fn parse_construct_query(
         }
         JsonValue::Object(_) | JsonValue::Array(_) => {
             // Explicit template: parse separately
-            parse_construct_template(construct_val, context)?
+            parse_construct_template(construct_val, ctx)?
         }
         _ => {
             return Err(ParseError::InvalidConstruct(
@@ -463,21 +475,18 @@ fn parse_construct_query(
 /// Only triple patterns are valid in templates (filters/optionals are ignored).
 fn parse_construct_template(
     template: &JsonValue,
-    context: &ParsedContext,
+    ctx: &JsonLdParseCtx,
 ) -> Result<Vec<UnresolvedPattern>> {
     let mut subject_counter = 0u32;
     let mut nested_counter = 0u32;
-    // CONSTRUCT templates only contain triple patterns — no path aliases needed.
-    let empty_aliases = PathAliasMap::new();
 
     match template {
         JsonValue::Object(map) => {
             // Single node-map template
-            let mut temp_query = UnresolvedQuery::new(context.clone());
+            let mut temp_query = UnresolvedQuery::new(ctx.context.clone());
             node_map::parse_node_map(
                 map,
-                context,
-                &empty_aliases,
+                ctx,
                 &mut temp_query,
                 &mut subject_counter,
                 &mut nested_counter,
@@ -495,11 +504,10 @@ fn parse_construct_template(
             let mut patterns = Vec::new();
             for item in arr {
                 if let JsonValue::Object(map) = item {
-                    let mut temp_query = UnresolvedQuery::new(context.clone());
+                    let mut temp_query = UnresolvedQuery::new(ctx.context.clone());
                     node_map::parse_node_map(
                         map,
-                        context,
-                        &empty_aliases,
+                        ctx,
                         &mut temp_query,
                         &mut subject_counter,
                         &mut nested_counter,
@@ -535,7 +543,7 @@ fn parse_construct_template(
 /// 5. S-expression aggregates: `["?name", "(count ?favNums as ?cnt)"]`
 fn parse_select(
     select: &JsonValue,
-    context: &ParsedContext,
+    ctx: &JsonLdParseCtx,
     query: &mut UnresolvedQuery,
 ) -> Result<()> {
     match select {
@@ -547,7 +555,7 @@ fn parse_select(
                         parse_select_string(s, query)?;
                     }
                     JsonValue::Object(map) => {
-                        let spec = parse_graph_select_object(map, context, query)?;
+                        let spec = parse_graph_select_object(map, ctx, query)?;
                         query.graph_select = Some(spec);
                     }
                     _ => {
@@ -561,7 +569,7 @@ fn parse_select(
 
         // Case 4: Single object form: {"?person": ["*"]}
         JsonValue::Object(map) => {
-            let spec = parse_graph_select_object(map, context, query)?;
+            let spec = parse_graph_select_object(map, ctx, query)?;
             query.graph_select = Some(spec);
         }
 
@@ -809,7 +817,7 @@ fn parse_aggregate_fn_and_input(
 /// Also adds the root variable to the execution select list.
 fn parse_graph_select_object(
     map: &serde_json::Map<String, JsonValue>,
-    context: &ParsedContext,
+    ctx: &JsonLdParseCtx,
     query: &mut UnresolvedQuery,
 ) -> Result<UnresolvedGraphSelectSpec> {
     // Error if we already have a graph_select (only one allowed)
@@ -835,7 +843,7 @@ fn parse_graph_select_object(
         UnresolvedRoot::Var(Arc::from(root_str.as_str()))
     } else {
         // IRI constant root - expand via @context
-        let (expanded, _) = details_checked(root_str, context)?;
+        let (expanded, _) = ctx.expand_vocab(root_str)?;
         UnresolvedRoot::Iri(expanded)
     };
 
@@ -844,7 +852,7 @@ fn parse_graph_select_object(
         ParseError::InvalidSelect("graph-select value must be an array".to_string())
     })?;
 
-    let specs = parse_selection_specs(specs_arr, context)?;
+    let specs = parse_selection_specs(specs_arr, ctx)?;
 
     Ok(UnresolvedGraphSelectSpec {
         root,
@@ -883,7 +891,7 @@ struct SelectionSpecs {
 }
 
 /// Parse selection specs array, separating forward and reverse properties.
-fn parse_selection_specs(arr: &[JsonValue], context: &ParsedContext) -> Result<SelectionSpecs> {
+fn parse_selection_specs(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<SelectionSpecs> {
     let mut forward = Vec::new();
     let mut reverse: std::collections::HashMap<String, Option<Box<UnresolvedNestedSelectSpec>>> =
         std::collections::HashMap::new();
@@ -897,12 +905,12 @@ fn parse_selection_specs(arr: &[JsonValue], context: &ParsedContext) -> Result<S
                 has_wildcard = true;
             }
             // Explicit @id selection
-            JsonValue::String(s) if s == "@id" || s == "id" || s == context.id_key.as_str() => {
+            JsonValue::String(s) if s == "@id" || s == "id" || s == ctx.context.id_key.as_str() => {
                 forward.push(UnresolvedSelectionSpec::Id);
             }
             // Property name: "ex:name"
             JsonValue::String(s) => {
-                let (expanded, entry) = details_checked(s, context)?;
+                let (expanded, entry) = ctx.expand_vocab(s)?;
                 // Check if this is a reverse property from @context
                 // (reverse field is Option<String> with the reversed property IRI)
                 if let Some(e) = entry {
@@ -931,14 +939,14 @@ fn parse_selection_specs(arr: &[JsonValue], context: &ParsedContext) -> Result<S
                 }
 
                 let (pred_str, sub_specs_val) = map.iter().next().unwrap();
-                let (expanded, entry) = details_checked(pred_str, context)?;
+                let (expanded, entry) = ctx.expand_vocab(pred_str)?;
 
                 let sub_arr = sub_specs_val.as_array().ok_or_else(|| {
                     ParseError::InvalidSelect("nested selection value must be an array".to_string())
                 })?;
 
                 // Recursively parse sub-selections - preserves both forward AND reverse
-                let sub_specs = parse_selection_specs(sub_arr, context)?;
+                let sub_specs = parse_selection_specs(sub_arr, ctx)?;
 
                 let nested_spec =
                     make_nested_spec(sub_specs.forward, sub_specs.reverse, sub_specs.has_wildcard);
@@ -1045,8 +1053,9 @@ pub fn parse_query<E: IriEncoder>(
     json: &JsonValue,
     encoder: &E,
     vars: &mut VarRegistry,
+    strict_override: Option<bool>,
 ) -> Result<ParsedQuery> {
-    let (ast, select_mode) = parse_query_ast(json)?;
+    let (ast, select_mode) = parse_query_ast(json, strict_override)?;
     lower_query(ast, encoder, vars, select_mode)
 }
 
@@ -1078,7 +1087,7 @@ mod tests {
             "where": { "@type": "ex:Person", "ex:name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.select.len(), 1);
         assert_eq!(ast.select[0].as_ref(), "?name");
@@ -1097,7 +1106,7 @@ mod tests {
             "orderBy": ["?x", "(desc ?y)", ["ASC", "?z"]]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert_eq!(ast.options.order_by.len(), 3);
         assert_eq!(ast.options.order_by[0].var.as_ref(), "?x");
         assert_eq!(
@@ -1125,7 +1134,7 @@ mod tests {
             "orderBy": "?x"
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert_eq!(ast.options.order_by.len(), 1);
         assert_eq!(ast.options.order_by[0].var.as_ref(), "?x");
         assert_eq!(
@@ -1142,7 +1151,7 @@ mod tests {
             "where": { "ex:name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have generated ?__s0 as subject (unique per node-map, reserved prefix)
         assert_eq!(ast.patterns.len(), 1);
@@ -1158,7 +1167,7 @@ mod tests {
             "where": { "@id": "?person", "ex:name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(matches!(&pattern.s, UnresolvedTerm::Var(v) if v.as_ref() == "?person"));
@@ -1172,7 +1181,7 @@ mod tests {
             "where": { "@id": "ex:alice", "ex:name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(
@@ -1193,7 +1202,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.patterns.len(), 3);
 
@@ -1218,7 +1227,7 @@ mod tests {
             "select": ["?name"],
             "where": { "ex:name": "?name" }
         });
-        assert!(parse_query_ast(&json1).is_ok());
+        assert!(parse_query_ast(&json1, None).is_ok());
 
         // context (without @)
         let json2 = json!({
@@ -1226,7 +1235,7 @@ mod tests {
             "select": ["?name"],
             "where": { "ex:name": "?name" }
         });
-        assert!(parse_query_ast(&json2).is_ok());
+        assert!(parse_query_ast(&json2, None).is_ok());
     }
 
     #[test]
@@ -1236,7 +1245,7 @@ mod tests {
             "where": { "ex:name": "?name" }
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(matches!(
             result.unwrap_err(),
             ParseError::MissingField(
@@ -1252,7 +1261,7 @@ mod tests {
             "select": ["?name"]
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(matches!(
             result.unwrap_err(),
             ParseError::MissingField("where")
@@ -1267,7 +1276,7 @@ mod tests {
             "values": ["?x", [1, 2, 3]]
         });
 
-        let (ast, _mode) = parse_query_ast(&json).unwrap();
+        let (ast, _mode) = parse_query_ast(&json, None).unwrap();
         assert_eq!(ast.patterns.len(), 1);
         assert!(matches!(ast.patterns[0], UnresolvedPattern::Values { .. }));
     }
@@ -1283,7 +1292,7 @@ mod tests {
             ]
         });
 
-        let (ast, _mode) = parse_query_ast(&json).unwrap();
+        let (ast, _mode) = parse_query_ast(&json, None).unwrap();
         assert!(ast
             .patterns
             .iter()
@@ -1300,7 +1309,7 @@ mod tests {
             ]]
         });
 
-        let (ast, _mode) = parse_query_ast(&json).unwrap();
+        let (ast, _mode) = parse_query_ast(&json, None).unwrap();
         let UnresolvedPattern::Values { vars, rows } = &ast.patterns[0] else {
             panic!("expected Values pattern");
         };
@@ -1328,7 +1337,7 @@ mod tests {
             "where": { "ex:name": "?name" }
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(matches!(
             result.unwrap_err(),
             ParseError::InvalidVariable(_)
@@ -1343,7 +1352,7 @@ mod tests {
             "where": { "@id": "?s", "@type": "ex:Person" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let type_pattern = triple(&ast.patterns[0]);
         assert!(matches!(
@@ -1364,7 +1373,7 @@ mod tests {
             "where": { "@id": "?s", "@type": ["ex:Person", "ex:Agent"] }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have two type patterns
         let type_patterns: Vec<_> = ast
@@ -1391,7 +1400,7 @@ mod tests {
         encoder.add_namespace("http://example.org/", 100);
 
         let mut vars = VarRegistry::new();
-        let query = parse_query(&json, &encoder, &mut vars).unwrap();
+        let query = parse_query(&json, &encoder, &mut vars, None).unwrap();
 
         assert_eq!(query.output.select_vars().unwrap().len(), 2);
         assert_eq!(query.patterns.len(), 1);
@@ -1417,7 +1426,7 @@ mod tests {
             "where": { "@id": "?s", "age": "?age" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(pattern.dtc.is_some());
@@ -1438,7 +1447,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have patterns from both node-maps
         assert_eq!(ast.patterns.len(), 2);
@@ -1454,7 +1463,7 @@ mod tests {
             "where": { "name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(
@@ -1470,7 +1479,7 @@ mod tests {
             "where": { "@id": "?s", "ex:score": 3.13 }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         if let UnresolvedTerm::Literal(LiteralValue::Double(d)) = &pattern.o {
@@ -1492,7 +1501,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.patterns.len(), 2);
 
@@ -1518,7 +1527,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.patterns.len(), 3);
 
@@ -1544,7 +1553,7 @@ mod tests {
             "where": { "@id": "?s", "@type": ["ex:Person", 42] }
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1563,7 +1572,7 @@ mod tests {
             }
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ParseError::InvalidWhere(msg) if msg.contains("nested @context")));
@@ -1578,7 +1587,7 @@ mod tests {
             "where": { "@id": "?s", "?p": "?o" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.patterns.len(), 1);
         let pattern = triple(&ast.patterns[0]);
@@ -1606,7 +1615,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.patterns.len(), 2);
 
@@ -1651,7 +1660,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 2 patterns:
         // 1. ?person ex:friend ?__n0  (connecting triple)
@@ -1690,7 +1699,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 2 patterns:
         // 1. ?person ex:friend ?friend  (connecting triple uses explicit @id)
@@ -1724,7 +1733,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 3 patterns:
         // 1. ?person ex:address ?__n0
@@ -1772,7 +1781,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 3 patterns:
         // 1. ?person ex:friend ?__n0
@@ -1808,7 +1817,7 @@ mod tests {
             "where": { "@id": "?s", "friend": "?friend" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         // The predicate should be expanded
@@ -1829,7 +1838,7 @@ mod tests {
             "where": { "@id": "?s", "friend": "ex:alice" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         // The object should be an IRI, not a string literal
@@ -1849,7 +1858,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(
@@ -1869,7 +1878,7 @@ mod tests {
             "where": { "@id": "?s", "@type": "?type" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let type_pattern = triple(&ast.patterns[0]);
         assert!(matches!(
@@ -1891,7 +1900,7 @@ mod tests {
             "where": { "@id": "?s", "type": "ex:Person" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let type_pattern = triple(&ast.patterns[0]);
         assert!(matches!(
@@ -1916,7 +1925,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.patterns.len(), 2);
 
@@ -1948,7 +1957,7 @@ mod tests {
             }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 4 patterns: type + name + age + email
         assert_eq!(ast.patterns.len(), 4);
@@ -1971,7 +1980,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.patterns.len(), 2);
 
@@ -1993,7 +2002,7 @@ mod tests {
             "where": { "@id": "?s", "ex:name": "Alice" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(matches!(
@@ -2010,7 +2019,7 @@ mod tests {
             "where": { "@id": "?s", "ex:balance": -100 }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(matches!(
@@ -2027,7 +2036,7 @@ mod tests {
             "where": { "@id": "?s", "ex:temperature": -273.15 }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         if let UnresolvedTerm::Literal(LiteralValue::Double(d)) = &pattern.o {
@@ -2045,7 +2054,7 @@ mod tests {
             "where": { "@id": "?s", "ex:active": false }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         assert!(matches!(
@@ -2063,7 +2072,7 @@ mod tests {
         });
 
         // Empty select should parse (though semantically questionable)
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert!(ast.select.is_empty());
     }
 
@@ -2076,7 +2085,7 @@ mod tests {
         });
 
         // Empty where object produces no patterns (just implicit subject)
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert!(ast.patterns.is_empty());
     }
 
@@ -2093,7 +2102,7 @@ mod tests {
             "where": { "@id": "?s", "kind": "ex:Person" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let type_pattern = triple(&ast.patterns[0]);
         assert!(matches!(
@@ -2111,7 +2120,7 @@ mod tests {
             "where": { "ex:name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert_eq!(ast.select.len(), 2);
     }
 
@@ -2123,7 +2132,7 @@ mod tests {
             "where": []
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert!(ast.patterns.is_empty());
     }
 
@@ -2140,7 +2149,7 @@ mod tests {
             "where": { "@id": "#alice", "name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         // Subject "#alice" should expand using @base
@@ -2161,7 +2170,7 @@ mod tests {
             "where": { "@id": "people/alice", "name": "?name" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let pattern = triple(&ast.patterns[0]);
         // Subject "people/alice" should expand using @base
@@ -2208,7 +2217,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 2 patterns: 1 triple + 1 filter
         assert_eq!(ast.patterns.len(), 2);
@@ -2242,7 +2251,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(count_triples(&ast.patterns), 1);
         assert_eq!(count_filters(&ast.patterns), 1);
@@ -2272,7 +2281,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 2 patterns: 1 triple + 1 filter
         assert_eq!(count_triples(&ast.patterns), 1);
@@ -2313,7 +2322,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
@@ -2335,7 +2344,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
@@ -2357,7 +2366,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
@@ -2379,7 +2388,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // 2 triple patterns (ex:x and ex:y) + 1 filter (@id just sets subject, doesn't create pattern)
         assert_eq!(count_triples(&ast.patterns), 2);
@@ -2413,7 +2422,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
@@ -2440,7 +2449,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
@@ -2488,7 +2497,7 @@ mod tests {
                 ]
             });
 
-            let (ast, _) = parse_query_ast(&json).unwrap();
+            let (ast, _) = parse_query_ast(&json, None).unwrap();
 
             let filter = find_filter(&ast.patterns).expect("Should have a filter");
             match filter {
@@ -2517,7 +2526,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert_eq!(count_triples(&ast.patterns), 1);
         assert_eq!(count_filters(&ast.patterns), 1);
     }
@@ -2533,7 +2542,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let filter = find_filter(&ast.patterns).expect("Should have a filter");
         match filter {
@@ -2558,7 +2567,7 @@ mod tests {
             ]
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ParseError::InvalidFilter(_)));
@@ -2576,7 +2585,7 @@ mod tests {
             ]
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(result.is_ok());
     }
 
@@ -2592,7 +2601,7 @@ mod tests {
             ]
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ParseError::InvalidFilter(_)));
@@ -2609,7 +2618,7 @@ mod tests {
             ]
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, ParseError::InvalidFilter(_)));
@@ -2648,7 +2657,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Should have 2 patterns: 1 triple + 1 optional
         assert_eq!(ast.patterns.len(), 2);
@@ -2676,7 +2685,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(count_triples(&ast.patterns), 1);
         // Fluree semantics: each node-map object becomes its own OPTIONAL clause.
@@ -2703,7 +2712,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let optional = find_optional(&ast.patterns).expect("Should have optional");
         // Optional should contain 1 triple + 1 filter
@@ -2734,7 +2743,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let optional = find_optional(&ast.patterns).expect("Should have optional");
         // Optional should contain 2 triples (connecting + nested property)
@@ -2754,7 +2763,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(count_triples(&ast.patterns), 1);
         assert_eq!(count_optionals(&ast.patterns), 2);
@@ -2773,7 +2782,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(count_triples(&ast.patterns), 2); // name + age
         assert_eq!(count_filters(&ast.patterns), 1);
@@ -2792,7 +2801,7 @@ mod tests {
             ]
         });
 
-        let result = parse_query_ast(&json);
+        let result = parse_query_ast(&json, None);
         assert!(result.is_err());
     }
 
@@ -2811,7 +2820,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Top level: 1 triple + 1 optional
         assert_eq!(count_triples(&ast.patterns), 1);
@@ -2864,7 +2873,7 @@ mod tests {
             ]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         let filter = find_filter(&ast.patterns).expect("Should have filter");
         match filter {
@@ -2885,7 +2894,7 @@ mod tests {
             "groupBy": ["?name"]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         // Check select has both vars
         assert_eq!(ast.select.len(), 2);
@@ -2910,7 +2919,7 @@ mod tests {
             "groupBy": ["?name"]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.options.aggregates.len(), 1);
         let agg = &ast.options.aggregates[0];
@@ -2928,7 +2937,7 @@ mod tests {
             "where": { "ex:age": "?age" }
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.select.len(), 1);
         assert_eq!(ast.select[0].as_ref(), "?sum");
@@ -2950,7 +2959,7 @@ mod tests {
             "groupBy": ["?s"]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         assert_eq!(ast.options.aggregates.len(), 1);
         let agg = &ast.options.aggregates[0];
@@ -2973,7 +2982,7 @@ mod tests {
             "where": { "ex:x": "?x", "ex:y": "?y" }
         });
 
-        let err = parse_query_ast(&json).unwrap_err();
+        let err = parse_query_ast(&json, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("requires exactly 1 argument"),
@@ -2990,7 +2999,7 @@ mod tests {
             "where": { "ex:x": "?x" }
         });
 
-        let err = parse_query_ast(&json).unwrap_err();
+        let err = parse_query_ast(&json, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("accepts at most 2 arguments"),
@@ -3009,7 +3018,7 @@ mod tests {
             "groupBy": ["?x"]
         });
 
-        let err = parse_query_ast(&json).unwrap_err();
+        let err = parse_query_ast(&json, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unclosed string literal"),
@@ -3040,7 +3049,7 @@ mod tests {
             }]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert_eq!(ast.patterns.len(), 1);
 
         match &ast.patterns[0] {
@@ -3079,7 +3088,7 @@ mod tests {
             }]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
         assert_eq!(ast.patterns.len(), 1);
 
         match &ast.patterns[0] {
@@ -3116,7 +3125,7 @@ mod tests {
             }]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         match &ast.patterns[0] {
             UnresolvedPattern::VectorSearch(vsp) => {
@@ -3141,7 +3150,7 @@ mod tests {
             }]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         match &ast.patterns[0] {
             UnresolvedPattern::VectorSearch(vsp) => {
@@ -3164,7 +3173,7 @@ mod tests {
             }]
         });
 
-        let err = parse_query_ast(&json).unwrap_err();
+        let err = parse_query_ast(&json, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("queryVector") && msg.contains("required"),
@@ -3185,7 +3194,7 @@ mod tests {
             }]
         });
 
-        let err = parse_query_ast(&json).unwrap_err();
+        let err = parse_query_ast(&json, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("searchResult") && msg.contains("required"),
@@ -3207,7 +3216,7 @@ mod tests {
             }]
         });
 
-        let err = parse_query_ast(&json).unwrap_err();
+        let err = parse_query_ast(&json, None).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("queryVector") && msg.contains("variable or array"),
@@ -3228,7 +3237,7 @@ mod tests {
             }]
         });
 
-        let (ast, _) = parse_query_ast(&json).unwrap();
+        let (ast, _) = parse_query_ast(&json, None).unwrap();
 
         match &ast.patterns[0] {
             UnresolvedPattern::VectorSearch(vsp) => {

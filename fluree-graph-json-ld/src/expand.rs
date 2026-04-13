@@ -610,7 +610,11 @@ fn expand_node_internal(
 }
 
 /// Shared implementation for node expansion with configurable strictness.
-fn node_impl(node_map: &JsonValue, context: &ParsedContext, strict: bool) -> Result<JsonValue> {
+pub(crate) fn node_impl(
+    node_map: &JsonValue,
+    context: &ParsedContext,
+    strict: bool,
+) -> Result<JsonValue> {
     let idx = vec![];
 
     match node_map {

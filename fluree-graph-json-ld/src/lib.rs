@@ -214,6 +214,59 @@ pub fn expand_with_context_checked(
     expand::node_checked(node_map, context)
 }
 
+// ── Policy-driven dispatch: strict=true → checked, strict=false → permissive ──
+//
+// These always return Result so callers use `?` uniformly regardless of mode.
+
+/// Expand IRI details, strict or permissive based on `strict` flag.
+pub fn details_with_policy(
+    compact_iri: &str,
+    context: &ParsedContext,
+    strict: bool,
+) -> Result<(String, Option<ContextEntry>)> {
+    if strict {
+        expand::details_checked(compact_iri, context, true)
+    } else {
+        Ok(expand::details(compact_iri, context, true))
+    }
+}
+
+/// Expand IRI details with explicit vocab/base control, strict or permissive.
+pub fn details_with_vocab_policy(
+    compact_iri: &str,
+    context: &ParsedContext,
+    vocab: bool,
+    strict: bool,
+) -> Result<(String, Option<ContextEntry>)> {
+    if strict {
+        expand::details_checked(compact_iri, context, vocab)
+    } else {
+        Ok(expand::details(compact_iri, context, vocab))
+    }
+}
+
+/// Expand a compact IRI, strict or permissive based on `strict` flag.
+pub fn expand_iri_with_policy(
+    compact_iri: &str,
+    context: &ParsedContext,
+    strict: bool,
+) -> Result<String> {
+    if strict {
+        expand::iri_checked(compact_iri, context, true)
+    } else {
+        Ok(expand::iri(compact_iri, context, true))
+    }
+}
+
+/// Expand a JSON-LD document with a pre-parsed context, strict or permissive.
+pub fn expand_with_context_policy(
+    node_map: &JsonValue,
+    context: &ParsedContext,
+    strict: bool,
+) -> Result<JsonValue> {
+    expand::node_impl(node_map, context, strict)
+}
+
 /// Compact an IRI using a context.
 ///
 /// # Arguments

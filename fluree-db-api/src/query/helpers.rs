@@ -28,6 +28,7 @@ pub(crate) fn parse_jsonld_query(
     query_json: &JsonValue,
     snapshot: &LedgerSnapshot,
     default_context: Option<&JsonValue>,
+    strict_compact_iri: Option<bool>,
 ) -> Result<(VarRegistry, ParsedQuery)> {
     let has_context = query_json.get("@context").is_some() || query_json.get("context").is_some();
 
@@ -50,7 +51,7 @@ pub(crate) fn parse_jsonld_query(
     };
 
     let mut vars = VarRegistry::new();
-    let parsed = parse_query(query_ref, snapshot, &mut vars)?;
+    let parsed = parse_query(query_ref, snapshot, &mut vars, strict_compact_iri)?;
     Ok((vars, parsed))
 }
 

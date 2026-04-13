@@ -442,6 +442,15 @@ pub struct TxnOpts {
     /// storage overhead for bulk ingest (e.g., Turtle expanded to huge JSON-LD).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store_raw_txn: Option<bool>,
+
+    /// Override the strict compact-IRI guard for this transaction.
+    ///
+    /// When `Some(false)`, unresolved compact-looking IRIs (e.g. `ex:Person`
+    /// without `ex` in `@context`) pass through silently instead of being
+    /// rejected. When `None`, the guard reads `opts.strictCompactIri` from
+    /// the transaction JSON, defaulting to `true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict_compact_iri: Option<bool>,
 }
 
 impl TxnOpts {

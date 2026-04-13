@@ -33,7 +33,7 @@ where
             .ok_or_else(|| ApiError::query("Dataset has no graphs for query execution"))?;
         // Parse the query using the primary ledger's DB for IRI encoding
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, primary.snapshot.as_ref(), &mut vars)?;
+        let parsed = parse_query(query_json, primary.snapshot.as_ref(), &mut vars, None)?;
 
         // Build the runtime dataset
         let runtime_dataset = dataset.as_runtime_dataset();
