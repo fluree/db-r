@@ -1044,31 +1044,14 @@ where
         );
 
         // 6. Spawn async garbage collection (non-blocking)
-        let storage_clone = match self.backend().admin_storage_cloned() {
-            Some(s) => s,
-            None => {
-                // Permanent backends (IPFS): clean_garbage requires address-based
-                // Storage for deletion. A content-store-based GC that uses
-                // ContentStore::release is needed to unpin replaced CIDs.
-                tracing::debug!("Skipping GC: clean_garbage requires address-based Storage");
-                return Ok(ReindexResult {
-                    ledger_id,
-                    index_t: index_result.index_t,
-                    root_id: index_result.root_id,
-                    stats: index_result.stats,
-                });
-            }
-        };
+        let gc_store = self.content_store(&ledger_id);
         let gc_root_id = index_result.root_id.clone();
-        let gc_ledger_id = ledger_id.clone();
         let gc_config = CleanGarbageConfig {
             max_old_indexes: Some(gc_max_old_indexes),
             min_time_garbage_mins: Some(gc_min_time_mins),
         };
         tokio::spawn(async move {
-            if let Err(e) =
-                clean_garbage(&storage_clone, &gc_root_id, &gc_ledger_id, gc_config).await
-            {
+            if let Err(e) = clean_garbage(gc_store.as_ref(), &gc_root_id, gc_config).await {
                 tracing::warn!(
                     error = %e,
                     root_id = %gc_root_id,

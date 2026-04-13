@@ -1856,8 +1856,10 @@ impl FlureeBuilder {
     /// # Notes
     ///
     /// - Requires the `ipfs` feature.
-    /// - IPFS does not support delete or list operations; admin/GC paths
-    ///   that need these will return errors.
+    /// - Background indexing is supported. GC unpins replaced CIDs so Kubo's
+    ///   garbage collector can reclaim them.
+    /// - Admin operations that require prefix listing (e.g., fast-path ledger
+    ///   drop) fall back to CID-walking, which is slower but correct.
     ///
     /// [`build_with`]: FlureeBuilder::build_with
     #[cfg(feature = "ipfs")]
@@ -1870,14 +1872,13 @@ impl FlureeBuilder {
         let backend = StorageBackend::Permanent(Arc::new(ipfs_store));
         let nameservice = MemoryNameService::new();
         let index_config = self.derive_indexing();
-        // Note: background indexing is disabled for IPFS — the indexer
-        // still requires a Storage-trait backend.
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
         Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
             nameservice,
-            tx::IndexingMode::Disabled,
+            indexing_mode,
             index_config,
         )
     }
