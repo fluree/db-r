@@ -3,11 +3,16 @@
 //! # Thread Safety Note
 //!
 //! The HTTP server requires `Send + Sync` for state shared across handlers.
+//! This server currently only supports **file-based storage** for production use.
+//!
+//! Memory storage support would require either:
+//! - A single-threaded runtime with `LocalSet`
+//! - Or refactoring `MemoryNameService` to use `Arc<RwLock<...>>`
 //!
 //! # Storage Access Modes
 //!
-//! The server operates in one of two storage access modes:
-//! - **Direct**: Local storage backend (file, S3, DynamoDB, etc.) built via `FlureeBuilder::build_client()`
+//! Peers can operate in two storage access modes:
+//! - **Shared**: Direct access to storage (default, requires storage credentials)
 //! - **Proxy**: All storage reads proxied through transaction server (no storage credentials)
 
 use crate::config::{ServerConfig, ServerRole};
@@ -15,23 +20,24 @@ use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
 use fluree_db_api::{Fluree, FlureeBuilder, FlureeClient, IndexConfig, QueryConnectionOptions};
+use fluree_db_nameservice::Publication;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Proxy-backed Fluree instance type (peer with proxy storage access)
-pub type ProxyFluree = Fluree<ProxyStorage, ProxyNameService>;
+pub type ProxyFluree = Fluree<ProxyNameService>;
 
 /// Unified Fluree instance wrapper
 ///
-/// Allows AppState to work with either direct-storage or proxy-backed
-/// Fluree instances, selected at runtime based on configuration.
+/// Allows AppState to work with either file-backed or proxy-backed Fluree
+/// instances, selected at runtime based on configuration.
 #[derive(Clone)]
 pub enum FlureeInstance {
-    /// Direct storage backend (file, S3, etc.) built via `FlureeBuilder::build_client()`.
+    /// Direct storage backend (file, S3, DynamoDB, etc.) built via `FlureeBuilder::build_client()`.
     Direct(Arc<FlureeClient>),
-    /// Proxy-backed storage (peer proxying through transaction server).
+    /// Proxy-backed storage (peer proxying through transaction server)
     Proxy(Arc<ProxyFluree>),
 }
 
@@ -45,7 +51,7 @@ impl std::fmt::Debug for FlureeInstance {
 }
 
 impl FlureeInstance {
-    /// Check if this is a direct storage instance
+    /// Check if this is a file-backed instance
     pub fn is_direct(&self) -> bool {
         matches!(self, FlureeInstance::Direct(_))
     }
@@ -55,32 +61,43 @@ impl FlureeInstance {
         matches!(self, FlureeInstance::Proxy(_))
     }
 
-    /// Get the direct-storage instance (panics if not direct)
+    /// Get the file-backed instance (panics if proxy)
+    ///
+    /// Use this in code paths that are guaranteed to be transaction-mode only
+    /// (e.g., write handlers which forward to tx server in peer mode).
     pub fn as_direct(&self) -> &Arc<FlureeClient> {
         match self {
-            FlureeInstance::Direct(d) => d,
-            _ => panic!("Expected direct-storage Fluree instance"),
+            FlureeInstance::Direct(f) => f,
+            FlureeInstance::Proxy(_) => panic!("Expected file-backed Fluree instance"),
         }
     }
 
-    /// Get the proxy-backed instance (panics if not proxy)
+    /// Get the proxy-backed instance (panics if file)
     pub fn as_proxy(&self) -> &Arc<ProxyFluree> {
         match self {
             FlureeInstance::Proxy(p) => p,
-            _ => panic!("Expected proxy-backed Fluree instance"),
+            FlureeInstance::Direct(_) => panic!("Expected proxy-backed Fluree instance"),
+        }
+    }
+
+    /// Get the storage backend from whichever variant is active.
+    pub fn backend(&self) -> &fluree_db_core::StorageBackend {
+        match self {
+            FlureeInstance::Direct(f) => f.backend(),
+            FlureeInstance::Proxy(p) => p.backend(),
         }
     }
 
     /// Lookup a ledger in the nameservice
     ///
-    /// Works with all instance types.
+    /// Works with both file-backed and proxy-backed instances.
     pub async fn nameservice_lookup(
         &self,
         ledger_id: &str,
     ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::NsRecord>> {
         use fluree_db_nameservice::NameService as _;
         match self {
-            FlureeInstance::Direct(d) => d.nameservice().lookup(ledger_id).await,
+            FlureeInstance::Direct(f) => f.nameservice().lookup(ledger_id).await,
             FlureeInstance::Proxy(p) => p.nameservice().lookup(ledger_id).await,
         }
     }
@@ -92,7 +109,7 @@ impl FlureeInstance {
     /// the nameservice without loading the ledger data.
     pub async fn ledger_exists(&self, ledger_id: &str) -> fluree_db_api::Result<bool> {
         match self {
-            FlureeInstance::Direct(d) => d.ledger_exists(ledger_id).await,
+            FlureeInstance::Direct(f) => f.ledger_exists(ledger_id).await,
             FlureeInstance::Proxy(p) => p.ledger_exists(ledger_id).await,
         }
     }
@@ -103,7 +120,7 @@ impl FlureeInstance {
         ledger_name: &str,
     ) -> fluree_db_api::Result<Vec<fluree_db_nameservice::NsRecord>> {
         match self {
-            FlureeInstance::Direct(d) => d.list_branches(ledger_name).await,
+            FlureeInstance::Direct(f) => f.list_branches(ledger_name).await,
             FlureeInstance::Proxy(p) => p.list_branches(ledger_name).await,
         }
     }
@@ -114,7 +131,7 @@ impl FlureeInstance {
     ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::NsRecord>> {
         use fluree_db_nameservice::NameService as _;
         match self {
-            FlureeInstance::Direct(d) => d.nameservice().all_records().await,
+            FlureeInstance::Direct(f) => f.nameservice().all_records().await,
             FlureeInstance::Proxy(p) => p.nameservice().all_records().await,
         }
     }
@@ -125,7 +142,7 @@ impl FlureeInstance {
     ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::GraphSourceRecord>> {
         use fluree_db_nameservice::GraphSourceLookup as _;
         match self {
-            FlureeInstance::Direct(d) => d.nameservice().all_graph_source_records().await,
+            FlureeInstance::Direct(f) => f.nameservice().all_graph_source_records().await,
             // Proxy mode: graph source records not available locally
             FlureeInstance::Proxy(_) => Ok(Vec::new()),
         }
@@ -138,7 +155,7 @@ impl FlureeInstance {
     ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::GraphSourceRecord>> {
         use fluree_db_nameservice::GraphSourceLookup as _;
         match self {
-            FlureeInstance::Direct(d) => d.nameservice().lookup_graph_source(graph_source_id).await,
+            FlureeInstance::Direct(f) => f.nameservice().lookup_graph_source(graph_source_id).await,
             // Proxy mode: graph source records not available locally
             FlureeInstance::Proxy(_) => Ok(None),
         }
@@ -152,7 +169,7 @@ impl FlureeInstance {
         sparql: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::Direct(d) => d.query_from().sparql(sparql).execute_formatted().await,
+            FlureeInstance::Direct(f) => f.query_from().sparql(sparql).execute_formatted().await,
             FlureeInstance::Proxy(p) => p.query_from().sparql(sparql).execute_formatted().await,
         }
     }
@@ -168,8 +185,8 @@ impl FlureeInstance {
         query_json: &serde_json::Value,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::Direct(d) => {
-                d.query_from().jsonld(query_json).execute_formatted().await
+            FlureeInstance::Direct(f) => {
+                f.query_from().jsonld(query_json).execute_formatted().await
             }
             FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_formatted().await,
         }
@@ -185,7 +202,7 @@ impl FlureeInstance {
     ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
     {
         match self {
-            FlureeInstance::Direct(d) => d.query_from().jsonld(query_json).execute_tracked().await,
+            FlureeInstance::Direct(f) => f.query_from().jsonld(query_json).execute_tracked().await,
             FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_tracked().await,
         }
     }
@@ -202,9 +219,9 @@ impl FlureeInstance {
         query_json: &serde_json::Value,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::Direct(d) => {
-                let view = d.load_graph_db_or_graph_source(ledger_id).await?;
-                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(d, &view)
+            FlureeInstance::Direct(f) => {
+                let view = f.load_graph_db_or_graph_source(ledger_id).await?;
+                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
                     .jsonld(query_json)
                     .execute_formatted()
                     .await
@@ -227,14 +244,14 @@ impl FlureeInstance {
     ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
     {
         match self {
-            FlureeInstance::Direct(d) => {
-                let view = d
+            FlureeInstance::Direct(f) => {
+                let view = f
                     .load_graph_db_or_graph_source(ledger_id)
                     .await
                     .map_err(|e| {
                         fluree_db_api::TrackedErrorResponse::new(404, e.to_string(), None)
                     })?;
-                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(d, &view)
+                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
                     .jsonld(query_json)
                     .execute_tracked()
                     .await
@@ -256,9 +273,9 @@ impl FlureeInstance {
         sparql: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::Direct(d) => {
-                let view = d.load_graph_db_or_graph_source(ledger_id).await?;
-                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(d, &view)
+            FlureeInstance::Direct(f) => {
+                let view = f.load_graph_db_or_graph_source(ledger_id).await?;
+                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
                     .sparql(sparql)
                     .execute_formatted()
                     .await
@@ -293,9 +310,9 @@ impl FlureeInstance {
                 };
 
                 match self {
-                    FlureeInstance::Direct(d) => {
-                        let view = d.db_with_policy(ledger_id, &opts).await?;
-                        view.query(d.as_ref())
+                    FlureeInstance::Direct(f) => {
+                        let view = f.db_with_policy(ledger_id, &opts).await?;
+                        view.query(f.as_ref())
                             .sparql(sparql)
                             .execute_formatted()
                             .await
@@ -323,10 +340,10 @@ impl FlureeInstance {
         query_json: &serde_json::Value,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::Direct(d) => {
-                let ledger = d.ledger(ledger_id).await?;
+            FlureeInstance::Direct(f) => {
+                let ledger = f.ledger(ledger_id).await?;
                 let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
-                d.explain(&db, query_json).await
+                f.explain(&db, query_json).await
             }
             FlureeInstance::Proxy(p) => {
                 let ledger = p.ledger(ledger_id).await?;
@@ -343,10 +360,10 @@ impl FlureeInstance {
         sparql: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
         match self {
-            FlureeInstance::Direct(d) => {
-                let ledger = d.ledger(ledger_id).await?;
+            FlureeInstance::Direct(f) => {
+                let ledger = f.ledger(ledger_id).await?;
                 let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
-                d.explain_sparql(&db, sparql).await
+                f.explain_sparql(&db, sparql).await
             }
             FlureeInstance::Proxy(p) => {
                 let ledger = p.ledger(ledger_id).await?;
@@ -362,8 +379,8 @@ impl FlureeInstance {
     /// In proxy mode, this always fetches the latest from the transaction server.
     pub async fn ledger_index_t(&self, ledger_id: &str) -> fluree_db_api::Result<i64> {
         match self {
-            FlureeInstance::Direct(d) => {
-                let ledger = d.ledger(ledger_id).await?;
+            FlureeInstance::Direct(f) => {
+                let ledger = f.ledger(ledger_id).await?;
                 Ok(ledger.index_t())
             }
             FlureeInstance::Proxy(p) => {
@@ -379,7 +396,7 @@ impl FlureeInstance {
     /// Returns None if caching is not enabled.
     pub fn spawn_maintenance(&self) -> Option<tokio::task::JoinHandle<()>> {
         match self {
-            FlureeInstance::Direct(d) => d.spawn_maintenance(),
+            FlureeInstance::Direct(f) => f.spawn_maintenance(),
             FlureeInstance::Proxy(p) => p.spawn_maintenance(),
         }
     }
@@ -389,8 +406,8 @@ impl FlureeInstance {
     /// Returns 0 if caching is not enabled.
     pub async fn cached_ledger_count(&self) -> usize {
         match self {
-            FlureeInstance::Direct(d) => {
-                if let Some(mgr) = d.ledger_manager() {
+            FlureeInstance::Direct(f) => {
+                if let Some(mgr) = f.ledger_manager() {
                     mgr.cached_count().await
                 } else {
                     0
@@ -412,7 +429,7 @@ impl FlureeInstance {
     /// If caching is disabled, this is a no-op.
     pub async fn disconnect_ledger(&self, ledger_id: &str) {
         match self {
-            FlureeInstance::Direct(d) => d.disconnect_ledger(ledger_id).await,
+            FlureeInstance::Direct(f) => f.disconnect_ledger(ledger_id).await,
             FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
         }
     }
@@ -423,35 +440,31 @@ impl FlureeInstance {
     /// ledgers, and clears caches. See `Fluree::disconnect` for details.
     pub async fn disconnect(&self) {
         match self {
-            FlureeInstance::Direct(d) => d.disconnect().await,
+            FlureeInstance::Direct(f) => f.disconnect().await,
             FlureeInstance::Proxy(p) => p.disconnect().await,
         }
     }
 
     /// Build comprehensive ledger info (for MCP get_data_model and /fluree/ledger-info)
     ///
-    /// Works with all instance types. Loads the ledger into cache if not already
-    /// cached, then builds metadata including commit info, namespace codes, and statistics.
+    /// Works with both file-backed and proxy-backed instances. Loads the ledger
+    /// into cache if not already cached, then builds metadata including commit info,
+    /// namespace codes, and statistics.
     pub async fn build_ledger_info(
         &self,
         ledger_id: &str,
     ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::Direct(d) => {
-                let handle = d.ledger_cached(ledger_id).await?;
-                let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, d.storage(), None)
-                    .await
-                    .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
-            }
-            FlureeInstance::Proxy(p) => {
-                let handle = p.ledger_cached(ledger_id).await?;
-                let ledger_state = handle.snapshot().await.to_ledger_state();
-                fluree_db_api::ledger_info::build_ledger_info(&ledger_state, p.storage(), None)
-                    .await
-                    .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
-            }
-        }
+        let admin_storage = self.backend().admin_storage_cloned().ok_or_else(|| {
+            fluree_db_api::ApiError::config("ledger_info requires a managed storage backend")
+        })?;
+        let handle = match self {
+            FlureeInstance::Direct(f) => f.ledger_cached(ledger_id).await?,
+            FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await?,
+        };
+        let ledger_state = handle.snapshot().await.to_ledger_state();
+        fluree_db_api::ledger_info::build_ledger_info(&ledger_state, &admin_storage, None)
+            .await
+            .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
     }
 }
 
@@ -499,11 +512,8 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn spawn_leaflet_cache_stats_logger<S, N>(
-        fluree: Arc<Fluree<S, N>>,
-    ) -> tokio::task::JoinHandle<()>
+    fn spawn_leaflet_cache_stats_logger<N>(fluree: Arc<Fluree<N>>) -> tokio::task::JoinHandle<()>
     where
-        S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
         N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
     {
         // Keep logging lightweight and periodic: one line per minute.
@@ -541,9 +551,10 @@ impl AppState {
 
     /// Create new application state from config
     ///
-    /// Initializes the Fluree instance based on config:
-    /// - Proxy storage mode: Proxy-backed (peer proxying through tx server)
-    /// - Otherwise: Direct storage (file, S3, DynamoDB, etc.) via `FlureeBuilder::build_client()`
+    /// Initializes either file-backed or proxy-backed Fluree based on config:
+    /// - Transaction server: Always file-backed
+    /// - Peer with shared storage: File-backed
+    /// - Peer with proxy storage: Proxy-backed (no local storage needed)
     pub async fn new(
         config: ServerConfig,
         telemetry_config: TelemetryConfig,
@@ -553,7 +564,7 @@ impl AppState {
             fluree_db_api::ApiError::internal(format!("Invalid configuration: {}", e))
         })?;
 
-        // Create Fluree instance based on config
+        // Create Fluree instance based on storage access mode
         let (fluree, cache_stats_handle) = if config.is_proxy_storage_mode() {
             // Proxy mode: peer proxies all storage reads through tx server
             Self::create_proxy_fluree(&config)?
@@ -621,11 +632,17 @@ impl AppState {
     }
 
     /// Create a direct-storage Fluree instance (file, S3, DynamoDB, etc.)
+    ///
+    /// Uses `FlureeBuilder::build_client()` which returns a type-erased `FlureeClient`
+    /// supporting all backend types. Backend selection is driven by:
+    /// - `--connection-config`: JSON-LD config file (S3, DynamoDB, split storage, encryption)
+    /// - `--storage-path`: local filesystem (default)
+    /// - Neither: in-memory storage at `.fluree/storage`
     async fn create_direct_fluree(
         config: &ServerConfig,
     ) -> Result<(FlureeInstance, tokio::task::JoinHandle<()>), fluree_db_api::ApiError> {
         let mut builder = if let Some(ref path) = config.connection_config {
-            // Connection config: build from JSON-LD
+            // Connection config: build from JSON-LD (supports S3, DynamoDB, split storage, etc.)
             let json_str = std::fs::read_to_string(path).map_err(|e| {
                 fluree_db_api::ApiError::internal(format!(
                     "Failed to read connection config file '{}': {}",
@@ -652,19 +669,15 @@ impl AppState {
         };
 
         // Server-level overrides take precedence over connection config defaults.
-        // When --connection-config is used, from_json_ld() may set its own indexing
-        // and cache config; the server's settings always override.
         if let Some(max_mb) = config.cache_max_mb {
             builder = builder.cache_max_mb(max_mb);
         }
         if config.indexing_enabled {
             builder = builder
                 .with_indexing_thresholds(config.reindex_min_bytes, config.reindex_max_bytes);
-        } else if config.connection_config.is_some() {
-            // Explicitly disable indexing: connection config may have enabled it,
-            // but the server's --indexing-enabled=false (the default) takes precedence.
-            builder = builder.without_indexing();
         }
+        // When indexing is disabled (default), we don't call with_indexing_thresholds,
+        // so the builder stays in no-indexing mode regardless of connection config defaults.
 
         let fluree = Arc::new(builder.build_client().await?);
 
@@ -697,7 +710,7 @@ impl AppState {
 
         tracing::info!("Initialized peer with proxy storage mode");
         let fluree = Arc::new(fluree);
-        let handle = Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
+        let handle = Self::spawn_leaflet_cache_stats_logger::<_>(Arc::clone(&fluree));
         Ok((FlureeInstance::Proxy(fluree), handle))
     }
 
@@ -715,18 +728,16 @@ impl AppState {
         &self,
         scope: fluree_db_nameservice::SubscriptionScope,
     ) -> fluree_db_nameservice::Result<fluree_db_nameservice::Subscription> {
-        use fluree_db_nameservice::Publication;
         match &self.fluree {
-            FlureeInstance::Direct(d) => {
-                let ns = d.nameservice();
-                match ns.publication() {
-                    Some(pub_ns) => pub_ns.subscribe(scope).await,
-                    None => Err(fluree_db_nameservice::NameServiceError::storage(
-                        "Event subscriptions are not supported by this nameservice backend",
-                    )),
-                }
+            FlureeInstance::Direct(f) => {
+                let pub_ns = f.nameservice().publication().ok_or_else(|| {
+                    fluree_db_nameservice::NameServiceError::storage(
+                        "Subscription requires a nameservice that supports publication",
+                    )
+                })?;
+                pub_ns.subscribe(scope).await
             }
-            FlureeInstance::Proxy(p) => p.nameservice().subscribe(scope).await,
+            FlureeInstance::Proxy(f) => f.nameservice().subscribe(scope).await,
         }
     }
 }

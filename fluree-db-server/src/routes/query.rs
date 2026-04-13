@@ -2021,14 +2021,13 @@ pub(crate) async fn load_ledger_for_query(
     /// Inner helper: load from cache, check peer freshness if needed, return snapshot.
     ///
     /// Generic over storage/nameservice so it works with File, Proxy, and Client instances.
-    async fn load_and_check_freshness<S, N>(
-        fluree: &fluree_db_api::Fluree<S, N>,
+    async fn load_and_check_freshness<N>(
+        fluree: &fluree_db_api::Fluree<N>,
         state: &AppState,
         ledger_id: &str,
         span: &tracing::Span,
     ) -> Result<LedgerState>
     where
-        S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
         N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
     {
         // Get cached handle (loads if not cached)

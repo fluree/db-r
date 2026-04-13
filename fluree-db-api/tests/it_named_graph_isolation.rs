@@ -43,7 +43,7 @@ async fn rdf_type_isolated_across_named_graphs() {
     let ledger_id = "it/graph-isolation-type:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -154,7 +154,7 @@ async fn subject_properties_isolated_per_graph() {
     let ledger_id = "it/graph-isolation-props:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -273,7 +273,7 @@ async fn type_filter_query_respects_graph_boundaries() {
     let ledger_id = "it/graph-isolation-typefilter:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -376,7 +376,7 @@ async fn pre_index_upsert_isolates_named_graphs() {
     let ledger_id = "it/graph-isolation-preindex:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
@@ -539,7 +539,7 @@ async fn push_roundtrip_named_graph_retractions() {
         .build_memory();
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

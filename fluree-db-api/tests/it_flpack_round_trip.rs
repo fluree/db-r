@@ -19,7 +19,6 @@ use fluree_db_core::pack::{
     decode_frame, encode_data_frame, encode_end_frame, encode_header_frame, encode_manifest_frame,
     read_stream_preamble, write_stream_preamble, PackFrame, PackHeader, DEFAULT_MAX_PAYLOAD,
 };
-use fluree_db_core::storage::content_store_for;
 use fluree_db_core::{ContentKind, ContentStore};
 use fluree_db_nameservice::NameService;
 use fluree_db_nameservice_sync::ingest_pack_frame;
@@ -27,12 +26,8 @@ use serde_json::json;
 use std::collections::HashSet;
 
 /// Export a ledger to an in-memory `.flpack` byte buffer.
-async fn export_ledger_to_bytes<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
-    ledger_id: &str,
-) -> Vec<u8>
+async fn export_ledger_to_bytes<N>(fluree: &fluree_db_api::Fluree<N>, ledger_id: &str) -> Vec<u8>
 where
-    S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
     N: NameService + Send + Sync,
 {
     let ns_record = fluree
@@ -47,7 +42,7 @@ where
         .as_ref()
         .expect("ledger should have commits");
 
-    let content_store = content_store_for(fluree.storage().clone(), ledger_id);
+    let content_store = fluree.content_store(ledger_id);
 
     let missing_commits = compute_missing_commits(
         &content_store,
@@ -158,17 +153,11 @@ where
 }
 
 /// Import a `.flpack` byte buffer into a Fluree instance under the given ledger name.
-async fn import_ledger_from_bytes<S, N>(
-    fluree: &fluree_db_api::Fluree<S, N>,
+async fn import_ledger_from_bytes<N>(
+    fluree: &fluree_db_api::Fluree<N>,
     ledger_id: &str,
     data: &[u8],
 ) where
-    S: fluree_db_core::Storage
-        + fluree_db_core::storage::ContentAddressedWrite
-        + Clone
-        + Send
-        + Sync
-        + 'static,
     N: NameService
         + fluree_db_nameservice::Publisher
         + fluree_db_nameservice::ConfigPublisher
@@ -184,6 +173,10 @@ async fn import_ledger_from_bytes<S, N>(
         .expect("create ledger for import");
 
     let mut pos = read_stream_preamble(data).expect("valid preamble");
+    let admin_storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .expect("managed backend");
 
     let mut saw_header = false;
     let mut ns_manifest: Option<serde_json::Value> = None;
@@ -202,7 +195,7 @@ async fn import_ledger_from_bytes<S, N>(
             }
             PackFrame::Data { cid, payload } => {
                 assert!(saw_header, "data frame before header");
-                ingest_pack_frame(&cid, &payload, fluree.storage(), ledger_id)
+                ingest_pack_frame(&cid, &payload, &admin_storage, ledger_id)
                     .await
                     .unwrap_or_else(|e| panic!("ingest failed for {cid}: {e}"));
                 objects += 1;
@@ -379,7 +372,7 @@ async fn flpack_export_import_round_trip_with_index() {
         .expect("build source");
 
     let (local, handle) = start_background_indexer_local(
-        src_fluree.storage().clone(),
+        src_fluree.backend().clone(),
         src_fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

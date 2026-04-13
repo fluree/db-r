@@ -16,8 +16,8 @@ use fluree_db_core::ledger_config::LedgerConfig;
 use fluree_db_core::ledger_config::ValidationMode;
 use fluree_db_core::DatatypeConstraint;
 use fluree_db_core::{
-    range_with_overlay, ContentAddressedWrite, ContentId, ContentKind, FlakeValue, GraphId,
-    IndexType, RangeMatch, RangeOptions, RangeTest, Sid, Storage,
+    range_with_overlay, ContentId, ContentKind, FlakeValue, GraphId, IndexType, RangeMatch,
+    RangeOptions, RangeTest, Sid,
 };
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
@@ -803,9 +803,8 @@ fn convert_named_graphs_to_templates(
     Ok((templates, graph_delta))
 }
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
 {
     /// Stage a transaction against a ledger (no persistence).
@@ -1146,10 +1145,7 @@ where
         index_config: &IndexConfig,
         commit_opts: CommitOpts,
     ) -> Result<(CommitReceipt, LedgerState)> {
-        let content_store = fluree_db_core::content_store_for(
-            self.connection.storage().clone(),
-            view.db().ledger_id.as_str(),
-        );
+        let content_store = self.content_store(view.db().ledger_id.as_str());
         let (receipt, ledger) = commit_txn(
             view,
             ns_registry,
@@ -1918,9 +1914,8 @@ where
     }
 }
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
 {
     /// Update data using a transaction that specifies the ledger ID.

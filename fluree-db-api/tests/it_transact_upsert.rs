@@ -6,7 +6,7 @@ mod support;
 
 use fluree_db_api::FlureeBuilder;
 use fluree_db_core::comparator::IndexType;
-use fluree_db_core::{content_store_for, load_commit_by_id, FlakeValue};
+use fluree_db_core::{load_commit_by_id, FlakeValue};
 use serde_json::json;
 use support::normalize_rows;
 
@@ -270,7 +270,7 @@ async fn upsert_typed_string_retract_and_assert_use_same_datatype_sid() {
     });
     let result = fluree.upsert(ledger1, &upsert_txn).await.unwrap();
 
-    let content_store = content_store_for(fluree.storage().clone(), ledger_id);
+    let content_store = fluree.content_store(ledger_id);
     let commit = load_commit_by_id(&content_store, &result.receipt.commit_id)
         .await
         .expect("load upsert commit");

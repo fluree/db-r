@@ -925,7 +925,7 @@ async fn indexed_untyped_value_matching_parity() {
     let ledger_id = "misc/untyped-value-matching-indexed:main";
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         (*fluree.nameservice()).clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

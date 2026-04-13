@@ -32,8 +32,10 @@ benchmarks = []
 search-remote-client = ["dep:reqwest"]
 # Embedded vector search (HNSW-based approximate nearest neighbor)
 vector = ["fluree-db-query/vector"]
+# IPFS-backed storage (via Kubo HTTP RPC)
+ipfs = ["dep:fluree-db-storage-ipfs"]
 # Convenience: all features enabled
-full = ["native", "credential", "iceberg", "shacl"]
+full = ["native", "credential", "iceberg", "shacl", "ipfs"]
 
 [dependencies]
 fluree-db-core = { path = "../fluree-db-core" }
@@ -52,6 +54,7 @@ fluree-db-spatial = { path = "../fluree-db-spatial" }
 fluree-db-iceberg = { path = "../fluree-db-iceberg", default-features = false, optional = true, features = ["aws"] }
 fluree-db-r2rml = { path = "../fluree-db-r2rml", features = ["turtle"] }
 fluree-db-storage-aws = { path = "../fluree-db-storage-aws", optional = true }
+fluree-db-storage-ipfs = { path = "../fluree-db-storage-ipfs", optional = true }
 fluree-search-protocol = { path = "../fluree-search-protocol" }
 fluree-graph-ir = { path = "../fluree-graph-ir" }
 fluree-graph-format = { path = "../fluree-graph-format" }

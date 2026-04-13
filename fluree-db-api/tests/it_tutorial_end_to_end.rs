@@ -141,7 +141,11 @@ async fn tutorial_step1_insert_and_query() {
         .collect();
     assert_eq!(
         titles,
-        vec!["Deployment Runbook", "Incident Response Playbook", "Onboarding Guide"]
+        vec![
+            "Deployment Runbook",
+            "Incident Response Playbook",
+            "Onboarding Guide"
+        ]
     );
 
     // Verify: query articles with JSON-LD
@@ -161,7 +165,11 @@ async fn tutorial_step1_insert_and_query() {
     let jsonld_titles = extract_sorted_strings(&rows);
     assert_eq!(
         jsonld_titles,
-        vec!["Deployment Runbook", "Incident Response Playbook", "Onboarding Guide"]
+        vec![
+            "Deployment Runbook",
+            "Incident Response Playbook",
+            "Onboarding Guide"
+        ]
     );
 
     // Verify: query with join (articles + authors)
@@ -488,7 +496,11 @@ async fn tutorial_step4_branch_and_merge() {
         .await
         .expect("branch category query");
     let rows = result.to_jsonld(&branch_ledger.snapshot).unwrap();
-    assert_eq!(rows.as_array().unwrap().len(), 3, "branch should have 3 categorized articles");
+    assert_eq!(
+        rows.as_array().unwrap().len(),
+        3,
+        "branch should have 3 categorized articles"
+    );
 
     // Verify: main does NOT have categories
     let main_ledger = fluree.ledger("kb-branch:main").await.unwrap();
@@ -526,7 +538,10 @@ async fn tutorial_step4_branch_and_merge() {
         .await
         .expect("main visibility query");
     let rows = result.to_jsonld(&main_ledger.snapshot).unwrap();
-    assert_eq!(rows[0], "confidential", "main should retain original visibility");
+    assert_eq!(
+        rows[0], "confidential",
+        "main should retain original visibility"
+    );
 
     // Merge branch back to main
     let report = fluree
@@ -552,7 +567,10 @@ async fn tutorial_step4_branch_and_merge() {
         .await
         .expect("post-merge visibility query");
     let rows = result.to_jsonld(&main_ledger.snapshot).unwrap();
-    assert_eq!(rows[0], "internal", "main should have updated visibility after merge");
+    assert_eq!(
+        rows[0], "internal",
+        "main should have updated visibility after merge"
+    );
 
     // Drop the branch
     fluree
@@ -709,7 +727,12 @@ async fn tutorial_step5_combined_workflow() {
 
     // Merge experiment into main
     let report = fluree
-        .merge_branch("kb-combined", "experiment", None, ConflictStrategy::default())
+        .merge_branch(
+            "kb-combined",
+            "experiment",
+            None,
+            ConflictStrategy::default(),
+        )
         .await
         .expect("merge");
     assert!(report.fast_forward);
@@ -791,7 +814,10 @@ async fn tutorial_turtle_insert() {
         .await
         .expect("fulltext on turtle data");
     let rows = result.to_jsonld(&ledger.snapshot).unwrap();
-    assert!(!rows.as_array().unwrap().is_empty(), "should find turtle-inserted article via fulltext");
+    assert!(
+        !rows.as_array().unwrap().is_empty(),
+        "should find turtle-inserted article via fulltext"
+    );
 }
 
 // =========================================================================

@@ -32,7 +32,7 @@
 
 use crate::error::ApiError;
 use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
-use fluree_db_nameservice::{CasResult, NameService, Publisher, RefKind, RefPublisher, RefValue};
+use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -649,19 +649,17 @@ fn resolve_chunk_source(
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct ImportBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a super::Fluree<S, N>,
+pub struct ImportBuilder<'a, N> {
+    fluree: &'a super::Fluree<N>,
     ledger_id: String,
     import_path: PathBuf,
     config: ImportConfig,
 }
 
-impl<'a, S, N> ImportBuilder<'a, S, N>
+impl<'a, N> ImportBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
-        + RefPublisher
         + fluree_db_nameservice::ConfigPublisher
         + Clone
         + Send
@@ -669,7 +667,7 @@ where
         + 'static,
 {
     pub(crate) fn new(
-        fluree: &'a super::Fluree<S, N>,
+        fluree: &'a super::Fluree<N>,
         ledger_id: String,
         import_path: PathBuf,
     ) -> Self {
@@ -781,8 +779,15 @@ where
 
     /// Execute the bulk import pipeline.
     pub async fn execute(self) -> std::result::Result<ImportResult, ImportError> {
+        let storage = self
+            .fluree
+            .backend()
+            .admin_storage_cloned()
+            .ok_or_else(|| {
+                ImportError::Storage("bulk import requires a managed storage backend".into())
+            })?;
         run_import_pipeline(
-            self.fluree.storage(),
+            &storage,
             self.fluree.nameservice(),
             &self.ledger_id,
             &self.import_path,
@@ -799,27 +804,24 @@ where
 /// Intermediate builder returned by `fluree.create("mydb")`.
 ///
 /// Supports `.import(path)` for bulk import, or `.execute()` for empty ledger creation.
-pub struct CreateBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a super::Fluree<S, N>,
+pub struct CreateBuilder<'a, N> {
+    fluree: &'a super::Fluree<N>,
     ledger_id: String,
 }
 
-impl<'a, S, N> CreateBuilder<'a, S, N>
+impl<'a, N> CreateBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(fluree: &'a super::Fluree<S, N>, ledger_id: String) -> Self {
+    pub(crate) fn new(fluree: &'a super::Fluree<N>, ledger_id: String) -> Self {
         Self { fluree, ledger_id }
     }
 }
 
-impl<'a, S, N> CreateBuilder<'a, S, N>
+impl<'a, N> CreateBuilder<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
-        + RefPublisher
         + fluree_db_nameservice::ConfigPublisher
         + Clone
         + Send
@@ -830,7 +832,7 @@ where
     ///
     /// `path` can be a directory containing `.ttl`/`.trig`/`.jsonld` files
     /// (sorted lexicographically), or a single `.ttl`/`.jsonld` file.
-    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, S, N> {
+    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, N> {
         ImportBuilder::new(self.fluree, self.ledger_id, path.as_ref().to_path_buf())
     }
 }
@@ -936,44 +938,6 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
 // Import pipeline
 // ============================================================================
 
-async fn publish_commit_head_checked<N: RefPublisher>(
-    nameservice: &N,
-    ledger_id: &str,
-    published_ref: &mut Option<RefValue>,
-    commit_t: i64,
-    commit_id: &ContentId,
-) -> std::result::Result<(), ImportError> {
-    let new_ref = RefValue {
-        id: Some(commit_id.clone()),
-        t: commit_t,
-    };
-    let result = nameservice
-        .compare_and_set_ref(
-            ledger_id,
-            RefKind::CommitHead,
-            published_ref.as_ref(),
-            &new_ref,
-        )
-        .await
-        .map_err(|e| ImportError::Storage(e.to_string()))?;
-    match result {
-        CasResult::Updated => {
-            *published_ref = Some(new_ref);
-            Ok(())
-        }
-        CasResult::Conflict { actual } => Err(ImportError::Storage(format!(
-            "commit head publish race for {ledger_id}: attempted t={} id={}, current head is t={} id={}",
-            commit_t,
-            commit_id,
-            actual.as_ref().map(|r| r.t).unwrap_or(0),
-            actual
-                .and_then(|r| r.id)
-                .map(|cid| cid.to_string())
-                .unwrap_or_else(|| "None".to_string())
-        ))),
-    }
-}
-
 /// Core import pipeline. Orchestrates all phases.
 async fn run_import_pipeline<S, N>(
     storage: &S,
@@ -984,7 +948,7 @@ async fn run_import_pipeline<S, N>(
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + RefPublisher + fluree_db_nameservice::ConfigPublisher,
+    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     let pipeline_start = Instant::now();
     let span = tracing::debug_span!("bulk_import", alias = %alias);
@@ -1182,7 +1146,7 @@ async fn run_pipeline_phases<S, N>(
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + RefPublisher + fluree_db_nameservice::ConfigPublisher,
+    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
     let import_result = run_import_chunks(
@@ -1339,7 +1303,7 @@ async fn run_import_chunks<S, N>(
 ) -> std::result::Result<ChunkImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + RefPublisher,
+    N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_transact::import::{
@@ -1447,7 +1411,6 @@ where
         result_rx: std::sync::mpsc::Receiver<std::result::Result<(usize, ParsedChunk), String>>,
         env: &CommitPipelineEnv<'_, S, N>,
         state: &mut ImportState,
-        published_ref: &mut Option<RefValue>,
         published_codes: &mut rustc_hash::FxHashSet<u16>,
         compute_ns_delta: impl Fn(
             &rustc_hash::FxHashSet<u16>,
@@ -1462,8 +1425,8 @@ where
         commit_metas: &mut Vec<CommitMeta>,
     ) -> std::result::Result<usize, ImportError>
     where
-        S: Storage + Clone + Send + Sync + 'static,
-        N: NameService + Publisher + RefPublisher,
+        S: Storage,
+        N: NameService + Publisher,
     {
         // Serial commit loop: receive parsed chunks, reorder, finalize in order.
         // Parsed chunks arrive out of order from parallel workers.
@@ -1534,14 +1497,10 @@ where
                 if env.config.publish_every > 0
                     && (next_expected + 1).is_multiple_of(env.config.publish_every)
                 {
-                    publish_commit_head_checked(
-                        env.nameservice,
-                        env.alias,
-                        published_ref,
-                        result.t,
-                        &result.commit_id,
-                    )
-                    .await?;
+                    env.nameservice
+                        .publish_commit(env.alias, result.t, &result.commit_id)
+                        .await
+                        .map_err(|e| ImportError::Storage(e.to_string()))?;
                     tracing::info!(
                         t = result.t,
                         chunk = next_expected + 1,
@@ -1561,10 +1520,6 @@ where
     let compress = config.compress_commits;
     let num_threads = config.parse_threads;
     let mut state = ImportState::new();
-    let mut published_ref = nameservice
-        .get_ref(alias, RefKind::CommitHead)
-        .await
-        .map_err(|e| ImportError::Storage(e.to_string()))?;
     let run_start = Instant::now();
 
     // ---- Inflight permit channel (memory budget enforcement) ----
@@ -1930,7 +1885,6 @@ where
             result_rx,
             &commit_env,
             &mut state,
-            &mut published_ref,
             &mut published_codes,
             compute_ns_delta,
             &mut sort_write_handles,
@@ -2041,7 +1995,6 @@ where
                 result_rx,
                 &commit_env,
                 &mut state,
-                &mut published_ref,
                 &mut published_codes,
                 compute_ns_delta,
                 &mut sort_write_handles,
@@ -2158,14 +2111,10 @@ where
                     elapsed_secs: run_start.elapsed().as_secs_f64(),
                 });
                 if config.publish_every > 0 && (i + 1).is_multiple_of(config.publish_every) {
-                    publish_commit_head_checked(
-                        nameservice,
-                        alias,
-                        &mut published_ref,
-                        result.t,
-                        &result.commit_id,
-                    )
-                    .await?;
+                    nameservice
+                        .publish_commit(alias, result.t, &result.commit_id)
+                        .await
+                        .map_err(|e| ImportError::Storage(e.to_string()))?;
                 }
             }
         }
@@ -2178,14 +2127,10 @@ where
         .map(|r| r.id.clone())
         .ok_or_else(|| ImportError::Storage("no commit head after import".to_string()))?;
 
-    publish_commit_head_checked(
-        nameservice,
-        alias,
-        &mut published_ref,
-        state.t,
-        &commit_head_id,
-    )
-    .await?;
+    nameservice
+        .publish_commit(alias, state.t, &commit_head_id)
+        .await
+        .map_err(|e| ImportError::Storage(e.to_string()))?;
     tracing::info!(t = state.t, "published final commit head");
 
     // ---- Spawn txn-meta "meta chunk" build in background ----
@@ -2819,15 +2764,19 @@ where
         );
     }
 
+    // Shared content store for dict upload, index upload, and other CAS operations.
+    let content_store: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
+        fluree_db_core::storage::content_store_for(storage.clone(), alias),
+    );
+
     // Start dict upload (reads flat files from run_dir, builds CoW trees, uploads to CAS).
     // This runs concurrently with the index builds below.
     let dict_upload_handle = {
-        let storage = storage.clone();
-        let alias = alias.to_string();
+        let content_store = content_store.clone();
         let run_dir = input.run_dir.to_path_buf();
         let namespace_codes = input.namespace_codes.clone();
         tokio::spawn(async move {
-            upload_dicts_from_disk(&storage, &alias, &run_dir, &namespace_codes, true).await
+            upload_dicts_from_disk(content_store.as_ref(), &run_dir, &namespace_codes, true).await
         })
     };
 
@@ -3110,9 +3059,10 @@ where
             stage: "Uploading index artifacts",
         });
         let upload_indexes_start = Instant::now();
-        let v3_uploaded = fluree_db_indexer::upload_indexes_to_cas(storage, alias, &v3_result)
-            .await
-            .map_err(|e| ImportError::Upload(e.to_string()))?;
+        let v3_uploaded =
+            fluree_db_indexer::upload_indexes_to_cas(content_store.as_ref(), &v3_result)
+                .await
+                .map_err(|e| ImportError::Upload(e.to_string()))?;
         tracing::info!(
             elapsed_ms = upload_indexes_start.elapsed().as_millis(),
             default_orders = v3_uploaded.default_graph_orders.len(),

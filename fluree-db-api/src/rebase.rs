@@ -8,13 +8,11 @@ use crate::error::{ApiError, Result};
 use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{
     range_with_overlay, ConflictKey, ContentId, Flake, IndexType, RangeMatch, RangeOptions,
-    RangeTest, Storage,
+    RangeTest,
 };
 use fluree_db_core::{trace_commits_by_id, Commit};
 use fluree_db_ledger::{LedgerState, LedgerView};
-use fluree_db_nameservice::{
-    CasResult, NameService, NsRecordSnapshot, Publisher, RefKind, RefPublisher, RefValue,
-};
+use fluree_db_nameservice::{NameService, NsRecordSnapshot, Publisher};
 use fluree_db_novelty::compute_delta_keys;
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use futures::TryStreamExt;
@@ -101,10 +99,9 @@ pub struct RebaseReport {
 // Orchestration
 // ---------------------------------------------------------------------------
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
-    N: NameService + Publisher + RefPublisher + 'static,
+    N: NameService + Publisher + fluree_db_nameservice::RefPublisher + 'static,
 {
     /// Rebase a branch onto its source branch's current HEAD.
     ///
@@ -171,12 +168,9 @@ where
         }
 
         // Build a BranchedContentStore for reading commits across namespaces.
-        let branch_store = LedgerState::build_branched_store(
-            &self.nameservice,
-            &branch_record,
-            self.connection.storage(),
-        )
-        .await?;
+        let branch_store =
+            LedgerState::build_branched_store(&self.nameservice, &branch_record, self.backend())
+                .await?;
 
         // Compute common ancestor by walking commit chains.
         let branch_head_id = branch_record
@@ -195,10 +189,6 @@ where
                 .fast_forward_rebase(
                     &branch_id,
                     &source_id,
-                    RefValue {
-                        id: branch_record.commit_head_id.clone(),
-                        t: branch_record.commit_t,
-                    },
                     &source_record,
                     source_head_id,
                     source_head_t,
@@ -213,13 +203,12 @@ where
             let source_store = LedgerState::build_branched_store(
                 &self.nameservice,
                 &source_record,
-                self.connection.storage(),
+                self.backend(),
             )
             .await?;
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         } else {
-            let source_store =
-                fluree_db_core::content_store_for(self.connection.storage().clone(), &source_id);
+            let source_store = self.content_store(&source_id);
             compute_delta_keys(source_store, source_head_id.clone(), ancestor.t).await?
         };
 
@@ -254,13 +243,6 @@ where
         // novelty grows too large mid-rebase.
         self.copy_source_index(&source_id, &branch_id, &source_record)
             .await;
-
-        // Rebase replay creates a new branch-local commit chain on top of the
-        // source head. Reset the branch head to the source snapshot first so
-        // replayed commits advance from the correct expected ref.
-        self.nameservice
-            .reset_head(&branch_id, NsRecordSnapshot::from_record(&source_record))
-            .await?;
 
         // Run replay and finalization; roll back on any error.
         let ctx = ReplayContext {
@@ -310,13 +292,9 @@ where
 
     /// The actual replay loop + finalization, extracted so the caller can
     /// wrap it in a snapshot/rollback guard.
-    async fn run_replay(&self, ctx: &ReplayContext<'_, S>) -> Result<RebaseReport> {
-        let mut current_state = LedgerState::load(
-            &self.nameservice,
-            ctx.source_id,
-            self.connection.storage().clone(),
-        )
-        .await?;
+    async fn run_replay(&self, ctx: &ReplayContext<'_>) -> Result<RebaseReport> {
+        let mut current_state =
+            LedgerState::load(&self.nameservice, ctx.source_id, self.backend()).await?;
 
         current_state.snapshot.ledger_id = ctx.branch_id.to_string();
 
@@ -387,41 +365,29 @@ where
         &self,
         branch_id: &str,
         source_id: &str,
-        expected_branch_head: RefValue,
         source_record: &fluree_db_nameservice::NsRecord,
         source_head_id: ContentId,
         source_head_t: i64,
     ) -> Result<RebaseReport> {
+        use fluree_db_nameservice::{CasResult, RefValue};
+
+        let new_ref = RefValue {
+            id: Some(source_head_id.clone()),
+            t: source_head_t,
+        };
         match self
             .nameservice
-            .compare_and_set_ref(
-                branch_id,
-                RefKind::CommitHead,
-                Some(&expected_branch_head),
-                &RefValue {
-                    id: Some(source_head_id.clone()),
-                    t: source_head_t,
-                },
-            )
+            .fast_forward_commit(branch_id, &new_ref, 3)
             .await?
         {
             CasResult::Updated => {}
             CasResult::Conflict { actual } => {
-                let actual_t = actual.as_ref().map(|r| r.t).unwrap_or(0);
-                let actual_id = actual
-                    .and_then(|r| r.id)
-                    .map(|cid| cid.to_string())
-                    .unwrap_or_else(|| "None".to_string());
-                return Err(ApiError::BranchConflict(format!(
-                    "Rebase aborted: branch advanced concurrently (expected head t={} id={}, found t={} id={})",
-                    expected_branch_head.t,
-                    expected_branch_head
-                        .id
-                        .as_ref()
-                        .map(|cid| cid.to_string())
-                        .unwrap_or_else(|| "None".to_string()),
-                    actual_t,
-                    actual_id
+                return Err(ApiError::internal(format!(
+                    "Fast-forward rebase conflict on {}: branch head moved concurrently \
+                     (attempted t={}, actual t={})",
+                    branch_id,
+                    source_head_t,
+                    actual.as_ref().map(|r| r.t).unwrap_or(0),
                 )));
             }
         }
@@ -467,10 +433,7 @@ where
             .with_namespace_delta(original_commit.namespace_delta.clone())
             .with_graph_delta(original_commit.graph_delta.clone());
 
-        let content_store = fluree_db_core::content_store_for(
-            self.connection.storage().clone(),
-            view.db().ledger_id.as_str(),
-        );
+        let content_store = self.content_store(view.db().ledger_id.as_str());
         let (_receipt, new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
@@ -593,12 +556,9 @@ where
             "building inline index mid-rebase to flush novelty"
         );
 
-        let branch_store = LedgerState::build_branched_store(
-            &self.nameservice,
-            branch_record,
-            self.connection.storage(),
-        )
-        .await?;
+        let branch_store =
+            LedgerState::build_branched_store(&self.nameservice, branch_record, self.backend())
+                .await?;
 
         let record = self
             .nameservice
@@ -606,10 +566,9 @@ where
             .await?
             .ok_or_else(|| ApiError::NotFound(branch_id.to_string()))?;
 
-        let indexer_config = crate::build_indexer_config(self.connection.config());
+        let indexer_config = crate::build_indexer_config(self.config());
 
         let index_result = fluree_db_indexer::rebuild_index_from_commits_with_store(
-            self.connection.storage(),
             branch_store,
             branch_id,
             &record,
@@ -622,13 +581,9 @@ where
             .publish_index(branch_id, index_result.index_t, &index_result.root_id)
             .await?;
 
-        LedgerState::load(
-            &self.nameservice,
-            branch_id,
-            self.connection.storage().clone(),
-        )
-        .await
-        .map_err(Into::into)
+        LedgerState::load(&self.nameservice, branch_id, self.backend())
+            .await
+            .map_err(Into::into)
     }
 
     /// Copy index artifacts from source to branch (best-effort).
@@ -664,13 +619,13 @@ where
 
 /// Context for the replay loop, bundling references that would otherwise
 /// require 10+ parameters.
-struct ReplayContext<'a, S: Storage> {
+struct ReplayContext<'a> {
     branch_id: &'a str,
     branch_record: &'a fluree_db_nameservice::NsRecord,
     source_id: &'a str,
     source_head_id: &'a ContentId,
     source_head_t: i64,
-    branch_store: &'a fluree_db_core::BranchedContentStore<S>,
+    branch_store: &'a fluree_db_core::BranchedContentStore,
     summaries: &'a [CommitSummary],
     strategy: &'a ConflictStrategy,
     total_commits: usize,

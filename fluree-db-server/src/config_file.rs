@@ -255,7 +255,7 @@ fn find_config_in_dir(dir: &Path) -> Option<PathBuf> {
 pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         // Explicit path: could be a file or a directory containing config
-        if p.is_file() {
+        if p.is_dir() {
             return Some(p.to_path_buf());
         }
         if p.is_dir() {

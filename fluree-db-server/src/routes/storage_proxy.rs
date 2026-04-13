@@ -27,7 +27,7 @@ use axum::{
     Json,
 };
 use fluree_db_api::block_fetch::{self, BlockContent, EnforcementMode, LedgerBlockContext};
-use fluree_db_api::{verify_commit_blob, StorageRead};
+use fluree_db_api::{verify_commit_blob, NameService, StorageMethod, StorageRead};
 use fluree_db_core::flake::Flake;
 use fluree_db_core::ContentKind;
 use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
@@ -234,12 +234,13 @@ pub async fn get_ns_record(
         return Err(ServerError::not_found("Ledger not found"));
     }
 
-    // Look up the nameservice record.
-    // Storage proxy is only enabled on transaction servers (validated in config).
-    // Works with File and Client instances (same NameService API surface).
+    // Look up the nameservice record
+    // Storage proxy is only enabled on transaction servers (validated in config)
     let ns_record = state
         .fluree
-        .nameservice_lookup(&ledger_id)
+        .as_direct()
+        .nameservice()
+        .lookup(&ledger_id)
         .await
         .map_err(|e| ServerError::internal(format!("Nameservice lookup failed: {}", e)))?
         .ok_or_else(|| ServerError::not_found("Ledger not found"))?;
@@ -305,9 +306,10 @@ pub async fn get_block(
     let _ = kind;
 
     // 3. Namespace guard: ensure `body.ledger` is a real ledger (not a graph source alias)
-    state
-        .fluree
-        .nameservice_lookup(&body.ledger)
+    let fluree = state.fluree.as_direct();
+    fluree
+        .nameservice()
+        .lookup(&body.ledger)
         .await
         .map_err(|e| ServerError::internal(format!("Nameservice lookup failed: {e}")))?
         .ok_or_else(|| ServerError::not_found("Block not found"))?;
@@ -334,49 +336,37 @@ pub async fn get_block(
         policy_class: effective_policy_class,
     };
 
-    // Dispatch block fetch across File/Client variants.
-    // Both have the same storage()/ledger_cached()/disconnect_ledger() API surface.
-    macro_rules! fetch_block {
-        ($fluree:expr) => {{
-            let fluree = $fluree;
+    // Load ledger context for leaf decoding + policy filtering
+    // Force a fresh load so policy evaluation sees current data.
+    // This avoids stale-cache issues after reindex updates.
+    fluree.disconnect_ledger(&body.ledger).await;
 
-            // Load ledger context for leaf decoding + policy filtering
-            // Force a fresh load so policy evaluation sees current data.
-            fluree.disconnect_ledger(&body.ledger).await;
-
-            let handle = fluree
-                .ledger_cached(&body.ledger)
-                .await
-                .map_err(|e| ServerError::internal(format!("Ledger load failed: {e}")))?;
-            let snapshot = handle.snapshot().await;
-            let to_t = snapshot.snapshot.t;
-            let ledger_ctx = LedgerBlockContext {
-                snapshot: &snapshot.snapshot,
-                to_t,
-                binary_store: snapshot.binary_store.clone(),
-            };
-
-            // Fetch and decode with enforcement
-            block_fetch::fetch_and_decode_block(
-                fluree.storage(),
-                &body.ledger,
-                &cid,
-                Some(&ledger_ctx),
-                &mode,
-            )
-            .await
-            .map_err(map_block_fetch_error)?
-        }};
-    }
-
-    let fetched = match &state.fluree {
-        crate::state::FlureeInstance::Direct(d) => fetch_block!(d),
-        crate::state::FlureeInstance::Proxy(_) => {
-            return Err(ServerError::NotImplemented(
-                "Block fetch is not available in proxy mode".to_string(),
-            ));
-        }
+    let handle = fluree
+        .ledger_cached(&body.ledger)
+        .await
+        .map_err(|e| ServerError::internal(format!("Ledger load failed: {e}")))?;
+    let snapshot = handle.snapshot().await;
+    let to_t = snapshot.snapshot.t;
+    let ledger_ctx = LedgerBlockContext {
+        snapshot: &snapshot.snapshot,
+        to_t,
+        binary_store: snapshot.binary_store.clone(),
     };
+
+    // 5. Fetch and decode with enforcement
+    let admin_storage = fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| ServerError::internal("block fetch requires a managed storage backend"))?;
+    let fetched = block_fetch::fetch_and_decode_block(
+        &admin_storage,
+        &body.ledger,
+        &cid,
+        Some(&ledger_ctx),
+        &mode,
+    )
+    .await
+    .map_err(map_block_fetch_error)?;
 
     // Parse Accept header (selects representation, not enforcement)
     let accept = parse_accept_header(&headers);
@@ -515,35 +505,22 @@ pub async fn get_object_by_cid(
         return Err(ServerError::not_found("Object not found"));
     }
 
-    // 4. Resolve CID → storage address and read bytes.
-    // Dispatch across File/Client variants for type-erased storage access.
-    macro_rules! read_object {
-        ($fluree:expr) => {{
-            let fluree = $fluree;
-            let method = fluree_db_core::StorageMethod::storage_method(fluree.storage());
-            let address =
-                fluree_db_core::content_address(method, kind, &query.ledger, &id.digest_hex());
-            fluree
-                .storage()
-                .read_bytes(&address)
-                .await
-                .map_err(|e| match e {
-                    fluree_db_core::Error::NotFound(_) => {
-                        ServerError::not_found("Object not found")
-                    }
-                    other => ServerError::internal(format!("Storage read: {other}")),
-                })?
-        }};
-    }
+    // 4. Resolve CID → storage address and read bytes
+    let admin_storage = state
+        .fluree
+        .backend()
+        .admin_storage_cloned()
+        .ok_or_else(|| ServerError::internal("object fetch requires a managed storage backend"))?;
+    let method = admin_storage.storage_method();
+    let address = fluree_db_core::content_address(method, kind, &query.ledger, &id.digest_hex());
 
-    let bytes = match &state.fluree {
-        crate::state::FlureeInstance::Direct(d) => read_object!(d),
-        crate::state::FlureeInstance::Proxy(_) => {
-            return Err(ServerError::NotImplemented(
-                "Object fetch is not available in proxy mode".to_string(),
-            ));
-        }
-    };
+    let bytes = admin_storage
+        .read_bytes(&address)
+        .await
+        .map_err(|e| match e {
+            fluree_db_core::Error::NotFound(_) => ServerError::not_found("Object not found"),
+            other => ServerError::internal(format!("Storage read: {other}")),
+        })?;
 
     // 5. Verify integrity (format-sniffing for commits)
     if !verify_object_integrity(&id, &bytes) {

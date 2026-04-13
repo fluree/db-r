@@ -12,7 +12,6 @@ mod support;
 use fluree_db_api::TimeSpec;
 use fluree_db_api::{DataSetDb, DatasetSpec, FlureeBuilder, GraphDb, GraphSource, QueryInput};
 use fluree_db_core::load_commit_by_id;
-use fluree_db_core::StorageContentStore;
 use serde_json::json;
 use support::{
     assert_index_defaults, genesis_ledger, normalize_flat_results, normalize_rows_array,
@@ -1165,7 +1164,7 @@ async fn dataset_time_travel_at_time_iso() {
         "@graph": [{"@id": "ex:alice", "@type": "ex:Person", "schema:name": "Alice"}]
     });
     let tx1 = fluree.insert(ledger0, &insert1).await.unwrap();
-    let content_store = StorageContentStore::new(fluree.storage().clone(), "people:main", "memory");
+    let content_store = fluree.content_store("people:main");
     let commit1 = load_commit_by_id(&content_store, &tx1.receipt.commit_id)
         .await
         .unwrap();

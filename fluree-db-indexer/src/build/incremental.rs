@@ -24,7 +24,7 @@ use fluree_db_binary_index::format::branch::LeafEntry;
 use fluree_db_binary_index::format::run_record::RunSortOrder;
 use fluree_db_binary_index::format::run_record_v2::{cmp_v2_for_order, RunRecordV2};
 use fluree_db_binary_index::{BinaryGarbageRef, BinaryPrevIndexRef};
-use fluree_db_core::{ContentId, ContentKind, Storage};
+use fluree_db_core::{ContentId, ContentKind, ContentStore};
 use futures::stream::{self, StreamExt};
 
 use crate::error::{IndexerError, Result};
@@ -138,17 +138,12 @@ struct Phase2TaskOutput {
     new_leaf_count: usize,
 }
 
-async fn execute_phase2_task<S>(
-    storage: &S,
-    ledger_id: &str,
+async fn execute_phase2_task(
     task: Phase2Task,
     config: &IndexerConfig,
     content_store: Arc<dyn fluree_db_core::storage::ContentStore>,
     cache_dir: std::path::PathBuf,
-) -> Result<Phase2TaskOutput>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
+) -> Result<Phase2TaskOutput> {
     let Phase2Task {
         seq,
         g_id,
@@ -179,11 +174,11 @@ where
                 sorted_records,
                 sorted_ops,
                 branch_config,
-                content_store,
+                Arc::clone(&content_store),
                 cache_dir,
             )
             .await?;
-            upload_leaf_blobs(storage, ledger_id, &result).await?;
+            upload_leaf_blobs(content_store.as_ref(), &result).await?;
             Phase2TaskOutput {
                 seq,
                 g_id,
@@ -199,7 +194,7 @@ where
         Phase2TaskKind::DefaultFresh => {
             let result =
                 build_fresh_default_graph_v3(&sorted_records, &sorted_ops, order, g_id, config)?;
-            upload_leaf_blobs(storage, ledger_id, &result).await?;
+            upload_leaf_blobs(content_store.as_ref(), &result).await?;
             Phase2TaskOutput {
                 seq,
                 g_id,
@@ -228,13 +223,13 @@ where
                 sorted_records,
                 sorted_ops,
                 branch_config,
-                content_store,
+                Arc::clone(&content_store),
                 cache_dir,
             )
             .await?;
-            upload_leaf_blobs(storage, ledger_id, &result).await?;
-            storage
-                .content_write_bytes(ContentKind::IndexBranch, ledger_id, &result.branch_bytes)
+            upload_leaf_blobs(content_store.as_ref(), &result).await?;
+            content_store
+                .put(ContentKind::IndexBranch, &result.branch_bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             Phase2TaskOutput {
@@ -251,9 +246,9 @@ where
         }
         Phase2TaskKind::NamedFresh => {
             let result = build_fresh_named_graph_v3(&sorted_records, order, g_id, config)?;
-            upload_leaf_blobs(storage, ledger_id, &result).await?;
-            storage
-                .content_write_bytes(ContentKind::IndexBranch, ledger_id, &result.branch_bytes)
+            upload_leaf_blobs(content_store.as_ref(), &result).await?;
+            content_store
+                .put(ContentKind::IndexBranch, &result.branch_bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
             Phase2TaskOutput {
@@ -286,15 +281,12 @@ where
 ///
 /// Called from `build_index_for_ledger` when an index exists and
 /// incremental conditions are met.
-pub async fn incremental_index<S>(
-    storage: &S,
+pub async fn incremental_index(
+    content_store: Arc<dyn ContentStore>,
     ledger_id: &str,
     record: &fluree_db_nameservice::NsRecord,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
+) -> Result<IndexResult> {
     let base_root_id = record.index_head_id.clone().ok_or(IndexerError::NoIndex)?;
     let head_commit_id = record
         .commit_head_id
@@ -310,9 +302,6 @@ where
         "starting incremental index build"
     );
 
-    let content_store: Arc<dyn fluree_db_core::storage::ContentStore> = Arc::new(
-        fluree_db_core::storage::content_store_for(storage.clone(), ledger_id),
-    );
     let cache_dir = artifact_cache_dir(&config);
     let _ = std::fs::create_dir_all(&cache_dir);
 
@@ -435,17 +424,7 @@ where
         .map(|task| {
             let content_store = content_store.clone();
             let cache_dir = cache_dir.clone();
-            async move {
-                execute_phase2_task(
-                    storage,
-                    ledger_id,
-                    task,
-                    config_ref,
-                    content_store,
-                    cache_dir,
-                )
-                .await
-            }
+            async move { execute_phase2_task(task, config_ref, content_store, cache_dir).await }
         })
         .buffer_unordered(concurrency)
         .collect::<Vec<_>>()
@@ -490,10 +469,8 @@ where
             "V6 Phase 3: updating subject reverse tree"
         );
         let updated = upload_incremental_reverse_tree_async(
-            storage,
-            ledger_id,
+            content_store.as_ref(),
             fluree_db_core::DictKind::SubjectReverse,
-            &content_store,
             &base_root.dict_refs.subject_reverse,
             novelty.new_subjects.clone(),
         )
@@ -508,10 +485,8 @@ where
             "V6 Phase 3: updating string reverse tree"
         );
         let updated = upload_incremental_reverse_tree_async_strings(
-            storage,
-            ledger_id,
+            content_store.as_ref(),
             fluree_db_core::DictKind::StringReverse,
-            &content_store,
             &base_root.dict_refs.string_reverse,
             novelty.new_strings.clone(),
         )
@@ -524,7 +499,6 @@ where
     // Forward packs are append-only: existing pack refs are preserved, new entries get
     // their own pack artifacts appended to the routing list.
     {
-        use super::upload::cid_from_write;
         use fluree_db_binary_index::dict::incremental::{
             build_incremental_string_packs, build_incremental_subject_packs_for_ns,
         };
@@ -554,14 +528,14 @@ where
                 dict: fluree_db_core::DictKind::StringForward,
             };
             for pack in &pack_result.new_packs {
-                let cas_result = storage
-                    .content_write_bytes(kind, ledger_id, &pack.bytes)
+                let pack_cid = content_store
+                    .put(kind, &pack.bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 updated_refs.push(PackBranchEntry {
                     first_id: pack.first_id,
                     last_id: pack.last_id,
-                    pack_cid: cid_from_write(kind, &cas_result),
+                    pack_cid,
                 });
             }
             new_dict_refs.forward_packs.string_fwd_packs = updated_refs;
@@ -626,14 +600,14 @@ where
                 // Upload new packs and build updated refs.
                 let mut updated_refs = existing_ns_refs;
                 for pack in &pack_result.new_packs {
-                    let cas_result = storage
-                        .content_write_bytes(kind, ledger_id, &pack.bytes)
+                    let pack_cid = content_store
+                        .put(kind, &pack.bytes)
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                     updated_refs.push(PackBranchEntry {
                         first_id: pack.first_id,
                         last_id: pack.last_id,
-                        pack_cid: cid_from_write(kind, &cas_result),
+                        pack_cid,
                     });
                 }
 
@@ -758,9 +732,8 @@ where
                             IndexerError::StorageWrite(format!("numbig arena serialize: {e}"))
                         })?;
                     let dict_kind = fluree_db_core::DictKind::NumBig { p_id };
-                    let (cid, _) = super::upload::upload_dict_blob(
-                        storage,
-                        ledger_id,
+                    let cid = super::upload::upload_dict_blob(
+                        content_store.as_ref(),
                         dict_kind,
                         &bytes,
                         "incremental V6 numbig arena uploaded",
@@ -898,17 +871,16 @@ where
                                         })?;
 
                                     let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
-                                    let (new_last_cid, wr) = super::upload::upload_dict_blob(
-                                        storage,
-                                        ledger_id,
+                                    let new_last_cid = super::upload::upload_dict_blob(
+                                        content_store.as_ref(),
                                         dict_kind,
                                         &shard_bytes,
                                         "incremental V6 vector last shard replaced",
                                     )
                                     .await?;
 
+                                    combined_shard_infos[last_idx].cas = new_last_cid.to_string();
                                     combined_shards[last_idx] = new_last_cid;
-                                    combined_shard_infos[last_idx].cas = wr.address;
                                     combined_shard_infos[last_idx].count = last_info.count + take;
                                     root_builder.add_replaced_cids(vec![old_last_cid]);
                                     consumed_new = take;
@@ -929,15 +901,14 @@ where
 
                         for (shard_bytes, mut shard_info) in shard_results {
                             let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
-                            let (shard_cid, wr) = super::upload::upload_dict_blob(
-                                storage,
-                                ledger_id,
+                            let shard_cid = super::upload::upload_dict_blob(
+                                content_store.as_ref(),
                                 dict_kind,
                                 &shard_bytes,
                                 "incremental V6 vector shard uploaded",
                             )
                             .await?;
-                            shard_info.cas = wr.address;
+                            shard_info.cas = shard_cid.to_string();
                             combined_shards.push(shard_cid);
                             combined_shard_infos.push(shard_info);
                         }
@@ -961,9 +932,8 @@ where
                             })?;
 
                         let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
-                        let (manifest_cid, _) = super::upload::upload_dict_blob(
-                            storage,
-                            ledger_id,
+                        let manifest_cid = super::upload::upload_dict_blob(
+                            content_store.as_ref(),
                             dict_kind,
                             &manifest_json,
                             "incremental V6 vector manifest uploaded",
@@ -991,15 +961,14 @@ where
 
                         for (shard_bytes, mut shard_info) in shard_results {
                             let dict_kind = fluree_db_core::DictKind::VectorShard { p_id };
-                            let (shard_cid, wr) = super::upload::upload_dict_blob(
-                                storage,
-                                ledger_id,
+                            let shard_cid = super::upload::upload_dict_blob(
+                                content_store.as_ref(),
                                 dict_kind,
                                 &shard_bytes,
                                 "incremental V6 vector shard uploaded",
                             )
                             .await?;
-                            shard_info.cas = wr.address;
+                            shard_info.cas = shard_cid.to_string();
                             new_shard_cids.push(shard_cid);
                             new_shard_infos.push(shard_info);
                         }
@@ -1019,9 +988,8 @@ where
                         })?;
 
                         let dict_kind = fluree_db_core::DictKind::VectorManifest { p_id };
-                        let (manifest_cid, _) = super::upload::upload_dict_blob(
-                            storage,
-                            ledger_id,
+                        let manifest_cid = super::upload::upload_dict_blob(
+                            content_store.as_ref(),
                             dict_kind,
                             &manifest_json,
                             "incremental V6 vector manifest uploaded",
@@ -1101,20 +1069,11 @@ where
                     }
 
                     let blob = arena.encode();
-                    let cas_result = storage
-                        .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob)
+                    let arena_cid = content_store
+                        .put(ContentKind::IndexLeaf, &blob)
                         .await
                         .map_err(|e| {
                             IndexerError::StorageWrite(format!("fulltext CAS write: {e}"))
-                        })?;
-
-                    let codec = ContentKind::IndexLeaf.to_codec();
-                    let arena_cid = ContentId::from_hex_digest(codec, &cas_result.content_hash)
-                        .ok_or_else(|| {
-                            IndexerError::Other(format!(
-                                "invalid fulltext arena hash: {}",
-                                cas_result.content_hash
-                            ))
                         })?;
 
                     let new_ref = FulltextArenaRef { p_id, arena_cid };
@@ -1293,8 +1252,8 @@ where
                         .map_err(|e| IndexerError::Other(format!("spatial CAS build: {e}")))?;
 
                     for (_hash, blob_bytes) in &pending_blobs {
-                        storage
-                            .content_write_bytes(ContentKind::SpatialIndex, ledger_id, blob_bytes)
+                        content_store
+                            .put(ContentKind::SpatialIndex, blob_bytes)
                             .await
                             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                     }
@@ -1303,18 +1262,10 @@ where
                     let spatial_codec = ContentKind::SpatialIndex.to_codec();
                     let root_json = serde_json::to_vec(&write_result.root)
                         .map_err(|e| IndexerError::Other(format!("spatial root serialize: {e}")))?;
-                    let root_cas = storage
-                        .content_write_bytes(ContentKind::SpatialIndex, ledger_id, &root_json)
+                    let root_cid = content_store
+                        .put(ContentKind::SpatialIndex, &root_json)
                         .await
                         .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                    let root_cid =
-                        ContentId::from_hex_digest(spatial_codec, &root_cas.content_hash)
-                            .ok_or_else(|| {
-                                IndexerError::StorageWrite(format!(
-                                    "invalid spatial root hash for g_id={g_id}, p_id={p_id}: {}",
-                                    root_cas.content_hash
-                                ))
-                            })?;
                     let manifest_cid =
                         ContentId::from_hex_digest(spatial_codec, &write_result.manifest_address)
                             .ok_or_else(|| {
@@ -1467,14 +1418,13 @@ where
                 let sketch_bytes = sketch_blob
                     .to_json_bytes()
                     .map_err(|e| IndexerError::StorageWrite(format!("sketch serialize: {e}")))?;
-                let sketch_wr = storage
-                    .content_write_bytes(ContentKind::StatsSketch, ledger_id, &sketch_bytes)
+                let cid = content_store
+                    .put(ContentKind::StatsSketch, &sketch_bytes)
                     .await
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-                let cid = super::upload::cid_from_write(ContentKind::StatsSketch, &sketch_wr);
                 tracing::debug!(
                     %cid,
-                    bytes = sketch_wr.size_bytes,
+                    bytes = sketch_bytes.len(),
                     entries = sketch_blob.entries.len(),
                     "incremental V6: HLL sketch uploaded"
                 );
@@ -2267,14 +2217,18 @@ where
     // Write garbage manifest.
     if !replaced_cids.is_empty() {
         let garbage_strings: Vec<String> = replaced_cids.iter().map(|c| c.to_string()).collect();
-        let garbage_ref =
-            gc::write_garbage_record(storage, ledger_id, new_root.index_t, garbage_strings)
-                .await
-                .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
+        let garbage_cid = gc::write_garbage_record(
+            content_store.as_ref(),
+            ledger_id,
+            new_root.index_t,
+            garbage_strings,
+        )
+        .await
+        .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
         // Set garbage on the root before encoding.
         let mut final_root = new_root;
-        final_root.garbage = garbage_ref.map(|id| BinaryGarbageRef { id });
+        final_root.garbage = Some(BinaryGarbageRef { id: garbage_cid });
         if let Some(stats) = final_root.stats.as_mut() {
             stats.size = final_root.total_commit_size;
             if let Some(graphs) = stats.graphs.as_mut() {
@@ -2305,21 +2259,10 @@ where
         )?;
 
         let root_bytes = final_root.encode();
-        let write_result = storage
-            .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
+        let root_id = content_store
+            .put(ContentKind::IndexRoot, &root_bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-        let root_id = ContentId::from_hex_digest(
-            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
-            &write_result.content_hash,
-        )
-        .ok_or_else(|| {
-            IndexerError::StorageWrite(format!(
-                "invalid root digest for FIR6: {}",
-                write_result.content_hash
-            ))
-        })?;
 
         tracing::debug!(
             %root_id,
@@ -2371,21 +2314,10 @@ where
             final_root.index_t,
         )?;
         let root_bytes = final_root.encode();
-        let write_result = storage
-            .content_write_bytes(ContentKind::IndexRoot, ledger_id, &root_bytes)
+        let root_id = content_store
+            .put(ContentKind::IndexRoot, &root_bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
-
-        let root_id = ContentId::from_hex_digest(
-            fluree_db_core::content_kind::CODEC_FLUREE_INDEX_ROOT,
-            &write_result.content_hash,
-        )
-        .ok_or_else(|| {
-            IndexerError::StorageWrite(format!(
-                "invalid root digest for FIR6: {}",
-                write_result.content_hash
-            ))
-        })?;
 
         tracing::debug!(
             %root_id,
@@ -2415,23 +2347,19 @@ where
 /// Upload leaf and sidecar blobs from a branch update result.
 ///
 /// Shared by all four code paths: default-graph existing/fresh, named-graph existing/fresh.
-async fn upload_leaf_blobs<S>(
-    storage: &S,
-    ledger_id: &str,
+async fn upload_leaf_blobs(
+    content_store: &dyn ContentStore,
     result: &BranchUpdateResult,
-) -> Result<()>
-where
-    S: Storage + Clone + Send + Sync + 'static,
-{
+) -> Result<()> {
     for blob in &result.new_leaf_blobs {
-        storage
-            .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob.info.leaf_bytes)
+        content_store
+            .put(ContentKind::IndexLeaf, &blob.info.leaf_bytes)
             .await
             .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
 
         if let Some(ref sc_bytes) = blob.info.sidecar_bytes {
-            storage
-                .content_write_bytes(ContentKind::HistorySidecar, ledger_id, sc_bytes)
+            content_store
+                .put(ContentKind::HistorySidecar, sc_bytes)
                 .await
                 .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
         }

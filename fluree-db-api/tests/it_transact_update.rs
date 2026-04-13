@@ -5,7 +5,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
-use fluree_db_core::{content_store_for, load_commit_by_id, FlakeValue, LedgerSnapshot};
+use fluree_db_core::{load_commit_by_id, FlakeValue, LedgerSnapshot};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
 
@@ -29,10 +29,7 @@ fn ctx_ex() -> JsonValue {
 async fn seed_users(
     ledger_id: &str,
 ) -> (
-    fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     LedgerState,
 ) {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -61,10 +58,7 @@ async fn seed_users(
 }
 
 async fn query_names(
-    fluree: &fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     ledger: &LedgerState,
 ) -> Vec<String> {
     let q = json!({
@@ -263,7 +257,7 @@ async fn update_where_bound_typed_string_delete_and_insert_use_same_datatype_sid
         .await
         .unwrap();
 
-    let content_store = content_store_for(fluree.storage().clone(), ledger_id);
+    let content_store = fluree.content_store(ledger_id);
     let commit = load_commit_by_id(&content_store, &result.receipt.commit_id)
         .await
         .expect("load update commit");
@@ -1895,7 +1889,7 @@ async fn update_values_wildcard_delete_index_plus_novelty() {
     let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         Default::default(),
     );
@@ -2023,7 +2017,7 @@ async fn update_wildcard_delete_duplicate_facts_across_index_and_novelty() {
     let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         Default::default(),
     );
@@ -2150,7 +2144,7 @@ async fn update_values_wildcard_delete_after_updates_and_indexing() {
     let ledger0 = LedgerState::new(ledger0, Novelty::new(0));
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         Default::default(),
     );

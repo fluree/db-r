@@ -664,6 +664,81 @@ impl Publisher for FileNameService {
         Ok(())
     }
 
+    async fn publish_commit(
+        &self,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &ContentId,
+    ) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let address = Self::ns_address(&ledger_name, &branch);
+        let commit_id_for_event = commit_id.clone();
+        let ledger_name_c = ledger_name.clone();
+        let branch_c = branch.clone();
+        let cid_str = commit_id.to_string();
+
+        let outcome = self
+            .storage
+            .compare_and_swap(&address, |bytes| {
+                let cid_val = Some(cid_str.clone());
+
+                match bytes {
+                    Some(data) => {
+                        let mut file: NsFileV2 = deserialize_json(data)?;
+                        // Strictly monotonic update
+                        if commit_t > file.t {
+                            file.commit_cid = cid_val;
+                            file.t = commit_t;
+                            let new_bytes = serialize_json(&file)?;
+                            Ok(CasAction::Write(new_bytes))
+                        } else {
+                            Ok(CasAction::Abort(()))
+                        }
+                    }
+                    None => {
+                        // Create new record (always write)
+                        let file = NsFileV2 {
+                            context: ns_context(),
+                            id: format_ledger_id(&ledger_name_c, &branch_c),
+                            record_type: vec!["f:LedgerSource".to_string()],
+                            ledger: LedgerRef {
+                                id: ledger_name_c.clone(),
+                            },
+                            branch: branch_c.clone(),
+                            commit_cid: cid_val,
+                            config_cid: None,
+                            t: commit_t,
+                            index: None,
+                            status: "ready".to_string(),
+                            default_context_cid: None,
+                            // v2 extension fields - initialize with defaults
+                            status_v: Some(1),
+                            status_meta: None,
+                            config_v: Some(0),
+                            config_meta: None,
+                            source_branch: None,
+                            branch_point: None,
+                            branches: 0,
+                        };
+                        let new_bytes = serialize_json(&file)?;
+                        Ok(CasAction::Write(new_bytes))
+                    }
+                }
+            })
+            .await?;
+
+        self.emit_on_write(
+            &outcome,
+            NameServiceEvent::LedgerCommitPublished {
+                ledger_id: format_ledger_id(&ledger_name, &branch),
+                commit_id: commit_id_for_event,
+                commit_t,
+            },
+        );
+
+        Ok(())
+    }
+
     async fn publish_index(
         &self,
         ledger_id: &str,

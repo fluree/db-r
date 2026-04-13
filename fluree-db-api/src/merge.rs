@@ -10,11 +10,9 @@ use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_kind::ContentKind;
 use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{collect_dag_cids, load_commit_by_id, CommonAncestor};
-use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake, Storage};
+use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake};
 use fluree_db_ledger::{LedgerState, LedgerView};
-use fluree_db_nameservice::{
-    CasResult, NameService, NsRecord, NsRecordSnapshot, Publisher, RefPublisher, RefValue,
-};
+use fluree_db_nameservice::{NameService, NsRecord, NsRecordSnapshot, Publisher};
 use fluree_db_novelty::compute_delta_keys;
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use rustc_hash::FxHashSet;
@@ -42,10 +40,9 @@ pub struct MergeReport {
     pub strategy: Option<String>,
 }
 
-impl<S, N> crate::Fluree<S, N>
+impl<N> crate::Fluree<N>
 where
-    S: Storage + Clone + 'static,
-    N: NameService + Publisher + RefPublisher + 'static,
+    N: NameService + Publisher + fluree_db_nameservice::RefPublisher + 'static,
 {
     /// Merge a source branch into a target branch.
     ///
@@ -117,12 +114,9 @@ where
         // Compute common ancestor to determine fast-forward eligibility.
         // Build a BranchedContentStore for the source so we can walk both
         // commit chains through parent namespaces.
-        let source_store = LedgerState::build_branched_store(
-            &self.nameservice,
-            &source_record,
-            self.connection.storage(),
-        )
-        .await?;
+        let source_store =
+            LedgerState::build_branched_store(&self.nameservice, &source_record, self.backend())
+                .await?;
 
         let target_head = target_record.commit_head_id.as_ref();
         let ancestor = match target_head {
@@ -230,7 +224,9 @@ where
             .copy_commit_chain(source_store, source_head_id, stop_at_t, target_id)
             .await?;
 
-        // Advance target's HEAD to source's HEAD via fast-forward.
+        // Advance target's HEAD to source's HEAD via CAS to detect concurrent moves.
+        use fluree_db_nameservice::{CasResult, RefValue};
+
         let new_ref = RefValue {
             id: Some(source_head_id.clone()),
             t: source_head_t,
@@ -242,14 +238,12 @@ where
         {
             CasResult::Updated => {}
             CasResult::Conflict { actual } => {
-                let actual_t = actual.as_ref().map(|r| r.t).unwrap_or(0);
-                let actual_id = actual
-                    .and_then(|r| r.id)
-                    .map(|cid| cid.to_string())
-                    .unwrap_or_else(|| "None".to_string());
-                return Err(ApiError::BranchConflict(format!(
-                    "Fast-forward merge aborted: target branch advanced concurrently \
-                     (found t={actual_t} id={actual_id})"
+                return Err(ApiError::internal(format!(
+                    "Fast-forward merge conflict on {}: target head moved concurrently \
+                     (attempted t={}, actual t={})",
+                    target_id,
+                    source_head_t,
+                    actual.as_ref().map(|r| r.t).unwrap_or(0),
                 )));
             }
         }
@@ -320,16 +314,12 @@ where
 
         // Compute target delta. Build a branched store if target is also a branch.
         let target_delta = if target_record.source_branch.is_some() {
-            let target_store = LedgerState::build_branched_store(
-                &self.nameservice,
-                target_record,
-                self.connection.storage(),
-            )
-            .await?;
+            let target_store =
+                LedgerState::build_branched_store(&self.nameservice, target_record, self.backend())
+                    .await?;
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         } else {
-            let target_store =
-                fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+            let target_store = self.content_store(target_id);
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         };
 
@@ -350,12 +340,7 @@ where
         }
 
         // Load target state for staging the merge commit.
-        let target_state = LedgerState::load(
-            &self.nameservice,
-            target_id,
-            self.connection.storage().clone(),
-        )
-        .await?;
+        let target_state = LedgerState::load(&self.nameservice, target_id, self.backend()).await?;
 
         // Collect source flakes and metadata: walk source commits from HEAD
         // to ancestor, gathering flakes, namespace deltas, and graph deltas.
@@ -395,8 +380,7 @@ where
             .copy_commit_chain(source_store, source_head_id, ancestor.t, target_id)
             .await?;
 
-        let content_store =
-            fluree_db_core::content_store_for(self.connection.storage().clone(), target_id);
+        let content_store = self.content_store(target_id);
 
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
@@ -496,7 +480,9 @@ where
         stop_at_t: i64,
         target_ledger_id: &str,
     ) -> Result<usize> {
-        let storage = self.connection.storage();
+        let storage = self
+            .admin_storage()
+            .ok_or_else(|| ApiError::internal("merge requires managed storage backend"))?;
 
         let dag = collect_dag_cids(source_store, head_id, stop_at_t).await?;
         let mut copied = 0;

@@ -109,7 +109,7 @@ impl FlureeServer {
         let start = std::time::Instant::now();
 
         let records = match &state.fluree {
-            state::FlureeInstance::Direct(d) => match d.nameservice().all_records().await {
+            state::FlureeInstance::Direct(f) => match f.nameservice().all_records().await {
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(error = %e, "Failed to enumerate ledgers for preloading");
@@ -135,7 +135,7 @@ impl FlureeServer {
 
         for record in &active {
             let handle = match &state.fluree {
-                state::FlureeInstance::Direct(d) => d.ledger_cached(&record.ledger_id).await,
+                state::FlureeInstance::Direct(f) => f.ledger_cached(&record.ledger_id).await,
                 state::FlureeInstance::Proxy(p) => p.ledger_cached(&record.ledger_id).await,
             };
 
@@ -210,7 +210,7 @@ impl FlureeServer {
                 .expect("peer_state should exist in peer mode");
 
             if self.state.fluree.is_direct() {
-                // Direct (shared storage): PeerSyncTask persists refs into local nameservice
+                // Shared storage: PeerSyncTask persists refs into local FileNameService
                 let events_url = peer::build_peer_events_url(&self.state.config);
                 let auth_token = self.state.config.load_peer_events_token().ok().flatten();
                 let watch = fluree_db_nameservice_sync::SseRemoteWatch::new(events_url, auth_token);
@@ -222,7 +222,7 @@ impl FlureeServer {
                 );
                 Some(task.spawn())
             } else {
-                // Proxy mode: PeerSubscriptionTask (in-memory watermarks only)
+                // Proxy storage: existing PeerSubscriptionTask (in-memory watermarks only)
                 let task = peer::PeerSubscriptionTask::new(
                     self.state.config.clone(),
                     peer_state,
@@ -275,16 +275,13 @@ impl FlureeServer {
         use fluree_db_nameservice::{Publication, SubscriptionScope};
 
         let subscription = match &self.state.fluree {
-            state::FlureeInstance::Direct(d) => {
-                let ns = d.nameservice();
-                match ns.publication() {
-                    Some(pub_ns) => pub_ns.subscribe(SubscriptionScope::All).await,
-                    None => {
-                        return Err(fluree_db_api::ApiError::internal(
-                            "Registry maintenance not supported: nameservice does not support publication",
-                        ));
-                    }
-                }
+            state::FlureeInstance::Direct(f) => {
+                let pub_ns = f.nameservice().publication().ok_or_else(|| {
+                    fluree_db_api::ApiError::internal(
+                        "Registry maintenance requires a nameservice that supports publication",
+                    )
+                })?;
+                pub_ns.subscribe(SubscriptionScope::All).await
             }
             state::FlureeInstance::Proxy(p) => {
                 p.nameservice().subscribe(SubscriptionScope::All).await

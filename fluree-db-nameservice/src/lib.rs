@@ -494,11 +494,10 @@ impl NsRecordSnapshot {
     }
 }
 
-/// Publisher trait for writing nameservice records.
+/// Publisher trait for writing nameservice records
 ///
-/// Commit-head updates are intentionally excluded from this trait. Callers that
-/// need to advance a ledger head must use [`RefPublisher`] so concurrent writers
-/// receive explicit CAS conflicts instead of blind monotonic no-ops.
+/// Implementations handle publishing commit and index updates with
+/// monotonic guarantees.
 #[async_trait]
 pub trait Publisher: Debug + Send + Sync {
     /// Initialize a new ledger in the nameservice
@@ -512,6 +511,18 @@ pub trait Publisher: Debug + Send + Sync {
     /// # Errors
     /// Returns an error if a record already exists (including retracted records).
     async fn publish_ledger_init(&self, ledger_id: &str) -> Result<()>;
+
+    /// Publish a new commit
+    ///
+    /// Only updates if: `(not exists) OR (new_t > existing_t)`
+    ///
+    /// This is called by the transactor after each successful commit.
+    async fn publish_commit(
+        &self,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &ContentId,
+    ) -> Result<()>;
 
     /// Publish a new index
     ///

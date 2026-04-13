@@ -31,8 +31,6 @@
 #[cfg(feature = "vector")]
 use crate::{ApiError, Result};
 #[cfg(feature = "vector")]
-use fluree_db_core::{Storage, StorageWrite};
-#[cfg(feature = "vector")]
 use fluree_db_nameservice::{
     GraphSourcePublisher, NameService, NameServiceEvent, Publication, Publisher,
 };
@@ -273,21 +271,20 @@ impl VectorWorkerHandle {
 /// Monitors nameservice events and automatically syncs vector indexes when their
 /// source ledgers are updated.
 #[cfg(feature = "vector")]
-pub struct VectorMaintenanceWorker<'a, S: Storage + 'static, N> {
-    fluree: &'a crate::Fluree<S, N>,
+pub struct VectorMaintenanceWorker<'a, N> {
+    fluree: &'a crate::Fluree<N>,
     config: VectorWorkerConfig,
     state: Rc<RefCell<VectorWorkerState>>,
     stop_requested: Rc<RefCell<bool>>,
 }
 
 #[cfg(feature = "vector")]
-impl<'a, S, N> VectorMaintenanceWorker<'a, S, N>
+impl<'a, N> VectorMaintenanceWorker<'a, N>
 where
-    S: Storage + StorageWrite + Clone + 'static,
     N: NameService + Publisher + GraphSourcePublisher + Publication,
 {
     /// Create a new maintenance worker.
-    pub fn new(fluree: &'a crate::Fluree<S, N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
         Self {
             fluree,
             config: VectorWorkerConfig::default(),
@@ -297,7 +294,7 @@ where
     }
 
     /// Create a new maintenance worker with custom config.
-    pub fn with_config(fluree: &'a crate::Fluree<S, N>, config: VectorWorkerConfig) -> Self {
+    pub fn with_config(fluree: &'a crate::Fluree<N>, config: VectorWorkerConfig) -> Self {
         Self {
             fluree,
             config,

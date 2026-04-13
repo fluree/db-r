@@ -1970,3 +1970,38 @@ mem:fact-01kntkdbj9s0akhg36brbre0wa a mem:Fact ;
     mem:artifactRef "fluree-db-server/src/state.rs" ;
     mem:createdAt "2026-04-10T02:26:51.081621+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01knykc5at3k85pzd5t9wcdfk1 a mem:Fact ;
+    mem:content "SPARQL SERVICE Federation Implementation Status in fluree db-r:\n\nPARSER LAYER (fluree-db-sparql):\n- AST PATTERN DEFINED: GraphPattern::Service with ServiceEndpoint enum exists in ast/pattern.rs (lines 131-140)\n- SERVICE keyword (KwService) defined in lex/token.rs with token recognition\n- SILENT keyword (KwSilent) also defined in token.rs\n- PARSING LOGIC MISSING: No parse_service_pattern() in parse/query/pattern.rs\n  * parse_graph_pattern() implemented for GRAPH patterns (line 222)\n  * No equivalent SERVICE parsing in parse_group_graph_pattern() (lines 90-96 check KwGraph but not KwService)\n  * The parser currently lacks the branch to handle SERVICE keyword\n\nLOWERING LAYER (fluree-db-sparql/src/lower/pattern.rs):\n- COMPLETE IMPLEMENTATION: lower_service_pattern() exists (lines 206-238)\n- Converts ServiceEndpoint (Iri or Var) to IR representation\n- Creates ServicePattern with inner_patterns lowered recursively\n- Works with IRI expansion and variable registration\n- Architecture: takes silent flag, endpoint (IRI/Var), and pattern to lower\n\nQUERY IR LAYER (fluree-db-query/src/ir.rs):\n- ServicePattern struct defined (lines 1169-1198)\n- ServiceEndpoint enum with Iri and Var variants (lines 1122-1152)\n- Full documentation for fluree:ledger: scheme support\n- Pattern::Service variant in Pattern enum (line 1303)\n- Helper methods: is_var(), as_var(), as_iri()\n\nEXECUTION LAYER (fluree-db-query/src/service.rs):\n- ServiceOperator fully implemented (~564 lines)\n- Supports fluree:ledger:<alias>:<branch> endpoints\n- Correlated operator pattern (like SubqueryOperator)\n- Handles SERVICE SILENT with error swallowing\n- Variable endpoints iterate all ledgers in dataset\n- Seed-based execution for parent row correlation\n- Tests for ledger reference parsing included\n\nPLANNER LAYER (fluree-db-query/src/planner.rs):\n- Pattern::Service handled in reorder_patterns() (line 952-954)\n- Can push filters into SERVICE patterns\n- Estimated as a Source pattern (line 820)\n- Integration with pattern optimization\n\nTESTING:\n- W3C SPARQL 1.1 federation syntax tests referenced (testsuite-sparql/tests/w3c_sparql.rs lines 58-68)\n- Test runs against https://w3c.github.io/rdf-tests/sparql/sparql11/syntax-fed/manifest.ttl\n- Currently only syntax tests, no evaluation tests for SERVICE\n\nEXTERNAL ENDPOINT SUPPORT:\n- Only fluree:ledger: endpoints currently supported\n- External HTTP SPARQL endpoints explicitly NOT supported (service.rs lines 360-372, 405-414)\n- Returns error or SILENT result for non-Fluree endpoints\n\nDATASET/FEDERATION SUPPORT:\n- DatasetSpec in fluree-db-api/src/dataset.rs supports multi-graph queries\n- ExecutionContext has dataset field for named_graphs_iter()\n- ServiceOperator uses ctx.dataset.find_by_ledger_id() for lookups\n- Dataset concept exists for multi-ledger queries\n" ;
+    mem:tag "SERVICE" ;
+    mem:tag "SPARQL" ;
+    mem:tag "architecture" ;
+    mem:tag "execution" ;
+    mem:tag "federation" ;
+    mem:tag "parsing" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/ir.rs" ;
+    mem:artifactRef "fluree-db-query/src/planner.rs" ;
+    mem:artifactRef "fluree-db-query/src/service.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/ast/pattern.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/pattern.rs" ;
+    mem:branch "claude/frosty-shirley" ;
+    mem:createdAt "2026-04-11T15:43:09.658833+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01knymjwzpn6s9rysnwv6hcd0j a mem:Fact ;
+    mem:content "SPARQL SERVICE parser now wired (step 1 of federation rollout).\n\n`fluree-db-sparql` parses `SERVICE [SILENT] <iri>|?var { ... }` via `parse_service_pattern()` in `fluree-db-sparql/src/parse/query/pattern.rs`, dispatched from `parse_group_graph_pattern` on `TokenKind::KwService`.\n\nNo IR changes needed — AST `GraphPattern::Service`, lowering `lower_service_pattern`, and `ServiceOperator` were already in place. Parser unit tests in `parse/query/tests.rs` cover IRI/var/prefixed endpoints, SILENT, mixed-group, and error paths. End-to-end tests in `fluree-db-api/tests/it_query_sparql.rs`:\n- Self-reference `fluree:ledger:<alias>` executes against the current ledger (works via service.rs fallback: when no dataset is attached, `ctx.snapshot.ledger_id` equality check).\n- External `https://...` endpoint errors cleanly without SILENT.\n- External endpoint + SERVICE SILENT swallows the error and yields zero rows.\n\nExternal (non-Fluree) endpoints still error with `QueryError::InvalidQuery` at fluree-db-query/src/service.rs:360-373 — step 2 (bound-join remote execution) replaces that branch.\n\nGotcha: the parent tree `/Users/bplatz/fluree/db-r` and the worktree `.claude/worktrees/frosty-shirley` have separate copies of each crate. Always edit files via the worktree absolute path when cargo is running from the worktree, otherwise edits silently don't take effect." ;
+    mem:tag "SERVICE" ;
+    mem:tag "SPARQL" ;
+    mem:tag "federation" ;
+    mem:tag "parser" ;
+    mem:tag "step-1" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/tests/it_query_sparql.rs" ;
+    mem:artifactRef "fluree-db-query/src/service.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/parse/query/pattern.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/parse/query/tests.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-11T16:04:19.062797+00:00"^^xsd:dateTime .

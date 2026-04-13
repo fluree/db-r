@@ -220,6 +220,44 @@ impl Publisher for MemoryNameService {
         Ok(())
     }
 
+    async fn publish_commit(
+        &self,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &ContentId,
+    ) -> Result<()> {
+        let key = self.normalize_ledger_id(ledger_id);
+        let mut records = self.records.write();
+        let mut did_update = false;
+
+        if let Some(record) = records.get_mut(&key) {
+            // Only update if new_t > existing_t (strictly monotonic)
+            if commit_t > record.commit_t {
+                record.commit_head_id = Some(commit_id.clone());
+                record.commit_t = commit_t;
+                did_update = true;
+            }
+            // If commit_t <= existing, silently ignore (monotonic guarantee)
+        } else {
+            // Create new record
+            let (ledger_name, branch) = core_ledger_id::split_ledger_id(ledger_id)?;
+            let mut record = NsRecord::new(ledger_name, branch);
+            record.commit_head_id = Some(commit_id.clone());
+            record.commit_t = commit_t;
+            records.insert(key, record);
+            did_update = true;
+        }
+
+        if did_update {
+            let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
+                ledger_id: self.normalize_ledger_id(ledger_id),
+                commit_id: commit_id.clone(),
+                commit_t,
+            });
+        }
+        Ok(())
+    }
+
     async fn publish_index(
         &self,
         ledger_id: &str,

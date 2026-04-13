@@ -68,7 +68,7 @@ async fn repro_upsert_repeated_ids_create_duplicate_subject_ids() {
 
     // Start background indexer.
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

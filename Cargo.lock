@@ -2327,6 +2327,7 @@ dependencies = [
  "fluree-db-sparql",
  "fluree-db-spatial",
  "fluree-db-storage-aws",
+ "fluree-db-storage-ipfs",
  "fluree-db-transact",
  "fluree-graph-format",
  "fluree-graph-ir",

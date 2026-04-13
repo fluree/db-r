@@ -27,7 +27,7 @@ async fn novelty_only_strings_subjects_predicates_and_json_decode_with_existing_
         .expect("build file fluree");
 
     let (local, handle) = start_background_indexer_local(
-        fluree.storage().clone(),
+        fluree.backend().clone(),
         fluree.nameservice().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );

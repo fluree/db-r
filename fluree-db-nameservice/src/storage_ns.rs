@@ -762,6 +762,45 @@ where
         }
     }
 
+    async fn publish_commit(
+        &self,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &ContentId,
+    ) -> Result<()> {
+        let (ledger_name, branch) = split_ledger_id(ledger_id)?;
+        let key = self.ns_key(&ledger_name, &branch);
+
+        let ledger_name_clone = ledger_name.clone();
+        let branch_clone = branch.clone();
+        let cid_str = commit_id.to_string();
+
+        self.cas_update::<NsFileV2, _>(&key, move |existing| {
+            match existing {
+                Some(mut file) => {
+                    // Only update if strictly newer
+                    if commit_t > file.t {
+                        file.commit_cid = Some(cid_str.clone());
+                        file.t = commit_t;
+                        Some(file)
+                    } else {
+                        None // No update needed
+                    }
+                }
+                None => {
+                    // Create new record
+                    Some(Self::new_main_file(
+                        &ledger_name_clone,
+                        &branch_clone,
+                        Some(&cid_str),
+                        commit_t,
+                    ))
+                }
+            }
+        })
+        .await
+    }
+
     async fn publish_index(
         &self,
         ledger_id: &str,

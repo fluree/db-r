@@ -30,9 +30,7 @@ use fluree_db_binary_index::{BinaryIndexStore, LeafletCache};
 use fluree_db_core::db::{LedgerSnapshot, LedgerSnapshotMetadata};
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::trace_commits_by_id;
-use fluree_db_core::{
-    content_store_for, ledger_id::normalize_ledger_id, ContentId, ContentStore, Storage,
-};
+use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, StorageBackend};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
 use fluree_db_nameservice::{NameService, NsRecord};
 use fluree_db_novelty::Novelty;
@@ -369,10 +367,10 @@ impl LedgerHandle {
     /// The state lock is held for the brief atomic swap of both `state` and
     /// `binary_store`, ensuring coherence between `db.range_provider` and
     /// `binary_store` (lock ordering: state → binary_store).
-    pub async fn apply_index_v2<S: Storage + Clone + 'static>(
+    pub async fn apply_index_v2(
         &self,
         index_id: &ContentId,
-        storage: &S,
+        backend: &StorageBackend,
         cache_dir: &std::path::Path,
         leaflet_cache: Option<Arc<LeafletCache>>,
     ) -> Result<()> {
@@ -381,20 +379,20 @@ impl LedgerHandle {
             let state = self.inner.state.lock().await;
             state.snapshot.ledger_id.clone()
         };
-        let content_store = fluree_db_core::content_store_for(storage.clone(), &ledger_id);
-        let bytes = content_store
+        let cs: Arc<dyn ContentStore> = backend.content_store(&ledger_id);
+        let bytes = cs
             .get(index_id)
             .await
             .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
 
-        let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
-            storage.clone(),
-            &ledger_id,
-        ));
-        let mut store =
-            BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
-                .await
-                .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+        let mut store = BinaryIndexStore::load_from_root_bytes(
+            Arc::clone(&cs),
+            &bytes,
+            cache_dir,
+            leaflet_cache,
+        )
+        .await
+        .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
         // Build metadata-only LedgerSnapshot from FIR6 root.
         let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
@@ -559,8 +557,8 @@ use fluree_db_query::BinaryRangeProvider;
 /// to the LedgerState's LedgerSnapshot, and return the Arc'd store.
 ///
 /// Returns `Ok(None)` if no index_head_id is present or the root is not v2.
-pub(crate) async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
-    storage: &S,
+pub(crate) async fn load_and_attach_binary_store(
+    backend: &StorageBackend,
     state: &mut LedgerState,
     cache_dir: &std::path::Path,
     leaflet_cache: Option<Arc<LeafletCache>>,
@@ -574,8 +572,8 @@ pub(crate) async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         None => return Ok(None),
     };
 
-    let store = fluree_db_core::content_store_for(storage.clone(), &state.snapshot.ledger_id);
-    let bytes = store
+    let cs: Arc<dyn ContentStore> = backend.content_store(&state.snapshot.ledger_id);
+    let bytes = cs
         .get(&index_cid)
         .await
         .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
@@ -592,13 +590,10 @@ pub(crate) async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
         state.snapshot.string_watermark,
     ));
 
-    let cs = std::sync::Arc::new(fluree_db_core::content_store_for(
-        storage.clone(),
-        &state.snapshot.ledger_id,
-    ));
-    let mut store = BinaryIndexStore::load_from_root_bytes(cs, &bytes, cache_dir, leaflet_cache)
-        .await
-        .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+    let mut store =
+        BinaryIndexStore::load_from_root_bytes(Arc::clone(&cs), &bytes, cache_dir, leaflet_cache)
+            .await
+            .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
 
     // Sync namespace codes between store and snapshot (bimap validation).
     crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
@@ -643,7 +638,6 @@ pub(crate) async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
             .as_ref()
             .and_then(|r| r.default_context.as_ref())
         {
-            let cs = fluree_db_core::content_store_for(storage.clone(), &state.snapshot.ledger_id);
             match cs.get(ctx_id).await {
                 Ok(bytes) => match serde_json::from_slice(&bytes) {
                     Ok(ctx) => state.default_context = Some(ctx),
@@ -667,11 +661,11 @@ pub(crate) async fn load_and_attach_binary_store<S: Storage + Clone + 'static>(
 ///
 /// Provides single-flight loading (concurrent requests share one I/O operation)
 /// and idle eviction.
-pub struct LedgerManager<S, N> {
+pub struct LedgerManager<N> {
     /// Cached ledger handles + loading state
     entries: RwLock<HashMap<String, LoadState>>,
-    /// Storage for ledger loading
-    storage: S,
+    /// Storage backend for ledger loading
+    backend: StorageBackend,
     /// Shared cache for index nodes
     /// Nameservice for ledger lookup/loading
     nameservice: N,
@@ -682,23 +676,22 @@ pub struct LedgerManager<S, N> {
 }
 
 // Unconstrained accessors (no trait bounds needed — just field access).
-impl<S, N> LedgerManager<S, N> {
+impl<N> LedgerManager<N> {
     /// Get the shared leaflet cache (if configured).
     pub fn leaflet_cache(&self) -> Option<&Arc<LeafletCache>> {
         self.config.leaflet_cache.as_ref()
     }
 }
 
-impl<S, N> LedgerManager<S, N>
+impl<N> LedgerManager<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Send + Sync + 'static,
 {
     /// Create a new ledger manager
-    pub fn new(storage: S, nameservice: N, config: LedgerManagerConfig) -> Self {
+    pub fn new(backend: StorageBackend, nameservice: N, config: LedgerManagerConfig) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
-            storage,
+            backend,
             nameservice,
             config,
             shutdown: AtomicBool::new(false),
@@ -783,7 +776,7 @@ where
         // We're the loader - do the I/O without holding manager lock
         // Note: We pass the original address to nameservice (it handles resolution),
         // but cache under the canonical address for consistent lookup
-        let result = LedgerState::load(&self.nameservice, ledger_id, self.storage.clone())
+        let result = LedgerState::load(&self.nameservice, ledger_id, &self.backend)
             .await
             .map_err(ApiError::from); // Convert LedgerError to ApiError
 
@@ -796,7 +789,7 @@ where
                 // Attempt to load binary index store (v2 only).
                 // Non-fatal: if loading fails, log and continue without binary index.
                 let binary_store = match load_and_attach_binary_store(
-                    &self.storage,
+                    &self.backend,
                     &mut state,
                     &self.config.cache_dir,
                     self.config.leaflet_cache.clone(),
@@ -971,7 +964,7 @@ where
                 // We're the reload leader - do I/O without manager lock
                 let mut write_guard = handle.lock_for_write().await;
 
-                let result = LedgerState::load(&self.nameservice, ledger_id, self.storage.clone())
+                let result = LedgerState::load(&self.nameservice, ledger_id, &self.backend)
                     .await
                     .map_err(ApiError::from); // Convert LedgerError to ApiError
 
@@ -983,7 +976,7 @@ where
                     Ok(mut new_state) => {
                         // Attempt to load binary index store (v2 only)
                         let new_binary_store = match load_and_attach_binary_store(
-                            &self.storage,
+                            &self.backend,
                             &mut new_state,
                             &self.config.cache_dir,
                             self.config.leaflet_cache.clone(),
@@ -1308,9 +1301,8 @@ pub struct RefreshResult {
     pub action: NotifyResult,
 }
 
-impl<S, N> LedgerManager<S, N>
+impl<N> LedgerManager<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Send + Sync + 'static,
 {
     /// Handle nameservice update notification
@@ -1371,7 +1363,7 @@ where
                 handle
                     .apply_index_v2(
                         &index_head_id,
-                        &self.storage,
+                        &self.backend,
                         &self.config.cache_dir,
                         self.config.leaflet_cache.clone(),
                     )
@@ -1393,7 +1385,7 @@ where
                 );
 
                 let ledger_id_canonical = handle.ledger_id().to_string();
-                let cs = content_store_for(self.storage.clone(), &ledger_id_canonical);
+                let cs: Arc<dyn ContentStore> = self.backend.content_store(&ledger_id_canonical);
 
                 // Load commits outside any lock.
                 // trace_commits_by_id walks HEAD → oldest, stopping at local_t.
@@ -1478,7 +1470,7 @@ where
                     handle
                         .apply_index_v2(
                             &index_head_id,
-                            &self.storage,
+                            &self.backend,
                             &self.config.cache_dir,
                             self.config.leaflet_cache.clone(),
                         )
@@ -1796,9 +1788,10 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
+        let backend = StorageBackend::Managed(Arc::new(storage));
         let ns = MemoryNameService::new();
         let config = LedgerManagerConfig::default();
-        let mgr = LedgerManager::new(storage, ns, config);
+        let mgr = LedgerManager::new(backend, ns, config);
 
         // Directly insert Loading entries (simulates in-flight loads)
         {
@@ -1828,9 +1821,10 @@ mod tests {
         use fluree_db_nameservice::memory::MemoryNameService;
 
         let storage = MemoryStorage::new();
+        let backend = StorageBackend::Managed(Arc::new(storage));
         let ns = MemoryNameService::new();
         let config = LedgerManagerConfig::default();
-        let mgr = LedgerManager::new(storage, ns, config);
+        let mgr = LedgerManager::new(backend, ns, config);
 
         // Simulate: disconnect_all sets shutdown flag and clears entries
         mgr.disconnect_all().await;

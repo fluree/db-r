@@ -19,10 +19,10 @@ use crate::error::{BuilderError, BuilderErrors};
 use crate::ledger_manager::LedgerHandle;
 use crate::tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, Storage, TrackedErrorResponse,
+    ApiError, Fluree, NameService, PolicyContext, Result, TrackedErrorResponse,
     TrackedTransactionInput, Tracker, TrackingOptions,
 };
-use fluree_db_core::{ContentAddressedWrite, ContentId, ContentKind};
+use fluree_db_core::{ContentId, ContentKind};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::Publisher;
 use fluree_db_transact::{
@@ -248,19 +248,18 @@ impl std::fmt::Debug for Staged {
 ///     .execute().await?;
 /// let ledger = result.ledger;
 /// ```
-pub struct OwnedTransactBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct OwnedTransactBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     ledger: LedgerState,
     core: TransactCore<'a>,
 }
 
-impl<'a, S, N> OwnedTransactBuilder<'a, S, N>
+impl<'a, N> OwnedTransactBuilder<'a, N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
 {
     /// Create a new builder (called by `Fluree::stage_owned()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger: LedgerState) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, ledger: LedgerState) -> Self {
         Self {
             fluree,
             ledger,
@@ -598,15 +597,14 @@ where
 ///     .insert(&data)
 ///     .execute().await?;
 /// ```
-pub struct RefTransactBuilder<'a, S: Storage + 'static, N> {
-    fluree: &'a Fluree<S, N>,
+pub struct RefTransactBuilder<'a, N> {
+    fluree: &'a Fluree<N>,
     handle: &'a LedgerHandle,
     core: TransactCore<'a>,
 }
 
-impl<'a, S, N> RefTransactBuilder<'a, S, N>
+impl<'a, N> RefTransactBuilder<'a, N>
 where
-    S: Storage + ContentAddressedWrite + Clone + 'static,
     N: NameService
         + Publisher
         + fluree_db_nameservice::RefPublisher
@@ -616,7 +614,7 @@ where
         + 'static,
 {
     /// Create a new builder (called by `Fluree::stage()`).
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, handle: &'a LedgerHandle) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, handle: &'a LedgerHandle) -> Self {
         Self {
             fluree,
             handle,
@@ -720,13 +718,12 @@ where
 ///
 /// This is the shared logic for `RefTransactBuilder::execute()` and
 /// `GraphTransactBuilder::commit()`.
-pub(crate) async fn commit_with_handle<S, N>(
-    fluree: &Fluree<S, N>,
+pub(crate) async fn commit_with_handle<N>(
+    fluree: &Fluree<N>,
     handle: &LedgerHandle,
     core: TransactCore<'_>,
 ) -> Result<TransactResultRef>
 where
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService
         + Publisher
         + fluree_db_nameservice::RefPublisher
@@ -859,7 +856,7 @@ where
             let cache_dir = fluree.binary_store_cache_dir();
             // Result unused: load_and_attach mutates new_state in-place
             let _store = crate::ledger_manager::load_and_attach_binary_store(
-                fluree.storage(),
+                fluree.backend(),
                 &mut new_state,
                 &cache_dir,
                 Some(std::sync::Arc::clone(fluree.leaflet_cache())),
@@ -1032,7 +1029,7 @@ where
             let cache_dir = fluree.binary_store_cache_dir();
             // Result unused: load_and_attach mutates new_state in-place
             let _store = crate::ledger_manager::load_and_attach_binary_store(
-                fluree.storage(),
+                fluree.backend(),
                 &mut new_state,
                 &cache_dir,
                 Some(std::sync::Arc::clone(fluree.leaflet_cache())),

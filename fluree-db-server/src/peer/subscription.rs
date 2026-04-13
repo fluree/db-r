@@ -246,7 +246,7 @@ impl PeerSubscriptionTask {
         for ledger_id in &sub.ledgers {
             // Preload by loading into the connection-level ledger cache.
             let result = match &self.fluree {
-                FlureeInstance::Direct(d) => d.ledger_cached(ledger_id).await.map(|_| ()),
+                FlureeInstance::Direct(f) => f.ledger_cached(ledger_id).await.map(|_| ()),
                 FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await.map(|_| ()),
             };
 
@@ -263,7 +263,7 @@ impl PeerSubscriptionTask {
 
     async fn disconnect_cached_ledger(&self, ledger_id: &str) {
         match &self.fluree {
-            FlureeInstance::Direct(d) => d.disconnect_ledger(ledger_id).await,
+            FlureeInstance::Direct(f) => f.disconnect_ledger(ledger_id).await,
             FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
         }
     }
@@ -278,8 +278,8 @@ impl PeerSubscriptionTask {
         };
 
         match &self.fluree {
-            FlureeInstance::Direct(d) => {
-                let Some(mgr) = d.ledger_manager() else {
+            FlureeInstance::Direct(f) => {
+                let Some(mgr) = f.ledger_manager() else {
                     return;
                 };
                 self.notify_mgr(mgr, record, ns_record).await;
@@ -293,13 +293,12 @@ impl PeerSubscriptionTask {
         };
     }
 
-    async fn notify_mgr<S, N>(
+    async fn notify_mgr<N>(
         &self,
-        mgr: &Arc<fluree_db_api::LedgerManager<S, N>>,
+        mgr: &Arc<fluree_db_api::LedgerManager<N>>,
         record: &LedgerRecord,
         ns_record: NsRecord,
     ) where
-        S: fluree_db_core::Storage + Clone + Send + Sync + 'static,
         N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
     {
         match mgr

@@ -36,10 +36,7 @@ fn people_data() -> JsonValue {
 }
 
 async fn seed_people() -> (
-    fluree_db_api::Fluree<
-        fluree_db_core::MemoryStorage,
-        fluree_db_nameservice::memory::MemoryNameService,
-    >,
+    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
     LedgerState,
 ) {
     let fluree = FlureeBuilder::memory().build_memory();

@@ -23,7 +23,6 @@ pub async fn get_context(
     bearer: MaybeDataBearer,
 ) -> Result<Response> {
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-
     let span = create_request_span(
         "context:get",
         request_id.as_deref(),
@@ -46,22 +45,15 @@ pub async fn get_context(
         }
 
         let ctx = match &state.fluree {
-            crate::state::FlureeInstance::Direct(d) => {
-                // Use ConfigPublisher if available (reads context CID from NS config,
-                // fetches blob from CAS). Fall back to cached context on the ledger.
-                if d.nameservice().config_publisher().is_some() {
-                    d.get_default_context_checked(&ledger)
-                        .await
-                        .map_err(ServerError::Api)?
-                } else {
-                    let ls = d.ledger(&ledger).await.map_err(ServerError::Api)?;
-                    ls.default_context.clone()
-                }
-            }
+            crate::state::FlureeInstance::Direct(f) => f
+                .get_default_context(&ledger)
+                .await
+                .map_err(ServerError::Api)?,
             crate::state::FlureeInstance::Proxy(p) => {
-                // Proxy mode: ConfigPublisher not available, return cached context
-                let ls = p.ledger(&ledger).await.map_err(ServerError::Api)?;
-                ls.default_context.clone()
+                // Proxy mode: ConfigPublisher not available, return simplified response
+                // by loading ledger and reading cached context
+                let ledger_state = p.ledger(&ledger).await.map_err(ServerError::Api)?;
+                ledger_state.default_context.clone()
             }
         };
 
@@ -97,7 +89,6 @@ pub async fn set_context(
     }
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
-
     let span = create_request_span(
         "context:set",
         request_id.as_deref(),
@@ -133,30 +124,24 @@ pub async fn set_context(
             ));
         }
 
-        match &state.fluree {
-            crate::state::FlureeInstance::Direct(d) => {
-                match d
-                    .set_default_context_checked(&ledger, &context)
-                    .await
-                    .map_err(ServerError::Api)?
-                {
-                    fluree_db_api::SetContextResult::Updated => Ok((
-                        StatusCode::OK,
-                        Json(serde_json::json!({ "status": "updated" })),
-                    )
-                        .into_response()),
-                    fluree_db_api::SetContextResult::Conflict => Ok((
-                        StatusCode::CONFLICT,
-                        Json(serde_json::json!({
-                            "error": "Concurrent update conflict. Please retry."
-                        })),
-                    )
-                        .into_response()),
-                }
-            }
-            crate::state::FlureeInstance::Proxy(_) => Err(ServerError::NotImplemented(
-                "Setting default context is not available in proxy mode".to_string(),
-            )),
+        let f = state.fluree.as_direct();
+        match f
+            .set_default_context(&ledger, &context)
+            .await
+            .map_err(ServerError::Api)?
+        {
+            fluree_db_api::SetContextResult::Updated => Ok((
+                StatusCode::OK,
+                Json(serde_json::json!({ "status": "updated" })),
+            )
+                .into_response()),
+            fluree_db_api::SetContextResult::Conflict => Ok((
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "Concurrent update conflict. Please retry."
+                })),
+            )
+                .into_response()),
         }
     }
     .instrument(span)

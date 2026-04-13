@@ -112,9 +112,8 @@ pub struct PushedHead {
 ///
 /// This acquires the ledger write mutex for the duration of validation + publish,
 /// so pushes are serialized with normal transactions.
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync + 'static,
 {
     pub async fn push_commits_with_handle(
@@ -285,16 +284,15 @@ where
         }
 
         // 5) Write required blobs and commit bytes to storage (safe before CAS).
-        write_required_blobs(
-            self.storage(),
-            base_state.ledger_id(),
-            &request.blobs,
-            &decoded,
-        )
-        .await
-        .map_err(|e| e.into_api_error())?;
+        let storage = self
+            .backend()
+            .admin_storage_cloned()
+            .ok_or_else(|| ApiError::config("push_commits requires a managed storage backend"))?;
+        write_required_blobs(&storage, base_state.ledger_id(), &request.blobs, &decoded)
+            .await
+            .map_err(|e| e.into_api_error())?;
 
-        let stored_commits = write_commit_blobs(self.storage(), base_state.ledger_id(), &decoded)
+        let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await
             .map_err(|e| e.into_api_error())?;
 
@@ -341,7 +339,7 @@ where
             let cache_dir = self.binary_store_cache_dir();
             // Result unused: load_and_attach mutates new_state in-place
             let _store = crate::ledger_manager::load_and_attach_binary_store(
-                self.storage(),
+                self.backend(),
                 &mut new_state,
                 &cache_dir,
                 Some(std::sync::Arc::clone(self.leaflet_cache())),
@@ -752,14 +750,15 @@ async fn is_currently_asserted(
     Ok(last_t.is_some() && last_op)
 }
 
-async fn write_required_blobs<
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
->(
+async fn write_required_blobs<S>(
     storage: &S,
     ledger_id: &str,
     provided: &HashMap<String, Base64Bytes>,
     decoded: &[PushCommitDecoded],
-) -> std::result::Result<(), PushError> {
+) -> std::result::Result<(), PushError>
+where
+    S: Storage + Send + Sync,
+{
     // Build required set (txn CID strings, for now).
     let mut required: HashSet<String> = HashSet::new();
     for c in decoded {
@@ -1011,9 +1010,8 @@ pub struct ExportCommitsResponse {
 /// regardless of total ledger size.
 ///
 /// Commits are returned newest → oldest. The client reverses for import.
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync,
 {
     pub async fn export_commit_range(
@@ -1023,7 +1021,6 @@ where
     ) -> Result<ExportCommitsResponse> {
         use fluree_db_core::commit::codec::envelope::decode_envelope;
         use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
-        use fluree_db_core::storage::content_store_for;
         use fluree_db_core::ContentStore;
 
         let effective_limit = request
@@ -1051,7 +1048,7 @@ where
         let head_t = head_ref.t;
 
         // Build a ContentStore bridge for CID-based reads.
-        let content_store = content_store_for(self.storage().clone(), ledger_id);
+        let content_store = self.content_store(ledger_id);
 
         // Determine start cursor CID.
         let start_cid: ContentId = if let Some(cid) = &request.cursor_id {
@@ -1176,9 +1173,8 @@ pub struct CommitImportResult {
     pub indexing: IndexingStatus,
 }
 
-impl<S, N> Fluree<S, N>
+impl<N> Fluree<N>
 where
-    S: Storage + ContentAddressedWrite + Clone + Send + Sync + 'static,
     N: NameService + RefPublisher + Send + Sync,
 {
     /// Bulk-import commit blobs to local CAS (clone path).
@@ -1192,7 +1188,9 @@ where
         response: &ExportCommitsResponse,
     ) -> Result<BulkImportResult> {
         let ledger_id = handle.ledger_id();
-        let storage = self.storage();
+        let storage = self.admin_storage().ok_or_else(|| {
+            ApiError::config("import_commits_bulk requires a managed storage backend")
+        })?;
         let mut stored = 0usize;
         let mut blobs_stored = 0usize;
 
@@ -1377,16 +1375,14 @@ where
         validate_required_blobs(&decoded, &request.blobs).map_err(|e| e.into_api_error())?;
 
         // 6) Write blobs + commit bytes to local CAS.
-        write_required_blobs(
-            self.storage(),
-            base_state.ledger_id(),
-            &request.blobs,
-            &decoded,
-        )
-        .await
-        .map_err(|e| e.into_api_error())?;
+        let storage = self.backend().admin_storage_cloned().ok_or_else(|| {
+            ApiError::config("push_commits_strict requires a managed storage backend")
+        })?;
+        write_required_blobs(&storage, base_state.ledger_id(), &request.blobs, &decoded)
+            .await
+            .map_err(|e| e.into_api_error())?;
 
-        let stored_commits = write_commit_blobs(self.storage(), base_state.ledger_id(), &decoded)
+        let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await
             .map_err(|e| e.into_api_error())?;
 

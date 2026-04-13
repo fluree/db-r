@@ -762,6 +762,17 @@ mod tests {
             self.inner.publish_ledger_init(ledger_id).await
         }
 
+        async fn publish_commit(
+            &self,
+            ledger_id: &str,
+            commit_t: i64,
+            commit_id: &ContentId,
+        ) -> fluree_db_nameservice::Result<()> {
+            self.inner
+                .publish_commit(ledger_id, commit_t, commit_id)
+                .await
+        }
+
         async fn publish_index(
             &self,
             ledger_id: &str,

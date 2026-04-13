@@ -9,7 +9,7 @@ use crate::graph_commit_builder::CommitBuilder;
 use crate::graph_query_builder::GraphQueryBuilder;
 use crate::graph_snapshot::GraphSnapshot;
 use crate::graph_transact_builder::GraphTransactBuilder;
-use crate::{Fluree, NameService, Result, Storage};
+use crate::{Fluree, NameService, Result};
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::Publisher;
 
@@ -42,19 +42,18 @@ use fluree_db_nameservice::Publisher;
 /// let r1 = snapshot.query().sparql("SELECT ...").execute().await?;
 /// let r2 = snapshot.query().jsonld(&q).execute().await?;
 /// ```
-pub struct Graph<'a, S: Storage + 'static, N> {
-    pub(crate) fluree: &'a Fluree<S, N>,
+pub struct Graph<'a, N> {
+    pub(crate) fluree: &'a Fluree<N>,
     pub(crate) ledger_id: String,
     pub(crate) time_spec: TimeSpec,
 }
 
-impl<'a, S, N> Graph<'a, S, N>
+impl<'a, N> Graph<'a, N>
 where
-    S: Storage + Clone + Send + Sync + 'static,
     N: NameService + Clone + Send + Sync + 'static,
 {
     /// Create a new lazy graph handle.
-    pub(crate) fn new(fluree: &'a Fluree<S, N>, ledger_id: String, time_spec: TimeSpec) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree<N>, ledger_id: String, time_spec: TimeSpec) -> Self {
         Self {
             fluree,
             ledger_id,
@@ -72,7 +71,7 @@ where
     /// let r1 = snapshot.query().sparql("...").execute().await?;
     /// let r2 = snapshot.query().jsonld(&q).execute().await?;
     /// ```
-    pub async fn load(&self) -> Result<GraphSnapshot<'a, S, N>> {
+    pub async fn load(&self) -> Result<GraphSnapshot<'a, N>> {
         let view = self
             .fluree
             .load_graph_db_at(&self.ledger_id, self.time_spec.clone())
@@ -96,7 +95,7 @@ where
     ///
     /// When the `iceberg` feature is compiled, R2RML/Iceberg graph source
     /// support is automatically enabled — graph sources resolve transparently.
-    pub fn query(&self) -> GraphQueryBuilder<'a, '_, S, N> {
+    pub fn query(&self) -> GraphQueryBuilder<'a, '_, N> {
         let builder = GraphQueryBuilder::new(self);
         #[cfg(feature = "iceberg")]
         let builder = builder.with_r2rml();
@@ -116,9 +115,8 @@ where
     ///     .commit()
     ///     .await?;
     /// ```
-    pub fn transact(&self) -> GraphTransactBuilder<'a, '_, S, N>
+    pub fn transact(&self) -> GraphTransactBuilder<'a, '_, N>
     where
-        S: fluree_db_core::ContentAddressedWrite,
         N: Publisher + fluree_db_nameservice::RefPublisher,
     {
         GraphTransactBuilder::new(self)
@@ -139,7 +137,7 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
-    pub fn commit(&self, id: &ContentId) -> CommitBuilder<'a, '_, S, N> {
+    pub fn commit(&self, id: &ContentId) -> CommitBuilder<'a, '_, N> {
         CommitBuilder::new(self, id.clone())
     }
 
@@ -158,7 +156,7 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
-    pub fn commit_prefix(&self, prefix: &str) -> CommitBuilder<'a, '_, S, N> {
+    pub fn commit_prefix(&self, prefix: &str) -> CommitBuilder<'a, '_, N> {
         // Try parsing as a full CID first
         if let Ok(cid) = prefix.parse::<ContentId>() {
             CommitBuilder::new(self, cid)
@@ -181,7 +179,7 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
-    pub fn commit_t(&self, t: i64) -> CommitBuilder<'a, '_, S, N> {
+    pub fn commit_t(&self, t: i64) -> CommitBuilder<'a, '_, N> {
         CommitBuilder::from_t(self, t)
     }
 }
