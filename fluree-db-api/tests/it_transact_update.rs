@@ -5,7 +5,7 @@
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState, Novelty};
-use fluree_db_core::{content_store_for, load_commit_by_id, FlakeValue, LedgerSnapshot};
+use fluree_db_core::{load_commit_by_id, FlakeValue, LedgerSnapshot};
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::{json, Value as JsonValue};
 
@@ -257,7 +257,7 @@ async fn update_where_bound_typed_string_delete_and_insert_use_same_datatype_sid
         .await
         .unwrap();
 
-    let content_store = content_store_for(fluree.storage().clone(), ledger_id);
+    let content_store = fluree.content_store(ledger_id);
     let commit = load_commit_by_id(&content_store, &result.receipt.commit_id)
         .await
         .expect("load update commit");

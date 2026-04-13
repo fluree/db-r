@@ -40,7 +40,7 @@
 mod support;
 
 use fluree_db_api::FlureeBuilder;
-use fluree_db_core::{content_store_for, load_commit_by_id, FlakeValue};
+use fluree_db_core::{load_commit_by_id, FlakeValue};
 use serde_json::json;
 
 // =============================================================================
@@ -483,7 +483,7 @@ async fn single_insert_three_json_datatype_forms_produce_same_dt_sid() {
     });
 
     let result = fluree.insert(ledger0, &insert).await.unwrap();
-    let content_store = content_store_for(fluree.storage().clone(), ledger_id);
+    let content_store = fluree.content_store(ledger_id);
     let commit = load_commit_by_id(&content_store, &result.receipt.commit_id)
         .await
         .expect("load commit");
@@ -538,7 +538,7 @@ async fn single_insert_two_xsd_string_datatype_forms_produce_same_dt_sid() {
     });
 
     let result = fluree.insert(ledger0, &insert).await.unwrap();
-    let content_store = content_store_for(fluree.storage().clone(), ledger_id);
+    let content_store = fluree.content_store(ledger_id);
     let commit = load_commit_by_id(&content_store, &result.receipt.commit_id)
         .await
         .expect("load commit");
