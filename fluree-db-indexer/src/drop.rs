@@ -12,7 +12,6 @@
 use std::collections::HashSet;
 
 use fluree_db_binary_index::format::branch::read_branch_from_bytes;
-use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::commit::codec::read_commit_envelope;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::storage::ContentStore;
@@ -26,8 +25,7 @@ use crate::gc::collector::walk_prev_index_chain_cs;
 /// graph branch → leaf expansion), and extra NsRecord references to build a
 /// complete, deduplicated set of CIDs.
 ///
-/// Callers can then delete or release these CIDs depending on the storage
-/// backend (address-based deletion for managed backends, unpinning for IPFS).
+/// Callers can then release these CIDs via `ContentStore::release`.
 pub async fn collect_ledger_cids(
     store: &dyn ContentStore,
     commit_head_id: Option<&ContentId>,
@@ -125,30 +123,8 @@ async fn collect_index_chain_cids(
         // Add the root CID itself
         cids.insert(entry.root_id.clone());
 
-        // Load the full IndexRoot to get all CAS artifacts
-        let root_bytes = match store.get(&entry.root_id).await {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::warn!(
-                    root_id = %entry.root_id,
-                    error = %e,
-                    "failed to read index root during drop, skipping"
-                );
-                continue;
-            }
-        };
-
-        let root = match IndexRoot::decode(&root_bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(
-                    root_id = %entry.root_id,
-                    error = %e,
-                    "failed to decode index root during drop, skipping"
-                );
-                continue;
-            }
-        };
+        // Use the already-decoded IndexRoot from the chain walk
+        let root = &entry.root;
 
         // Bulk collect CAS artifact CIDs (dicts, leaves, branches, etc.)
         for id in root.all_cas_ids() {

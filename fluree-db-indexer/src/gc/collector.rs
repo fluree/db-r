@@ -1,7 +1,7 @@
 //! Garbage collection implementation
 //!
 //! Provides the `clean_garbage` function that walks the prev-index chain,
-//! identifies gc-eligible indexes, and deletes obsolete nodes.
+//! identifies gc-eligible indexes, and releases obsolete CAS artifacts.
 //!
 //! # GC semantics
 //!
@@ -16,6 +16,7 @@
 use super::{parse_garbage_record, CleanGarbageConfig, CleanGarbageResult};
 use super::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
 use crate::error::Result;
+use fluree_db_binary_index::IndexRoot;
 use fluree_db_core::storage::ContentStore;
 use fluree_db_core::ContentId;
 
@@ -27,17 +28,21 @@ pub(crate) struct IndexChainEntry {
     pub(crate) root_id: ContentId,
     /// CID of this root's garbage manifest (if any).
     pub(crate) garbage_id: Option<ContentId>,
+    /// The decoded index root (already fetched during chain walk).
+    pub(crate) root: IndexRoot,
 }
 
-/// Extract the GC-relevant fields from an index root blob (FIR6).
+/// Decode an index root blob (FIR6) and extract the GC-relevant fields.
 ///
-/// Returns `(index_t, prev_index_id, garbage_id)`.
-fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<ContentId>)> {
-    let root = fluree_db_binary_index::IndexRoot::decode(bytes)
+/// Returns `(index_t, prev_index_id, garbage_id, decoded_root)`.
+fn parse_chain_fields(
+    bytes: &[u8],
+) -> Result<(i64, Option<ContentId>, Option<ContentId>, IndexRoot)> {
+    let root = IndexRoot::decode(bytes)
         .map_err(|e| crate::error::IndexerError::Serialization(format!("index root FIR6: {e}")))?;
-    let prev_id = root.prev_index.map(|p| p.id);
-    let garbage_id = root.garbage.map(|g| g.id);
-    Ok((root.index_t, prev_id, garbage_id))
+    let prev_id = root.prev_index.as_ref().map(|p| p.id.clone());
+    let garbage_id = root.garbage.as_ref().map(|g| g.id.clone());
+    Ok((root.index_t, prev_id, garbage_id, root))
 }
 
 /// Get current timestamp in milliseconds
@@ -262,13 +267,14 @@ pub(crate) async fn walk_prev_index_chain_cs(
             }
         };
 
-        let (t, prev_index_id, garbage_id) = parse_chain_fields(&bytes)?;
+        let (t, prev_index_id, garbage_id, root) = parse_chain_fields(&bytes)?;
 
         let next_id = prev_index_id;
         chain.push(IndexChainEntry {
             t,
             root_id: current_id,
             garbage_id,
+            root,
         });
 
         match next_id {
@@ -376,7 +382,7 @@ mod tests {
                 id: garb_cid.clone(),
             }),
         );
-        let (t, prev, garbage) = parse_chain_fields(&bytes).unwrap();
+        let (t, prev, garbage, _) = parse_chain_fields(&bytes).unwrap();
         assert_eq!(t, 5);
         assert_eq!(prev, Some(prev_cid));
         assert_eq!(garbage, Some(garb_cid));
@@ -386,7 +392,7 @@ mod tests {
     fn test_parse_chain_fields_minimal() {
         // FIR6 root without prev_index or garbage.
         let bytes = minimal_fir6(1, None, None);
-        let (t, prev, garbage) = parse_chain_fields(&bytes).unwrap();
+        let (t, prev, garbage, _) = parse_chain_fields(&bytes).unwrap();
         assert_eq!(t, 1);
         assert_eq!(prev, None);
         assert_eq!(garbage, None);
