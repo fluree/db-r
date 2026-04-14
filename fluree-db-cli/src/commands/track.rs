@@ -259,7 +259,7 @@ async fn run_status(store: &TomlSyncConfigStore, ledger: Option<&str>) -> CliRes
             t.remote
         );
 
-        match client.ledger_info(&t.remote_alias).await {
+        match client.ledger_info(&t.remote_alias, None).await {
             Ok(info) => {
                 if let Some(t_val) = info.get("t").and_then(|v| v.as_i64()) {
                     println!("  t: {}", t_val);

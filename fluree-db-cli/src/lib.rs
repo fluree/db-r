@@ -87,9 +87,20 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             commands::list::run(&fluree_dir, remote.as_deref(), direct).await
         }
 
-        Commands::Info { ledger, remote } => {
+        Commands::Info {
+            ledger,
+            remote,
+            graph,
+        } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
-            commands::info::run(ledger.as_deref(), &fluree_dir, remote.as_deref(), direct).await
+            commands::info::run(
+                ledger.as_deref(),
+                &fluree_dir,
+                remote.as_deref(),
+                direct,
+                graph.as_deref(),
+            )
+            .await
         }
 
         Commands::Branch { action } => {

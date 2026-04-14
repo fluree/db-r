@@ -8,7 +8,18 @@ pub async fn run(
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
     direct: bool,
+    graph: Option<&str>,
 ) -> CliResult<()> {
+    // Reject ledger#fragment syntax — use --graph instead
+    if let Some(l) = ledger {
+        if l.contains('#') {
+            return Err(CliError::Usage(
+                "info does not support 'ledger#fragment' syntax; use --graph <name|IRI> to scope stats to a named graph"
+                    .to_string(),
+            ));
+        }
+    }
+
     // Resolve ledger mode: --remote flag, local, tracked, or auto-route to local server.
     // If resolution fails (not found), try graph source lookup before giving up.
     let mode = if let Some(remote_name) = remote_flag {
@@ -28,6 +39,11 @@ pub async fn run(
                 let fluree = context::build_fluree(dirs)?;
                 let gs_id = context::to_ledger_id(&alias);
                 if let Some(gs) = fluree.nameservice().lookup_graph_source(&gs_id).await? {
+                    if graph.is_some() {
+                        return Err(CliError::Usage(
+                            "--graph is not applicable to graph sources".to_string(),
+                        ));
+                    }
                     print_graph_source_info(&gs);
                     return Ok(());
                 }
@@ -48,12 +64,17 @@ pub async fn run(
             local_alias,
             remote_name,
         } => {
-            let info = client.ledger_info(&remote_alias).await?;
+            let info = client.ledger_info(&remote_alias, graph).await?;
 
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
             // Detect graph source response (has graph_source_id but no ledger_id)
             if info.get("graph_source_id").is_some() {
+                if graph.is_some() {
+                    return Err(CliError::Usage(
+                        "--graph is not applicable to graph sources".to_string(),
+                    ));
+                }
                 print_remote_graph_source_info(&info);
             } else {
                 println!(
@@ -95,6 +116,18 @@ pub async fn run(
 
             // Try ledger first, then graph source
             if let Some(record) = fluree.nameservice().lookup(&ledger_id).await? {
+                if let Some(g) = graph {
+                    let info = fluree
+                        .ledger_info(&ledger_id)
+                        .for_graph(g)
+                        .execute()
+                        .await?;
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&info).unwrap_or_default()
+                    );
+                    return Ok(());
+                }
                 println!("Ledger:         {}", record.name);
                 println!("Branch:         {}", record.branch);
                 println!("Type:           Ledger");
@@ -120,6 +153,11 @@ pub async fn run(
                         .unwrap_or("(none)")
                 );
             } else if let Some(gs) = fluree.nameservice().lookup_graph_source(&ledger_id).await? {
+                if graph.is_some() {
+                    return Err(CliError::Usage(
+                        "--graph is not applicable to graph sources".to_string(),
+                    ));
+                }
                 print_graph_source_info(&gs);
             } else {
                 return Err(CliError::NotFound(format!(

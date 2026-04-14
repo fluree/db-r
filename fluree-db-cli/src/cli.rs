@@ -118,6 +118,12 @@ pub enum Commands {
         /// Query a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,
+
+        /// Scope stats to a specific named graph within the ledger.
+        ///
+        /// Accepts a well-known name (`default`, `txn-meta`) or a graph IRI.
+        #[arg(long)]
+        graph: Option<String>,
     },
 
     /// Manage branches for a ledger

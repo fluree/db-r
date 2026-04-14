@@ -260,7 +260,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
 
     // Resolve remote head.
     let info = client
-        .ledger_info(remote_ledger_id)
+        .ledger_info(remote_ledger_id, None)
         .await
         .map_err(|e| CliError::Config(format!("pull failed (remote ledger info): {e}")))?;
     let remote_t = info
@@ -637,7 +637,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
 
     // Resolve remote head (t + commit CID).
     let info = client
-        .ledger_info(remote_ledger_id)
+        .ledger_info(remote_ledger_id, None)
         .await
         .map_err(|e| CliError::Config(format!("push failed (remote ledger info): {e}")))?;
     let remote_t = info
@@ -835,7 +835,7 @@ pub async fn run_publish(
         // If it exists, check remote head — if remote has commits we can't
         // blindly push everything, fall back to normal push behavior.
         let info = client
-            .ledger_info(&remote_ledger_id)
+            .ledger_info(&remote_ledger_id, None)
             .await
             .map_err(|e| CliError::Config(format!("failed to get remote ledger info: {e}")))?;
         let remote_t = info.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1017,7 +1017,7 @@ pub async fn run_clone(
 
     // Verify the remote ledger exists (ledger_info returns 404 if not).
     let info = client
-        .ledger_info(&ledger_id)
+        .ledger_info(&ledger_id, None)
         .await
         .map_err(|e| CliError::Config(format!("clone failed (remote ledger info): {e}")))?;
 

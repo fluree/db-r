@@ -116,7 +116,7 @@ pub async fn run_iceberg_info(
 ) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {
         let client = context::build_remote_client(remote_name, dirs).await?;
-        let info = client.ledger_info(name).await.map_err(|e| {
+        let info = client.ledger_info(name, None).await.map_err(|e| {
             CliError::Remote(format!(
                 "failed to load Iceberg graph source info from '{}': {}",
                 remote_name, e
@@ -128,7 +128,7 @@ pub async fn run_iceberg_info(
 
     if !direct {
         if let Some(client) = context::try_server_route_client(dirs) {
-            let info = client.ledger_info(name).await.map_err(|e| {
+            let info = client.ledger_info(name, None).await.map_err(|e| {
                 CliError::Remote(format!("failed to load Iceberg graph source info: {}", e))
             })?;
             return print_iceberg_info_remote(name, &info);
@@ -175,7 +175,7 @@ pub async fn run_iceberg_drop(
 
     if let Some(remote_name) = remote_flag {
         let client = context::build_remote_client(remote_name, dirs).await?;
-        let info = client.ledger_info(name).await.map_err(|e| {
+        let info = client.ledger_info(name, None).await.map_err(|e| {
             CliError::Remote(format!(
                 "failed to validate Iceberg graph source on '{}': {}",
                 remote_name, e
@@ -195,7 +195,7 @@ pub async fn run_iceberg_drop(
 
     if !direct {
         if let Some(client) = context::try_server_route_client(dirs) {
-            let info = client.ledger_info(name).await.map_err(|e| {
+            let info = client.ledger_info(name, None).await.map_err(|e| {
                 CliError::Remote(format!("failed to validate Iceberg graph source: {}", e))
             })?;
             ensure_remote_iceberg_info(name, &info)?;

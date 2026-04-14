@@ -741,8 +741,19 @@ impl RemoteLedgerClient {
     // =========================================================================
 
     /// Get ledger info from the remote server.
-    pub async fn ledger_info(&self, ledger: &str) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = self.op_url("info", ledger);
+    ///
+    /// When `graph` is `Some`, scopes the `stats` block to that named graph
+    /// (well-known name or IRI).
+    pub async fn ledger_info(
+        &self,
+        ledger: &str,
+        graph: Option<&str>,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let mut url = self.op_url("info", ledger);
+        if let Some(g) = graph {
+            url.push_str("?graph=");
+            url.push_str(&urlencoding::encode(g));
+        }
         self.send_json(reqwest::Method::GET, &url, "application/json", None)
             .await
     }
