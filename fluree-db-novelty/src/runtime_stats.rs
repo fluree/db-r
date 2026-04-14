@@ -221,13 +221,20 @@ fn assemble_fast_stats_inner(
 
     for flake_id in novelty.iter_index(IndexType::Post) {
         let flake = novelty.get_flake(flake_id);
-        if !include_in_runtime_stats(flake, to_t) {
+        if flake.t > to_t {
             continue;
         }
 
         let delta = if flake.op { 1 } else { -1 };
         let g_id = graph_id_for_flake(snapshot, flake);
         flakes_delta += delta;
+
+        let graph_entry = get_or_insert_graph_entry(&mut graphs, &mut graph_index, g_id);
+        graph_entry.flakes = ((graph_entry.flakes as i64) + delta).max(0) as u64;
+
+        if !include_in_runtime_stats(flake, to_t) {
+            continue;
+        }
 
         if is_rdf_type(&flake.p) {
             if let FlakeValue::Ref(class_sid) = &flake.o {

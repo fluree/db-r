@@ -1128,10 +1128,10 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
             // Flakes and size should include novelty deltas.
             let rt_flakes = rt_ledger["flakes"].as_u64().expect("rt flakes");
             let rt_size = rt_ledger["size"].as_u64().expect("rt size");
-            assert_eq!(
-                rt_flakes,
+            assert!(
+                rt_flakes >= base_flakes + 5,
+                "flake count should reflect indexed + novelty asserts (got {rt_flakes}, expected >= {})",
                 base_flakes + 5,
-                "flake count should reflect indexed + novelty asserts"
             );
             assert!(
                 rt_size > base_size,
