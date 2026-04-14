@@ -120,6 +120,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             message,
             format,
             remote,
+            policy,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::insert::run(
@@ -131,6 +132,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                 &fluree_dir,
                 remote.as_deref(),
                 direct,
+                &policy,
             )
             .await
         }
@@ -142,6 +144,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             message,
             format,
             remote,
+            policy,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::update::run(
@@ -153,6 +156,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                 &fluree_dir,
                 remote.as_deref(),
                 direct,
+                &policy,
             )
             .await
         }
@@ -164,6 +168,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             message,
             format,
             remote,
+            policy,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             commands::upsert::run(
@@ -175,6 +180,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                 &fluree_dir,
                 remote.as_deref(),
                 direct,
+                &policy,
             )
             .await
         }
@@ -191,6 +197,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             jsonld,
             at,
             remote,
+            policy,
         } => {
             let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
             commands::query::run(
@@ -207,6 +214,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                 &fluree_dir,
                 remote.as_deref(),
                 direct,
+                &policy,
             )
             .await
         }

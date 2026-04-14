@@ -95,33 +95,6 @@ fn effective_identity(credential: &MaybeCredential, bearer: &MaybeDataBearer) ->
         .or_else(|| bearer.0.as_ref().and_then(|p| p.identity.clone()))
 }
 
-/// Force auth identity/policy-class into JSON-LD query opts, overriding client-provided values.
-fn force_query_auth_opts(
-    query: &mut JsonValue,
-    identity: Option<&str>,
-    policy_class: Option<&str>,
-) {
-    let Some(obj) = query.as_object_mut() else {
-        return;
-    };
-    let opts = obj
-        .entry("opts")
-        .or_insert_with(|| JsonValue::Object(serde_json::Map::new()));
-    let Some(opts_obj) = opts.as_object_mut() else {
-        return;
-    };
-
-    if let Some(id) = identity {
-        opts_obj.insert("identity".to_string(), JsonValue::String(id.to_string()));
-    }
-    if let Some(pc) = policy_class {
-        opts_obj.insert(
-            "policy-class".to_string(),
-            JsonValue::String(pc.to_string()),
-        );
-    }
-}
-
 /// Check if tracking is requested in query opts
 fn has_tracking_opts(query_json: &JsonValue) -> bool {
     let Some(opts) = query_json.get("opts") else {
@@ -395,10 +368,18 @@ pub async fn query(
             }
         }
 
-        // Force auth-derived identity and policy-class into opts (non-spoofable)
+        // Apply bearer identity + server-default policy-class to opts, honoring
+        // the root-identity impersonation semantic (see routes::policy_auth).
         let identity = effective_identity(&credential, &bearer);
         let policy_class = data_auth.default_policy_class.as_deref();
-        force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+        crate::routes::policy_auth::apply_auth_identity_to_opts(
+            &state,
+            &ledger_id,
+            &mut query_json,
+            identity.as_deref(),
+            policy_class,
+        )
+        .await;
 
         execute_query(&state, &ledger_id, &query_json, delimited).await
     }
@@ -486,7 +467,14 @@ pub async fn query_ledger(
             }
         }
 
-        let identity = effective_identity(&credential, &bearer);
+        let bearer_identity = effective_identity(&credential, &bearer);
+        let identity = crate::routes::policy_auth::resolve_sparql_identity(
+            &state,
+            &ledger,
+            bearer_identity.as_deref(),
+            headers.identity.as_deref(),
+        )
+        .await;
         return execute_sparql_ledger(&state, &ledger, &sparql, identity.as_deref(), delimited, &headers)
             .await;
     }
@@ -529,10 +517,18 @@ pub async fn query_ledger(
         }
     }
 
-    // Force auth-derived identity and policy-class into opts (non-spoofable)
+    // Apply bearer identity + server-default policy-class to opts, honoring
+    // the root-identity impersonation semantic (see routes::policy_auth).
     let identity = effective_identity(&credential, &bearer);
     let policy_class = data_auth.default_policy_class.as_deref();
-    force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+    crate::routes::policy_auth::apply_auth_identity_to_opts(
+        &state,
+        &ledger_id,
+        &mut query_json,
+        identity.as_deref(),
+        policy_class,
+    )
+    .await;
 
     execute_query(&state, &ledger_id, &query_json, delimited).await
     }
@@ -696,10 +692,18 @@ pub async fn explain_ledger(
             }
         }
 
-        // Force auth-derived identity and policy-class into opts (non-spoofable)
+        // Apply bearer identity + server-default policy-class to opts, honoring
+        // the root-identity impersonation semantic (see routes::policy_auth).
         let identity = effective_identity(&credential, &bearer);
         let policy_class = data_auth.default_policy_class.as_deref();
-        force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+        crate::routes::policy_auth::apply_auth_identity_to_opts(
+            &state,
+            &ledger_id,
+            &mut query_json,
+            identity.as_deref(),
+            policy_class,
+        )
+        .await;
 
         let result = state
             .fluree
@@ -1281,8 +1285,31 @@ async fn execute_sparql_ledger(
             return Ok((HeaderMap::new(), Json(result)).into_response());
         }
 
-        // Identity-based queries go through connection path (returns pre-formatted JSON)
-        if let Some(id) = identity {
+        // Build a QueryConnectionOptions from the resolved identity plus all
+        // policy headers (`fluree-policy-class`, `fluree-policy`,
+        // `fluree-policy-values`, `fluree-default-allow`). SPARQL has no body
+        // opts block, so headers are the only transport for these fields.
+        let policy_values_map = headers.policy_values_map().map_err(|e| {
+            set_span_error_code(&span, "error:BadRequest");
+            tracing::warn!(error = %e, "invalid fluree-policy-values header");
+            e
+        })?;
+        let qc_opts = fluree_db_api::QueryConnectionOptions {
+            identity: identity.map(String::from),
+            policy_class: if headers.policy_class.is_empty() {
+                None
+            } else {
+                Some(headers.policy_class.clone())
+            },
+            policy: headers.policy.clone(),
+            policy_values: policy_values_map,
+            default_allow: headers.default_allow,
+            ..Default::default()
+        };
+
+        // Policy-enforced SPARQL goes through the connection path (which
+        // returns pre-formatted JSON via execute_formatted).
+        if qc_opts.has_any_policy_inputs() {
             if has_dataset_clause {
                 return Err(ServerError::not_acceptable(
                     "FROM/FROM NAMED is not currently supported with identity-scoped SPARQL on the ledger-scoped endpoint".to_string(),
@@ -1307,7 +1334,7 @@ async fn execute_sparql_ledger(
             }
             let result = state
                 .fluree
-                .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
+                .query_ledger_sparql_with_opts(ledger_id, sparql, &qc_opts)
                 .await
                 .inspect_err(|_| {
                     set_span_error_code(&span, "error:QueryFailed");
@@ -1962,10 +1989,18 @@ pub async fn explain(
             }
         }
 
-        // Force auth-derived identity and policy-class into opts (non-spoofable)
+        // Apply bearer identity + server-default policy-class to opts, honoring
+        // the root-identity impersonation semantic (see routes::policy_auth).
         let identity = effective_identity(&credential, &bearer);
         let policy_class = data_auth.default_policy_class.as_deref();
-        force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
+        crate::routes::policy_auth::apply_auth_identity_to_opts(
+            &state,
+            &ledger_id,
+            &mut query_json,
+            identity.as_deref(),
+            policy_class,
+        )
+        .await;
 
         // Execute explain
         let result = if state.config.is_proxy_storage_mode() {

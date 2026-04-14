@@ -689,6 +689,44 @@ async function testTransactionPolicy() {
 }
 ```
 
+## Testing Policies from the CLI
+
+The same `--as`, `--policy-class`, and `--default-allow` flags used on
+`fluree query` are available on `fluree insert`, `fluree upsert`, and
+`fluree update` so you can verify write-time enforcement without any client
+code:
+
+```bash
+# Attempt a write as an identity that lacks the f:modify policy — expect failure
+fluree insert --as did:key:z6MkReadOnly... -f new-data.ttl
+
+# Same write as an authorized identity — expect success
+fluree insert --as did:key:z6MkWriter... -f new-data.ttl
+```
+
+The flags work locally and against remote servers. On remote, the CLI sends
+the policy options as HTTP headers (`fluree-identity`,
+`fluree-policy-class`, `fluree-default-allow`) and, for JSON-LD bodies, also
+injects them into `opts`. The server applies the **root-impersonation gate**:
+your bearer identity may delegate to `--as <iri>` only when the bearer
+identity itself has no `f:policyClass` on the target ledger. Restricted
+bearers have `--as` force-overridden back to their own identity (and see only
+what their own policies permit).
+
+This is the standard service-account pattern — see
+[Policy in Queries → Remote impersonation](policy-in-queries.md#remote-impersonation-how-its-authorized)
+for the full authorization rules and audit-log format.
+
+### Policy enforcement on transactions is now end-to-end
+
+Prior to this revision, unsigned bearer-authenticated transactions ran under a
+root policy bypass. They now build a `PolicyContext` from the (post-header-
+merge) opts and route through the policy-enforcing `transact_tracked_with_policy`
+path. Practically: a non-root bearer's `f:modify` constraints now apply to
+their writes, matching the long-standing query-side behavior. SPARQL UPDATE
+inherits the same enforcement, with identity sourced from either the bearer
+or the `fluree-identity` header (impersonation-gated).
+
 ## Related Documentation
 
 - [Policy Model](policy-model.md) - Policy structure

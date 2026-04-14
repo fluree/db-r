@@ -1014,6 +1014,47 @@ async fn main() -> Result<()> {
 }
 ```
 
+### Remote Federation
+
+Query ledgers on remote Fluree servers using SPARQL `SERVICE` with the `fluree:remote:` scheme. Register remote connections at build time — each maps a name to a server URL and optional bearer token:
+
+```rust
+use fluree_db_api::{FlureeBuilder, Result};
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let fluree = FlureeBuilder::file("./data")
+        .remote_connection(
+            "acme",
+            "https://acme-fluree.example.com",
+            Some("eyJhbG...".to_string()),
+        )
+        .build()?;
+
+    let db = fluree.view("local-ledger:main").await?;
+
+    // Join local data with a ledger on the remote server
+    let result = fluree.query(&db, r#"
+        PREFIX ex: <http://example.org/ns/>
+        SELECT ?name ?email
+        WHERE {
+          ?person ex:name ?name .
+          SERVICE <fluree:remote:acme/customers:main> {
+            ?person ex:email ?email .
+          }
+        }
+    "#).await?;
+
+    Ok(())
+}
+```
+
+The connection name (`acme`) maps to the server URL. The ledger path (`customers:main`) is appended to form the request URL: `POST https://acme-fluree.example.com/v1/fluree/query/customers:main`. The bearer token is sent as `Authorization: Bearer <token>` on every request.
+
+Multiple ledgers on the same remote server use the same connection name — you register the server once and can query any ledger your token is authorized for.
+
+See [Configuration: Remote connections](../operations/configuration.md#remote-connections) for details and [SPARQL: Remote Fluree Federation](../query/sparql.md#remote-fluree-federation) for full query syntax.
+
 ### FROM-Driven Queries (Connection Queries)
 
 When the query body itself specifies which ledgers to target (via `"from"` in JSON-LD or `FROM` in SPARQL), use `query_from()`:

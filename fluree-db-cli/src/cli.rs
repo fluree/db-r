@@ -1,6 +1,148 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
+/// Policy enforcement flags shared by query and transaction subcommands.
+///
+/// Use these to test that policies stored in the ledger behave as configured,
+/// or to test ad-hoc policies (`--policy` / `--policy-file`) that haven't been
+/// persisted yet. Works against local and remote ledgers — see
+/// `docs/security/policy-in-queries.md` for the full reference and the
+/// remote impersonation rules.
+#[derive(Args, Debug, Clone, Default)]
+pub struct PolicyArgs {
+    /// Execute as this identity (IRI). Resolves applicable policies via
+    /// `f:policyClass` on the identity subject in the ledger.
+    #[arg(long = "as", value_name = "IRI")]
+    pub identity: Option<String>,
+
+    /// Apply policies of the given class IRI. Repeatable. Narrows the active
+    /// policy set to the intersection of the identity's policies and these
+    /// classes, or (without `--as`) applies these classes directly.
+    #[arg(long = "policy-class", value_name = "IRI")]
+    pub policy_class: Vec<String>,
+
+    /// Inline JSON-LD policy document(s) to apply for this request only.
+    /// Useful for testing rules before persisting them to the ledger.
+    /// Mutually exclusive with `--policy-file`. Pass a JSON object or array.
+    #[arg(long = "policy", value_name = "JSON", conflicts_with = "policy_file")]
+    pub policy: Option<String>,
+
+    /// Read inline JSON-LD policy from a file (alternative to `--policy`).
+    /// Same semantics — applied for this request only.
+    #[arg(long = "policy-file", value_name = "PATH", conflicts_with = "policy")]
+    pub policy_file: Option<PathBuf>,
+
+    /// Bind variables for parameterized policies (e.g. `?$dept`). Pass a JSON
+    /// object: `--policy-values '{"?$dept":"engineering"}'`. Variable keys
+    /// must start with `?$`. Mutually exclusive with `--policy-values-file`.
+    #[arg(
+        long = "policy-values",
+        value_name = "JSON",
+        conflicts_with = "policy_values_file"
+    )]
+    pub policy_values: Option<String>,
+
+    /// Read policy variable bindings from a JSON file (alternative to
+    /// `--policy-values`).
+    #[arg(
+        long = "policy-values-file",
+        value_name = "PATH",
+        conflicts_with = "policy_values"
+    )]
+    pub policy_values_file: Option<PathBuf>,
+
+    /// Allow access when no matching policy rules exist for the requested
+    /// operation. Defaults to false (deny-by-default).
+    #[arg(long = "default-allow")]
+    pub default_allow: bool,
+}
+
+impl PolicyArgs {
+    /// Returns true if the user supplied any policy flag.
+    pub fn is_set(&self) -> bool {
+        self.identity.is_some()
+            || !self.policy_class.is_empty()
+            || self.policy.is_some()
+            || self.policy_file.is_some()
+            || self.policy_values.is_some()
+            || self.policy_values_file.is_some()
+            || self.default_allow
+    }
+
+    /// Resolve `--policy` / `--policy-file` into a parsed JSON value, returning
+    /// `None` when neither is set.
+    pub fn resolve_policy(&self) -> Result<Option<serde_json::Value>, String> {
+        if let Some(s) = &self.policy {
+            return serde_json::from_str(s)
+                .map(Some)
+                .map_err(|e| format!("--policy is not valid JSON: {e}"));
+        }
+        if let Some(p) = &self.policy_file {
+            let bytes = std::fs::read(p)
+                .map_err(|e| format!("could not read --policy-file '{}': {e}", p.display()))?;
+            return serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+                format!(
+                    "--policy-file '{}' did not contain valid JSON: {e}",
+                    p.display()
+                )
+            });
+        }
+        Ok(None)
+    }
+
+    /// Resolve `--policy-values` / `--policy-values-file` into a parsed JSON
+    /// object, returning `None` when neither is set. Errors when the value is
+    /// present but not a JSON object.
+    pub fn resolve_policy_values(
+        &self,
+    ) -> Result<Option<std::collections::HashMap<String, serde_json::Value>>, String> {
+        let raw = if let Some(s) = &self.policy_values {
+            Some(
+                serde_json::from_str::<serde_json::Value>(s)
+                    .map_err(|e| format!("--policy-values is not valid JSON: {e}"))?,
+            )
+        } else if let Some(p) = &self.policy_values_file {
+            let bytes = std::fs::read(p).map_err(|e| {
+                format!("could not read --policy-values-file '{}': {e}", p.display())
+            })?;
+            Some(
+                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|e| {
+                    format!(
+                        "--policy-values-file '{}' did not contain valid JSON: {e}",
+                        p.display()
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
+        match raw {
+            None => Ok(None),
+            Some(serde_json::Value::Object(obj)) => Ok(Some(obj.into_iter().collect())),
+            Some(_) => Err(
+                "--policy-values must be a JSON object (e.g. '{\"?$dept\":\"eng\"}')".to_string(),
+            ),
+        }
+    }
+
+    /// Convert into a `QueryConnectionOptions` usable by the fluree-db-api.
+    /// Returns an error if `--policy` or `--policy-values` failed to parse.
+    pub fn to_options(&self) -> Result<fluree_db_api::QueryConnectionOptions, String> {
+        Ok(fluree_db_api::QueryConnectionOptions {
+            identity: self.identity.clone(),
+            policy_class: if self.policy_class.is_empty() {
+                None
+            } else {
+                Some(self.policy_class.clone())
+            },
+            policy: self.resolve_policy()?,
+            policy_values: self.resolve_policy_values()?,
+            default_allow: self.default_allow,
+            tracking: Default::default(),
+        })
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "fluree", about = "Fluree database CLI", version)]
@@ -179,6 +321,9 @@ pub enum Commands {
         /// Execute against a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,
+
+        #[command(flatten)]
+        policy: PolicyArgs,
     },
 
     /// Update with full WHERE/DELETE/INSERT semantics
@@ -218,6 +363,9 @@ pub enum Commands {
         /// Execute against a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,
+
+        #[command(flatten)]
+        policy: PolicyArgs,
     },
 
     /// Upsert data into a ledger (insert or update existing)
@@ -256,6 +404,9 @@ pub enum Commands {
         /// Execute against a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,
+
+        #[command(flatten)]
+        policy: PolicyArgs,
     },
 
     /// Query a ledger
@@ -315,6 +466,9 @@ pub enum Commands {
         /// Execute against a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,
+
+        #[command(flatten)]
+        policy: PolicyArgs,
     },
 
     /// Show change history for an entity

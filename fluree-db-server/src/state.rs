@@ -303,32 +303,48 @@ impl FlureeInstance {
     ) -> fluree_db_api::Result<serde_json::Value> {
         match identity {
             Some(identity_iri) => {
-                // Build policy options from identity
                 let opts = QueryConnectionOptions {
                     identity: Some(identity_iri.to_string()),
                     ..Default::default()
                 };
-
-                match self {
-                    FlureeInstance::Direct(f) => {
-                        let view = f.db_with_policy(ledger_id, &opts).await?;
-                        view.query(f.as_ref())
-                            .sparql(sparql)
-                            .execute_formatted()
-                            .await
-                    }
-                    FlureeInstance::Proxy(p) => {
-                        let view = p.db_with_policy(ledger_id, &opts).await?;
-                        view.query(p.as_ref())
-                            .sparql(sparql)
-                            .execute_formatted()
-                            .await
-                    }
-                }
+                self.query_ledger_sparql_with_opts(ledger_id, sparql, &opts)
+                    .await
             }
             None => {
                 // No identity - execute without policy
                 self.query_ledger_sparql_jsonld(ledger_id, sparql).await
+            }
+        }
+    }
+
+    /// Execute a SPARQL query with a fully-specified `QueryConnectionOptions`.
+    ///
+    /// Honors `identity`, `policy_class`, `policy` (inline), `policy_values`,
+    /// and `default_allow`. When `opts.has_any_policy_inputs()` is false, the
+    /// query runs without policy enforcement (root path).
+    pub async fn query_ledger_sparql_with_opts(
+        &self,
+        ledger_id: &str,
+        sparql: &str,
+        opts: &QueryConnectionOptions,
+    ) -> fluree_db_api::Result<serde_json::Value> {
+        if !opts.has_any_policy_inputs() {
+            return self.query_ledger_sparql_jsonld(ledger_id, sparql).await;
+        }
+        match self {
+            FlureeInstance::Direct(f) => {
+                let view = f.db_with_policy(ledger_id, opts).await?;
+                view.query(f.as_ref())
+                    .sparql(sparql)
+                    .execute_formatted()
+                    .await
+            }
+            FlureeInstance::Proxy(p) => {
+                let view = p.db_with_policy(ledger_id, opts).await?;
+                view.query(p.as_ref())
+                    .sparql(sparql)
+                    .execute_formatted()
+                    .await
             }
         }
     }

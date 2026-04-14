@@ -558,6 +558,7 @@ where
             dict_novelty: db.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
+            remote_service: self.remote_service_executor(),
             strict_bind_errors: true,
             ..Default::default()
         };
@@ -608,6 +609,7 @@ where
             dict_novelty: db.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
+            remote_service: self.remote_service_executor(),
             strict_bind_errors: true,
             ..Default::default()
         };

@@ -26,6 +26,7 @@ use crate::error::{QueryError, Result};
 use crate::execute::build_where_operators_seeded;
 use crate::ir::{ServiceEndpoint, ServicePattern};
 use crate::operator::{BoxedOperator, Operator, OperatorState};
+use crate::remote_service::{is_fluree_remote_endpoint, parse_fluree_remote_ref};
 use crate::seed::SeedOperator;
 use crate::var_registry::VarId;
 use async_trait::async_trait;
@@ -259,6 +260,83 @@ impl ServiceOperator {
         Ok(())
     }
 
+    /// Execute SERVICE against a remote Fluree instance via the RemoteServiceExecutor trait.
+    async fn execute_against_remote(
+        &mut self,
+        ctx: &ExecutionContext<'_>,
+        parent_batch: &Batch,
+        row_idx: usize,
+        connection_name: &str,
+        ledger: &str,
+    ) -> Result<()> {
+        let executor = ctx.remote_service.ok_or_else(|| {
+            QueryError::InvalidQuery(format!(
+                "No remote service executor configured. Cannot reach 'fluree:remote:{connection_name}/{ledger}'"
+            ))
+        })?;
+
+        let source_body = self.service.source_body.as_deref().ok_or_else(|| {
+            QueryError::InvalidQuery(
+                "Remote SERVICE requires SPARQL source text (not available for JSON-LD queries)"
+                    .into(),
+            )
+        })?;
+
+        // Build a complete SPARQL query from the captured body.
+        // The source_body may or may not include braces depending on whether
+        // parse_group_graph_pattern unwrapped a single-pattern group. Always
+        // wrap in braces to ensure valid SPARQL (double-braces are legal).
+        let sparql = format!("SELECT * WHERE {{ {source_body} }}");
+
+        let result = match executor
+            .execute_remote_sparql(connection_name, ledger, &sparql)
+            .await
+        {
+            Ok(r) => r,
+            Err(e) if self.service.silent => {
+                tracing::debug!(
+                    error = %e,
+                    connection = connection_name,
+                    ledger = ledger,
+                    "SERVICE SILENT: ignoring remote execution error"
+                );
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        };
+
+        // Merge each remote result row with the parent row
+        for remote_row in &result.rows {
+            let mut merged_row = Vec::with_capacity(self.schema.len());
+
+            // Copy parent bindings
+            for var in self.child.schema() {
+                let binding = parent_batch
+                    .get(row_idx, *var)
+                    .cloned()
+                    .unwrap_or(Binding::Unbound);
+                merged_row.push(binding);
+            }
+
+            // Append new variables from inner patterns
+            let parent_len = self.child.schema().len();
+            for var in self.schema.iter().skip(parent_len) {
+                // Find this var's name and look it up in the remote results
+                let var_name = ctx.vars.name(*var);
+                let stripped = var_name.strip_prefix('?').unwrap_or(var_name);
+                let binding = remote_row
+                    .get(stripped)
+                    .cloned()
+                    .unwrap_or(Binding::Unbound);
+                merged_row.push(binding);
+            }
+
+            self.result_buffer.push(merged_row);
+        }
+
+        Ok(())
+    }
+
     /// Drain buffered results into a batch
     fn drain_buffer(&mut self) -> Result<Option<Batch>> {
         if self.buffer_pos >= self.result_buffer.len() {
@@ -357,8 +435,29 @@ impl Operator for ServiceOperator {
                                     iri
                                 )));
                             }
+                        } else if is_fluree_remote_endpoint(iri) {
+                            if let Some((connection, ledger)) = parse_fluree_remote_ref(iri) {
+                                self.execute_against_remote(
+                                    ctx,
+                                    &parent_batch,
+                                    row_idx,
+                                    connection,
+                                    ledger,
+                                )
+                                .await?;
+                            } else if silent {
+                                tracing::debug!(
+                                    endpoint = %iri,
+                                    "SERVICE SILENT: malformed fluree:remote endpoint"
+                                );
+                            } else {
+                                return Err(QueryError::InvalidQuery(format!(
+                                    "Invalid fluree:remote endpoint format: '{}'. Expected 'fluree:remote:<connection>/<ledger>'",
+                                    iri
+                                )));
+                            }
                         } else {
-                            // Non-Fluree endpoint - not yet supported
+                            // Non-Fluree endpoint - not supported
                             if silent {
                                 tracing::debug!(
                                     endpoint = %iri,
@@ -366,7 +465,7 @@ impl Operator for ServiceOperator {
                                 );
                             } else {
                                 return Err(QueryError::InvalidQuery(format!(
-                                    "External SERVICE endpoints not supported. Use 'fluree:ledger:<alias>' for local ledger queries. Got: '{}'",
+                                    "External SERVICE endpoints not supported. Use 'fluree:ledger:<alias>' for local ledger queries or 'fluree:remote:<connection>/<ledger>' for remote Fluree instances. Got: '{}'",
                                     iri
                                 )));
                             }
@@ -399,6 +498,29 @@ impl Operator for ServiceOperator {
                                     } else {
                                         return Err(QueryError::InvalidQuery(format!(
                                             "Invalid fluree:ledger endpoint format: '{}'",
+                                            bound_iri
+                                        )));
+                                    }
+                                } else if is_fluree_remote_endpoint(&bound_iri) {
+                                    if let Some((connection, ledger)) =
+                                        parse_fluree_remote_ref(&bound_iri)
+                                    {
+                                        self.execute_against_remote(
+                                            ctx,
+                                            &parent_batch,
+                                            row_idx,
+                                            connection,
+                                            ledger,
+                                        )
+                                        .await?;
+                                    } else if silent {
+                                        tracing::debug!(
+                                            endpoint = %bound_iri,
+                                            "SERVICE SILENT: malformed fluree:remote endpoint"
+                                        );
+                                    } else {
+                                        return Err(QueryError::InvalidQuery(format!(
+                                            "Invalid fluree:remote endpoint format: '{}'",
                                             bound_iri
                                         )));
                                     }

@@ -610,6 +610,103 @@ Make policy filters as specific as possible for better performance.
 - Complex graph patterns
 - Multi-graph queries
 
+## Testing Policies from the CLI
+
+The `fluree` CLI supports policy-enforced queries so you can verify that the
+policies you've configured filter results as expected — without writing any
+client code.
+
+### Flags
+
+Available on `fluree query` (and on `fluree insert`, `upsert`, `update` for
+write-time enforcement):
+
+| Flag | Purpose |
+|------|---------|
+| `--as <IRI>` | Execute as this identity. Resolves `f:policyClass` on the identity subject to collect applicable policies. |
+| `--policy-class <IRI>` | Apply policies of the given class IRI. Repeatable. Narrows to the intersection with the identity's policies, or applies directly without `--as`. |
+| `--default-allow` | Allow when no matching policy exists for the operation. Defaults to false (deny-by-default). |
+
+### Workflow
+
+1. Transact your policy rules (and the identities with their `f:policyClass`
+   assignments) into the ledger, using any of the normal insert / upsert /
+   update commands.
+2. Re-run the same query as different identities to confirm results differ as
+   the policies prescribe:
+
+```bash
+# Full result set (no policy enforcement)
+fluree query 'SELECT ?name ?salary WHERE { ?p schema:name ?name ; ex:salary ?salary }'
+
+# As an HR user — should see all salaries
+fluree query --as did:key:z6MkHR... \
+  'SELECT ?name ?salary WHERE { ?p schema:name ?name ; ex:salary ?salary }'
+
+# As a regular employee — policies should hide salary field
+fluree query --as did:key:z6MkEmp... \
+  'SELECT ?name ?salary WHERE { ?p schema:name ?name ; ex:salary ?salary }'
+```
+
+Combine with `--policy-class` to scope to a specific policy set, or with
+`--default-allow` to flip the baseline for negative testing:
+
+```bash
+fluree query --as did:key:z6Mkh... --policy-class ex:ReadOnlyEngineer \
+  'SELECT ?doc WHERE { ?doc a ex:Document }'
+```
+
+### Local vs Remote
+
+The flags work in both modes:
+
+- **Local** (default, or with `--direct`): the CLI loads the ledger directly
+  and applies policy via the in-process query engine.
+- **Remote** (with `--remote <name>`, or auto-routed through a running local
+  server): the CLI sends the flags to the server as HTTP headers
+  (`fluree-identity`, `fluree-policy-class`, `fluree-default-allow`) and, for
+  JSON-LD bodies, also injects them into `opts`. Multi-value `--policy-class`
+  rides through the body opts only; SPARQL transport is single-valued via the
+  header.
+
+### Remote impersonation: how it's authorized
+
+When you run against a remote server with `--as <iri>`, the server treats the
+request as **impersonation** and gates it as follows:
+
+1. Your bearer token's identity is resolved on the target ledger.
+2. If that identity has **no** `f:policyClass` assignments
+   (the `FoundNoPolicies` outcome — i.e., your service account is unrestricted
+   on this ledger), the server honors `--as` and runs the query as the target
+   identity.
+3. If your bearer identity is itself policy-constrained
+   (`FoundWithPolicies`) or unknown to this ledger (`NotFound`), the server
+   force-overrides `--as` with your bearer identity. You see your own filtered
+   view, not the target's.
+
+Each successful impersonation is logged at `info` level on the server:
+
+```
+policy impersonation: bearer=<svc-id> target=<as-iri> ledger=<name>
+```
+
+This is the standard service-account pattern: register your CLI/app-server
+identity in the ledger with no `f:policyClass`, and it gains the right to
+delegate to any end-user identity for testing or per-request enforcement.
+Assigning a policy class to that identity revokes the delegation right with no
+config change.
+
+### Limitations
+
+- Inline policy rules (`opts.policy`) and policy variable bindings
+  (`opts.policy-values`) are not yet exposed as CLI flags — use a JSON-LD
+  query body with an `"opts"` block when you need those.
+- For SPARQL queries against a remote, only `--as` and `--policy-class` (single
+  value) and `--default-allow` are wired (via headers). Multi-value
+  `--policy-class` works on JSON-LD only.
+- Proxy-mode servers fall back to the legacy non-impersonation behavior — the
+  upstream server performs the impersonation check.
+
 ## Related Documentation
 
 - [Policy Model](policy-model.md) - Policy structure and evaluation

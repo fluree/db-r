@@ -215,6 +215,35 @@ pub async fn build_policy_context_from_opts(
     Ok(PolicyContext::new(wrapper, identity_sid))
 }
 
+/// Returns `true` iff `identity_iri` exists as a subject in the ledger but has
+/// **no** `f:policyClass` assignments — meaning no policy restrictions apply to
+/// that identity.
+///
+/// This is the predicate used to decide whether a bearer-authenticated identity
+/// may impersonate another identity via `opts.identity` for policy testing.
+/// The semantics are:
+///
+/// - `FoundNoPolicies` → `true`: the identity is known and unrestricted, so it
+///   may delegate / impersonate.
+/// - `FoundWithPolicies` → `false`: the identity is itself policy-constrained
+///   and must not be allowed to bypass its own constraints by acting as another
+///   identity.
+/// - `NotFound` → `false`: an unknown identity must not gain impersonation
+///   rights regardless of `default_allow`.
+pub async fn identity_has_no_policies(
+    snapshot: &LedgerSnapshot,
+    overlay: &dyn fluree_db_core::OverlayProvider,
+    to_t: i64,
+    identity_iri: &str,
+) -> Result<bool> {
+    match load_policies_by_identity(snapshot, overlay, to_t, identity_iri).await? {
+        IdentityLookupResult::FoundNoPolicies { .. } => Ok(true),
+        IdentityLookupResult::FoundWithPolicies { .. } | IdentityLookupResult::NotFound => {
+            Ok(false)
+        }
+    }
+}
+
 // ============================================================================
 // Identity-based policy loading
 // ============================================================================

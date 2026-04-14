@@ -1,4 +1,7 @@
-use crate::commands::insert::{print_txn_result, resolve_positional_args, warn_novelty_if_needed};
+use crate::cli::PolicyArgs;
+use crate::commands::insert::{
+    build_policy_ctx, print_txn_result, resolve_positional_args, warn_novelty_if_needed,
+};
 use crate::context::{self, LedgerMode};
 use crate::error::{CliError, CliResult};
 use crate::input;
@@ -81,6 +84,7 @@ pub async fn run(
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
     direct: bool,
+    policy: &PolicyArgs,
 ) -> CliResult<()> {
     let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
@@ -117,6 +121,7 @@ pub async fn run(
             remote_name,
             ..
         } => {
+            let client = client.with_policy(policy.clone());
             let result = match txn_format {
                 UpdateFormat::SparqlUpdate => client.update_sparql(&remote_alias, &content).await?,
                 UpdateFormat::JsonLd => {
@@ -149,13 +154,13 @@ pub async fn run(
                     message: message.map(String::from),
                     ..Default::default()
                 };
-                let result = fluree
-                    .graph(&alias)
-                    .transact()
-                    .update(&json)
-                    .commit_opts(commit_opts)
-                    .commit()
-                    .await?;
+                let policy_ctx = build_policy_ctx(&fluree, &alias, policy).await?;
+                let graph = fluree.graph(&alias);
+                let mut b = graph.transact().update(&json).commit_opts(commit_opts);
+                if let Some(ctx) = policy_ctx {
+                    b = b.policy(ctx);
+                }
+                let result = b.commit().await?;
 
                 println!(
                     "Committed t={}, {} flakes",

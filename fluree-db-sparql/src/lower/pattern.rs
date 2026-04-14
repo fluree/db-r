@@ -230,11 +230,21 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         // Lower the inner pattern
         let inner_patterns = self.lower_graph_pattern(pattern)?;
 
-        Ok(vec![Pattern::Service(ServicePattern::new(
-            silent,
-            ir_endpoint,
-            inner_patterns,
-        ))])
+        // Extract the original SPARQL text for the SERVICE body (for remote execution).
+        // The pattern span covers the inner `{ ... }` content.
+        let source_body = self.source_text.and_then(|src| {
+            let span = pattern.span();
+            src.get(span.start..span.end).map(std::sync::Arc::from)
+        });
+
+        let service = match source_body {
+            Some(body) => {
+                ServicePattern::with_source_body(silent, ir_endpoint, inner_patterns, body)
+            }
+            None => ServicePattern::new(silent, ir_endpoint, inner_patterns),
+        };
+
+        Ok(vec![Pattern::Service(service)])
     }
 }
 

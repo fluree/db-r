@@ -110,6 +110,94 @@ Exports a full local ledger (all commits, indexes, dictionaries) as a `.flpack` 
 - `GET {api_base_url}/info/*ledger`
 - `GET {api_base_url}/exists/*ledger`
 
+When the CLI is invoked with policy flags (`--as`, `--policy-class`,
+`--policy`, `--policy-file`, `--policy-values`, `--policy-values-file`,
+`--default-allow`), it carries them on every data API request via the headers
+listed below and, for JSON-LD bodies, also injects them into `opts`. To be
+CLI-compatible, your server must implement the contract in
+[Policy Enforcement Contract](#policy-enforcement-contract).
+
+## Policy Enforcement Contract
+
+CLI policy flags ride on every data API request as both HTTP headers and (for
+JSON-LD bodies) body-level `opts` fields. Servers wanting full CLI parity must
+honor both transports and apply the **root-impersonation gate** described
+below.
+
+### Headers the CLI may send
+
+| Header | CLI flag | Type | Notes |
+|---|---|---|---|
+| `fluree-identity` | `--as <iri>` | string | Identity IRI to execute as. |
+| `fluree-policy-class` | `--policy-class <iri>` | string, repeatable | Send one header per class, OR a single header with comma-separated IRIs. Both forms must accumulate into a single list. |
+| `fluree-policy` | `--policy <json>` / `--policy-file` | JSON string | Inline JSON-LD policy document(s). Reject with `400` on parse failure. |
+| `fluree-policy-values` | `--policy-values <json>` / `--policy-values-file` | JSON object string | Variable bindings for parameterized policies (keys begin with `?$`). Reject with `400` on parse failure or non-object value. |
+| `fluree-default-allow` | `--default-allow` | `"true"` (presence-truthy) | Permit access when no matching policy rules exist. |
+
+For JSON-LD requests (`POST /query/*`, `POST /insert/*`, `POST /upsert/*`,
+`POST /update/*` with `Content-Type: application/json`), the CLI **also**
+injects each field into the request body's `opts` object using the same names
+(`opts.identity`, `opts.policy-class` as a JSON array, `opts.policy`,
+`opts.policy-values` as an object, `opts.default-allow` as a bool). Servers
+should treat header values as defaults that body values override.
+
+For SPARQL requests (`Content-Type: application/sparql-query`,
+`application/sparql-update`), headers are the only transport — the SPARQL body
+has no opts block.
+
+### Required server behavior
+
+1. **Build a `PolicyContext`** from the merged opts (header defaults + body
+   overrides) and apply it to every query and transaction execution path.
+   Without policy fields the request runs under root (no enforcement). With
+   any policy field, the policies must be enforced — including for unsigned
+   bearer-only transactions, which historically bypassed enforcement.
+
+2. **Force the bearer's identity into `opts.identity`** by default (the
+   bearer is the authenticated principal; clients cannot spoof identity by
+   setting `opts.identity`). The exception is the impersonation gate below.
+
+3. **Implement the impersonation gate** for JSON-LD `opts.identity`,
+   `opts.policy-class`, `opts.policy`, and `opts.policy-values`, plus the
+   `fluree-identity` header on SPARQL requests:
+
+   - Resolve the bearer's identity in the target ledger's policy graph.
+   - If the lookup returns "subject exists with no `f:policyClass`"
+     (the `FoundNoPolicies` outcome — the bearer is unrestricted on this
+     ledger), respect the client-supplied identity / policy fields.
+   - If the lookup returns "subject has `f:policyClass` assignments"
+     (`FoundWithPolicies`) **or** "subject not found" (`NotFound`), force the
+     bearer identity into `opts.identity` and ignore the client-supplied
+     policy fields — the request runs under the bearer's own policies.
+   - `opts.default-allow` is **not** an impersonation field — it only governs
+     the absence of matching rules and should not trigger the gate's lookup.
+
+4. **Audit-log impersonations**. When the gate honors a client-supplied
+   identity, log at `info` level with the bearer, target, and ledger:
+
+   ```
+   policy impersonation: bearer=<bearer-id> target=<as-iri> ledger=<name>
+   ```
+
+5. **Set commit `author` to the impersonated identity** for write operations.
+   The original bearer is captured in the audit log; the commit's author
+   field tracks who the operation was executed *as*.
+
+6. **In proxy/forwarding mode**, defer the gate to the upstream server:
+   forward the request as-is and let the upstream resolve the gate against
+   its own ledger state.
+
+### Reference behavior
+
+The Fluree reference server implements the gate via
+`fluree_db_api::identity_has_no_policies(snapshot, overlay, t, identity_iri)`,
+which wraps the three-state `IdentityLookupResult` enum and returns `true`
+only for `FoundNoPolicies`. Source: `fluree-db-api/src/policy_builder.rs`.
+The route-level wiring (header merge, gate, force-override, audit log,
+PolicyContext construction) lives in
+`fluree-db-server/src/routes/policy_auth.rs` — useful as a concrete
+implementation reference if you're porting the contract to another server.
+
 ## Replication Auth Contract
 
 Replication endpoints are intentionally protected more strictly than data reads:

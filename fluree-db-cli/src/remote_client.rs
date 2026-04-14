@@ -17,9 +17,97 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cli::PolicyArgs;
 use fluree_db_api::{ExportCommitsResponse, PushCommitsResponse};
 use fluree_db_core::pack::PackRequest;
 use fluree_db_nameservice::NsRecord;
+
+/// Build the set of HTTP headers that carry policy enforcement options to a
+/// remote Fluree server.
+///
+/// Returns an empty vec when `policy` is unset. The server accepts:
+///
+/// - `fluree-identity` — the identity IRI to execute as
+/// - `fluree-policy-class` — repeated for each policy class IRI (the server
+///   accumulates all instances; comma-separated values within a single header
+///   are also accepted)
+/// - `fluree-default-allow` — `"true"` to allow access absent matching rules
+///
+/// JSON-LD requests additionally carry the same fields via body `opts` so
+/// future opts-only fields ride through; see [`inject_policy_into_json_opts`].
+pub(crate) fn policy_headers(policy: &PolicyArgs) -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    if let Some(id) = &policy.identity {
+        headers.push(("fluree-identity", id.clone()));
+    }
+    for pc in &policy.policy_class {
+        headers.push(("fluree-policy-class", pc.clone()));
+    }
+    // `--policy` and `--policy-values` are JSON-encoded values transported in
+    // headers as their compact JSON representation. Failures to read/parse the
+    // source flag/file are surfaced earlier (when the CLI builds opts), so a
+    // resolution error here is treated as a no-op.
+    if let Ok(Some(p)) = policy.resolve_policy() {
+        if let Ok(s) = serde_json::to_string(&p) {
+            headers.push(("fluree-policy", s));
+        }
+    }
+    if let Ok(Some(values)) = policy.resolve_policy_values() {
+        let obj: serde_json::Map<String, serde_json::Value> = values.into_iter().collect();
+        if let Ok(s) = serde_json::to_string(&serde_json::Value::Object(obj)) {
+            headers.push(("fluree-policy-values", s));
+        }
+    }
+    if policy.default_allow {
+        headers.push(("fluree-default-allow", "true".to_string()));
+    }
+    headers
+}
+
+/// Inject policy opts into a JSON-LD query/transaction body.
+///
+/// Does nothing when `policy` is unset or `body` is not a JSON object. Uses
+/// the standard `opts.identity` / `opts.policy-class` / `opts.default-allow`
+/// shape the server parses via `QueryConnectionOptions::from_json`.
+pub(crate) fn inject_policy_into_json_opts(body: &mut serde_json::Value, policy: &PolicyArgs) {
+    if !policy.is_set() {
+        return;
+    }
+    let Some(obj) = body.as_object_mut() else {
+        return;
+    };
+    let opts = obj
+        .entry("opts")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    let Some(opts_obj) = opts.as_object_mut() else {
+        return;
+    };
+    if let Some(id) = &policy.identity {
+        opts_obj.insert(
+            "identity".to_string(),
+            serde_json::Value::String(id.clone()),
+        );
+    }
+    if !policy.policy_class.is_empty() {
+        let arr = policy
+            .policy_class
+            .iter()
+            .cloned()
+            .map(serde_json::Value::String)
+            .collect();
+        opts_obj.insert("policy-class".to_string(), serde_json::Value::Array(arr));
+    }
+    if let Ok(Some(p)) = policy.resolve_policy() {
+        opts_obj.insert("policy".to_string(), p);
+    }
+    if let Ok(Some(values)) = policy.resolve_policy_values() {
+        let obj: serde_json::Map<String, serde_json::Value> = values.into_iter().collect();
+        opts_obj.insert("policy-values".to_string(), serde_json::Value::Object(obj));
+    }
+    if policy.default_allow {
+        opts_obj.insert("default-allow".to_string(), serde_json::Value::Bool(true));
+    }
+}
 
 /// Configuration for automatic token refresh on 401.
 #[derive(Clone, Debug)]
@@ -49,6 +137,10 @@ pub struct RemoteLedgerClient {
     token: Arc<Mutex<Option<String>>>,
     refresh_config: Option<Arc<Mutex<RefreshConfig>>>,
     refreshed: Arc<Mutex<Option<RefreshedTokens>>>,
+    /// Optional policy flags that are automatically injected as HTTP headers
+    /// on every request and (when the body is JSON-LD) as body-level `opts`
+    /// fields. Set via [`RemoteLedgerClient::with_policy`].
+    policy: PolicyArgs,
 }
 
 impl fmt::Debug for RemoteLedgerClient {
@@ -137,12 +229,25 @@ impl RemoteLedgerClient {
             token: Arc::new(Mutex::new(auth_token)),
             refresh_config: None,
             refreshed: Arc::new(Mutex::new(None)),
+            policy: PolicyArgs::default(),
         }
     }
 
     /// Attach refresh configuration for automatic 401 retry.
     pub fn with_refresh(mut self, config: RefreshConfig) -> Self {
         self.refresh_config = Some(Arc::new(Mutex::new(config)));
+        self
+    }
+
+    /// Attach policy flags that are automatically applied to every request.
+    ///
+    /// Policy is transported as HTTP headers (`fluree-identity`,
+    /// `fluree-policy-class`, `fluree-default-allow`) on all requests, and
+    /// additionally injected into the body-level `opts` object for JSON-LD
+    /// query/transaction requests (enabling multi-value `policy-class` and
+    /// future opts-only fields). No-op when `policy` is empty.
+    pub fn with_policy(mut self, policy: PolicyArgs) -> Self {
+        self.policy = policy;
         self
     }
 
@@ -416,8 +521,24 @@ impl RemoteLedgerClient {
     ) -> reqwest::RequestBuilder {
         let mut req = self.add_auth(self.client.request(method, url));
         req = req.header("Content-Type", content_type);
+        // Policy flags transport as HTTP headers on every request; servers read
+        // them for SPARQL (which has no body opts) and merge them into body opts
+        // for JSON-LD (with body values taking precedence).
+        for (k, v) in policy_headers(&self.policy) {
+            req = req.header(k, v);
+        }
         match body {
-            Some(RequestBody::Json(v)) => req.json(*v),
+            Some(RequestBody::Json(v)) => {
+                // For JSON-LD bodies, also inject opts so multi-value
+                // policy-class and any future opts-only fields ride through.
+                if self.policy.is_set() {
+                    let mut cloned = (*v).clone();
+                    inject_policy_into_json_opts(&mut cloned, &self.policy);
+                    req.json(&cloned)
+                } else {
+                    req.json(*v)
+                }
+            }
             Some(RequestBody::Text(s)) => req.body(s.to_string()),
             None => req,
         }

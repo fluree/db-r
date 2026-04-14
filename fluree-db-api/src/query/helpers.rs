@@ -91,7 +91,8 @@ pub(crate) fn parse_sparql_to_ir(
     }
 
     let mut vars = VarRegistry::new();
-    let parsed = fluree_db_sparql::lower_sparql(&ast, snapshot, &mut vars)?;
+    let parsed =
+        fluree_db_sparql::lower_sparql_with_source(&ast, snapshot, &mut vars, Some(sparql))?;
     Ok((vars, parsed))
 }
 

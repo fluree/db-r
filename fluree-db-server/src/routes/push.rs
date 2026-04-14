@@ -76,8 +76,8 @@ async fn push_ledger_local(
     // Force server default policy-class if configured (non-spoofable).
     if let Some(pc) = data_auth.default_policy_class.as_ref() {
         opts.policy_class = Some(vec![pc.clone()]);
-    } else if let Some(pc) = headers.policy_class.clone() {
-        opts.policy_class = Some(vec![pc]);
+    } else if !headers.policy_class.is_empty() {
+        opts.policy_class = Some(headers.policy_class.clone());
     }
 
     // Index config: server-level override if present, else default.

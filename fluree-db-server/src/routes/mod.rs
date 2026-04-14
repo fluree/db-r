@@ -10,6 +10,7 @@ mod iceberg;
 mod ledger;
 mod nameservice_refs;
 mod pack;
+mod policy_auth;
 mod push;
 mod query;
 mod show;

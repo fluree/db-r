@@ -835,6 +835,48 @@ Use structured logging for production:
 fluree-server --log-level info 2>&1 | jq .
 ```
 
+## Remote Connections
+
+Remote connections enable SPARQL `SERVICE` federation against other Fluree instances. A remote connection maps a name to a server URL and bearer token. Once registered, queries can reference any ledger on that server using `SERVICE <fluree:remote:<name>/<ledger>> { ... }`.
+
+### Rust API
+
+Register remote connections on the `FlureeBuilder`:
+
+```rust
+let fluree = FlureeBuilder::file("./data")
+    .remote_connection("acme", "https://acme-fluree.example.com", Some(token))
+    .remote_connection("partner", "https://partner.example.com", None)
+    .build()?;
+```
+
+Each call registers a named connection. The name is used in SPARQL queries:
+
+```sparql
+SERVICE <fluree:remote:acme/customers:main> { ?s ?p ?o }
+SERVICE <fluree:remote:partner/inventory:main> { ?item ex:sku ?sku }
+```
+
+### Connection Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `name` | Alias used in `fluree:remote:<name>/...` URIs |
+| `base_url` | Server URL (e.g., `https://acme-fluree.example.com`). The query path `/v1/fluree/query/{ledger}` is appended automatically. |
+| `token` | Optional bearer token for authentication. Sent as `Authorization: Bearer <token>` on every request. |
+
+The default per-request timeout is 30 seconds. Requests that exceed this produce a query error (or empty results with `SERVICE SILENT`).
+
+### Security
+
+Bearer tokens are stored in memory on the `Fluree` instance. They are never serialized to storage, included in nameservice records, or exposed through info/admin endpoints. If the token needs rotation, rebuild the `Fluree` instance with an updated token, or use `set_remote_service()` to inject a custom executor with token refresh logic.
+
+### Feature Flag
+
+The HTTP transport for remote SERVICE requires the `search-remote-client` Cargo feature (which enables `reqwest`). Without this feature, remote connections can be registered but queries against them will fail at runtime. The feature is enabled by default in the server binary.
+
+See [SPARQL: Remote Fluree Federation](../query/sparql.md#remote-fluree-federation) for query syntax and examples.
+
 ## Related Documentation
 
 - [Query Peers](query-peers.md) - Peer mode and replication

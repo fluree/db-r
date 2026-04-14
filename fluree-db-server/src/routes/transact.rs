@@ -1185,8 +1185,26 @@ async fn execute_transaction(
     // Inject header-based tracking options into body opts (header defaults, body overrides)
     inject_headers_into_txn(body, headers);
 
+    // Apply bearer identity + server-default policy-class to opts, honoring the
+    // root-identity impersonation semantic (see routes::policy_auth). After this
+    // call, body.opts.identity / policy-class reflect the effective identity
+    // used for policy enforcement.
+    let default_policy_class = state.config.data_auth().default_policy_class.clone();
+    crate::routes::policy_auth::apply_auth_identity_to_opts(
+        state,
+        ledger_id,
+        body,
+        author,
+        default_policy_class.as_deref(),
+    )
+    .await;
+
     // Extract tracking options from body (after header injection)
     let tracking = tracking_options_from_body(body);
+
+    // Parse QueryConnectionOptions from the finalized body opts. These drive
+    // PolicyContext construction below.
+    let qc_opts = fluree_db_api::QueryConnectionOptions::from_json(body).unwrap_or_default();
 
     // Create execution span
     let span =
@@ -1211,7 +1229,47 @@ async fn execute_transaction(
             }
         };
 
-        let did = author.map(String::from);
+        // Build a PolicyContext from the finalized opts if any policy inputs
+        // are present. This covers:
+        //   - unsigned bearer requests (identity now forced into opts)
+        //   - impersonation requests (opts.identity from body/header)
+        //   - explicit opts.policy / opts.policy-class on any request
+        // Requests with no policy inputs still run under root (today's behavior).
+        let policy_ctx = if qc_opts.has_any_policy_inputs() {
+            let snap = handle.snapshot().await;
+            match fluree_db_api::build_policy_context(
+                &snap.snapshot,
+                snap.novelty.as_ref(),
+                Some(snap.novelty.as_ref()),
+                snap.t,
+                &qc_opts,
+            )
+            .await
+            {
+                Ok(ctx) => Some(ctx),
+                Err(e) => {
+                    let server_error = ServerError::Api(e);
+                    set_span_error_code(&span, "error:PolicyBuildFailed");
+                    tracing::error!(error = %server_error, "failed to build policy context");
+                    return Err(server_error);
+                }
+            }
+        } else {
+            None
+        };
+
+        // Effective author: prefer the (possibly-impersonated) opts.identity
+        // so the commit records who the transaction was executed AS. The
+        // original bearer identity that authorized the request is captured in
+        // the `policy impersonation: bearer=... target=... ledger=...` audit
+        // log emitted by `apply_auth_identity_to_opts`. The two-source design
+        // is deliberate: commits should remain attributable to the policy
+        // subject responsible for the data change, while the audit trail
+        // captures the operator who performed the action.
+        let did = qc_opts
+            .identity
+            .clone()
+            .or_else(|| author.map(String::from));
 
         // Build transaction options with DID as author if credential was signed
         let txn_opts = match &did {
@@ -1243,6 +1301,9 @@ async fn execute_transaction(
         }
         if let Some(opts) = tracking {
             builder = builder.tracking(opts);
+        }
+        if let Some(ctx) = policy_ctx {
+            builder = builder.policy(ctx);
         }
 
         let correlation = index_request_correlation(
@@ -1554,12 +1615,71 @@ async fn execute_sparql_update_request(
     let cached_state = handle.snapshot().await;
     let mut ns = NamespaceRegistry::from_db(&cached_state.snapshot);
 
-    // Build transaction options (use auth-derived author)
-    let author = effective_author(credential, bearer);
-    let did = author;
-    let txn_opts = match did {
-        Some(d) => TxnOpts::default().author(d),
+    // Resolve the effective identity honoring the root-impersonation semantic.
+    // For SPARQL UPDATE, impersonation is driven by the `fluree-identity` header
+    // (there is no body-level opts block). Policy-class / policy / policy-values
+    // headers are not yet plumbed for SPARQL UPDATE.
+    let bearer_identity = effective_author(credential, bearer);
+    let effective_identity = crate::routes::policy_auth::resolve_sparql_identity(
+        state,
+        &ledger_id,
+        bearer_identity.as_deref(),
+        headers.identity.as_deref(),
+    )
+    .await;
+
+    // Build transaction options (author tracks the effective identity so the
+    // commit records who the transaction was executed as).
+    let txn_opts = match &effective_identity {
+        Some(d) => TxnOpts::default().author(d.clone()),
         None => TxnOpts::default(),
+    };
+
+    // Build PolicyContext from the resolved identity plus all header-supplied
+    // policy fields. SPARQL UPDATE has no body opts block, so headers are the
+    // only transport for `policy-class`, `policy`, `policy-values`, and
+    // `default-allow`. The impersonation gate above already constrained the
+    // identity; the additional fields here apply on top.
+    let policy_values_map = match headers.policy_values_map() {
+        Ok(v) => v,
+        Err(e) => {
+            set_span_error_code(parent_span, "error:BadRequest");
+            tracing::warn!(error = %e, "invalid fluree-policy-values header");
+            return Err(e);
+        }
+    };
+    let qc_opts = fluree_db_api::QueryConnectionOptions {
+        identity: effective_identity.clone(),
+        policy_class: if headers.policy_class.is_empty() {
+            None
+        } else {
+            Some(headers.policy_class.clone())
+        },
+        policy: headers.policy.clone(),
+        policy_values: policy_values_map,
+        default_allow: headers.default_allow,
+        ..Default::default()
+    };
+    let policy_ctx = if qc_opts.has_any_policy_inputs() {
+        match fluree_db_api::build_policy_context(
+            &cached_state.snapshot,
+            cached_state.novelty.as_ref(),
+            Some(cached_state.novelty.as_ref()),
+            cached_state.t,
+            &qc_opts,
+        )
+        .await
+        {
+            Ok(ctx) => Some(ctx),
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(parent_span, "error:PolicyBuildFailed");
+                tracing::error!(error = %server_error, "failed to build policy context for SPARQL UPDATE");
+                return Err(server_error);
+            }
+        }
+    } else {
+        None
     };
 
     // Lower SPARQL UPDATE to Txn IR
@@ -1587,13 +1707,16 @@ async fn execute_sparql_update_request(
     // If the request was signed, ALWAYS store the original signed envelope for provenance.
     if let Some(raw_txn) = raw_txn_from_credential(credential) {
         let mut commit_opts = CommitOpts::default();
-        if let Some(d) = effective_author(credential, bearer) {
-            commit_opts = commit_opts.author(d);
+        if let Some(d) = &effective_identity {
+            commit_opts = commit_opts.author(d.clone());
         }
         builder = builder.commit_opts(commit_opts.with_raw_txn(raw_txn));
     }
     if let Some(config) = &state.index_config {
         builder = builder.index_config(config.clone());
+    }
+    if let Some(ctx) = policy_ctx {
+        builder = builder.policy(ctx);
     }
 
     let correlation = index_request_correlation(

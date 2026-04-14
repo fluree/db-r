@@ -25,11 +25,16 @@ pub struct FlureeHeaders {
     /// Policy document as JSON
     pub policy: Option<JsonValue>,
 
-    /// Policy class IRI
-    pub policy_class: Option<String>,
+    /// Policy class IRIs. Multiple `fluree-policy-class` headers (or a single
+    /// header with comma-separated values) accumulate into this Vec.
+    pub policy_class: Vec<String>,
 
     /// Policy values as JSON
     pub policy_values: Option<JsonValue>,
+
+    /// Default-allow flag — when true, permit access in the absence of matching
+    /// policy rules. Delivered via the `fluree-default-allow` header.
+    pub default_allow: bool,
 
     /// Enable all metadata tracking
     pub track_meta: bool,
@@ -57,8 +62,9 @@ impl Default for FlureeHeaders {
             ledger: None,
             identity: None,
             policy: None,
-            policy_class: None,
+            policy_class: Vec::new(),
             policy_values: None,
+            default_allow: false,
             track_meta: false,
             track_fuel: false,
             track_time: false,
@@ -76,6 +82,7 @@ impl FlureeHeaders {
     pub const POLICY: &'static str = "fluree-policy";
     pub const POLICY_CLASS: &'static str = "fluree-policy-class";
     pub const POLICY_VALUES: &'static str = "fluree-policy-values";
+    pub const DEFAULT_ALLOW: &'static str = "fluree-default-allow";
     pub const TRACK_META: &'static str = "fluree-track-meta";
     pub const TRACK_FUEL: &'static str = "fluree-track-fuel";
     pub const TRACK_TIME: &'static str = "fluree-track-time";
@@ -97,8 +104,17 @@ impl FlureeHeaders {
             fluree_headers.identity = Some(val.to_string());
         }
 
-        if let Some(val) = get_header_str(headers, Self::POLICY_CLASS) {
-            fluree_headers.policy_class = Some(val.to_string());
+        // Accumulate every `fluree-policy-class` header value, splitting any
+        // single value on commas to support both `H: a, b` and repeated `H`.
+        for hv in headers.get_all(Self::POLICY_CLASS) {
+            if let Ok(s) = hv.to_str() {
+                for part in s.split(',') {
+                    let trimmed = part.trim();
+                    if !trimmed.is_empty() {
+                        fluree_headers.policy_class.push(trimmed.to_string());
+                    }
+                }
+            }
         }
 
         // JSON headers
@@ -119,6 +135,7 @@ impl FlureeHeaders {
         }
 
         // Boolean headers (presence or "true" value)
+        fluree_headers.default_allow = is_header_truthy(headers, Self::DEFAULT_ALLOW);
         fluree_headers.track_meta = is_header_truthy(headers, Self::TRACK_META);
         fluree_headers.track_fuel =
             fluree_headers.track_meta || is_header_truthy(headers, Self::TRACK_FUEL);
@@ -297,10 +314,16 @@ impl FlureeHeaders {
             opts.insert("policy".to_string(), self.policy.clone().unwrap());
         }
 
-        if self.policy_class.is_some() && !opts.contains_key("policy-class") {
+        if !self.policy_class.is_empty() && !opts.contains_key("policy-class") {
             opts.insert(
                 "policy-class".to_string(),
-                JsonValue::String(self.policy_class.clone().unwrap()),
+                JsonValue::Array(
+                    self.policy_class
+                        .iter()
+                        .cloned()
+                        .map(JsonValue::String)
+                        .collect(),
+                ),
             );
         }
 
@@ -309,6 +332,14 @@ impl FlureeHeaders {
                 "policy-values".to_string(),
                 self.policy_values.clone().unwrap(),
             );
+        }
+
+        if self.default_allow
+            && !opts.contains_key("default-allow")
+            && !opts.contains_key("default_allow")
+            && !opts.contains_key("defaultAllow")
+        {
+            opts.insert("default-allow".to_string(), JsonValue::Bool(true));
         }
 
         if let Some(max_fuel) = self.max_fuel {

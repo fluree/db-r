@@ -64,6 +64,7 @@ pub mod policy_builder;
 pub mod policy_view;
 mod query;
 mod rebase;
+pub mod remote_service;
 pub(crate) mod runtime_dicts;
 pub mod server_defaults;
 mod time_resolve;
@@ -131,6 +132,7 @@ pub use pack::{
     compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
     PackStreamResult,
 };
+pub use policy_builder::identity_has_no_policies;
 pub use policy_view::{
     build_policy_context, wrap_identity_policy_view, wrap_policy_view, wrap_policy_view_historical,
     PolicyWrappedView,
@@ -1426,6 +1428,8 @@ pub struct FlureeBuilder {
     /// enabling background indexing — useful for CLI or embedded scenarios where
     /// the process is too short-lived for a background indexer.
     novelty_thresholds: Option<IndexConfig>,
+    /// Remote Fluree connection registry for SERVICE federation.
+    remote_connections: remote_service::RemoteConnectionRegistry,
 }
 
 /// Configuration for background indexing in `FlureeBuilder`.
@@ -1443,6 +1447,29 @@ fn make_leaflet_cache(
     std::sync::Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(
         config.cache.max_mb as u64,
     ))
+}
+
+/// Build a `RemoteServiceExecutor` from the connection registry, if any connections are registered.
+fn build_remote_service(
+    registry: remote_service::RemoteConnectionRegistry,
+) -> Option<Arc<dyn fluree_db_query::remote_service::RemoteServiceExecutor>> {
+    if registry.is_empty() {
+        return None;
+    }
+    #[cfg(feature = "search-remote-client")]
+    {
+        Some(Arc::new(remote_service::HttpRemoteService::new(Arc::new(
+            registry,
+        ))))
+    }
+    #[cfg(not(feature = "search-remote-client"))]
+    {
+        tracing::warn!(
+            "Remote connections registered but 'search-remote-client' feature is not enabled. \
+             Remote SERVICE queries will fail at runtime."
+        );
+        None
+    }
 }
 
 impl FlureeBuilder {
@@ -1467,6 +1494,7 @@ impl FlureeBuilder {
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
             novelty_thresholds: None,
+            remote_connections: remote_service::RemoteConnectionRegistry::new(),
         }
     }
 
@@ -1480,6 +1508,7 @@ impl FlureeBuilder {
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
             novelty_thresholds: None,
+            remote_connections: remote_service::RemoteConnectionRegistry::new(),
         }
     }
 
@@ -1544,6 +1573,7 @@ impl FlureeBuilder {
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config: None,
             novelty_thresholds: None,
+            remote_connections: remote_service::RemoteConnectionRegistry::new(),
         }
     }
 
@@ -1722,6 +1752,7 @@ impl FlureeBuilder {
             ledger_cache_config: Some(LedgerManagerConfig::default()),
             indexing_config,
             novelty_thresholds: None,
+            remote_connections: remote_service::RemoteConnectionRegistry::new(),
         })
     }
 
@@ -1829,6 +1860,20 @@ impl FlureeBuilder {
         self
     }
 
+    /// Register a remote Fluree connection for SERVICE federation.
+    ///
+    /// The `name` is used in SPARQL queries as `SERVICE <fluree:remote:name/ledger> { ... }`.
+    pub fn remote_connection(
+        mut self,
+        name: impl Into<String>,
+        base_url: impl Into<String>,
+        token: Option<String>,
+    ) -> Self {
+        self.remote_connections
+            .register(name, remote_service::RemoteConnection::new(base_url, token));
+        self
+    }
+
     /// Build a file-backed Fluree instance
     ///
     /// Returns an error if storage_path is not set.
@@ -1856,6 +1901,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            self.remote_connections,
         ))
     }
 
@@ -1879,6 +1925,7 @@ impl FlureeBuilder {
             nameservice,
             tx::IndexingMode::Disabled,
             index_config,
+            self.remote_connections,
         )
     }
 
@@ -1974,6 +2021,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            self.remote_connections,
         ))
     }
 
@@ -1997,6 +2045,7 @@ impl FlureeBuilder {
             nameservice,
             tx::IndexingMode::Disabled,
             index_config,
+            self.remote_connections,
         )
     }
 
@@ -2021,6 +2070,7 @@ impl FlureeBuilder {
             nameservice,
             tx::IndexingMode::Disabled,
             index_config,
+            self.remote_connections,
         )
     }
 
@@ -2063,6 +2113,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            self.remote_connections,
         )
     }
 
@@ -2127,6 +2178,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            self.remote_connections,
         ))
     }
 
@@ -2206,6 +2258,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            self.remote_connections,
         ))
     }
 
@@ -2269,6 +2322,7 @@ impl FlureeBuilder {
         nameservice: N,
         indexing_mode: tx::IndexingMode,
         index_config: IndexConfig,
+        remote_connections: remote_service::RemoteConnectionRegistry,
     ) -> Fluree<N>
     where
         S: Storage + 'static,
@@ -2281,6 +2335,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            remote_connections,
         )
     }
 
@@ -2292,6 +2347,7 @@ impl FlureeBuilder {
         nameservice: N,
         indexing_mode: tx::IndexingMode,
         index_config: IndexConfig,
+        remote_connections: remote_service::RemoteConnectionRegistry,
     ) -> Fluree<N>
     where
         N: NameService + Clone + Send + Sync + 'static,
@@ -2318,6 +2374,7 @@ impl FlureeBuilder {
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager,
+            remote_service: build_remote_service(remote_connections),
         }
     }
 
@@ -2379,6 +2436,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            self.remote_connections,
         ))
     }
 
@@ -2427,6 +2485,7 @@ impl FlureeBuilder {
                 nameservice,
                 indexing_mode,
                 index_config,
+                self.remote_connections,
             ))
         }
     }
@@ -2476,6 +2535,7 @@ impl FlureeBuilder {
             nameservice,
             indexing_mode,
             index_config,
+            self.remote_connections,
         ))
     }
 
@@ -2552,6 +2612,12 @@ pub struct Fluree<N> {
     /// Loaded ledgers are cached for reuse across queries and transactions.
     /// Disabled via `FlureeBuilder::without_ledger_caching()` for one-shot use.
     ledger_manager: Option<Arc<LedgerManager<N>>>,
+    /// Remote SERVICE executor for `fluree:remote:` federation.
+    ///
+    /// Populated from `FlureeBuilder::remote_connection()`. When `Some`,
+    /// the executor is passed to `ContextConfig` and made available to
+    /// `ServiceOperator` during query execution.
+    remote_service: Option<Arc<dyn fluree_db_query::remote_service::RemoteServiceExecutor>>,
 }
 
 impl<N> Fluree<N>
@@ -2581,6 +2647,7 @@ where
             index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
+            remote_service: None,
         }
     }
 
@@ -2601,12 +2668,28 @@ where
             index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
             ledger_manager: None,
+            remote_service: None,
         }
     }
 
     /// Set the indexing mode
     pub fn set_indexing_mode(&mut self, mode: tx::IndexingMode) {
         self.indexing_mode = mode;
+    }
+
+    /// Get the remote SERVICE executor, if configured.
+    pub fn remote_service_executor(
+        &self,
+    ) -> Option<&dyn fluree_db_query::remote_service::RemoteServiceExecutor> {
+        self.remote_service.as_deref()
+    }
+
+    /// Set a custom remote SERVICE executor (for testing or advanced use).
+    pub fn set_remote_service(
+        &mut self,
+        executor: Arc<dyn fluree_db_query::remote_service::RemoteServiceExecutor>,
+    ) {
+        self.remote_service = Some(executor);
     }
 
     /// Returns the novelty backpressure thresholds for this instance.

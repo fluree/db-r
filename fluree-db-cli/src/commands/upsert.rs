@@ -1,4 +1,7 @@
-use crate::commands::insert::{print_txn_result, resolve_positional_args, warn_novelty_if_needed};
+use crate::cli::PolicyArgs;
+use crate::commands::insert::{
+    build_policy_ctx, print_txn_result, resolve_positional_args, warn_novelty_if_needed,
+};
 use crate::context::{self, LedgerMode};
 use crate::detect;
 use crate::error::CliResult;
@@ -17,6 +20,7 @@ pub async fn run(
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
     direct: bool,
+    policy: &PolicyArgs,
 ) -> CliResult<()> {
     let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
@@ -53,6 +57,7 @@ pub async fn run(
             remote_name,
             ..
         } => {
+            let client = client.with_policy(policy.clone());
             let result = match data_format {
                 detect::DataFormat::Turtle => client.upsert_turtle(&remote_alias, &content).await?,
                 detect::DataFormat::JsonLd => {
@@ -71,25 +76,27 @@ pub async fn run(
                 ..Default::default()
             };
 
+            let policy_ctx = build_policy_ctx(&fluree, &alias, policy).await?;
+            let graph = fluree.graph(&alias);
+
             let result = match data_format {
                 detect::DataFormat::Turtle => {
-                    fluree
-                        .graph(&alias)
+                    let mut b = graph
                         .transact()
                         .upsert_turtle(&content)
-                        .commit_opts(commit_opts)
-                        .commit()
-                        .await?
+                        .commit_opts(commit_opts);
+                    if let Some(ctx) = policy_ctx {
+                        b = b.policy(ctx);
+                    }
+                    b.commit().await?
                 }
                 detect::DataFormat::JsonLd => {
                     let json: serde_json::Value = serde_json::from_str(&content)?;
-                    fluree
-                        .graph(&alias)
-                        .transact()
-                        .upsert(&json)
-                        .commit_opts(commit_opts)
-                        .commit()
-                        .await?
+                    let mut b = graph.transact().upsert(&json).commit_opts(commit_opts);
+                    if let Some(ctx) = policy_ctx {
+                        b = b.policy(ctx);
+                    }
+                    b.commit().await?
                 }
             };
 

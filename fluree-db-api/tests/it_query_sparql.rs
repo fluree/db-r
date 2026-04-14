@@ -6,6 +6,7 @@ mod support;
 
 use fluree_db_api::FlureeBuilder;
 use serde_json::{json, Value as JsonValue};
+use std::sync::Arc;
 use support::{
     assert_index_defaults, genesis_ledger, normalize_rows, normalize_rows_array,
     normalize_sparql_bindings, MemoryFluree, MemoryLedger,
@@ -3577,5 +3578,133 @@ async fn sparql_service_silent_external_yields_empty() {
     assert!(
         rows.is_empty(),
         "SERVICE SILENT with external endpoint should yield empty results, got: {jsonld:#}"
+    );
+}
+
+// ── Remote SERVICE integration tests ───────────────────────────────
+
+#[tokio::test]
+async fn sparql_service_remote_returns_mock_data() {
+    assert_index_defaults();
+    let mut fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "people:main").await;
+
+    // Set up a mock remote executor with canned response
+    let mock = fluree_db_api::remote_service::MockRemoteService::new();
+    mock.register_response(
+        "acme",
+        "customers:main",
+        json!({
+            "head": {"vars": ["name", "email"]},
+            "results": {"bindings": [
+                {
+                    "name": {"type": "literal", "value": "Alice"},
+                    "email": {"type": "literal", "value": "alice@example.com"}
+                },
+                {
+                    "name": {"type": "literal", "value": "Bob"},
+                    "email": {"type": "literal", "value": "bob@example.com"}
+                }
+            ]}
+        }),
+    );
+    fluree.set_remote_service(Arc::new(mock));
+
+    let query = r#"
+        SELECT ?name ?email
+        WHERE {
+          SERVICE <fluree:remote:acme/customers:main> {
+            ?s <http://example.org/name> ?name .
+            ?s <http://example.org/email> ?email .
+          }
+        }
+        ORDER BY ?name
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("Remote SERVICE should succeed with mock");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(
+        jsonld,
+        json!([["Alice", "alice@example.com"], ["Bob", "bob@example.com"]]),
+        "Remote SERVICE should return mock data.\nGot: {jsonld:#}"
+    );
+}
+
+#[tokio::test]
+async fn sparql_service_remote_unknown_connection_errors() {
+    assert_index_defaults();
+    let mut fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "people:main").await;
+
+    // Set up mock but don't register "nonexistent" connection
+    let mock = fluree_db_api::remote_service::MockRemoteService::new();
+    fluree.set_remote_service(Arc::new(mock));
+
+    let query = r#"
+        SELECT * WHERE {
+          SERVICE <fluree:remote:nonexistent/db:main> {
+            ?s ?p ?o .
+          }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query).await;
+    assert!(result.is_err(), "Unknown remote connection should error");
+}
+
+#[tokio::test]
+async fn sparql_service_remote_silent_swallows_error() {
+    assert_index_defaults();
+    let mut fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "people:main").await;
+
+    // Set up mock but don't register the endpoint
+    let mock = fluree_db_api::remote_service::MockRemoteService::new();
+    fluree.set_remote_service(Arc::new(mock));
+
+    let query = r#"
+        SELECT ?s ?p ?o
+        WHERE {
+          SERVICE SILENT <fluree:remote:missing/db:main> {
+            ?s ?p ?o .
+          }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("SERVICE SILENT should not error");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows = jsonld.as_array().expect("should be array");
+    assert!(
+        rows.is_empty(),
+        "SERVICE SILENT with failed remote should yield empty results, got: {jsonld:#}"
+    );
+}
+
+#[tokio::test]
+async fn sparql_service_remote_no_executor_errors() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "people:main").await;
+
+    // No remote executor set
+    let query = r#"
+        SELECT * WHERE {
+          SERVICE <fluree:remote:acme/db:main> { ?s ?p ?o }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query).await;
+    assert!(
+        result.is_err(),
+        "Remote SERVICE without executor should error"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("No remote service executor configured"),
+        "Error should mention missing executor, got: {err}"
     );
 }

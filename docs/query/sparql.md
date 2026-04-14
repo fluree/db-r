@@ -711,9 +711,88 @@ WHERE {
 - Results are joined with the outer query on shared variables
 - SERVICE patterns are executed as correlated subqueries (like EXISTS)
 
+### Remote Fluree Federation
+
+SERVICE supports querying ledgers on **remote Fluree instances** using the `fluree:remote:` scheme. This enables cross-server federation — a single SPARQL query can join data from local ledgers with data from ledgers on other Fluree servers.
+
+#### Remote Endpoint Format
+
+| Format | Description |
+|--------|-------------|
+| `fluree:remote:<connection>/<ledger>` | Query a ledger on a registered remote server |
+
+Where:
+- `<connection>` is a named remote connection registered at build time (maps to a server URL + bearer token)
+- `<ledger>` is the ledger ID on the remote server (e.g., `customers:main`, `acme/people:main`)
+
+#### Example: Cross-Server Join
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?localName ?remoteEmail
+WHERE {
+  ?person ex:name ?localName .
+  SERVICE <fluree:remote:acme/customers:main> {
+    ?person ex:email ?remoteEmail .
+  }
+}
+```
+
+This queries `?person ex:name` from the local ledger and joins with `?person ex:email` from the `customers:main` ledger on the remote server named `acme`.
+
+#### Multiple Ledgers on the Same Remote Server
+
+A single remote connection gives access to any ledger the bearer token is authorized for:
+
+```sparql
+PREFIX ex: <http://example.org/ns/>
+
+SELECT ?customer ?orderId ?productName
+WHERE {
+  SERVICE <fluree:remote:acme/customers:main> {
+    ?customer ex:name ?name .
+    ?customer ex:id ?customerId .
+  }
+  SERVICE <fluree:remote:acme/orders:main> {
+    ?order ex:customerId ?customerId .
+    ?order ex:orderId ?orderId .
+    ?order ex:product ?product .
+  }
+  SERVICE <fluree:remote:acme/products:main> {
+    ?product ex:name ?productName .
+  }
+}
+```
+
+#### SILENT with Remote Endpoints
+
+`SERVICE SILENT` works with remote endpoints. If the remote server is unreachable, the connection is not registered, or the bearer token is rejected, the SERVICE block returns empty results instead of failing the query:
+
+```sparql
+SERVICE SILENT <fluree:remote:partner/inventory:main> {
+  ?item ex:sku ?sku .
+}
+```
+
+#### Registering Remote Connections
+
+Remote connections are registered at connection build time via the Rust API or server configuration. See [Configuration: Remote connections](../operations/configuration.md#remote-connections) and [Rust API: Remote federation](../getting-started/rust-api.md#remote-federation) for setup details.
+
+#### Datatype Handling
+
+Remote query results preserve their original datatypes. Values returned from a remote server are parsed into the same rich type system used for local data — `xsd:dateTime`, `xsd:date`, `xsd:decimal`, `xsd:integer`, etc. are all stored with their proper typed representations. Custom datatypes (e.g., `http://example.org/myType`) are also preserved: the value is kept as a string with the original datatype IRI retained, so round-tripping and downstream FILTER comparisons on shared custom types work correctly.
+
+#### Limitations (v1)
+
+- **Uncorrelated execution only.** The SERVICE body is sent to the remote server as a standalone query. Parent-row bindings are not injected as VALUES (bound-join). This means a SERVICE block that references variables bound in the outer query will not push those constraints to the remote server — the remote returns all matching rows, and the join happens locally.
+- **SPARQL queries only.** Remote SERVICE is available in SPARQL queries. JSON-LD queries do not currently support the `fluree:remote:` scheme.
+- **No query cancellation propagation.** If the local query is cancelled, in-flight remote HTTP requests are not aborted.
+- **Policy is local only.** The remote server enforces its own policy based on the bearer token. The local server's policy engine does not filter rows returned from a remote SERVICE.
+
 ### External SPARQL Endpoints
 
-Federated queries to external SPARQL endpoints are not yet supported. Only local Fluree ledgers using the `fluree:ledger:` scheme are currently available.
+Federated queries to non-Fluree SPARQL endpoints (e.g., Wikidata, DBpedia) are not yet supported. Only the `fluree:ledger:` (local) and `fluree:remote:` (remote Fluree) schemes are currently available.
 
 ## Time Travel
 

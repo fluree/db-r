@@ -39,7 +39,7 @@ pub enum LedgerMode {
     },
     /// Remote-only tracked ledger via HTTP.
     Tracked {
-        client: RemoteLedgerClient,
+        client: Box<RemoteLedgerClient>,
         /// The alias on the remote server.
         remote_alias: String,
         /// The local alias the user used.
@@ -169,7 +169,7 @@ async fn try_compound_remote_syntax(
 
     let client = build_client_from_auth(&base_url, &remote.auth);
     Ok(Some(LedgerMode::Tracked {
-        client,
+        client: Box::new(client),
         remote_alias: ledger_alias.to_string(),
         local_alias: alias.to_string(),
         remote_name: remote_name.to_string(),
@@ -206,7 +206,7 @@ async fn build_tracked_mode(
 
     let client = build_client_from_auth(&base_url, &remote.auth);
     Ok(LedgerMode::Tracked {
-        client,
+        client: Box::new(client),
         remote_alias: tracked.remote_alias.clone(),
         local_alias: local_alias.to_string(),
         remote_name: tracked.remote.clone(),
@@ -239,7 +239,7 @@ pub async fn build_remote_mode(
 
     let client = build_client_from_auth(&base_url, &remote.auth);
     Ok(LedgerMode::Tracked {
-        client,
+        client: Box::new(client),
         remote_alias: ledger_alias.to_string(),
         local_alias: ledger_alias.to_string(),
         remote_name: remote_name_str.to_string(),
@@ -456,7 +456,7 @@ pub fn try_server_route(mode: LedgerMode, dirs: &FlureeDir) -> LedgerMode {
     );
 
     LedgerMode::Tracked {
-        client,
+        client: Box::new(client),
         remote_alias: alias.clone(),
         local_alias: alias,
         remote_name: LOCAL_SERVER_REMOTE.to_string(),

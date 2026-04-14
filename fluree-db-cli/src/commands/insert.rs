@@ -1,6 +1,7 @@
+use crate::cli::PolicyArgs;
 use crate::context::{self, LedgerMode};
 use crate::detect;
-use crate::error::CliResult;
+use crate::error::{CliError, CliResult};
 use crate::input;
 use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::CommitOpts;
@@ -74,6 +75,7 @@ pub async fn run(
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
     direct: bool,
+    policy: &PolicyArgs,
 ) -> CliResult<()> {
     let (explicit_ledger, positional_inline, positional_file) = resolve_positional_args(args)?;
 
@@ -110,6 +112,7 @@ pub async fn run(
             remote_name,
             ..
         } => {
+            let client = client.with_policy(policy.clone());
             let result = match data_format {
                 detect::DataFormat::Turtle => client.insert_turtle(&remote_alias, &content).await?,
                 detect::DataFormat::JsonLd => {
@@ -129,25 +132,27 @@ pub async fn run(
                 ..Default::default()
             };
 
+            let policy_ctx = build_policy_ctx(&fluree, &alias, policy).await?;
+            let graph = fluree.graph(&alias);
+
             let result = match data_format {
                 detect::DataFormat::Turtle => {
-                    fluree
-                        .graph(&alias)
+                    let mut b = graph
                         .transact()
                         .insert_turtle(&content)
-                        .commit_opts(commit_opts)
-                        .commit()
-                        .await?
+                        .commit_opts(commit_opts);
+                    if let Some(ctx) = policy_ctx {
+                        b = b.policy(ctx);
+                    }
+                    b.commit().await?
                 }
                 detect::DataFormat::JsonLd => {
                     let json: serde_json::Value = serde_json::from_str(&content)?;
-                    fluree
-                        .graph(&alias)
-                        .transact()
-                        .insert(&json)
-                        .commit_opts(commit_opts)
-                        .commit()
-                        .await?
+                    let mut b = graph.transact().insert(&json).commit_opts(commit_opts);
+                    if let Some(ctx) = policy_ctx {
+                        b = b.policy(ctx);
+                    }
+                    b.commit().await?
                 }
             };
 
@@ -160,6 +165,32 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// Build a `PolicyContext` from `PolicyArgs` against a freshly-loaded ledger state.
+/// Returns `None` when no policy flags are set.
+pub async fn build_policy_ctx<N>(
+    fluree: &fluree_db_api::Fluree<N>,
+    alias: &str,
+    policy: &PolicyArgs,
+) -> CliResult<Option<fluree_db_api::PolicyContext>>
+where
+    N: fluree_db_api::NameService + Clone + Send + Sync + 'static,
+{
+    if !policy.is_set() {
+        return Ok(None);
+    }
+    let ledger = fluree.ledger(alias).await?;
+    let opts = policy.to_options().map_err(CliError::Usage)?;
+    let ctx = fluree_db_api::build_policy_context(
+        &ledger.snapshot,
+        ledger.novelty.as_ref(),
+        Some(ledger.novelty.as_ref()),
+        ledger.t(),
+        &opts,
+    )
+    .await?;
+    Ok(Some(ctx))
 }
 
 /// Print transaction result from remote server JSON response.

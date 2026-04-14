@@ -8,6 +8,7 @@ use crate::dataset::{ActiveGraph, ActiveGraphs, DataSet};
 use crate::error::QueryError;
 use crate::policy::QueryPolicyEnforcer;
 use crate::r2rml::{R2rmlProvider, R2rmlTableProvider};
+use crate::remote_service::RemoteServiceExecutor;
 use crate::var_registry::VarRegistry;
 use crate::vector::VectorIndexProvider;
 use fluree_db_binary_index::{BinaryGraphView, BinaryIndexStore, FulltextArena};
@@ -109,6 +110,12 @@ pub struct ExecutionContext<'a> {
     /// arena-based BM25 scoring with corpus-wide IDF and avgdl stats.
     /// When absent, falls back to per-document TF-saturation scoring.
     pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Optional remote SERVICE executor for `fluree:remote:` endpoints.
+    ///
+    /// When present, `ServiceOperator` can execute SPARQL queries against
+    /// remote Fluree instances via HTTP. Populated from connection-level
+    /// remote endpoint registration.
+    pub remote_service: Option<&'a dyn RemoteServiceExecutor>,
     /// Set of ledger IDs that are backed by R2RML graph sources.
     ///
     /// Precomputed at context setup. When a scan operator encounters a graph
@@ -159,6 +166,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
@@ -204,6 +212,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
+            remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: db.eager,
@@ -253,6 +262,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
+            remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: db.eager,
@@ -291,6 +301,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
@@ -334,6 +345,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
@@ -373,6 +385,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
@@ -433,6 +446,12 @@ impl<'a> ExecutionContext<'a> {
         providers: &'a HashMap<(GraphId, u32), Arc<FulltextArena>>,
     ) -> Self {
         self.fulltext_providers = Some(providers);
+        self
+    }
+
+    /// Attach a remote SERVICE executor to this context.
+    pub fn with_remote_service(mut self, executor: &'a dyn RemoteServiceExecutor) -> Self {
+        self.remote_service = Some(executor);
         self
     }
 
@@ -735,6 +754,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            remote_service: self.remote_service,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger,
             eager_materialization: self.eager_materialization,
@@ -783,6 +803,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            remote_service: self.remote_service,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
             eager_materialization: self.eager_materialization,
@@ -822,6 +843,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            remote_service: self.remote_service,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
             eager_materialization: self.eager_materialization,

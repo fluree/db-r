@@ -1175,6 +1175,13 @@ pub struct ServicePattern {
     pub endpoint: ServiceEndpoint,
     /// The patterns to execute at the service
     pub patterns: Vec<Pattern>,
+    /// Original SPARQL text for the SERVICE body (for remote execution).
+    ///
+    /// Populated during SPARQL lowering by extracting the source text between
+    /// the braces of the SERVICE block. `None` for JSON-LD originated queries.
+    /// Used by `ServiceOperator` to send the body verbatim to remote endpoints
+    /// without needing an IR-to-SPARQL serializer.
+    pub source_body: Option<std::sync::Arc<str>>,
 }
 
 impl ServicePattern {
@@ -1184,6 +1191,22 @@ impl ServicePattern {
             silent,
             endpoint,
             patterns,
+            source_body: None,
+        }
+    }
+
+    /// Create a new SERVICE pattern with captured source body text
+    pub fn with_source_body(
+        silent: bool,
+        endpoint: ServiceEndpoint,
+        patterns: Vec<Pattern>,
+        source_body: std::sync::Arc<str>,
+    ) -> Self {
+        Self {
+            silent,
+            endpoint,
+            patterns,
+            source_body: Some(source_body),
         }
     }
 

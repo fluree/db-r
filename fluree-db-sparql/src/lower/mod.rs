@@ -89,12 +89,25 @@ pub fn lower_sparql<E: IriEncoder>(
     encoder: &E,
     vars: &mut VarRegistry,
 ) -> Result<ParsedQuery> {
+    lower_sparql_with_source(ast, encoder, vars, None)
+}
+
+/// Lower a SPARQL AST to a ParsedQuery, with optional source text for SERVICE body capture.
+///
+/// When `source_text` is provided, SERVICE patterns will capture the original SPARQL
+/// text for their body, enabling remote execution without an IR-to-SPARQL serializer.
+pub fn lower_sparql_with_source<E: IriEncoder>(
+    ast: &SparqlAst,
+    encoder: &E,
+    vars: &mut VarRegistry,
+    source_text: Option<&str>,
+) -> Result<ParsedQuery> {
     let span = tracing::debug_span!("sparql_lower");
     let _guard = span.enter();
 
     tracing::debug!("lowering SPARQL AST to query algebra");
 
-    let mut ctx = LoweringContext::new(ast, encoder, vars);
+    let mut ctx = LoweringContext::new(ast, encoder, vars, source_text);
     let result = ctx.lower();
 
     match &result {
@@ -136,10 +149,17 @@ struct LoweringContext<'a, E> {
     agg_counter: u32,
     /// Monotonic counter for generating intermediate property-path join variables (`?__pp0`, `?__pp1`, …).
     pp_counter: u32,
+    /// Original SPARQL source text (for extracting SERVICE body text).
+    source_text: Option<&'a str>,
 }
 
 impl<'a, E: IriEncoder> LoweringContext<'a, E> {
-    fn new(ast: &'a SparqlAst, encoder: &'a E, vars: &'a mut VarRegistry) -> Self {
+    fn new(
+        ast: &'a SparqlAst,
+        encoder: &'a E,
+        vars: &'a mut VarRegistry,
+        source_text: Option<&'a str>,
+    ) -> Self {
         // Build prefix map from prologue
         let mut prefixes = HashMap::new();
         for decl in &ast.prologue.prefixes {
@@ -159,6 +179,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             agg_expr_binds: HashMap::new(),
             agg_counter: 0,
             pp_counter: 0,
+            source_text,
         }
     }
 

@@ -488,6 +488,8 @@ pub struct ContextConfig<'a, 'b> {
     /// Fulltext BoW arenas for `fulltext()` BM25 scoring.
     /// Keys are `(g_id, p_id)` pairs.
     pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Remote SERVICE executor for `fluree:remote:` endpoints.
+    pub remote_service: Option<&'b dyn crate::remote_service::RemoteServiceExecutor>,
 }
 
 /// Parameters for query execution with dataset, policy, and search providers.
@@ -611,6 +613,9 @@ pub async fn execute_prepared<'a, 'b>(
     }
     if let Some(providers) = config.fulltext_providers {
         ctx = ctx.with_fulltext_providers(providers);
+    }
+    if let Some(executor) = config.remote_service {
+        ctx = ctx.with_remote_service(executor);
     }
 
     // Precompute which graphs in the dataset are R2RML-backed.

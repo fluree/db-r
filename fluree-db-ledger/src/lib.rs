@@ -213,6 +213,20 @@ impl LedgerState {
             ),
         };
 
+        // Re-stamp canonical ledger_id from the nameservice record.
+        //
+        // The index root bytes can carry the *source* ledger_id when the index
+        // was copied into a new namespace — this happens for branches
+        // (create_branch copies the source's index into the branch's namespace)
+        // and for pack import/clone into a differently-named destination. If
+        // we leave `snapshot.ledger_id` as-is, every subsequent nameservice
+        // lookup via `LedgerState::ledger_id()` would target the source's
+        // record instead of this ledger's, causing spurious CommitConflict
+        // errors on the first write after branching.
+        if snapshot.ledger_id != record.ledger_id {
+            snapshot.ledger_id = record.ledger_id.clone();
+        }
+
         // Load novelty from commits since index_t
         let head_commit_id = match &record.commit_head_id {
             Some(head_cid) if record.commit_t > snapshot.t => {

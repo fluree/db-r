@@ -1,3 +1,4 @@
+use crate::cli::PolicyArgs;
 use crate::commands::insert::resolve_positional_args;
 use crate::context::{self, LedgerMode};
 use crate::detect;
@@ -100,6 +101,7 @@ pub async fn run(
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
     direct: bool,
+    policy: &PolicyArgs,
 ) -> CliResult<()> {
     const BENCH_ROWS: usize = 5;
     const DEFAULT_TABLE_PREVIEW_ROWS: usize = 200;
@@ -174,6 +176,9 @@ pub async fn run(
             remote_name,
             ..
         } => {
+            // Attach policy flags to the remote client so headers + body opts
+            // ride through on every request (see RemoteLedgerClient::with_policy).
+            let client = client.with_policy(policy.clone());
             // Delimited fast path: for SPARQL + TSV/CSV, request the format directly
             // from the server and stream the raw bytes to stdout (no JSON round-trip).
             if matches!(output_format, OutputFormatKind::Tsv | OutputFormatKind::Csv) {
@@ -392,6 +397,13 @@ pub async fn run(
                     fluree.db_at_with_default_context(&alias, spec).await?
                 }
                 None => fluree.db_with_default_context(&alias).await?,
+            };
+
+            let view = if policy.is_set() {
+                let opts = policy.to_options().map_err(CliError::Usage)?;
+                fluree.wrap_policy(view, &opts, None).await?
+            } else {
+                view
             };
 
             if explain {

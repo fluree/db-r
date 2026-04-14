@@ -643,3 +643,613 @@ async fn known_identity_no_policy_class_default_allow_true_allows_all() {
         names
     );
 }
+
+// ── Root-bearer impersonation tests ──────────────────────────────────────────
+//
+// These exercise the "service-account impersonation" pattern: a bearer
+// identity that has no `f:policyClass` on the target ledger may delegate to a
+// body- or header-supplied target identity for policy testing. The check is
+// performed via `fluree_db_api::identity_has_no_policies` — only the
+// `FoundNoPolicies` outcome enables impersonation.
+
+/// Insert a registered identity subject with no `f:policyClass` so it qualifies
+/// as a root-equivalent (FoundNoPolicies) identity for impersonation.
+async fn register_root_identity(app: &axum::Router, ledger: &str, identity_iri: &str) {
+    let tx = serde_json::json!({
+        "@context": { "ex": "http://example.org/" },
+        "insert": { "@id": identity_iri, "ex:role": "service-account" }
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/fluree/insert/{}", ledger))
+                .header("content-type", "application/json")
+                .body(Body::from(tx.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "insert root identity {}",
+        identity_iri
+    );
+}
+
+/// Query as `bearer_identity`, requesting impersonation as `target_identity`
+/// via body `opts.identity`. Server should honor when bearer is root.
+async fn query_docs_as(
+    app: axum::Router,
+    ledger: &str,
+    bearer_token: &str,
+    target_identity: &str,
+) -> (StatusCode, JsonValue) {
+    let body = serde_json::json!({
+        "@context": {
+            "ex": "http://example.org/",
+            "schema": "http://schema.org/"
+        },
+        "opts": { "identity": target_identity },
+        "select": ["?name", "?class"],
+        "where": [
+            {"@id": "?doc", "@type": "ex:Document"},
+            {"@id": "?doc", "schema:name": "?name"},
+            {"@id": "?doc", "ex:classification": "?class"}
+        ]
+    });
+
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/fluree/query/{}", ledger))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {}", bearer_token));
+
+    let resp = app
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+
+    json_body(resp).await
+}
+
+/// A root bearer (no f:policyClass) can impersonate the employee identity and
+/// receives the employee's filtered view (public + internal docs only).
+#[tokio::test]
+async fn root_bearer_can_impersonate_employee_via_body_opts() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "imp1:main").await;
+    register_root_identity(&app, "imp1:main", "http://example.org/svc-bearer").await;
+
+    let signing_key = SigningKey::from_bytes(&[10u8; 32]);
+    let token = identity_token(&signing_key, "http://example.org/svc-bearer", "imp1:main");
+
+    let (status, json) =
+        query_docs_as(app, "imp1:main", &token, "http://example.org/employee-user").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = names_from_results(&json);
+    assert_eq!(
+        names.len(),
+        2,
+        "impersonating employee should see exactly 2 docs; got: {:?}",
+        names
+    );
+    assert!(names.contains(&"Public Post"));
+    assert!(names.contains(&"Internal Memo"));
+    assert!(!names.contains(&"Executive Salaries"));
+}
+
+/// A restricted bearer (employee) attempting impersonation has the
+/// `opts.identity` force-overridden by the server back to its own bearer
+/// identity — it sees its own filtered view, NOT the target's.
+#[tokio::test]
+async fn restricted_bearer_cannot_impersonate_manager() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "imp2:main").await;
+
+    let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+    let token = identity_token(
+        &signing_key,
+        "http://example.org/employee-user",
+        "imp2:main",
+    );
+
+    // Employee tries to impersonate manager — should be force-overridden.
+    let (status, json) =
+        query_docs_as(app, "imp2:main", &token, "http://example.org/manager-user").await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = names_from_results(&json);
+    assert_eq!(
+        names.len(),
+        2,
+        "restricted bearer should see employee view (2 docs), not manager view (3); got: {:?}",
+        names
+    );
+    assert!(!names.contains(&"Executive Salaries"));
+}
+
+/// Root bearer impersonates via the `fluree-identity` HTTP header on a SPARQL
+/// query; result set matches the impersonated identity's policy.
+#[tokio::test]
+async fn root_bearer_can_impersonate_via_sparql_header() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "imp3:main").await;
+    register_root_identity(&app, "imp3:main", "http://example.org/svc-bearer-sparql").await;
+
+    let signing_key = SigningKey::from_bytes(&[12u8; 32]);
+    let token = identity_token(
+        &signing_key,
+        "http://example.org/svc-bearer-sparql",
+        "imp3:main",
+    );
+
+    let sparql = "PREFIX ex: <http://example.org/> \
+                  PREFIX schema: <http://schema.org/> \
+                  SELECT ?name WHERE { \
+                    ?doc a ex:Document ; schema:name ?name . \
+                  }";
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/imp3:main")
+        .header("content-type", "application/sparql-query")
+        .header("authorization", format!("Bearer {}", token))
+        .header("fluree-identity", "http://example.org/public-user");
+
+    let resp = app
+        .oneshot(req.body(Body::from(sparql)).unwrap())
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // SPARQL results bindings format: {"results": {"bindings": [{"name": {"value": "..."}}]}}
+    let bindings = json
+        .pointer("/results/bindings")
+        .and_then(|v| v.as_array())
+        .expect("expected SPARQL results.bindings array");
+    let names: Vec<&str> = bindings
+        .iter()
+        .filter_map(|b| b.pointer("/name/value").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        names.len(),
+        1,
+        "impersonated public-user should see 1 doc via SPARQL; got: {:?}",
+        names
+    );
+    assert_eq!(names[0], "Public Post");
+}
+
+/// Restricted bearer attempting SPARQL impersonation via header is force-overridden.
+#[tokio::test]
+async fn restricted_bearer_cannot_impersonate_via_sparql_header() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "imp4:main").await;
+
+    let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+    let token = identity_token(
+        &signing_key,
+        "http://example.org/employee-user",
+        "imp4:main",
+    );
+
+    let sparql = "PREFIX ex: <http://example.org/> \
+                  PREFIX schema: <http://schema.org/> \
+                  SELECT ?name WHERE { \
+                    ?doc a ex:Document ; schema:name ?name . \
+                  }";
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/imp4:main")
+        .header("content-type", "application/sparql-query")
+        .header("authorization", format!("Bearer {}", token))
+        .header("fluree-identity", "http://example.org/manager-user");
+
+    let resp = app
+        .oneshot(req.body(Body::from(sparql)).unwrap())
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let bindings = json
+        .pointer("/results/bindings")
+        .and_then(|v| v.as_array())
+        .expect("expected SPARQL results.bindings array");
+    let names: Vec<&str> = bindings
+        .iter()
+        .filter_map(|b| b.pointer("/name/value").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        names.len(),
+        2,
+        "restricted SPARQL bearer should see employee view (2), not manager (3); got: {:?}",
+        names
+    );
+    assert!(!names.contains(&"Executive Salaries"));
+}
+
+// ── Inline policy and policy-values tests ────────────────────────────────────
+//
+// These exercise the ad-hoc policy CLI flags (`--policy` / `--policy-file` and
+// `--policy-values` / `--policy-values-file`) via their on-the-wire forms:
+// body `opts.policy` / `opts.policy-values` for JSON-LD, and
+// `fluree-policy` / `fluree-policy-values` headers for SPARQL. These are the
+// "test policies before persisting them" path.
+
+/// Helper: extract names from SPARQL results bindings.
+fn sparql_names(json: &JsonValue) -> Vec<&str> {
+    json.pointer("/results/bindings")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|b| b.pointer("/name/value").and_then(|v| v.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Helper: extract names from a JSON-LD select result. Single-column selects
+/// return a flat string array; multi-column selects return arrays of arrays.
+/// This handles both shapes.
+fn jsonld_select_names(json: &JsonValue) -> Vec<&str> {
+    let arr = json.as_array().expect("results should be an array");
+    arr.iter()
+        .filter_map(|row| match row {
+            JsonValue::String(s) => Some(s.as_str()),
+            JsonValue::Array(cols) => cols.first().and_then(|v| v.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Helper: build a root bearer token (identity has no f:policyClass on the
+/// ledger, so it qualifies for the impersonation gate when needed).
+async fn root_bearer(app: &axum::Router, ledger: &str, key_byte: u8, identity: &str) -> String {
+    register_root_identity(app, ledger, identity).await;
+    let signing_key = SigningKey::from_bytes(&[key_byte; 32]);
+    identity_token(&signing_key, identity, ledger)
+}
+
+/// Inline JSON-LD policy supplied via `opts.policy` filters results to public
+/// documents only — verifies the `--policy` flag's body-opts transport.
+#[tokio::test]
+async fn inline_policy_via_body_opts_filters_to_public() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "inline1:main").await;
+    let token = root_bearer(&app, "inline1:main", 20, "http://example.org/inline-svc").await;
+
+    // Inline policy: only documents with classification = "public" are visible.
+    let inline_policy = serde_json::json!([
+        {
+            "@id": "ex:adhocPublicOnly",
+            "@type": "f:AccessPolicy",
+            "f:action": [{"@id": "f:view"}],
+            "f:query": {
+                "@type": "@json",
+                "@value": {
+                    "@context": {"ex": "http://example.org/"},
+                    "where": [{"@id": "?$this", "ex:classification": "public"}]
+                }
+            }
+        }
+    ]);
+
+    let body = serde_json::json!({
+        "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+        "opts": { "policy": inline_policy, "default-allow": false },
+        "select": ["?name"],
+        "where": [
+            {"@id": "?doc", "@type": "ex:Document"},
+            {"@id": "?doc", "schema:name": "?name"}
+        ]
+    });
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/inline1:main")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {}", token));
+
+    let resp = app
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = jsonld_select_names(&json);
+    assert_eq!(
+        names.len(),
+        1,
+        "inline policy should restrict to 1 public doc; got: {:?}",
+        names
+    );
+    assert_eq!(names[0], "Public Post");
+}
+
+/// Inline policy supplied via the `fluree-policy` header on a SPARQL query —
+/// verifies the `--policy` flag's header transport for SPARQL.
+///
+/// Unauthenticated request: the policy_builder uses identity > policy_class >
+/// policy as a priority chain (mutually exclusive), so to exercise the inline
+/// policy path the test omits the bearer token. `DataAuthMode::Optional` in
+/// the test config allows this.
+#[tokio::test]
+async fn inline_policy_via_header_filters_sparql() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "inline2:main").await;
+
+    let inline_policy = serde_json::json!([
+        {
+            "@id": "ex:adhocInternalOnly",
+            "@type": "f:AccessPolicy",
+            "f:action": [{"@id": "f:view"}],
+            "f:query": {
+                "@type": "@json",
+                "@value": {
+                    "@context": {"ex": "http://example.org/"},
+                    "where": [{"@id": "?$this", "ex:classification": "internal"}]
+                }
+            }
+        }
+    ]);
+
+    let sparql = "PREFIX ex: <http://example.org/> \
+                  PREFIX schema: <http://schema.org/> \
+                  SELECT ?name WHERE { ?doc a ex:Document ; schema:name ?name . }";
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/inline2:main")
+        .header("content-type", "application/sparql-query")
+        .header("fluree-policy", inline_policy.to_string())
+        .header("fluree-default-allow", "false");
+
+    let resp = app
+        .oneshot(req.body(Body::from(sparql)).unwrap())
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = sparql_names(&json);
+    assert_eq!(
+        names.len(),
+        1,
+        "header-supplied inline policy should filter SPARQL to internal-only; got: {:?}",
+        names
+    );
+    assert_eq!(names[0], "Internal Memo");
+}
+
+/// Insert `ex:assignedTo` relationships from each document to one of the
+/// identity nodes — used by the policy-values tests below to demonstrate
+/// `?$identity` binding.
+async fn assign_docs_to_identities(app: &axum::Router, ledger: &str) {
+    let tx = serde_json::json!({
+        "@context": { "ex": "http://example.org/" },
+        "insert": [
+            { "@id": "ex:doc1", "ex:assignedTo": { "@id": "http://example.org/public-user" } },
+            { "@id": "ex:doc2", "ex:assignedTo": { "@id": "http://example.org/employee-user" } },
+            { "@id": "ex:doc3", "ex:assignedTo": { "@id": "http://example.org/manager-user" } }
+        ]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/fluree/upsert/{}", ledger))
+                .header("content-type", "application/json")
+                .body(Body::from(tx.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "assign docs to identities");
+}
+
+/// `opts.policy-values` binds `?$identity` for an inline policy that filters
+/// by document assignment. Verifies the JSON-LD body-opts transport for
+/// `--policy-values`.
+#[tokio::test]
+async fn policy_values_substitute_into_inline_policy() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "pv1:main").await;
+    assign_docs_to_identities(&app, "pv1:main").await;
+
+    // Parameterized policy: a document is viewable if `?$this`'s
+    // `ex:assignedTo` equals the bound `?$identity`.
+    let inline_policy = serde_json::json!([
+        {
+            "@id": "ex:adhocByAssignment",
+            "@type": "f:AccessPolicy",
+            "f:action": [{"@id": "f:view"}],
+            "f:query": {
+                "@type": "@json",
+                "@value": {
+                    "@context": {"ex": "http://example.org/"},
+                    "where": [{"@id": "?$this", "ex:assignedTo": "?$identity"}]
+                }
+            }
+        }
+    ]);
+
+    let body = serde_json::json!({
+        "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
+        "opts": {
+            "policy": inline_policy,
+            "policy-values": { "?$identity": { "@id": "http://example.org/employee-user" } },
+            "default-allow": false
+        },
+        "select": ["?name"],
+        "where": [
+            {"@id": "?doc", "@type": "ex:Document"},
+            {"@id": "?doc", "schema:name": "?name"}
+        ]
+    });
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/pv1:main")
+        .header("content-type", "application/json");
+
+    let resp = app
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = jsonld_select_names(&json);
+    assert_eq!(
+        names.len(),
+        1,
+        "?$identity=employee-user should yield only doc2; got: {:?}",
+        names
+    );
+    assert_eq!(names[0], "Internal Memo");
+}
+
+/// Same as above but transported via `fluree-policy` + `fluree-policy-values`
+/// headers on a SPARQL query.
+#[tokio::test]
+async fn policy_values_via_header_for_sparql() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "pv2:main").await;
+    assign_docs_to_identities(&app, "pv2:main").await;
+
+    let inline_policy = serde_json::json!([
+        {
+            "@id": "ex:adhocByAssignment",
+            "@type": "f:AccessPolicy",
+            "f:action": [{"@id": "f:view"}],
+            "f:query": {
+                "@type": "@json",
+                "@value": {
+                    "@context": {"ex": "http://example.org/"},
+                    "where": [{"@id": "?$this", "ex:assignedTo": "?$identity"}]
+                }
+            }
+        }
+    ]);
+    let policy_values = serde_json::json!({
+        "?$identity": { "@id": "http://example.org/manager-user" }
+    });
+
+    let sparql = "PREFIX ex: <http://example.org/> \
+                  PREFIX schema: <http://schema.org/> \
+                  SELECT ?name WHERE { ?doc a ex:Document ; schema:name ?name . }";
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/pv2:main")
+        .header("content-type", "application/sparql-query")
+        .header("fluree-policy", inline_policy.to_string())
+        .header("fluree-policy-values", policy_values.to_string())
+        .header("fluree-default-allow", "false");
+
+    let resp = app
+        .oneshot(req.body(Body::from(sparql)).unwrap())
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = sparql_names(&json);
+    assert_eq!(
+        names.len(),
+        1,
+        "?$identity=manager-user binding via headers should yield 1 doc; got: {:?}",
+        names
+    );
+    assert_eq!(names[0], "Executive Salaries");
+}
+
+/// Repeated `fluree-policy-class` headers accumulate into a multi-class set —
+/// verifies the multi-value transport that `--policy-class` (repeatable) needs
+/// for SPARQL parity with JSON-LD body opts.
+///
+/// Sends both `ex:PublicClass` and `ex:EmployeeClass`. The persisted policies
+/// for those classes are `{public}` and `{public, internal}` respectively;
+/// applying them as a class-set yields `{public, internal}` (the union of
+/// what either class permits).
+/// As above. The policy_builder uses identity > policy_class > policy as a
+/// priority chain, so to exercise the multi-class header path the request
+/// omits the bearer token.
+#[tokio::test]
+async fn multi_value_policy_class_via_repeated_sparql_headers() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "pc:main").await;
+
+    let sparql = "PREFIX ex: <http://example.org/> \
+                  PREFIX schema: <http://schema.org/> \
+                  SELECT ?name WHERE { ?doc a ex:Document ; schema:name ?name . }";
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/pc:main")
+        .header("content-type", "application/sparql-query")
+        .header("fluree-policy-class", "http://example.org/PublicClass")
+        .header("fluree-policy-class", "http://example.org/EmployeeClass");
+
+    let resp = app
+        .oneshot(req.body(Body::from(sparql)).unwrap())
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = sparql_names(&json);
+    assert!(
+        names.contains(&"Public Post") && names.contains(&"Internal Memo"),
+        "two policy-class headers should union into public+internal access; got: {:?}",
+        names
+    );
+    assert!(
+        !names.contains(&"Executive Salaries"),
+        "confidential should remain hidden; got: {:?}",
+        names
+    );
+}
+
+/// Comma-separated `fluree-policy-class` value parses into multiple classes
+/// (alternative wire form to repeated headers).
+#[tokio::test]
+async fn comma_separated_policy_class_header() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "pc2:main").await;
+
+    let sparql = "PREFIX ex: <http://example.org/> \
+                  PREFIX schema: <http://schema.org/> \
+                  SELECT ?name WHERE { ?doc a ex:Document ; schema:name ?name . }";
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/query/pc2:main")
+        .header("content-type", "application/sparql-query")
+        .header(
+            "fluree-policy-class",
+            "http://example.org/PublicClass, http://example.org/EmployeeClass",
+        );
+
+    let resp = app
+        .oneshot(req.body(Body::from(sparql)).unwrap())
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let names = sparql_names(&json);
+    assert!(names.contains(&"Public Post") && names.contains(&"Internal Memo"));
+    assert!(!names.contains(&"Executive Salaries"));
+}
