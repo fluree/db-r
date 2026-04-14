@@ -31,17 +31,68 @@ use serde_json::Value as JsonValue;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-const POLICY_GRAPHS: [fluree_db_core::GraphId; 1] = [0];
+/// Default policy graph set: only the default graph (g_id = 0).
+const DEFAULT_POLICY_GRAPHS: [fluree_db_core::GraphId; 1] = [0];
 
 // ============================================================================
 // Constants - Fluree policy vocabulary IRIs (from fluree-vocab)
 // ============================================================================
 
-use fluree_vocab::{fluree, policy_iris};
+use fluree_vocab::{config_iris, fluree, policy_iris};
 
 // ============================================================================
 // Public API
 // ============================================================================
+
+/// Resolve a `GraphSourceRef` from config into concrete graph IDs for policy loading.
+///
+/// Returns `Err` if the source specifies unsupported features (`at_t`, `trust_policy`,
+/// `rollback_guard`, cross-ledger `ledger`). Returns the default graph `[0]` when
+/// `source` is `None`.
+pub fn resolve_policy_source_g_ids(
+    source: Option<&fluree_db_core::ledger_config::GraphSourceRef>,
+    snapshot: &LedgerSnapshot,
+) -> Result<Vec<fluree_db_core::GraphId>> {
+    let source = match source {
+        None => return Ok(DEFAULT_POLICY_GRAPHS.to_vec()),
+        Some(s) => s,
+    };
+
+    if source.ledger.is_some() {
+        return Err(ApiError::query(
+            "f:policySource with a cross-ledger f:ledger reference is not yet supported",
+        ));
+    }
+    if source.at_t.is_some() {
+        return Err(ApiError::query(
+            "f:policySource with f:atT (temporal pinning) is not yet supported",
+        ));
+    }
+    if source.trust_policy.is_some() {
+        return Err(ApiError::query(
+            "f:policySource with f:trustPolicy is not yet supported",
+        ));
+    }
+    if source.rollback_guard.is_some() {
+        return Err(ApiError::query(
+            "f:policySource with f:rollbackGuard is not yet supported",
+        ));
+    }
+
+    let g_id = match source.graph_selector.as_deref() {
+        Some(iri) if iri == config_iris::DEFAULT_GRAPH => Some(0u16),
+        Some(iri) => snapshot.graph_registry.graph_id_for_iri(iri),
+        None => Some(0u16),
+    };
+
+    match g_id {
+        Some(id) => Ok(vec![id]),
+        None => Err(ApiError::query(format!(
+            "f:policySource graph '{}' not found in this ledger's graph registry",
+            source.graph_selector.as_deref().unwrap_or("<none>"),
+        ))),
+    }
+}
 
 /// Build a `PolicyContext` from `QueryConnectionOptions`.
 ///
@@ -59,12 +110,14 @@ use fluree_vocab::{fluree, policy_iris};
 /// * `novelty_for_stats` - Optional novelty for computing current stats (needed for f:onClass)
 /// * `to_t` - Time bound for queries
 /// * `opts` - Query connection options with policy configuration
+/// * `policy_graphs` - Which graphs to scan for policy triples (resolved from config)
 pub async fn build_policy_context_from_opts(
     snapshot: &LedgerSnapshot,
     overlay: &dyn fluree_db_core::OverlayProvider,
     novelty_for_stats: Option<&Novelty>,
     to_t: i64,
     opts: &QueryConnectionOptions,
+    policy_graphs: &[fluree_db_core::GraphId],
 ) -> Result<PolicyContext> {
     struct PolicyStatsLookup<'a> {
         overlay: &'a dyn fluree_db_core::OverlayProvider,
@@ -103,7 +156,9 @@ pub async fn build_policy_context_from_opts(
     //
     // Priority: identity > policy_class > policy > policy_values["?$identity"]
     let (identity_sid, restrictions, identity_found) = if let Some(identity_iri) = &opts.identity {
-        match load_policies_by_identity(snapshot, overlay, to_t, identity_iri).await? {
+        match load_policies_by_identity(snapshot, overlay, to_t, identity_iri, policy_graphs)
+            .await?
+        {
             IdentityLookupResult::NotFound => {
                 // IRI unresolvable or no subject node in this ledger. Fail-closed: the
                 // system cannot vouch for this requester, so no data should be exposed.
@@ -138,7 +193,7 @@ pub async fn build_policy_context_from_opts(
         };
 
         let restrictions = if let Some(classes) = &opts.policy_class {
-            load_policies_by_class(snapshot, overlay, to_t, classes).await?
+            load_policies_by_class(snapshot, overlay, to_t, classes, policy_graphs).await?
         } else if let Some(policy_json) = &opts.policy {
             parse_inline_policy(snapshot, policy_json)?
         } else {
@@ -236,7 +291,15 @@ pub async fn identity_has_no_policies(
     to_t: i64,
     identity_iri: &str,
 ) -> Result<bool> {
-    match load_policies_by_identity(snapshot, overlay, to_t, identity_iri).await? {
+    match load_policies_by_identity(
+        snapshot,
+        overlay,
+        to_t,
+        identity_iri,
+        &DEFAULT_POLICY_GRAPHS,
+    )
+    .await?
+    {
         IdentityLookupResult::FoundNoPolicies { .. } => Ok(true),
         IdentityLookupResult::FoundWithPolicies { .. } | IdentityLookupResult::NotFound => {
             Ok(false)
@@ -289,6 +352,7 @@ async fn load_policies_by_identity(
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     identity_iri: &str,
+    policy_graphs: &[fluree_db_core::GraphId],
 ) -> Result<IdentityLookupResult> {
     // Encode the identity IRI strictly — unregistered namespaces (including CURIEs
     // passed as opts.identity) produce NotFound rather than a silent empty result.
@@ -313,11 +377,11 @@ async fn load_policies_by_identity(
         Term::Var(class_var),
     );
 
-    // Collect class SIDs from the default graph (where policy data lives).
+    // Collect class SIDs from the configured policy graphs.
     // Eager materialization: `as_sid()` needs concrete `Binding::Sid`, not
     // late-materialized `EncodedSid` from binary scans with epoch=0.
     let mut class_sids: Vec<Sid> = Vec::new();
-    for g_id in POLICY_GRAPHS {
+    for &g_id in policy_graphs {
         let db = GraphDbRef::new(snapshot, g_id, overlay, to_t).eager();
         let batches = execute_pattern_with_overlay_at(db, &vars, pattern.clone(), None).await?;
         for batch in &batches {
@@ -333,20 +397,11 @@ async fn load_policies_by_identity(
 
     if class_sids.is_empty() {
         // No f:policyClass found. Determine whether the identity subject itself exists
-        // in any policy graph.
-        //
-        // We iterate POLICY_GRAPHS (rather than hard-coding [0]) for the same reason
-        // the policyClass lookup above iterates it: identity subjects are normally in
-        // graph 0 (the default graph, assigned when no @graph is specified in the
-        // transaction), but Fluree's JSON-LD transaction parser supports per-object
-        // @graph selectors, so a subject could land in a named graph if the caller
-        // explicitly specified one. If POLICY_GRAPHS is ever expanded to include named
-        // graphs, both lookups must cover the same set of graphs.
-        //
-        // Each seek is O(log n) with flake_limit=1; the loop runs once today since
-        // POLICY_GRAPHS = [0].
+        // in any of the configured policy graphs. Both the policyClass lookup and this
+        // existence check must cover the same set of graphs so that named-graph
+        // policy configurations work consistently.
         let range_opts = RangeOptions::default().with_flake_limit(1);
-        for g_id in POLICY_GRAPHS {
+        for &g_id in policy_graphs {
             let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
             let exists = db
                 .range_with_opts(
@@ -365,7 +420,8 @@ async fn load_policies_by_identity(
     }
 
     // Step 2: Load policies of those classes
-    let restrictions = load_policies_of_classes(snapshot, overlay, to_t, &class_sids).await?;
+    let restrictions =
+        load_policies_of_classes(snapshot, overlay, to_t, &class_sids, policy_graphs).await?;
     Ok(IdentityLookupResult::FoundWithPolicies {
         identity_sid,
         restrictions,
@@ -384,6 +440,7 @@ async fn load_policies_by_class(
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_iris: &[String],
+    policy_graphs: &[fluree_db_core::GraphId],
 ) -> Result<Vec<PolicyRestriction>> {
     // Resolve class IRIs to SIDs
     let mut class_sids = Vec::with_capacity(class_iris.len());
@@ -391,7 +448,7 @@ async fn load_policies_by_class(
         class_sids.push(resolve_policy_class_iri_to_sid(snapshot, iri)?);
     }
 
-    load_policies_of_classes(snapshot, overlay, to_t, &class_sids).await
+    load_policies_of_classes(snapshot, overlay, to_t, &class_sids, policy_graphs).await
 }
 
 /// Load policies that are instances of the given classes.
@@ -408,6 +465,7 @@ async fn load_policies_of_classes(
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     class_sids: &[Sid],
+    policy_graphs: &[fluree_db_core::GraphId],
 ) -> Result<Vec<PolicyRestriction>> {
     let rdf_type_sid = resolve_system_iri_to_sid(snapshot, RDF_TYPE_IRI, "rdf:type")?;
 
@@ -415,7 +473,7 @@ async fn load_policies_of_classes(
     let mut policy_sids: HashSet<Sid> = HashSet::new();
 
     for class_sid in class_sids {
-        for g_id in POLICY_GRAPHS {
+        for &g_id in policy_graphs {
             let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
             let flakes = db
                 .range(
@@ -440,7 +498,7 @@ async fn load_policies_of_classes(
     let mut restrictions = Vec::new();
     for policy_sid in policy_sids {
         if let Some(restriction) =
-            load_policy_restriction(snapshot, overlay, to_t, &policy_sid).await?
+            load_policy_restriction(snapshot, overlay, to_t, &policy_sid, policy_graphs).await?
         {
             restrictions.push(restriction);
         }
@@ -460,6 +518,7 @@ async fn load_policy_restriction(
     overlay: &dyn fluree_db_core::OverlayProvider,
     to_t: i64,
     policy_sid: &Sid,
+    policy_graphs: &[fluree_db_core::GraphId],
 ) -> Result<Option<PolicyRestriction>> {
     // Collect properties using explicit predicate queries
     // (wildcard ?pred would be filtered by scan layer for fluree:ledger predicates)
@@ -479,7 +538,15 @@ async fn load_policy_restriction(
     // f:allow
     {
         let allow_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ALLOW, "f:allow")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &allow_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &allow_sid,
+            policy_graphs,
+        )
+        .await?;
         for binding in bindings {
             if let Binding::Lit {
                 val: FlakeValue::Boolean(b),
@@ -495,7 +562,15 @@ async fn load_policy_restriction(
     // f:action - collect all action values to determine View, Modify, or Both
     let action: Option<PolicyAction> = {
         let action_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ACTION, "f:action")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &action_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &action_sid,
+            policy_graphs,
+        )
+        .await?;
         let mut has_view = false;
         let mut has_modify = false;
         for binding in bindings {
@@ -519,7 +594,15 @@ async fn load_policy_restriction(
     {
         let pred_sid =
             resolve_system_iri_to_sid(snapshot, policy_iris::ON_PROPERTY, "f:onProperty")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &pred_sid,
+            policy_graphs,
+        )
+        .await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_property.insert(sid.clone());
@@ -530,7 +613,15 @@ async fn load_policy_restriction(
     // f:onSubject (can have multiple values)
     {
         let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ON_SUBJECT, "f:onSubject")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &pred_sid,
+            policy_graphs,
+        )
+        .await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_subject.insert(sid.clone());
@@ -541,7 +632,15 @@ async fn load_policy_restriction(
     // f:onClass (can have multiple values)
     {
         let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::ON_CLASS, "f:onClass")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &pred_sid,
+            policy_graphs,
+        )
+        .await?;
         for binding in bindings {
             if let Some(sid) = binding.as_sid() {
                 on_class.insert(sid.clone());
@@ -552,7 +651,15 @@ async fn load_policy_restriction(
     // f:required
     {
         let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::REQUIRED, "f:required")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &pred_sid,
+            policy_graphs,
+        )
+        .await?;
         for binding in bindings {
             if let Binding::Lit {
                 val: FlakeValue::Boolean(b),
@@ -568,7 +675,15 @@ async fn load_policy_restriction(
     // f:exMessage
     {
         let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::EX_MESSAGE, "f:exMessage")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &pred_sid,
+            policy_graphs,
+        )
+        .await?;
         for binding in bindings {
             if let Binding::Lit {
                 val: FlakeValue::String(s),
@@ -584,7 +699,15 @@ async fn load_policy_restriction(
     // f:query
     {
         let pred_sid = resolve_system_iri_to_sid(snapshot, policy_iris::QUERY, "f:query")?;
-        let bindings = query_predicate(snapshot, overlay, to_t, policy_sid, &pred_sid).await?;
+        let bindings = query_predicate(
+            snapshot,
+            overlay,
+            to_t,
+            policy_sid,
+            &pred_sid,
+            policy_graphs,
+        )
+        .await?;
         for binding in bindings {
             match binding {
                 Binding::Lit {
@@ -691,11 +814,12 @@ async fn query_predicate(
     to_t: i64,
     subject_sid: &Sid,
     predicate_sid: &Sid,
+    policy_graphs: &[fluree_db_core::GraphId],
 ) -> Result<Vec<Binding>> {
     // Use range() to avoid late-materialized Encoded* bindings.
     // Policy loading needs concrete SID/literal values for restriction indexing.
     let mut results: Vec<Binding> = Vec::new();
-    for g_id in POLICY_GRAPHS {
+    for &g_id in policy_graphs {
         let db = GraphDbRef::new(snapshot, g_id, overlay, to_t);
         let flakes = db
             .range(

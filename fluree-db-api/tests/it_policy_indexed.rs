@@ -123,6 +123,7 @@ async fn policy_class_survives_indexing() {
                     None,
                     r1.ledger.t(),
                     &alice_opts,
+                    &[0],
                 )
                 .await
                 .expect("build policy pre-index");
@@ -180,6 +181,7 @@ async fn policy_class_survives_indexing() {
                     None,
                     ledger_indexed.t(),
                     &alice_opts,
+                    &[0],
                 )
                 .await
                 .expect("build policy post-index");

@@ -102,6 +102,7 @@ async fn policy_class_restricts_ssn_to_own_user() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");
@@ -208,6 +209,7 @@ async fn policy_class_allows_non_restricted_properties() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");
@@ -306,6 +308,7 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");

@@ -321,6 +321,7 @@ where
                 Some(snapshot.novelty.as_ref()),
                 commit.t,
                 &opts,
+                &[0],
             )
             .await?;
 

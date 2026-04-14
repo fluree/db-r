@@ -260,7 +260,7 @@ mod tests {
             "head": {"vars": ["n", "d", "b"]},
             "results": {"bindings": [{
                 "n": {"type": "literal", "value": "42", "datatype": "http://www.w3.org/2001/XMLSchema#integer"},
-                "d": {"type": "literal", "value": "3.14", "datatype": "http://www.w3.org/2001/XMLSchema#double"},
+                "d": {"type": "literal", "value": "3.15", "datatype": "http://www.w3.org/2001/XMLSchema#double"},
                 "b": {"type": "literal", "value": "true", "datatype": "http://www.w3.org/2001/XMLSchema#boolean"}
             }]}
         });
@@ -275,7 +275,7 @@ mod tests {
             }
         ));
         assert!(
-            matches!(row.get("d").unwrap(), Binding::Lit { val: FlakeValue::Double(d), .. } if (*d - 3.14).abs() < 0.001)
+            matches!(row.get("d").unwrap(), Binding::Lit { val: FlakeValue::Double(d), .. } if (*d - 3.15).abs() < 0.001)
         );
         assert!(matches!(
             row.get("b").unwrap(),

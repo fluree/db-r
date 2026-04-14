@@ -286,6 +286,7 @@ let policy_ctx = policy_builder::build_policy_context_from_opts(
     Some(ledger.novelty.as_ref()),
     ledger.t(),
     &qc_opts,
+    &[0], // default graph; use resolve_policy_source_g_ids() for config-driven graphs
 ).await?;
 
 let txn = json!({
@@ -326,6 +327,7 @@ let policy_ctx = policy_builder::build_policy_context_from_opts(
     Some(ledger.novelty.as_ref()),
     ledger.t(),
     &opts,
+    &[0],
 ).await?;
 
 let view = graph.with_policy(std::sync::Arc::new(policy_ctx));

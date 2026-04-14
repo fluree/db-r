@@ -234,9 +234,9 @@ pub fn merge_policy_opts(
         merged.policy_class = Some(classes.clone());
     }
 
-    // Note: policy_source (GraphSourceRef) requires graph loading which
-    // happens at a higher level. We store the reference in ResolvedConfig
-    // and the caller can resolve it.
+    // policy_source (GraphSourceRef) is resolved to graph IDs by the caller
+    // via resolve_policy_source_g_ids() and passed to build_policy_context_from_opts().
+    // See wrap_policy() in fluree_ext.rs.
 
     merged
 }

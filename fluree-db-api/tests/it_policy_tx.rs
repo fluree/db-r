@@ -105,6 +105,7 @@ async fn modify_policy_allows_own_property() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");
@@ -223,6 +224,7 @@ async fn modify_policy_denies_other_property() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");
@@ -317,6 +319,7 @@ async fn view_only_policy_blocks_modify() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");
@@ -414,6 +417,7 @@ async fn modify_query_always_false_denies() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");

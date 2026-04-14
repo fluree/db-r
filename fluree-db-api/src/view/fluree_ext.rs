@@ -618,12 +618,24 @@ where
         } else {
             opts.clone()
         };
+
+        let policy_graphs = if let Some(ref resolved) = view.resolved_config {
+            let source = resolved
+                .policy
+                .as_ref()
+                .and_then(|p| p.policy_source.as_ref());
+            crate::policy_builder::resolve_policy_source_g_ids(source, &view.snapshot)?
+        } else {
+            vec![0]
+        };
+
         let policy_ctx = crate::policy_builder::build_policy_context_from_opts(
             &view.snapshot,
             view.overlay.as_ref(),
             view.novelty_for_stats(),
             view.t,
             &effective_opts,
+            &policy_graphs,
         )
         .await?;
         Ok(view.with_policy(Arc::new(policy_ctx)))

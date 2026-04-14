@@ -1858,6 +1858,7 @@ where
             Some(ledger.novelty.as_ref()),
             ledger.t(),
             &opts,
+            &[0],
         )
         .await?;
 

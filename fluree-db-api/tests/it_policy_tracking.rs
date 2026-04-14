@@ -60,6 +60,7 @@ async fn transact_policy_denied_includes_policy_and_fuel_tracking() {
         Some(ledger.novelty.as_ref()),
         ledger.t(),
         &qc_opts,
+        &[0],
     )
     .await
     .expect("build policy context");

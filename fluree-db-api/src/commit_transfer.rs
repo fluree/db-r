@@ -643,7 +643,15 @@ async fn build_policy_ctx_for_push(
     opts: &QueryConnectionOptions,
 ) -> Result<PolicyContext> {
     // Build policy context from opts against current state (db + evolving novelty).
-    build_policy_context_from_opts(&base.snapshot, evolving, Some(evolving), current_t, opts).await
+    build_policy_context_from_opts(
+        &base.snapshot,
+        evolving,
+        Some(evolving),
+        current_t,
+        opts,
+        &[0],
+    )
+    .await
 }
 
 async fn stage_commit_flakes(

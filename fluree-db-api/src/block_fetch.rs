@@ -380,7 +380,7 @@ pub async fn apply_policy_filter(
     let overlay: &dyn OverlayProvider = &NoOverlay;
 
     let policy_ctx =
-        policy_builder::build_policy_context_from_opts(snapshot, overlay, None, to_t, &opts)
+        policy_builder::build_policy_context_from_opts(snapshot, overlay, None, to_t, &opts, &[0])
             .await
             .map_err(|e| BlockFetchError::PolicyBuild(e.to_string()))?;
 

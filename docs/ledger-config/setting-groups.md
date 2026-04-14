@@ -36,7 +36,11 @@ Controls default policy enforcement behavior.
 
 `f:policySource` is non-overridable — it can only be changed by writing to the config graph, not at query time. `f:defaultAllow` and `f:policyClass` are overridable (subject to override control).
 
-### Example
+When `f:policySource` is set, the policy loader scans the specified graph for policy rules instead of the default graph. This keeps policy rules separate from end-user data. If `f:policySource` is not set, policies are loaded from the default graph (backward compatible).
+
+**Current limitations**: `f:policySource` only supports same-ledger graphs. Cross-ledger references (`f:ledger`), temporal pinning (`f:atT`), trust policy, and rollback guard fields are parsed but will produce an error if configured.
+
+### Example: policies in the default graph
 
 ```trig
 @prefix f: <https://ns.flur.ee/db#> .
@@ -50,6 +54,25 @@ GRAPH <urn:fluree:mydb:main#config> {
         f:graphSource [ f:graphSelector f:defaultGraph ]
       ] ;
       f:overrideControl f:OverrideAll
+    ] .
+}
+```
+
+### Example: policies in a named graph
+
+Storing policy rules in a dedicated named graph keeps them out of the default data graph. The identity's `f:policyClass` triples must also be in the policy graph.
+
+```trig
+@prefix f: <https://ns.flur.ee/db#> .
+
+GRAPH <urn:fluree:mydb:main#config> {
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
+    f:policyDefaults [
+      f:defaultAllow false ;
+      f:policySource [
+        a f:GraphRef ;
+        f:graphSource [ f:graphSelector <urn:fluree:mydb:main/policy> ]
+      ]
     ] .
 }
 ```

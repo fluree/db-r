@@ -582,7 +582,7 @@ impl GraphDb {
     /// # Example
     ///
     /// ```ignore
-    /// let policy = build_policy_context_from_opts(&db, overlay, novelty, t, &opts).await?;
+    /// let policy = build_policy_context_from_opts(&db, overlay, novelty, t, &opts, &[0]).await?;
     /// let view = view.with_policy(Arc::new(policy));
     /// ```
     pub fn with_policy(mut self, policy: Arc<PolicyContext>) -> Self {
