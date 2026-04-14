@@ -160,6 +160,7 @@ async fn oidc_rs256_bearer_allows_read_and_write() {
 
     // Query data
     let query_body = json!({
+        "@context": { "ex": "http://example.org/" },
         "select": ["?name"],
         "where": { "@id": "?s", "ex:name": "?name" }
     });
@@ -413,6 +414,7 @@ async fn oidc_kid_miss_refresh_finds_new_key() {
 
     // Now query (use a query that works on the inserted data)
     let query_body2 = json!({
+        "@context": { "ex": "http://example.org/" },
         "select": ["?name"],
         "where": { "@id": "?s", "ex:name": "?name" }
     });
@@ -569,6 +571,7 @@ async fn oidc_embedded_jwk_still_works_alongside_jwks() {
 
     // Query with Ed25519 JWS should work
     let query_body = json!({
+        "@context": { "ex": "http://example.org/" },
         "select": ["?name"],
         "where": { "@id": "?s", "ex:name": "?name" }
     });

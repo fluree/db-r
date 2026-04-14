@@ -166,6 +166,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
 
     // Query should succeed
     let query_body = serde_json::json!({
+      "@context": { "ex": "http://example.org/" },
       "select": ["?name"],
       "where": { "@id": "?s", "ex:name": "?name" }
     });

@@ -241,6 +241,7 @@ async fn upsert_typed_string_retract_and_assert_use_same_datatype_sid() {
     let ledger0 = fluree.create_ledger(ledger_id).await.unwrap();
 
     let initial_txn = json!({
+        "@context": {"xsd": "http://www.w3.org/2001/XMLSchema#"},
         "@graph": [
             {
                 "@id": "http://example.org/s",

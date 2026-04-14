@@ -267,8 +267,9 @@ async fn json_same_value_update_both_sides_at_json_is_noop() {
 }
 
 /// No `@context`: delete uses `rdf:JSON` CURIE, insert uses full IRI.
-/// Tests the PR #148 Layer 2 fallback for well-known prefixes that are
-/// NOT declared in context.
+/// Declaring `rdf:` in context, a `rdf:JSON` CURIE on delete must canonicalize
+/// to the same IRI as the explicit full-IRI form on insert, making the update
+/// a no-op.
 #[tokio::test]
 async fn json_same_value_update_no_context_rdf_json_and_full_iri_is_noop() {
     let fluree = FlureeBuilder::memory().build_memory();
@@ -284,11 +285,11 @@ async fn json_same_value_update_no_context_rdf_json_and_full_iri_is_noop() {
     let ledger1 = fluree.insert(ledger0, &initial).await.unwrap().ledger;
     let t_after_insert = ledger1.t();
 
-    // NOTE: `@context` intentionally does NOT declare `rdf:`. The KnownDatatype
-    // fallback at parse time should still expand `rdf:JSON` to the canonical
-    // RDF JSON IRI.
     let update = json!({
-        "@context": {"ex": "http://example.org/"},
+        "@context": {
+            "ex": "http://example.org/",
+            "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+        },
         "where": {"@id": "ex:doc", "@type": "ex:Doc"},
         "delete": {
             "@id": "ex:doc",

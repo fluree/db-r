@@ -2029,3 +2029,49 @@ mem:fact-01kp4g1wa8yyty4sd2p03k6bg9 a mem:Fact ;
     mem:artifactRef "fluree-graph-json-ld/src/expand.rs" ;
     mem:createdAt "2026-04-13T22:40:33.608461+00:00"^^xsd:dateTime ;
     mem:factKind "architecture" .
+
+mem:fact-01kp4rwg9hcyj1ypqmfmygdxym a mem:Fact ;
+    mem:content "Strict compact-IRI policy: as of commit 170bccc9, JSON-LD transactions default `strict_compact_iri=true`. Any compact IRI (e.g. `rdf:JSON`, `xsd:string`, `ex:name`) used in data/query/update must have its prefix declared in `@context`, otherwise parsing returns `UnresolvedCompactIri`. The former PR #148 \"Layer 2 fallback\" for well-known prefixes (rdf:, xsd:) is gone. When tests fail with `UnresolvedCompactIri`, fix is to add the prefix to the test's explicit `@context` (per user preference: never rely on default/implicit context in tests). Override via `opts.strict_compact_iri = false` or JSON `opts: {strictCompactIri: false}` if legacy behavior required." ;
+    mem:tag "json-ld" ;
+    mem:tag "parse" ;
+    mem:tag "strict-compact-iri" ;
+    mem:tag "testing" ;
+    mem:tag "transact" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-query/src/parse/policy.rs" ;
+    mem:artifactRef "fluree-db-transact/src/parse/jsonld.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-14T01:14:54.641170+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kp4rwsy7pf6999h00kv3wdcg a mem:Fact ;
+    mem:content "Rebase flow: before replay, branch nameservice head must be reset to source head via `nameservice.reset_head(&branch_id, NsRecordSnapshot::from_record(&source_record))`. `replay_commit` uses `CommitOpts::default().with_skip_sequencing()` which takes the `fast_forward_commit` CAS path requiring strictly increasing t — without the reset, replaying commit #1 at t=N+1 collides with the branch's pre-rebase head at t≫N, producing `PublishLostRace`. Fix landed in fluree-db-api/src/rebase.rs between `copy_source_index` and `run_replay`. Pre-rebase snapshot is still captured for rollback on failure.\n\nMerge flow: the fast-forward CAS also rejects \"already up to date\" cases (source_head_id == target_head_id at same t), surfacing as \"Fast-forward merge conflict … (attempted t=X, actual t=X)\". `merge_branch_inner` now short-circuits when `target_head == Some(&source_head_id)` and returns a no-op `MergeReport{fast_forward: true, commits_copied: 0}`." ;
+    mem:tag "branches" ;
+    mem:tag "cas" ;
+    mem:tag "fast-forward" ;
+    mem:tag "merge" ;
+    mem:tag "nameservice" ;
+    mem:tag "rebase" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/merge.rs" ;
+    mem:artifactRef "fluree-db-api/src/rebase.rs" ;
+    mem:artifactRef "fluree-db-transact/src/commit.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-14T01:15:04.519020+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .
+
+mem:fact-01kp4rwyr6eas353wf1fwn2431 a mem:Fact ;
+    mem:content "Nextest SIGABRTs in fluree-db-server integration/policy/proxy/oidc tests when running multiple crates in parallel on macOS are resource contention, NOT test logic bugs. Running `cargo nextest run -p fluree-db-server --all-features` alone passes all 204 tests; running alongside fluree-db-api in the same invocation causes ~37 SIGABRTs at 0.05–0.6s (pre-body). `--test-threads=4` also makes them pass. When you see SIGABRT en-masse in server tests during a workspace run, isolate to the single crate before assuming a bug." ;
+    mem:tag "ci" ;
+    mem:tag "macos" ;
+    mem:tag "nextest" ;
+    mem:tag "parallelism" ;
+    mem:tag "sigabrt" ;
+    mem:tag "testing" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-14T01:15:09.446809+00:00"^^xsd:dateTime ;
+    mem:factKind "command" .

@@ -244,6 +244,15 @@ where
         self.copy_source_index(&source_id, &branch_id, &source_record)
             .await;
 
+        // Reset the branch's head to the source's head so replayed commits
+        // are sequenced on top of the rebased base (not the pre-rebase branch
+        // head). Without this, commit() would reject replay commits because
+        // their t-values are lower than the branch's current head.
+        let source_snapshot = NsRecordSnapshot::from_record(&source_record);
+        self.nameservice
+            .reset_head(&branch_id, source_snapshot)
+            .await?;
+
         // Run replay and finalization; roll back on any error.
         let ctx = ReplayContext {
             branch_id: &branch_id,

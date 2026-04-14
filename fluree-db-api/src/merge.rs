@@ -138,6 +138,21 @@ where
             _ => false,
         };
 
+        // Already up to date: source and target point at the same commit.
+        // Nothing to copy or advance; return a successful no-op report.
+        if target_head == Some(&source_head_id) {
+            return Ok(MergeReport {
+                target: resolved_target.to_string(),
+                source: source_branch.to_string(),
+                fast_forward: true,
+                new_head_t: source_head_t,
+                new_head_id: source_head_id,
+                commits_copied: 0,
+                conflict_count: 0,
+                strategy: None,
+            });
+        }
+
         // Snapshot target nameservice state before mutations.
         // If any step fails after publish_commit, we roll back.
         let target_snapshot = NsRecordSnapshot::from_record(&target_record);
