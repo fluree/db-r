@@ -14,7 +14,7 @@ Configure the ledger to enable SHACL and point to the graph containing your shap
 fluree insert '
 @prefix f: <https://ns.flur.ee/db#> .
 
-<urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+<urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
   f:shaclDefaults [
     f:shaclEnabled true ;
     f:shapesSource "default"

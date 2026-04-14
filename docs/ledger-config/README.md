@@ -67,7 +67,7 @@ Deny all access by default and require policy rules for every operation. Use `f:
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:policyDefaults [
       f:defaultAllow false ;
       f:policySource [
@@ -89,7 +89,7 @@ Validate data shapes but log warnings instead of rejecting — useful during dev
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:shaclDefaults [
       f:shaclEnabled true ;
       f:shapesSource [
@@ -116,7 +116,7 @@ ex:email f:enforceUnique true .
 
 # Step 2: Enable enforcement (in the config graph)
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:transactDefaults [
       f:uniqueEnabled true
     ] .
@@ -133,7 +133,7 @@ Automatically expand `rdfs:subClassOf` and `rdfs:subPropertyOf` in all queries:
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:reasoningDefaults [
       f:reasoningModes f:RDFS ;
       f:schemaSource [
@@ -154,7 +154,7 @@ Allow open access to most graphs but lock down a sensitive one:
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:policyDefaults [
       f:defaultAllow true ;
       f:overrideControl f:OverrideAll
@@ -193,7 +193,7 @@ If you set `f:defaultAllow false` with `f:OverrideNone` before granting write ac
 
 ### Multiple `f:LedgerConfig` resources
 
-If the config graph contains more than one `f:LedgerConfig` resource, the system uses the one with the **lexicographically smallest `@id`** and logs a warning. Use the recommended subject IRI convention (`urn:fluree:{ledger_id}#config#ledger`) to avoid this.
+If the config graph contains more than one `f:LedgerConfig` resource, the system uses the one with the **lexicographically smallest `@id`** and logs a warning. Use the recommended subject IRI convention (`urn:fluree:{ledger_id}:config:ledger`) to avoid this.
 
 ### Config graph query returns empty results
 

@@ -42,7 +42,7 @@ Controls default policy enforcement behavior.
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:policyDefaults [
       f:defaultAllow false ;
       f:policySource [
@@ -77,7 +77,7 @@ Controls SHACL shape validation at transaction time. Requires the `shacl` featur
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:shaclDefaults [
       f:shaclEnabled true ;
       f:shapesSource [
@@ -112,7 +112,7 @@ Controls OWL/RDFS reasoning applied at query time.
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:reasoningDefaults [
       f:reasoningModes f:RDFS ;
       f:schemaSource [
@@ -147,7 +147,7 @@ Controls Fluree's stored datalog rules (`f:rule`).
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:datalogDefaults [
       f:datalogEnabled true ;
       f:rulesSource [
@@ -199,7 +199,7 @@ ex:ssn   f:enforceUnique true .
 
 # Enable enforcement via config
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:transactDefaults [
       f:uniqueEnabled true ;
       f:constraintsSource [

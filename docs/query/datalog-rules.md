@@ -144,7 +144,7 @@ across all queries.
 ```json
 {
   "insert": {
-    "@id": "urn:fluree:mydb:main#config#ledger",
+    "@id": "urn:fluree:mydb:main:config:ledger",
     "@type": "f:LedgerConfig",
     "f:datalogDefaults": {
       "f:datalogEnabled": true,

@@ -20,7 +20,7 @@ TriG is the most natural format for writing to named graphs. Wrap your config tr
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:policyDefaults [
       f:defaultAllow false
     ] ;
@@ -40,7 +40,7 @@ PREFIX f: <https://ns.flur.ee/db#>
 
 INSERT DATA {
   GRAPH <urn:fluree:mydb:main#config> {
-    <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+    <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
       f:reasoningDefaults [
         f:reasoningModes f:RDFS ;
         f:schemaSource [
@@ -61,7 +61,7 @@ Use the `@graph` key with a named graph wrapper:
   "@context": { "f": "https://ns.flur.ee/db#" },
   "@graph": [
     {
-      "@id": "urn:fluree:mydb:main#config#ledger",
+      "@id": "urn:fluree:mydb:main:config:ledger",
       "@type": "f:LedgerConfig",
       "@graph": "urn:fluree:mydb:main#config",
       "f:shaclDefaults": {
@@ -92,7 +92,7 @@ INSERT {
 }
 WHERE {
   GRAPH <urn:fluree:mydb:main#config> {
-    <urn:fluree:mydb:main#config#ledger> f:policyDefaults ?policy .
+    <urn:fluree:mydb:main:config:ledger> f:policyDefaults ?policy .
     ?policy f:defaultAllow false .
   }
 }
@@ -106,10 +106,10 @@ Alternatively, give setting-group nodes explicit IRIs so they can be addressed d
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
-    f:policyDefaults <urn:fluree:mydb:main#config#policy> .
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
+    f:policyDefaults <urn:fluree:mydb:main:config:policy> .
 
-  <urn:fluree:mydb:main#config#policy>
+  <urn:fluree:mydb:main:config:policy>
     f:defaultAllow false ;
     f:overrideControl f:OverrideAll .
 }
@@ -135,10 +135,10 @@ If a ledger becomes unmodifiable due to a policy misconfiguration (no authorized
 For operational simplicity, use a stable, conventional subject IRI:
 
 ```
-urn:fluree:{ledger_id}#config#ledger
+urn:fluree:{ledger_id}:config:ledger
 ```
 
-This avoids accidental multiple-config instances and makes debugging simpler.
+Colons (not a second `#` fragment) keep the IRI well-formed: the graph IRI already uses a fragment (`#config`), and RFC 3986 allows only one fragment per IRI. Using colons produces a valid URN (RFC 8141) that stays scoped to the ledger and avoids accidental multiple-config instances.
 
 ## Querying the config graph
 

@@ -32,7 +32,7 @@ Enable unique constraint checking in the config graph:
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:transactDefaults [
       f:uniqueEnabled true
     ] .
@@ -49,7 +49,7 @@ To read annotations from a specific graph:
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:transactDefaults [
       f:uniqueEnabled true ;
       f:constraintsSource [
@@ -166,7 +166,7 @@ This means a per-graph override can add additional constraint sources but cannot
 
 ```trig
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:transactDefaults [
       f:uniqueEnabled true ;
       f:constraintsSource [
@@ -205,7 +205,7 @@ ex:email f:enforceUnique true .
 
 # 2. Enable enforcement in the config graph
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:transactDefaults [
       f:uniqueEnabled true
     ] .

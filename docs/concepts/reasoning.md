@@ -103,7 +103,7 @@ without having to specify it each time:
 {
   "@context": {"f": "https://ns.flur.ee/db#"},
   "insert": {
-    "@id": "urn:fluree:mydb:main#config#ledger",
+    "@id": "urn:fluree:mydb:main:config:ledger",
     "@type": "f:LedgerConfig",
     "f:reasoningDefaults": {
       "f:reasoningModes": {"@id": "f:RDFS"},

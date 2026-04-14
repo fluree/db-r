@@ -157,7 +157,7 @@ Per-graph overrides target specific named graphs by IRI:
 @prefix f: <https://ns.flur.ee/db#> .
 
 GRAPH <urn:fluree:mydb:main#config> {
-  <urn:fluree:mydb:main#config#ledger> a f:LedgerConfig ;
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
     f:policyDefaults [
       f:defaultAllow true ;
       f:overrideControl f:OverrideAll
