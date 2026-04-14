@@ -24,6 +24,7 @@ fluree upsert [LEDGER] [DATA] [OPTIONS]
 | `-f, --file <FILE>` | Read data from a file |
 | `-m, --message <MSG>` | Commit message |
 | `--format <FORMAT>` | Data format: `turtle` or `jsonld` (auto-detected if omitted) |
+| `--remote <NAME>` | Execute against a remote server (by remote name, e.g., `origin`) |
 
 ## Description
 

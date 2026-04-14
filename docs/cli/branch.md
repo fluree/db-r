@@ -248,11 +248,12 @@ fluree branch merge <SOURCE> [OPTIONS]
 |--------|-------------|
 | `--ledger <LEDGER>` | Ledger name (defaults to active ledger) |
 | `--target <BRANCH>` | Target branch to merge into (defaults to source's parent branch) |
+| `--strategy <STRATEGY>` | Conflict resolution strategy (default: `take-both`). Options: `take-both`, `abort`, `take-source`, `take-branch`. |
 | `--remote <REMOTE>` | Execute against a remote server |
 
 **Description:**
 
-Merges a source branch into a target branch using a fast-forward strategy. The target branch must not have any new commits since the source branch was created from it. If the target has diverged, rebase the source branch first, then merge.
+Merges a source branch into a target branch. When the target hasn't advanced since the source branched, this is a fast-forward; otherwise `--strategy` controls how conflicting edits are resolved (mirroring `branch rebase`).
 
 When `--target` is omitted, the merge target is inferred from the source branch's parent (the branch it was created from).
 

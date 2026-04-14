@@ -22,10 +22,14 @@ fluree query [LEDGER] [QUERY] [OPTIONS]
 |--------|-------------|
 | `-e, --expr <EXPR>` | Inline query expression (alternative to positional) |
 | `-f, --file <FILE>` | Read query from a file |
-| `--format <FORMAT>` | Output format: `json`, `table`, or `csv` (default: `json`) |
+| `--format <FORMAT>` | Output format: `json`, `typed-json`, `table`, `csv`, or `tsv` (default: `table`) |
 | `--sparql` | Force SPARQL query format |
 | `--jsonld` | Force JSON-LD query format |
 | `--at <TIME>` | Query at a specific point in time |
+| `--normalize-arrays` | Always wrap multi-value properties in arrays (graph-crawl JSON-LD queries only) |
+| `--bench` | Benchmark mode: time execution only and print the first 5 rows as a table (no full-result JSON formatting) |
+| `--explain` | Print the query plan without executing it |
+| `--remote <NAME>` | Execute against a remote server (by remote name, e.g., `origin`) |
 
 ## Description
 

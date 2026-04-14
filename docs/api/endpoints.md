@@ -703,6 +703,82 @@ curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:8090/v1/fluree/storage/objects/bafybeig...leafCid?ledger=mydb:main"
 ```
 
+## Nameservice Sync Endpoints
+
+Used by replication clients and peer instances to push ref updates, initialize
+ledgers, and fetch snapshots of all nameservice records. These are the
+server-side counterpart to the `fluree-db-nameservice-sync` crate.
+
+**Authorization:** All endpoints require a Bearer token with storage-proxy
+permissions. Per-alias endpoints verify the principal is authorized for that
+ledger. `/snapshot` filters results to the principal's authorized scope
+(`storage_all` returns everything; otherwise results are filtered to
+`storage_ledgers` and graph sources are excluded).
+
+**Availability:** These endpoints are only available on transaction servers
+(direct storage mode). Proxy-mode instances return `404 Not Found`.
+
+### POST /fluree/nameservice/refs/{alias}/commit
+
+Compare-and-set push for a ledger's commit-head ref.
+
+**Request Body:**
+
+```json
+{
+  "expected": { /* RefValue or null for initial creation */ },
+  "new":      { /* RefValue */ }
+}
+```
+
+**Response (200 OK — updated):**
+
+```json
+{ "status": "updated", "ref": { /* new RefValue */ } }
+```
+
+**Response (409 Conflict — CAS failed):**
+
+```json
+{ "status": "conflict", "actual": { /* current server-side RefValue */ } }
+```
+
+### POST /fluree/nameservice/refs/{alias}/index
+
+Compare-and-set push for a ledger's index-head ref. Same request/response shape
+as `/commit` above.
+
+### POST /fluree/nameservice/refs/{alias}/init
+
+Create a ledger entry in the nameservice if it does not already exist.
+Idempotent.
+
+**Response:**
+
+```json
+{ "created": true }   // new ledger entry was registered
+{ "created": false }  // already existed; no change
+```
+
+### GET /fluree/nameservice/snapshot
+
+Return a full snapshot of all ledger (`NsRecord`) and graph-source
+(`GraphSourceRecord`) records visible to the caller.
+
+**Response:**
+
+```json
+{
+  "ledgers":       [ /* NsRecord, … */ ],
+  "graph_sources": [ /* GraphSourceRecord, … */ ]
+}
+```
+
+**Status Codes:**
+- `200 OK` — snapshot returned
+- `401 Unauthorized` — missing/invalid storage-proxy token
+- `404 Not Found` — endpoint disabled (proxy mode)
+
 ## Query Endpoints
 
 ### POST /query
@@ -712,7 +788,10 @@ Execute a query against one or more ledgers.
 **URL:**
 ```
 POST /query
+GET  /query?query={urlencoded-sparql}   # SPARQL Protocol GET form
 ```
+
+The `GET` form is provided for W3C SPARQL Protocol compliance. It accepts SPARQL queries via the `query` query parameter; the body forms below are preferred for larger queries and for JSON-LD. The same form is available on the ledger-scoped `/query/{ledger}` route.
 
 **Request Headers:**
 ```http
@@ -946,6 +1025,46 @@ WHERE {
   << ex:alice ex:name ?name >> f:op ?op .
 }
 ORDER BY ?t'
+```
+
+### GET/POST /explain
+
+Return a query plan without executing the query. Accepts the same body formats and authentication as `/query` (JSON-LD, SPARQL via `application/sparql-query` or `?query=`, and JWS/VC signed requests).
+
+**URL:**
+```
+GET  /fluree/explain[/{ledger}]
+POST /fluree/explain[/{ledger}]
+```
+
+**Behavior:**
+- JSON-LD body: returns the logical plan for the parsed query.
+- SPARQL body: returns the plan for the parsed SPARQL query. The ledger-scoped endpoint (`/explain/{ledger}`) rejects queries containing `FROM` / `FROM NAMED` — strip dataset clauses to explain the core plan.
+- SPARQL UPDATE is rejected (HTTP 400) — use `/update` for updates.
+- Same ledger-scope enforcement for Bearer tokens as `/query`.
+
+**Response:**
+
+A JSON object describing the logical / physical plan. Shape mirrors the query engine's internal plan representation; treat it as informational and non-stable across releases.
+
+**Status Codes:**
+- `200 OK` — plan returned
+- `400 Bad Request` — SPARQL UPDATE sent, or `FROM` clauses on the ledger-scoped explain
+- `401 Unauthorized` — authentication required and missing
+- `404 Not Found` — ledger not found or not authorized
+
+**Examples:**
+
+```bash
+# Explain a SPARQL query
+curl -X POST http://localhost:8090/fluree/explain/mydb \
+  -H "Content-Type: application/sparql-query" \
+  --data 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10'
+
+# Explain a JSON-LD query
+curl -X POST http://localhost:8090/fluree/explain/mydb \
+  -H "Content-Type: application/json" \
+  -d '{"select":["?s"],"where":{"@id":"?s"}}'
 ```
 
 ## Nameservice Query Endpoint
@@ -2047,6 +2166,77 @@ Server-Sent Events (SSE) stream of nameservice changes for ledgers and graph sou
 > BM25 search **is** available in queries via the `f:graphSource` / `f:searchText` pattern in where clauses — see the query documentation for details.
 
 Graph source metadata can be discovered via the [POST /nameservice/query](#post-nameservicequery) endpoint using `@type: "f:GraphSourceDatabase"`.
+
+### POST /fluree/iceberg/map
+
+Map an Iceberg table (or R2RML-mapped relational source backed by Iceberg) as a graph source. Admin-protected — requires the admin Bearer token when an admin token is configured. Available only when the server is built with the `iceberg` feature.
+
+**URL:**
+```
+POST /fluree/iceberg/map
+```
+
+**Request Body:**
+
+```json
+{
+  "name": "warehouse-orders",
+  "mode": "rest",
+  "catalog_uri": "https://polaris.example.com/api/catalog",
+  "table": "sales.orders",
+  "branch": "main",
+  "r2rml": "@prefix rr: <http://www.w3.org/ns/r2rml#> . ...",
+  "r2rml_type": "text/turtle",
+  "warehouse": "prod",
+  "auth_bearer": "…",
+  "oauth2_token_url": "https://idp.example.com/token",
+  "oauth2_client_id": "…",
+  "oauth2_client_secret": "…",
+  "no_vended_credentials": false,
+  "s3_region": "us-east-1",
+  "s3_endpoint": "https://s3.example.com",
+  "s3_path_style": false,
+  "table_location": "s3://bucket/warehouse/sales/orders"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Graph source name (required) |
+| `mode` | string | `rest` (default) or `direct` |
+| `catalog_uri` | string | REST catalog URI (required in `rest` mode) |
+| `table` | string | Table identifier `namespace.table` (required in `rest` mode) |
+| `table_location` | string | S3 table location (required in `direct` mode) |
+| `r2rml` | string | Inline R2RML mapping (Turtle/JSON-LD). Omit to auto-generate a direct mapping. |
+| `r2rml_type` | string | Media type of `r2rml` (`text/turtle`, `application/ld+json`) |
+| `branch` | string | Branch name (default: `main`) |
+| `auth_bearer` | string | Bearer token for catalog auth |
+| `oauth2_*` | string | OAuth2 client-credentials flow for the catalog |
+| `warehouse` | string | Warehouse identifier |
+| `no_vended_credentials` | bool | Disable vended credentials |
+| `s3_region`, `s3_endpoint`, `s3_path_style` | | S3 overrides for `direct` mode |
+
+**Response:**
+
+```json
+{
+  "graph_source_id": "warehouse-orders:main",
+  "table_identifier": "sales.orders",
+  "catalog_uri": "https://polaris.example.com/api/catalog",
+  "connection_tested": true,
+  "mapping_source": "r2rml-inline",
+  "triples_map_count": 3,
+  "mapping_validated": true
+}
+```
+
+**Status Codes:**
+- `200 OK` — graph source created
+- `400 Bad Request` — missing required fields or invalid R2RML
+- `401/403` — admin auth required
+- `500 Internal Server Error` — catalog connection or mapping failure
+
+See also the CLI wrapper: [fluree iceberg map](../cli/iceberg.md).
 
 ## Admin Endpoints
 

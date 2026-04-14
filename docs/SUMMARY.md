@@ -32,6 +32,7 @@
   - [push](cli/push.md)
   - [publish](cli/publish.md)
   - [clone](cli/clone.md)
+  - [track](cli/track.md)
   - [server](cli/server.md)
   - [memory](cli/memory.md)
   - [mcp](cli/mcp.md)
