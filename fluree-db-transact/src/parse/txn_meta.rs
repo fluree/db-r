@@ -36,7 +36,19 @@ use crate::namespace::NamespaceRegistry;
 use crate::parse::jsonld::expand_datatype_iri;
 use fluree_db_novelty::{TxnMetaEntry, TxnMetaValue, MAX_TXN_META_BYTES, MAX_TXN_META_ENTRIES};
 use fluree_graph_json_ld::{details_with_policy, ParsedContext};
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, FLUREE_URN};
 use serde_json::Value;
+
+/// Namespace codes that are reserved for Fluree-generated provenance and must
+/// never appear as a user-supplied txn-meta predicate. System provenance
+/// (commit address, t, time, author, etc.) is emitted on the same commit
+/// subject as user metadata — allowing these namespaces would let a user
+/// clobber or shadow real provenance properties.
+///
+/// Why check by namespace code (not IRI string): the code is already resolved
+/// at the call site, comparison is O(1), and it's immune to IRI encoding
+/// tricks (percent-encoding, alternate prefixes, etc.).
+const RESERVED_PREDICATE_NAMESPACES: &[u16] = &[FLUREE_DB, FLUREE_COMMIT, FLUREE_URN];
 
 /// Reserved keys that are never transaction metadata.
 ///
@@ -86,6 +98,14 @@ pub fn extract_txn_meta(
         let sid = ns_registry.sid_for_iri(&expanded_iri);
         let predicate_ns = sid.namespace_code;
         let predicate_name = sid.name.to_string();
+
+        // Reject predicates in Fluree-reserved namespaces (see RESERVED_PREDICATE_NAMESPACES).
+        if RESERVED_PREDICATE_NAMESPACES.contains(&predicate_ns) {
+            return Err(TransactError::Parse(format!(
+                "txn-meta predicate '{}' (expanded: '{}') uses Fluree-reserved namespace and would collide with system provenance; use a different namespace",
+                key, expanded_iri
+            )));
+        }
 
         // Convert value(s) to TxnMetaValue(s)
         let meta_values = json_to_txn_meta_values(value, context, ns_registry, strict)?;
@@ -597,6 +617,90 @@ mod tests {
         let result = extract_txn_meta(&json, &ctx, &mut ns, true);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn test_reject_fluree_db_namespace_predicate() {
+        // A user cannot override system provenance by aliasing the FLUREE_DB
+        // namespace and using `db:t`, `db:address`, etc. as top-level keys.
+        let mut ns = test_registry();
+        let ctx_json = json!({ "db": "https://ns.flur.ee/db#" });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "@graph": [],
+            "db:t": 999999
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Fluree-reserved namespace"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_reject_fluree_db_namespace_predicate_full_iri() {
+        // Same check but with the full IRI written directly (no prefix alias).
+        let mut ns = test_registry();
+        let ctx = empty_context();
+
+        let json = json!({
+            "@graph": [],
+            "https://ns.flur.ee/db#address": "spoofed-address"
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Fluree-reserved namespace"));
+    }
+
+    #[test]
+    fn test_reject_fluree_commit_namespace_predicate() {
+        // Defense-in-depth: FLUREE_COMMIT namespace is also blocked as a predicate.
+        let mut ns = test_registry();
+        let ctx_json = json!({ "c": "fluree:commit:sha256:" });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "@graph": [],
+            "c:injected": "nope"
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Fluree-reserved namespace"));
+    }
+
+    #[test]
+    fn test_reject_fluree_urn_namespace_predicate() {
+        // Defense-in-depth: urn:fluree: is used for internal graph IRIs
+        // (`urn:fluree:{ledger}#txn-meta`, `#config`). Canonical split only
+        // lands on FLUREE_URN for bare `urn:fluree:name` forms; per-ledger
+        // IRIs with `#` split into their own namespace. The block still
+        // covers the former — the latter requires a separate graph-IRI check.
+        let mut ns = test_registry();
+        let ctx = empty_context();
+
+        let json = json!({
+            "@graph": [],
+            "urn:fluree:injected": "nope"
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Fluree-reserved namespace"));
     }
 
     #[test]

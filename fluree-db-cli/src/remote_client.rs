@@ -11,11 +11,45 @@
 //! updated tokens.
 
 use parking_lot::Mutex;
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use reqwest::{Client, StatusCode};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
+
+// RFC 3986 §3.3 — a path segment may contain `pchar = unreserved / pct-encoded
+// / sub-delims / ":" / "@"`. We encode only the characters that must not appear
+// literally in a URL path: the generic-delims that would otherwise reframe the
+// URL (`?`, `#`), whitespace, literal `%`, and a handful of hostile-looking
+// ASCII. Crucially, `:` is left untouched so ledger identifiers like
+// `ledger:branch` round-trip correctly through the server's path router.
+// `/` is preserved so ledger names with path separators still land in the
+// server's wildcard (`/*ledger`) capture.
+const LEDGER_PATH: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}')
+    .add(b'%');
+
+// Single-segment variant for routes that use a `:alias` matcher instead of a
+// wildcard; `/` must be encoded or it would split the URL path.
+const LEDGER_SEGMENT: &AsciiSet = &LEDGER_PATH.add(b'/');
+
+fn encode_ledger_path(s: &str) -> Cow<'_, str> {
+    utf8_percent_encode(s, LEDGER_PATH).into()
+}
+
+fn encode_ledger_segment(s: &str) -> Cow<'_, str> {
+    utf8_percent_encode(s, LEDGER_SEGMENT).into()
+}
 
 use crate::cli::PolicyArgs;
 use fluree_db_api::{ExportCommitsResponse, PushCommitsResponse};
@@ -553,7 +587,7 @@ impl RemoteLedgerClient {
             "{}/{}/{}",
             self.base_url,
             op,
-            urlencoding::encode(Self::ledger_tail(ledger)),
+            encode_ledger_path(Self::ledger_tail(ledger)),
         )
     }
 
@@ -890,7 +924,7 @@ impl RemoteLedgerClient {
         let url = format!(
             "{}/show/{}?commit={}",
             self.base_url,
-            Self::ledger_tail(ledger),
+            encode_ledger_path(Self::ledger_tail(ledger)),
             urlencoding::encode(commit_ref),
         );
         self.send_json(reqwest::Method::GET, &url, "application/json", None)
@@ -1205,7 +1239,7 @@ impl RemoteLedgerClient {
         let url = format!(
             "{}/storage/ns/{}",
             self.base_url,
-            urlencoding::encode(ledger)
+            encode_ledger_segment(ledger)
         );
 
         let resp = self
@@ -1368,6 +1402,37 @@ mod tests {
     #[test]
     fn test_extract_error_message_plain_text() {
         assert_eq!(extract_error_message("  nope  "), "nope");
+    }
+
+    #[test]
+    fn test_encode_ledger_path_preserves_colon_and_slash() {
+        // `:` is a valid pchar and MUST pass through so `ledger:branch`
+        // round-trips correctly through the server's path router.
+        assert_eq!(
+            encode_ledger_path("trigger-test:testing"),
+            "trigger-test:testing"
+        );
+        // `/` is preserved so nested ledger names land in the wildcard capture.
+        assert_eq!(encode_ledger_path("org/name:branch"), "org/name:branch");
+        // Truly unsafe chars still get encoded.
+        assert_eq!(encode_ledger_path("a b"), "a%20b");
+        assert_eq!(encode_ledger_path("a?b"), "a%3Fb");
+        assert_eq!(encode_ledger_path("a#b"), "a%23b");
+    }
+
+    #[test]
+    fn test_encode_ledger_segment_encodes_slash_preserves_colon() {
+        assert_eq!(encode_ledger_segment("ledger:branch"), "ledger:branch");
+        assert_eq!(encode_ledger_segment("a/b"), "a%2Fb");
+    }
+
+    #[test]
+    fn test_op_url_branched_ledger() {
+        let client = RemoteLedgerClient::new("http://localhost:8090/fluree", None);
+        assert_eq!(
+            client.op_url("query", "trigger-test:testing"),
+            "http://localhost:8090/fluree/query/trigger-test:testing"
+        );
     }
 
     #[test]

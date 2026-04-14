@@ -90,6 +90,7 @@ sha2.workspace = true
 reqwest = { workspace = true }
 bytes.workspace = true
 urlencoding = { workspace = true }
+percent-encoding = "2"
 open = "5"
 
 # Memory-mapped file I/O (flpack import)

@@ -2075,3 +2075,28 @@ mem:fact-01kp4rwyr6eas353wf1fwn2431 a mem:Fact ;
     mem:branch "misc/fixes" ;
     mem:createdAt "2026-04-14T01:15:09.446809+00:00"^^xsd:dateTime ;
     mem:factKind "command" .
+
+mem:fact-01kp5xkkavkfczvgm1vs3cvstn a mem:Fact ;
+    mem:content "SPARQL SERVICE Federation — Full Implementation Status\n\nPARSER (fluree-db-sparql):\n- COMPLETE: parse_service_pattern() in parse/query/pattern.rs dispatched from parse_group_graph_pattern on KwService\n- Handles SERVICE [SILENT] &lt;iri&gt;|?var { ... }\n- 8 unit tests in parse/query/tests.rs\n\nLOWERING (fluree-db-sparql/src/lower/):\n- COMPLETE: lower_service_pattern() in pattern.rs\n- Source text capture: LoweringContext carries optional source_text, extracts SERVICE body span for remote execution\n- lower_sparql_with_source() passes original SPARQL through for body capture\n- ServicePattern.source_body populated with Arc&lt;str&gt; of inner pattern text\n\nIR (fluree-db-query/src/ir.rs):\n- ServicePattern has source_body: Option&lt;Arc&lt;str&gt;&gt; field for remote execution\n- ServicePattern::with_source_body() constructor for SPARQL-originated queries\n- ServiceEndpoint::Iri / ::Var unchanged\n\nREMOTE SERVICE TRAIT (fluree-db-query/src/remote_service.rs):\n- RemoteServiceExecutor trait: async fn execute_remote_sparql(connection_name, ledger, sparql) -> Result&lt;RemoteQueryResult&gt;\n- RemoteQueryResult: vars Vec + rows Vec&lt;HashMap&lt;Arc&lt;str&gt;, Binding&gt;&gt;\n- parse_fluree_remote_ref(): parses \"fluree:remote:connection/ledger\" to (connection, ledger)\n- FLUREE_REMOTE_PREFIX = \"fluree:remote:\"\n\nSPARQL RESULTS JSON PARSER (fluree-db-query/src/sparql_results.rs):\n- parse_sparql_results_json(): W3C application/sparql-results+json to RemoteQueryResult\n- URIs to Binding::Iri, literals to Binding::Lit with proper DatatypeConstraint\n- Handles typed literals, language tags, blank nodes\n\nEXECUTION (fluree-db-query/src/service.rs):\n- ServiceOperator dispatch: fluree:ledger: local, fluree:remote: remote, other error\n- execute_against_remote(): calls ctx.remote_service trait, builds SELECT * WHERE {source_body}\n- Variable endpoint path also handles fluree:remote: scheme\n\nCONTEXT WIRING:\n- ExecutionContext.remote_service: Option&lt;&amp;dyn RemoteServiceExecutor&gt;\n- ContextConfig.remote_service in execute/runner.rs\n- view/query.rs passes self.remote_service_executor() into ContextConfig\n\nAPI LAYER (fluree-db-api/src/remote_service.rs):\n- RemoteConnectionRegistry, RemoteConnection (base_url, token, timeout)\n- HttpRemoteService (behind search-remote-client feature): reqwest POST to /v1/fluree/query/{ledger}\n- MockRemoteService: canned responses for testing\n- FlureeBuilder::remote_connection(name, base_url, token)\n- Fluree.set_remote_service(): inject custom executor\n\nENDPOINT SCHEME: fluree:remote:&lt;connection&gt;/&lt;ledger&gt;\n- connection = alias registered at build time\n- ledger = remote ledger ID (e.g., \"mydb:main\")\n- Maps to POST {base_url}/v1/fluree/query/{ledger} with Bearer token\n\nKNOWN LIMITATIONS (v1):\n- Uncorrelated only, no bound-join/VALUES injection\n- Remote results use Binding::Iri (no local SID resolution)\n- JSON-LD queries cannot use remote SERVICE (no source_body)\n- No per-endpoint cost accounting or query cancellation propagation\n- Policy engine does not filter remote-origin bindings" ;
+    mem:tag "SERVICE" ;
+    mem:tag "SPARQL" ;
+    mem:tag "architecture" ;
+    mem:tag "execution" ;
+    mem:tag "federation" ;
+    mem:tag "remote" ;
+    mem:tag "trait" ;
+    mem:scope mem:repo ;
+    mem:sensitivity "public" ;
+    mem:artifactRef "fluree-db-api/src/lib.rs" ;
+    mem:artifactRef "fluree-db-api/src/remote_service.rs" ;
+    mem:artifactRef "fluree-db-query/src/context.rs" ;
+    mem:artifactRef "fluree-db-query/src/ir.rs" ;
+    mem:artifactRef "fluree-db-query/src/remote_service.rs" ;
+    mem:artifactRef "fluree-db-query/src/service.rs" ;
+    mem:artifactRef "fluree-db-query/src/sparql_results.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/lower/pattern.rs" ;
+    mem:artifactRef "fluree-db-sparql/src/parse/query/pattern.rs" ;
+    mem:branch "claude/frosty-shirley" ;
+    mem:supersedes mem:fact-01knykc5at3k85pzd5t9wcdfk1 ;
+    mem:createdAt "2026-04-14T11:56:40.155792+00:00"^^xsd:dateTime ;
+    mem:factKind "architecture" .

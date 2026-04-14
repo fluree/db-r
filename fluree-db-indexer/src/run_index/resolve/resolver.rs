@@ -24,7 +24,15 @@ use fluree_db_core::temporal::{
 use fluree_db_core::value_id::{ObjKey, ObjKind};
 use fluree_db_core::DatatypeDictId;
 use fluree_db_core::GraphId;
+use fluree_vocab::namespaces::{FLUREE_COMMIT, FLUREE_DB, FLUREE_URN};
 use fluree_vocab::{db, fluree};
+
+/// Namespace codes reserved for Fluree system provenance. User-supplied
+/// `TxnMetaEntry`s must never land here — `extract_txn_meta` in
+/// fluree-db-transact rejects them at parse time. This list is duplicated
+/// (not imported) to avoid adding a transact → indexer layering inversion;
+/// the two sites are asserted in sync by the debug_assert in emit paths.
+const RESERVED_PREDICATE_NAMESPACES: &[u16] = &[FLUREE_DB, FLUREE_COMMIT, FLUREE_URN];
 use num_bigint::BigInt;
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
@@ -448,6 +456,12 @@ impl CommitResolver {
         dicts: &mut GlobalDicts,
         writer: &mut W,
     ) -> Result<u32, ResolverError> {
+        debug_assert!(
+            !RESERVED_PREDICATE_NAMESPACES.contains(&entry.predicate_ns),
+            "TxnMetaEntry in reserved namespace {} reached resolver — extract_txn_meta guard bypassed?",
+            entry.predicate_ns
+        );
+
         // Resolve predicate using ns_code + name
         let p_prefix = self.lookup_prefix(entry.predicate_ns);
         let p_id = dicts
@@ -1715,6 +1729,12 @@ impl SharedResolverState {
         entry: &fluree_db_novelty::TxnMetaEntry,
         chunk: &mut RebuildChunk,
     ) -> Result<u32, ResolverError> {
+        debug_assert!(
+            !RESERVED_PREDICATE_NAMESPACES.contains(&entry.predicate_ns),
+            "TxnMetaEntry in reserved namespace {} reached resolver — extract_txn_meta guard bypassed?",
+            entry.predicate_ns
+        );
+
         let p_prefix = self
             .ns_prefixes
             .get(&entry.predicate_ns)
