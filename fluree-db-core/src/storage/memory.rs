@@ -230,6 +230,11 @@ impl ContentStore for MemoryContentStore {
         Ok(())
     }
 
+    async fn release(&self, id: &ContentId) -> Result<()> {
+        self.data.write().remove(id);
+        Ok(())
+    }
+
     async fn get_range(&self, id: &ContentId, range: std::ops::Range<u64>) -> Result<Vec<u8>> {
         let data = self.data.read();
         let full = data

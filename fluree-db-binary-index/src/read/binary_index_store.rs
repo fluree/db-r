@@ -2277,6 +2277,10 @@ mod tests {
             self.inner.put_with_id(id, bytes).await
         }
 
+        async fn release(&self, id: &ContentId) -> fluree_db_core::Result<()> {
+            self.inner.release(id).await
+        }
+
         async fn get_range(
             &self,
             id: &ContentId,

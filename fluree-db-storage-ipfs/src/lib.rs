@@ -1,18 +1,39 @@
 //! IPFS storage backend for Fluree DB.
 //!
-//! Provides both `ContentStore` and `Storage` implementations backed by IPFS
-//! via the Kubo HTTP RPC API (`/api/v0/block/*`).
+//! Implements [`ContentStore`] (CID-first) backed by IPFS via the Kubo HTTP
+//! RPC API (`/api/v0/block/*`). Use via
+//! `StorageBackend::Permanent(Arc::new(IpfsStorage::new(...)))` to integrate
+//! with a `Fluree` instance.
 //!
 //! ## Architecture
 //!
-//! Fluree's `ContentId` is a CIDv1 with SHA2-256 multihash and Fluree-specific
+//! Fluree's [`ContentId`] is a CIDv1 with SHA2-256 multihash and Fluree-specific
 //! multicodec values (private-use range 0x300001–0x30000B). Kubo accepts these
 //! custom codecs in `block/put` and resolves blocks by multihash — so Fluree's
 //! native CIDs work directly with IPFS, no translation layer needed.
 //!
-//! The `Storage` trait implementation bridges the address-based API
-//! (`fluree:ipfs://path/{hash}.ext`) to CID-based IPFS operations by extracting
-//! the SHA-256 hash from addresses.
+//! Unlike file/S3/memory backends, IPFS does **not** implement the address-based
+//! [`Storage`] trait. IPFS is natively content-addressed and cannot meaningfully
+//! support arbitrary address-based writes or prefix listing. It is therefore
+//! represented as a [`StorageBackend::Permanent`] in the Fluree API.
+//!
+//! ## Limitations
+//!
+//! - **No true deletion**: IPFS content is immutable. [`ContentStore::release`]
+//!   unpins a block, making it eligible for Kubo's garbage collector — but the
+//!   block may persist if reachable from other pins or pinned remotely.
+//! - **No prefix listing**: IPFS has no concept of enumeration. Admin
+//!   operations that depend on listing (e.g., fast-path ledger drop) fall back
+//!   to CID-walking, which is slower but correct.
+//! - **No mutable nameservice**: `IpfsStorage` is suitable for storing
+//!   content-addressed data (commits, indexes) but not for nameservice records
+//!   that require mutable, address-based writes. Pair it with a separate
+//!   nameservice (e.g., [`MemoryNameService`] for tests, or a dedicated DB
+//!   for production).
+//!
+//! [`Storage`]: fluree_db_core::Storage
+//! [`StorageBackend::Permanent`]: fluree_db_core::StorageBackend::Permanent
+//! [`MemoryNameService`]: fluree_db_nameservice::memory::MemoryNameService
 //!
 //! ## Usage
 //!
@@ -28,15 +49,14 @@ pub use kubo::KuboClient;
 use async_trait::async_trait;
 use fluree_db_core::content_id::ContentId;
 use fluree_db_core::content_kind::ContentKind;
-use fluree_db_core::storage::{
-    ContentAddressedWrite, ContentStore, ContentWriteResult, StorageMethod, StorageRead,
-    StorageWrite,
-};
+use fluree_db_core::storage::ContentStore;
 
 /// IPFS storage backend backed by a Kubo node.
 ///
-/// Implements both `ContentStore` (CID-first) and the full `Storage` trait
-/// (address-based), enabling use with `Fluree<IpfsStorage, N>` generics.
+/// Implements [`ContentStore`] directly — IPFS is natively content-addressed,
+/// so operations take `ContentId` rather than address strings. Use via
+/// `StorageBackend::Permanent(Arc::new(IpfsStorage::new(...)))` to integrate
+/// with a `Fluree` instance.
 #[derive(Debug, Clone)]
 pub struct IpfsStorage {
     kubo: KuboClient,
@@ -170,6 +190,15 @@ impl ContentStore for IpfsStorage {
         Ok(expected_id)
     }
 
+    async fn release(&self, id: &ContentId) -> fluree_db_core::error::Result<()> {
+        let cid_str = id.to_string();
+        let raw_cid = Self::to_raw_cid(&cid_str).map_err(fluree_db_core::error::Error::storage)?;
+        self.kubo
+            .pin_rm(&raw_cid)
+            .await
+            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))
+    }
+
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::error::Result<()> {
         if !id.verify(bytes) {
             return Err(fluree_db_core::error::Error::storage(format!(
@@ -196,120 +225,5 @@ impl ContentStore for IpfsStorage {
 
         self.maybe_pin(&response.key).await;
         Ok(())
-    }
-}
-
-// ============================================================================
-// Storage traits (address-based interface)
-// ============================================================================
-
-impl StorageMethod for IpfsStorage {
-    fn storage_method(&self) -> &str {
-        fluree_db_core::STORAGE_METHOD_IPFS
-    }
-}
-
-#[async_trait]
-impl StorageRead for IpfsStorage {
-    async fn read_bytes(&self, addr: &str) -> fluree_db_core::error::Result<Vec<u8>> {
-        let hash_hex = address::extract_hash_hex(addr)
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        let cid_str = address::hash_hex_to_cid_string(hash_hex)
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        self.kubo
-            .block_get(&cid_str)
-            .await
-            .map_err(fluree_db_core::error::Error::from)
-    }
-
-    async fn exists(&self, addr: &str) -> fluree_db_core::error::Result<bool> {
-        let hash_hex = address::extract_hash_hex(addr)
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        let cid_str = address::hash_hex_to_cid_string(hash_hex)
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        match self.kubo.block_stat(&cid_str).await {
-            Ok(_) => Ok(true),
-            Err(IpfsStorageError::NotFound(_)) => Ok(false),
-            Err(e) => Err(fluree_db_core::error::Error::storage(e.to_string())),
-        }
-    }
-
-    async fn list_prefix(&self, _prefix: &str) -> fluree_db_core::error::Result<Vec<String>> {
-        // IPFS is a content-addressed store — there is no concept of prefix
-        // listing. Admin operations that require this (drop, GC) must use
-        // alternative strategies with IPFS (e.g., manifest-based tracking).
-        Err(fluree_db_core::error::Error::storage(
-            "IPFS does not support prefix listing; use manifest-based tracking instead",
-        ))
-    }
-}
-
-#[async_trait]
-impl StorageWrite for IpfsStorage {
-    async fn write_bytes(&self, _addr: &str, bytes: &[u8]) -> fluree_db_core::error::Result<()> {
-        // For non-CAS writes (e.g., nameservice records), store as raw blocks.
-        let response = self
-            .kubo
-            .block_put(bytes, None, Some("sha2-256"))
-            .await
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        self.maybe_pin(&response.key).await;
-        Ok(())
-    }
-
-    async fn delete(&self, addr: &str) -> fluree_db_core::error::Result<()> {
-        // IPFS content is immutable — "deletion" means unpinning so the block
-        // becomes eligible for Kubo's garbage collector.
-        let hash_hex = address::extract_hash_hex(addr)
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        let cid_str = address::hash_hex_to_cid_string(hash_hex)
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        self.kubo
-            .pin_rm(&cid_str)
-            .await
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl ContentAddressedWrite for IpfsStorage {
-    async fn content_write_bytes_with_hash(
-        &self,
-        kind: ContentKind,
-        _ledger_id: &str,
-        content_hash_hex: &str,
-        bytes: &[u8],
-    ) -> fluree_db_core::error::Result<ContentWriteResult> {
-        let codec = Self::codec_hex(kind);
-
-        let response = self
-            .kubo
-            .block_put(bytes, Some(&codec), Some("sha2-256"))
-            .await
-            .map_err(|e| fluree_db_core::error::Error::storage(e.to_string()))?;
-
-        tracing::debug!(
-            ipfs_cid = %response.key,
-            hash = %content_hash_hex,
-            size = response.size,
-            "content write to IPFS"
-        );
-
-        self.maybe_pin(&response.key).await;
-
-        // Build the canonical Fluree address for this content
-        let address = fluree_db_core::storage::content_address(
-            fluree_db_core::STORAGE_METHOD_IPFS,
-            kind,
-            _ledger_id,
-            content_hash_hex,
-        );
-
-        Ok(ContentWriteResult {
-            address,
-            content_hash: content_hash_hex.to_string(),
-            size_bytes: bytes.len(),
-        })
     }
 }
