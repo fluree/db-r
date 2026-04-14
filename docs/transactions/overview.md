@@ -289,8 +289,8 @@ Each commit includes rich metadata:
 - `flakes_retracted`: Number of retractions
 
 **Provenance:**
-- `author`: DID of transaction author (if signed)
-- `message`: Optional commit message
+- `author`: Transaction author (from signed credential DID, or explicit `CommitOpts.author`)
+- `message`: Optional commit message (from `CommitOpts.message`)
 - `previous_commit_id`: ContentId of previous commit
 
 See [Commit Receipts](commit-receipts.md) for details.

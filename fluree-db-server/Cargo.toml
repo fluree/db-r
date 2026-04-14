@@ -22,13 +22,15 @@ name = "fluree_db_server"
 path = "src/lib.rs"
 
 [features]
-default = ["native", "credential", "iceberg"]
+default = ["native", "credential", "iceberg", "shacl"]
 native = ["fluree-db-api/native"]
 # AWS S3 storage + DynamoDB nameservice (via connection JSON-LD config)
 aws = ["fluree-db-api/aws"]
 # DID/JWS/VerifiableCredential support for signed requests
 # When disabled, signed requests pass through as regular JSON bodies
 credential = ["fluree-db-api/credential"]
+# SHACL constraint validation at transaction time
+shacl = ["fluree-db-api/shacl"]
 # Enable OIDC JWT verification via JWKS (RS256 tokens from external IdPs)
 oidc = ["fluree-db-credential/oidc", "dep:jsonwebtoken"]
 # Iceberg / R2RML graph source support

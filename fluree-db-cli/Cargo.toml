@@ -16,10 +16,12 @@ name = "fluree_db_cli"
 path = "src/lib.rs"
 
 [features]
-default = ["server", "iceberg"]
+default = ["server", "iceberg", "shacl"]
 server = ["dep:fluree-db-server"]
 iceberg = ["fluree-db-api/iceberg"]
 aws = ["fluree-db-server/aws"]
+# SHACL constraint validation at transaction time
+shacl = ["fluree-db-api/shacl"]
 otel = [
     "dep:tracing-opentelemetry",
     "dep:opentelemetry",

@@ -11,7 +11,7 @@ use fluree_db_core::{ContentId, ContentKind, ContentStore, DictNovelty, Flake, T
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
 use fluree_db_nameservice::{CasResult, NameService, RefKind, RefPublisher, RefValue};
 use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes};
-use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnSignature};
+use fluree_db_novelty::{Commit, CommitRef, SigningKey, TxnMetaEntry, TxnMetaValue, TxnSignature};
 use fluree_db_query::BinaryRangeProvider;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -226,12 +226,12 @@ where
     // Move commit options into locals so we can pass ownership where useful
     // (e.g., txn_meta) without forcing clones, while still using other fields later.
     let CommitOpts {
-        message: _message,
-        author: _author,
+        message,
+        author,
         raw_txn,
         signing_key,
         txn_signature,
-        txn_meta,
+        mut txn_meta,
         graph_delta,
         namespace_delta: override_ns_delta,
         skip_backpressure,
@@ -239,6 +239,28 @@ where
         merge_parents,
         timestamp: opt_timestamp,
     } = opts;
+
+    // For signed transactions the txn_signature.signer is the cryptographically
+    // verified author — it overrides any user-supplied CommitOpts.author value.
+    let effective_author = txn_signature
+        .as_ref()
+        .map(|sig| sig.signer.clone())
+        .or(author);
+
+    if let Some(ref author_val) = effective_author {
+        txn_meta.push(TxnMetaEntry::new(
+            fluree_vocab::namespaces::FLUREE_DB,
+            fluree_vocab::db::AUTHOR,
+            TxnMetaValue::String(author_val.clone()),
+        ));
+    }
+    if let Some(ref msg) = message {
+        txn_meta.push(TxnMetaEntry::new(
+            fluree_vocab::namespaces::FLUREE_DB,
+            fluree_vocab::db::MESSAGE,
+            TxnMetaValue::String(msg.clone()),
+        ));
+    }
 
     let commit_span = tracing::debug_span!(
         "txn_commit",

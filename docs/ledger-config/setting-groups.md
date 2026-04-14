@@ -83,7 +83,7 @@ GRAPH <urn:fluree:mydb:main#config> {
 
 **Group predicate**: `f:shaclDefaults`
 
-Controls SHACL shape validation at transaction time. Requires the `shacl` feature flag at compile time.
+Controls SHACL shape validation at transaction time.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

@@ -33,14 +33,15 @@ fluree-db-api = "0.1"
 Available feature flags:
 
 - `native` (default) - File storage support
+- `credential` (default in server/CLI) - DID/JWS/VerifiableCredential support for signed queries and transactions
+- `shacl` (default in server/CLI) - SHACL constraint validation
+- `iceberg` (default in server/CLI) - Apache Iceberg/R2RML graph source support
 - `aws` - AWS-backed storage support (S3, storage-backed nameservice). Enables `FlureeBuilder::s3()` and S3-based JSON-LD configs.
+- `ipfs` - IPFS-backed storage via Kubo HTTP RPC
 - `vector` - Embedded vector similarity search (HNSW indexes via usearch)
-- `credential` - DID/JWS/VerifiableCredential support for signed queries and transactions (pulls in crypto dependencies like `ed25519-dalek`, `bs58`). Off by default to reduce compile times.
-- `iceberg` - Apache Iceberg/R2RML graph source support (pulls in AWS SDK + native deps)
-- `shacl` - SHACL validation support (requires fluree-db-transact + fluree-db-shacl)
 - `search-remote-client` - Remote search service client (HTTP client for remote BM25 and vector search services)
 - `aws-testcontainers` - Opt-in LocalStack-backed S3/DynamoDB tests (auto-start via testcontainers)
-- `full` - Enable all features (`native`, `credential`, `iceberg`, `shacl`)
+- `full` - Convenience bundle: `native`, `credential`, `iceberg`, `shacl`, `ipfs`
 
 ## Quick Start
 

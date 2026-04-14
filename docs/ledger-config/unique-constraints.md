@@ -1,6 +1,6 @@
 # Unique Constraints (`f:enforceUnique`)
 
-Fluree supports transaction-time enforcement of property value uniqueness via `f:enforceUnique`. This is complementary to SHACL — it runs independently and does not require the `shacl` feature flag.
+Fluree supports transaction-time enforcement of property value uniqueness via `f:enforceUnique`. This is complementary to SHACL — it runs independently.
 
 ## How it works
 

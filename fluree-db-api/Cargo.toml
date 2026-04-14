@@ -34,7 +34,7 @@ search-remote-client = ["dep:reqwest"]
 vector = ["fluree-db-query/vector"]
 # IPFS-backed storage (via Kubo HTTP RPC)
 ipfs = ["dep:fluree-db-storage-ipfs"]
-# Convenience: all features enabled
+# Convenience bundle (excludes vector, aws, and test-only features)
 full = ["native", "credential", "iceberg", "shacl", "ipfs"]
 
 [dependencies]

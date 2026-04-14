@@ -329,13 +329,16 @@ let result = fluree.graph_at("mydb:main", TimeSpec::AtT(42))
 | Flag | What It Enables |
 |------|-----------------|
 | `native` (default) | File storage, filesystem nameservice, moka cache |
+| `credential` (default) | JWS / DID / VerifiableCredential support |
+| `shacl` (default) | SHACL constraint validation |
+| `iceberg` (default) | Apache Iceberg REST catalog graph sources |
 | `aws` | S3 + DynamoDB storage backends |
-| `credential` | JWS / DID / VerifiableCredential support |
-| `shacl` | SHACL constraint validation |
-| `iceberg` | Apache Iceberg REST catalog graph sources |
+| `ipfs` | IPFS-backed storage via Kubo HTTP RPC |
 | `vector` | Embedded HNSW vector search |
-| `import` | Turtle bulk import support |
-| `full` | Everything above |
+| `oidc` | OIDC JWT verification via JWKS (RS256 tokens from external IdPs) |
+| `swagger-ui` | Swagger UI endpoint at `/swagger-ui` |
+| `otel` | OpenTelemetry tracing export |
+| `full` (api only) | Convenience bundle: `native`, `credential`, `iceberg`, `shacl`, `ipfs` |
 
 ---
 

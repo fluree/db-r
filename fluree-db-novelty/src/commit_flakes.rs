@@ -178,12 +178,12 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_id: &str, t: i64) -> Vec<F
         ));
     }
 
-    // 9. db#author (optional: transaction signer DID)
-    if let Some(txn_sig) = &commit.txn_signature {
+    // 9. db#txn (optional: transaction CID string)
+    if let Some(txn_id) = &commit.txn {
         flakes.push(Flake::new(
             commit_sid.clone(),
-            Sid::new(FLUREE_DB, db::AUTHOR),
-            FlakeValue::String(txn_sig.signer.clone()),
+            Sid::new(FLUREE_DB, db::TXN),
+            FlakeValue::String(txn_id.to_string()),
             string_dt.clone(),
             t,
             true,
@@ -191,13 +191,38 @@ pub fn generate_commit_flakes(commit: &Commit, ledger_id: &str, t: i64) -> Vec<F
         ));
     }
 
-    // 10. db#txn (optional: transaction CID string)
-    if let Some(txn_id) = &commit.txn {
+    // 11+. txn_meta entries (user-provided and system-generated metadata)
+    for entry in &commit.txn_meta {
+        let pred_sid = Sid::new(entry.predicate_ns, &entry.predicate_name);
+        let (value, dt) = match &entry.value {
+            crate::TxnMetaValue::String(s) => (FlakeValue::String(s.clone()), string_dt.clone()),
+            crate::TxnMetaValue::TypedLiteral {
+                value,
+                dt_ns,
+                dt_name,
+            } => {
+                let dt_sid = Sid::new(*dt_ns, dt_name);
+                (FlakeValue::String(value.clone()), dt_sid)
+            }
+            crate::TxnMetaValue::LangString { value, lang: _ } => {
+                (FlakeValue::String(value.clone()), string_dt.clone())
+            }
+            crate::TxnMetaValue::Ref { ns, name } => {
+                (FlakeValue::Ref(Sid::new(*ns, name)), ref_dt.clone())
+            }
+            crate::TxnMetaValue::Long(n) => (FlakeValue::Long(*n), long_dt.clone()),
+            crate::TxnMetaValue::Double(n) => {
+                (FlakeValue::Double(*n), Sid::new(XSD, xsd_names::DOUBLE))
+            }
+            crate::TxnMetaValue::Boolean(b) => {
+                (FlakeValue::Boolean(*b), Sid::new(XSD, xsd_names::BOOLEAN))
+            }
+        };
         flakes.push(Flake::new(
-            commit_sid,
-            Sid::new(FLUREE_DB, db::TXN),
-            FlakeValue::String(txn_id.to_string()),
-            string_dt,
+            commit_sid.clone(),
+            pred_sid,
+            value,
+            dt,
             t,
             true,
             None,

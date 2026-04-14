@@ -148,11 +148,12 @@ These features are controlled at compile time via Cargo:
 | `aws` | No | AWS-backed storage support (S3, storage-backed nameservice). Enables `FlureeBuilder::s3()` and S3-based JSON-LD configs. |
 | `credential` | No | DID/JWS/VerifiableCredential support for signed queries/transactions. Pulls in crypto dependencies (`ed25519-dalek`, `bs58`). |
 | `iceberg` | No | Apache Iceberg/R2RML graph source support |
-| `shacl` | No | SHACL validation support (requires fluree-db-transact + fluree-db-shacl) |
+| `shacl` | No | SHACL constraint validation (requires fluree-db-transact + fluree-db-shacl). Default in server/CLI. |
 | `vector` | No | Embedded vector similarity search (HNSW indexes via usearch) |
+| `ipfs` | No | IPFS-backed storage via Kubo HTTP RPC |
 | `search-remote-client` | No | HTTP client for remote BM25 and vector search services |
 | `aws-testcontainers` | No | Opt-in LocalStack-backed S3/DynamoDB tests (auto-start via testcontainers) |
-| `full` | No | Enable all features (`native`, `credential`, `iceberg`, `shacl`) |
+| `full` | No | Convenience bundle: `native`, `credential`, `iceberg`, `shacl`, `ipfs` |
 
 Example:
 ```toml
@@ -166,6 +167,10 @@ fluree-db-api = { path = "../fluree-db-api", features = ["native", "credential"]
 |---------|---------|-------------|
 | `native` | Yes | File storage support (forwards to `fluree-db-api/native`) |
 | `credential` | Yes | Signed request verification (forwards to `fluree-db-api/credential`) |
+| `shacl` | Yes | SHACL constraint validation (forwards to `fluree-db-api/shacl`) |
+| `iceberg` | Yes | Apache Iceberg/R2RML graph source support (forwards to `fluree-db-api/iceberg`) |
+| `aws` | No | AWS S3 storage + DynamoDB nameservice (forwards to `fluree-db-api/aws`) |
+| `oidc` | No | OIDC JWT verification via JWKS (RS256 tokens from external IdPs) |
 | `swagger-ui` | No | Swagger UI endpoint |
 | `otel` | No | OpenTelemetry tracing |
 

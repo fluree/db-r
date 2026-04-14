@@ -2,8 +2,6 @@
 
 SHACL (Shapes Constraint Language) is a W3C standard for defining constraints on graph data. In Fluree, SHACL shapes are validated at transaction time — invalid data is rejected before it's committed.
 
-> **Feature flag:** SHACL requires the `shacl` feature flag at compile time. Pre-built binaries and Docker images include it.
-
 ## Quick start
 
 ### 1. Enable SHACL validation

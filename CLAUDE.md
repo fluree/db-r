@@ -51,13 +51,15 @@ Generic over `S: Storage + 'static` and `N: NameService`. See `docs/reference/cr
 
 | Flag | What it enables | Key crates |
 |------|-----------------|------------|
-| `native` (default for api/server) | FileStorage, filesystem nameservice, moka cache | core, api, connection, nameservice |
-| `aws` | S3 + DynamoDB storage backends | api, connection, storage-aws, iceberg |
-| `credential` | JWS / VerifiableCredential verification | api, server, novelty |
-| `shacl` | SHACL constraint validation | api, transact |
-| `iceberg` | Iceberg REST catalog graph sources | api |
+| `native` (default for api/server/cli) | FileStorage, filesystem nameservice, moka cache | core, api, connection, nameservice |
+| `credential` (default for server) | JWS / VerifiableCredential verification | api, server |
+| `shacl` (default for server/cli) | SHACL constraint validation | api, transact |
+| `iceberg` (default for server/cli) | Iceberg REST catalog graph sources | api |
+| `aws` | S3 + DynamoDB storage backends | api, connection, storage-aws |
+| `ipfs` | IPFS-backed storage (Kubo HTTP RPC) | api, storage-ipfs |
 | `vector` | Embedded HNSW vector search (usearch) | api, query |
-| `import` | Turtle bulk import support | transact |
+| `oidc` | OIDC JWT verification via JWKS | server |
+| `swagger-ui` | Swagger UI endpoint | server |
 | `otel` | OpenTelemetry tracing export | server, cli |
 | `aws-testcontainers` | LocalStack Docker integration tests | api, connection |
 

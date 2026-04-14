@@ -1604,3 +1604,156 @@ async fn test_txn_meta_full_iri_in_from() {
         })
         .await;
 }
+
+// =============================================================================
+// CommitOpts author and message tests
+// =============================================================================
+
+#[tokio::test]
+async fn test_commit_opts_author_and_message_in_txn_meta() {
+    use fluree_db_core::{range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeTest};
+    use fluree_db_transact::CommitOpts;
+    use fluree_db_transact::TxnOpts;
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/txn-meta-commit-opts:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let data = json!({
+        "@context": {"ex": "http://example.org/"},
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+    });
+
+    let commit_opts = CommitOpts::with_message("initial load").author("did:example:admin");
+
+    let result = fluree
+        .insert_with_opts(
+            ledger,
+            &data,
+            TxnOpts::default(),
+            commit_opts,
+            &fluree_db_api::IndexConfig::default(),
+        )
+        .await
+        .expect("insert with author+message");
+
+    let ledger = &result.ledger;
+    let t = result.receipt.t;
+
+    let author_pred = fluree_db_core::Sid::new(
+        fluree_vocab::namespaces::FLUREE_DB,
+        fluree_vocab::db::AUTHOR,
+    );
+    let author_flakes = range_with_overlay(
+        &ledger.snapshot,
+        fluree_db_core::TXN_META_GRAPH_ID,
+        ledger.novelty.as_ref(),
+        IndexType::Post,
+        RangeTest::Eq,
+        RangeMatch::predicate_object(author_pred, FlakeValue::String("did:example:admin".into())),
+        fluree_db_core::RangeOptions::default().with_to_t(t),
+    )
+    .await
+    .expect("author lookup");
+
+    assert!(
+        !author_flakes.is_empty(),
+        "f:author should be in txn-meta novelty, got no flakes"
+    );
+
+    let message_pred = fluree_db_core::Sid::new(
+        fluree_vocab::namespaces::FLUREE_DB,
+        fluree_vocab::db::MESSAGE,
+    );
+    let message_flakes = range_with_overlay(
+        &ledger.snapshot,
+        fluree_db_core::TXN_META_GRAPH_ID,
+        ledger.novelty.as_ref(),
+        IndexType::Post,
+        RangeTest::Eq,
+        RangeMatch::predicate_object(message_pred, FlakeValue::String("initial load".into())),
+        fluree_db_core::RangeOptions::default().with_to_t(t),
+    )
+    .await
+    .expect("message lookup");
+
+    assert!(
+        !message_flakes.is_empty(),
+        "f:message should be in txn-meta novelty, got no flakes"
+    );
+}
+
+#[tokio::test]
+async fn test_commit_opts_message_only_no_author() {
+    use fluree_db_core::{range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeTest, Sid};
+    use fluree_db_transact::CommitOpts;
+    use fluree_db_transact::TxnOpts;
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/txn-meta-message-only:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let data = json!({
+        "@context": {"ex": "http://example.org/"},
+        "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+    });
+
+    let result = fluree
+        .insert_with_opts(
+            ledger,
+            &data,
+            TxnOpts::default(),
+            CommitOpts::with_message("schema migration v2"),
+            &fluree_db_api::IndexConfig::default(),
+        )
+        .await
+        .expect("insert with message only");
+
+    let ledger = &result.ledger;
+    let t = result.receipt.t;
+
+    let message_pred = Sid::new(
+        fluree_vocab::namespaces::FLUREE_DB,
+        fluree_vocab::db::MESSAGE,
+    );
+    let message_flakes = range_with_overlay(
+        &ledger.snapshot,
+        fluree_db_core::TXN_META_GRAPH_ID,
+        ledger.novelty.as_ref(),
+        IndexType::Post,
+        RangeTest::Eq,
+        RangeMatch::predicate_object(
+            message_pred,
+            FlakeValue::String("schema migration v2".into()),
+        ),
+        fluree_db_core::RangeOptions::default().with_to_t(t),
+    )
+    .await
+    .expect("message lookup");
+
+    assert!(
+        !message_flakes.is_empty(),
+        "f:message should be in txn-meta novelty"
+    );
+
+    let author_pred = Sid::new(
+        fluree_vocab::namespaces::FLUREE_DB,
+        fluree_vocab::db::AUTHOR,
+    );
+    let author_flakes = range_with_overlay(
+        &ledger.snapshot,
+        fluree_db_core::TXN_META_GRAPH_ID,
+        ledger.novelty.as_ref(),
+        IndexType::Spot,
+        RangeTest::Eq,
+        RangeMatch::predicate(author_pred),
+        fluree_db_core::RangeOptions::default().with_to_t(t),
+    )
+    .await
+    .expect("author scan");
+
+    assert!(
+        author_flakes.is_empty(),
+        "f:author should NOT be in txn-meta when no author was set"
+    );
+}
