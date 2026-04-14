@@ -1,7 +1,7 @@
 //! Garbage collection implementation
 //!
 //! Provides the `clean_garbage` function that walks the prev-index chain,
-//! identifies gc-eligible indexes, and deletes obsolete nodes.
+//! identifies gc-eligible indexes, and releases obsolete CAS artifacts.
 //!
 //! # GC semantics
 //!
@@ -13,10 +13,12 @@
 //!
 //! This means GC operates on pairs: (newer root with manifest, older root to delete).
 
-use super::{load_garbage_record, CleanGarbageConfig, CleanGarbageResult};
+use super::{parse_garbage_record, CleanGarbageConfig, CleanGarbageResult};
 use super::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
 use crate::error::Result;
-use fluree_db_core::{ContentId, ContentKind, Storage};
+use fluree_db_binary_index::IndexRoot;
+use fluree_db_core::storage::ContentStore;
+use fluree_db_core::ContentId;
 
 /// Entry in the prev-index chain.
 pub(crate) struct IndexChainEntry {
@@ -26,113 +28,21 @@ pub(crate) struct IndexChainEntry {
     pub(crate) root_id: ContentId,
     /// CID of this root's garbage manifest (if any).
     pub(crate) garbage_id: Option<ContentId>,
+    /// The decoded index root (already fetched during chain walk).
+    pub(crate) root: IndexRoot,
 }
 
-/// Extract the GC-relevant fields from an index root blob (FIR6).
+/// Decode an index root blob (FIR6) and extract the GC-relevant fields.
 ///
-/// Returns `(index_t, prev_index_id, garbage_id)`.
-fn parse_chain_fields(bytes: &[u8]) -> Result<(i64, Option<ContentId>, Option<ContentId>)> {
-    let root = fluree_db_binary_index::IndexRoot::decode(bytes)
+/// Returns `(index_t, prev_index_id, garbage_id, decoded_root)`.
+fn parse_chain_fields(
+    bytes: &[u8],
+) -> Result<(i64, Option<ContentId>, Option<ContentId>, IndexRoot)> {
+    let root = IndexRoot::decode(bytes)
         .map_err(|e| crate::error::IndexerError::Serialization(format!("index root FIR6: {e}")))?;
-    let prev_id = root.prev_index.map(|p| p.id);
-    let garbage_id = root.garbage.map(|g| g.id);
-    Ok((root.index_t, prev_id, garbage_id))
-}
-
-/// Derive a storage address from a ContentId using an explicit kind.
-pub(crate) fn derive_address(
-    cid: &ContentId,
-    kind: ContentKind,
-    storage_method: &str,
-    ledger_id: &str,
-) -> String {
-    fluree_db_core::content_address(storage_method, kind, ledger_id, &cid.digest_hex())
-}
-
-/// Derive a storage address from a ContentId using its embedded content kind.
-///
-/// Falls back to `ContentKind::IndexRoot` if the CID has no recognized kind
-/// (shouldn't happen in practice, but keeps GC tolerant).
-fn derive_address_from_cid(cid: &ContentId, storage_method: &str, ledger_id: &str) -> String {
-    let kind = cid.content_kind().unwrap_or(ContentKind::IndexRoot);
-    derive_address(cid, kind, storage_method, ledger_id)
-}
-
-/// Walk the prev-index chain starting from the current root CID.
-///
-/// Returns entries in order from newest to oldest.
-///
-/// **Tolerant behavior**: If a prev_index link cannot be loaded (e.g., it was
-/// deleted by prior GC), the walk stops gracefully at that point rather than
-/// returning an error. This ensures GC is idempotent.
-pub(crate) async fn walk_prev_index_chain<S: Storage>(
-    storage: &S,
-    current_root_id: &ContentId,
-    ledger_id: &str,
-) -> Result<Vec<IndexChainEntry>> {
-    let storage_method = storage.storage_method();
-    let mut chain = Vec::new();
-    let mut current_id = current_root_id.clone();
-
-    loop {
-        let address = derive_address_from_cid(&current_id, storage_method, ledger_id);
-
-        // Load the db-root - if this fails on the first entry, propagate error.
-        // For subsequent entries (prev_index links), treat as end of chain.
-        let bytes = match storage.read_bytes(&address).await {
-            Ok(b) => b,
-            Err(e) => {
-                if chain.is_empty() {
-                    // Can't load the starting root - that's a real error
-                    return Err(e.into());
-                } else {
-                    // Can't load prev_index - chain was truncated by prior GC
-                    tracing::debug!(
-                        root_id = %current_id,
-                        "prev_index not found, chain ends here (prior GC)"
-                    );
-                    break;
-                }
-            }
-        };
-
-        let (t, prev_index_id, garbage_id) = parse_chain_fields(&bytes)?;
-
-        let next_id = prev_index_id;
-        chain.push(IndexChainEntry {
-            t,
-            root_id: current_id,
-            garbage_id,
-        });
-
-        match next_id {
-            Some(id) => current_id = id,
-            None => break,
-        }
-    }
-
-    Ok(chain)
-}
-
-/// Resolve a garbage record item (CID string) to a storage address for deletion.
-///
-/// Returns `None` if the CID cannot be parsed or has no recognized content kind.
-fn resolve_garbage_item(item: &str, storage_method: &str, ledger_id: &str) -> Option<String> {
-    let cid = match item.parse::<ContentId>() {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(item, error = %e, "Skipping unrecognized garbage item (not a valid CID)");
-            return None;
-        }
-    };
-    let kind = match cid.content_kind() {
-        Some(k) => k,
-        None => {
-            tracing::warn!(item, "Skipping garbage item with unknown content kind");
-            return None;
-        }
-    };
-    Some(derive_address(&cid, kind, storage_method, ledger_id))
+    let prev_id = root.prev_index.as_ref().map(|p| p.id.clone());
+    let garbage_id = root.garbage.as_ref().map(|g| g.id.clone());
+    Ok((root.index_t, prev_id, garbage_id, root))
 }
 
 /// Get current timestamp in milliseconds
@@ -149,8 +59,8 @@ fn current_timestamp_ms() -> i64 {
 ///
 /// 1. Walks the prev-index chain to collect all index versions
 /// 2. Retains `current + max_old_indexes` versions (e.g., max_old_indexes=5 keeps 6 total)
-/// 3. For gc-eligible indexes, uses the newer root's garbage manifest to delete nodes
-/// 4. Deletes the older root and its garbage manifest (truncating the chain)
+/// 3. For gc-eligible indexes, uses the newer root's garbage manifest to release nodes
+/// 4. Releases the older root and its garbage manifest (truncating the chain)
 ///
 /// # Retention Policy
 ///
@@ -166,16 +76,12 @@ fn current_timestamp_ms() -> i64 {
 ///
 /// This function is idempotent - running it multiple times is safe.
 /// Chain walking is tolerant of missing roots (stops gracefully).
-/// Already-deleted nodes are skipped without error.
-pub async fn clean_garbage<S>(
-    storage: &S,
+/// Already-released nodes are skipped without error.
+pub async fn clean_garbage(
+    store: &dyn ContentStore,
     current_root_id: &ContentId,
-    ledger_id: &str,
     config: CleanGarbageConfig,
-) -> Result<CleanGarbageResult>
-where
-    S: Storage,
-{
+) -> Result<CleanGarbageResult> {
     let max_old_indexes = config.max_old_indexes.unwrap_or(DEFAULT_MAX_OLD_INDEXES) as usize;
     let min_age_mins = config
         .min_time_garbage_mins
@@ -184,7 +90,7 @@ where
     let now_ms = current_timestamp_ms();
 
     // 1. Walk prev_index chain to collect all index versions (tolerant of missing roots)
-    let index_chain = walk_prev_index_chain(storage, current_root_id, ledger_id).await?;
+    let index_chain = walk_prev_index_chain_cs(store, current_root_id).await?;
 
     // Retention: keep current + max_old_indexes
     // With max_old_indexes=5, keep_count=6 (indices 0..5)
@@ -202,7 +108,7 @@ where
     //
     // For each gc-eligible entry at index i, the manifest at index i-1 (the
     // newer entry) lists nodes from entry i that were replaced. We use that
-    // manifest to delete those nodes, then delete the entry's own garbage
+    // manifest to release those nodes, then release the entry's own garbage
     // manifest and root.
     //
     // Oldest-first processing (reversed range) is crash-safe: if interrupted,
@@ -211,10 +117,9 @@ where
     // retention boundary, orphaning everything beyond.
     //
     // We break (not continue) on any failure because skipping an entry and
-    // deleting a newer one would orphan the skipped entry and everything
+    // releasing a newer one would orphan the skipped entry and everything
     // older than it.
 
-    let storage_method = storage.storage_method();
     let mut deleted_count = 0;
     let mut indexes_cleaned = 0;
 
@@ -235,20 +140,24 @@ where
             }
         };
 
-        // Derive storage address for the garbage record and load it
-        let garbage_addr = derive_address(
-            garbage_id,
-            ContentKind::GarbageRecord,
-            storage_method,
-            ledger_id,
-        );
-        let record = match load_garbage_record(storage, &garbage_addr).await {
-            Ok(r) => r,
+        // Load the garbage record by CID
+        let record = match store.get(garbage_id).await {
+            Ok(bytes) => match parse_garbage_record(&bytes) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::debug!(
+                        t = manifest_entry.t,
+                        error = %e,
+                        "Failed to parse garbage record, stopping GC"
+                    );
+                    break;
+                }
+            },
             Err(e) => {
                 tracing::debug!(
                     t = manifest_entry.t,
                     error = %e,
-                    "Failed to load garbage record (may already be deleted), stopping GC"
+                    "Failed to load garbage record (may already be released), stopping GC"
                 );
                 break;
             }
@@ -266,46 +175,47 @@ where
             break;
         }
 
-        // Delete the garbage nodes (CID strings resolved to storage addresses).
+        // Release the garbage nodes (CID strings parsed back to ContentId).
         for item in &record.garbage {
-            if let Some(addr) = resolve_garbage_item(item, storage_method, ledger_id) {
-                if let Err(e) = storage.delete(&addr).await {
-                    tracing::debug!(
-                        address = %addr,
+            match item.parse::<ContentId>() {
+                Ok(cid) => {
+                    if let Err(e) = store.release(&cid).await {
+                        tracing::debug!(
+                            cid = %cid,
+                            error = %e,
+                            "Failed to release garbage node (may already be released)"
+                        );
+                    } else {
+                        deleted_count += 1;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        item,
                         error = %e,
-                        "Failed to delete garbage node (may already be deleted)"
+                        "Skipping unrecognized garbage item (not a valid CID)"
                     );
-                } else {
-                    deleted_count += 1;
                 }
             }
         }
 
-        // Delete entry_to_delete's own garbage manifest
+        // Release entry_to_delete's own garbage manifest
         if let Some(ref old_garbage_id) = entry_to_delete.garbage_id {
-            let old_garbage_addr = derive_address(
-                old_garbage_id,
-                ContentKind::GarbageRecord,
-                storage_method,
-                ledger_id,
-            );
-            if let Err(e) = storage.delete(&old_garbage_addr).await {
+            if let Err(e) = store.release(old_garbage_id).await {
                 tracing::debug!(
-                    address = %old_garbage_addr,
+                    cid = %old_garbage_id,
                     error = %e,
-                    "Failed to delete old garbage manifest (may already be deleted)"
+                    "Failed to release old garbage manifest (may already be released)"
                 );
             }
         }
 
-        // Delete the old db-root
-        let root_addr =
-            derive_address_from_cid(&entry_to_delete.root_id, storage_method, ledger_id);
-        if let Err(e) = storage.delete(&root_addr).await {
+        // Release the old db-root
+        if let Err(e) = store.release(&entry_to_delete.root_id).await {
             tracing::debug!(
-                address = %root_addr,
+                cid = %entry_to_delete.root_id,
                 error = %e,
-                "Failed to delete old db-root (may already be deleted)"
+                "Failed to release old db-root (may already be released)"
             );
         } else {
             indexes_cleaned += 1;
@@ -327,6 +237,55 @@ where
     })
 }
 
+/// Walk the prev-index chain using `ContentStore::get` (CID-based).
+///
+/// Returns entries in order from newest to oldest.
+///
+/// **Tolerant behavior**: If a prev_index link cannot be loaded (e.g., it was
+/// released by prior GC), the walk stops gracefully at that point rather than
+/// returning an error. This ensures GC is idempotent.
+pub(crate) async fn walk_prev_index_chain_cs(
+    store: &dyn ContentStore,
+    current_root_id: &ContentId,
+) -> Result<Vec<IndexChainEntry>> {
+    let mut chain = Vec::new();
+    let mut current_id = current_root_id.clone();
+
+    loop {
+        let bytes = match store.get(&current_id).await {
+            Ok(b) => b,
+            Err(e) => {
+                if chain.is_empty() {
+                    return Err(e.into());
+                } else {
+                    tracing::debug!(
+                        root_id = %current_id,
+                        "prev_index not found, chain ends here (prior GC)"
+                    );
+                    break;
+                }
+            }
+        };
+
+        let (t, prev_index_id, garbage_id, root) = parse_chain_fields(&bytes)?;
+
+        let next_id = prev_index_id;
+        chain.push(IndexChainEntry {
+            t,
+            root_id: current_id,
+            garbage_id,
+            root,
+        });
+
+        match next_id {
+            Some(id) => current_id = id,
+            None => break,
+        }
+    }
+
+    Ok(chain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,9 +293,15 @@ mod tests {
         BinaryGarbageRef, BinaryPrevIndexRef, DictPackRefs, DictRefs, DictTreeRefs, IndexRoot,
     };
     use fluree_db_core::prelude::*;
+    use fluree_db_core::storage::content_store_for;
     use std::collections::BTreeMap;
 
     const LEDGER: &str = "test:main";
+
+    /// Build a content store from MemoryStorage for testing.
+    fn test_store(storage: &MemoryStorage) -> impl ContentStore + '_ {
+        content_store_for(storage.clone(), LEDGER)
+    }
 
     /// Build a minimal FIR6 root with the given t, prev_index, and garbage.
     fn minimal_fir6(
@@ -417,7 +382,7 @@ mod tests {
                 id: garb_cid.clone(),
             }),
         );
-        let (t, prev, garbage) = parse_chain_fields(&bytes).unwrap();
+        let (t, prev, garbage, _) = parse_chain_fields(&bytes).unwrap();
         assert_eq!(t, 5);
         assert_eq!(prev, Some(prev_cid));
         assert_eq!(garbage, Some(garb_cid));
@@ -427,31 +392,10 @@ mod tests {
     fn test_parse_chain_fields_minimal() {
         // FIR6 root without prev_index or garbage.
         let bytes = minimal_fir6(1, None, None);
-        let (t, prev, garbage) = parse_chain_fields(&bytes).unwrap();
+        let (t, prev, garbage, _) = parse_chain_fields(&bytes).unwrap();
         assert_eq!(t, 1);
         assert_eq!(prev, None);
         assert_eq!(garbage, None);
-    }
-
-    #[test]
-    fn test_resolve_garbage_item_cid() {
-        let cid = ContentId::new(ContentKind::IndexLeaf, b"leaf-data");
-        let cid_str = cid.to_string();
-        let resolved = resolve_garbage_item(&cid_str, "memory", LEDGER);
-        let expected = fluree_db_core::content_address(
-            "memory",
-            ContentKind::IndexLeaf,
-            LEDGER,
-            &cid.digest_hex(),
-        );
-        assert_eq!(resolved, Some(expected));
-    }
-
-    #[test]
-    fn test_resolve_garbage_item_invalid() {
-        // Non-CID strings are skipped (return None)
-        let resolved = resolve_garbage_item("not-a-cid", "memory", LEDGER);
-        assert_eq!(resolved, None);
     }
 
     #[tokio::test]
@@ -462,9 +406,8 @@ mod tests {
         let root_bytes = minimal_fir6(1, None, None);
         storage.write_bytes(&root_addr, &root_bytes).await.unwrap();
 
-        let chain = walk_prev_index_chain(&storage, &root_cid, LEDGER)
-            .await
-            .unwrap();
+        let store = test_store(&storage);
+        let chain = walk_prev_index_chain_cs(&store, &root_cid).await.unwrap();
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0].t, 1);
         assert_eq!(chain[0].root_id, root_cid);
@@ -474,9 +417,7 @@ mod tests {
             max_old_indexes: Some(5),
             min_time_garbage_mins: Some(0),
         };
-        let result = clean_garbage(&storage, &root_cid, LEDGER, config)
-            .await
-            .unwrap();
+        let result = clean_garbage(&store, &root_cid, config).await.unwrap();
         assert_eq!(result.indexes_cleaned, 0);
         assert_eq!(result.nodes_deleted, 0);
     }
@@ -512,10 +453,9 @@ mod tests {
         storage.write_bytes(&addr2, &root2).await.unwrap();
         storage.write_bytes(&addr3, &root3).await.unwrap();
 
+        let store = test_store(&storage);
         let (cid3, _) = cid_and_addr(ContentKind::IndexRoot, b"root3");
-        let chain = walk_prev_index_chain(&storage, &cid3, LEDGER)
-            .await
-            .unwrap();
+        let chain = walk_prev_index_chain_cs(&store, &cid3).await.unwrap();
         assert_eq!(chain.len(), 3);
         assert_eq!(chain[0].t, 3);
         assert_eq!(chain[1].t, 2);
@@ -539,10 +479,9 @@ mod tests {
         );
         storage.write_bytes(&addr2, &root2).await.unwrap();
 
+        let store = test_store(&storage);
         let (cid2, _) = cid_and_addr(ContentKind::IndexRoot, b"root2");
-        let chain = walk_prev_index_chain(&storage, &cid2, LEDGER)
-            .await
-            .unwrap();
+        let chain = walk_prev_index_chain_cs(&store, &cid2).await.unwrap();
         assert_eq!(chain.len(), 1);
         assert_eq!(chain[0].t, 2);
     }
@@ -625,25 +564,24 @@ mod tests {
             min_time_garbage_mins: Some(30),
         };
 
-        let result = clean_garbage(&storage, &cid3, LEDGER, config)
-            .await
-            .unwrap();
+        let store = test_store(&storage);
+        let result = clean_garbage(&store, &cid3, config).await.unwrap();
 
         // Should clean 1 index (t=1) and delete 1 node (old_leaf)
         assert_eq!(result.indexes_cleaned, 1);
         assert_eq!(result.nodes_deleted, 1);
 
         // Old leaf deleted via CID->address resolution
-        assert!(storage.read_bytes(&old_leaf_addr).await.is_err());
+        assert!(!store.has(&old_leaf_cid).await.unwrap());
         // t=1 root deleted
-        assert!(storage.read_bytes(&addr1).await.is_err());
+        assert!(!store.has(&cid1).await.unwrap());
         // t=1 garbage manifest deleted
-        assert!(storage.read_bytes(&garb_addr1).await.is_err());
+        assert!(!store.has(&garb_cid1).await.unwrap());
         // t=2 and t=3 retained
-        assert!(storage.read_bytes(&addr2).await.is_ok());
-        assert!(storage.read_bytes(&addr3).await.is_ok());
+        assert!(store.has(&cid2).await.unwrap());
+        assert!(store.has(&cid3).await.unwrap());
         // t=2 garbage manifest retained
-        assert!(storage.read_bytes(&garb_addr2).await.is_ok());
+        assert!(store.has(&garb_cid2).await.unwrap());
     }
 
     #[tokio::test]
@@ -696,18 +634,17 @@ mod tests {
             min_time_garbage_mins: Some(30),
         };
 
-        let result = clean_garbage(&storage, &cid3, LEDGER, config)
-            .await
-            .unwrap();
+        let store = test_store(&storage);
+        let result = clean_garbage(&store, &cid3, config).await.unwrap();
 
         // Nothing cleaned -- garbage too recent
         assert_eq!(result.indexes_cleaned, 0);
         assert_eq!(result.nodes_deleted, 0);
 
         // All roots still exist
-        assert!(storage.read_bytes(&addr1).await.is_ok());
-        assert!(storage.read_bytes(&addr2).await.is_ok());
-        assert!(storage.read_bytes(&addr3).await.is_ok());
+        assert!(store.has(&cid1).await.unwrap());
+        assert!(store.has(&cid2).await.unwrap());
+        assert!(store.has(&cid3).await.unwrap());
     }
 
     #[tokio::test]
@@ -761,23 +698,21 @@ mod tests {
             min_time_garbage_mins: Some(30),
         };
 
+        let store = test_store(&storage);
+
         // First GC run
-        let result1 = clean_garbage(&storage, &cid3, LEDGER, config.clone())
-            .await
-            .unwrap();
+        let result1 = clean_garbage(&store, &cid3, config.clone()).await.unwrap();
         assert_eq!(result1.indexes_cleaned, 1);
-        assert!(storage.read_bytes(&addr1).await.is_err());
+        assert!(!store.has(&cid1).await.unwrap());
 
         // Second GC run -- idempotent (chain is now t=3->t=2, only 2 entries <= keep=2)
-        let result2 = clean_garbage(&storage, &cid3, LEDGER, config)
-            .await
-            .unwrap();
+        let result2 = clean_garbage(&store, &cid3, config).await.unwrap();
         assert_eq!(result2.indexes_cleaned, 0);
         assert_eq!(result2.nodes_deleted, 0);
 
         // t=2 and t=3 still exist
-        assert!(storage.read_bytes(&addr2).await.is_ok());
-        assert!(storage.read_bytes(&addr3).await.is_ok());
+        assert!(store.has(&cid2).await.unwrap());
+        assert!(store.has(&cid3).await.unwrap());
     }
 
     #[tokio::test]
@@ -878,25 +813,24 @@ mod tests {
             min_time_garbage_mins: Some(30),
         };
 
-        let result = clean_garbage(&storage, &cid5, LEDGER, config)
-            .await
-            .unwrap();
+        let store = test_store(&storage);
+        let result = clean_garbage(&store, &cid5, config).await.unwrap();
 
         assert_eq!(result.indexes_cleaned, 3);
         assert_eq!(result.nodes_deleted, 3);
 
         // GC-eligible roots deleted
-        assert!(storage.read_bytes(&addr1).await.is_err());
-        assert!(storage.read_bytes(&addr2).await.is_err());
-        assert!(storage.read_bytes(&addr3).await.is_err());
+        assert!(!store.has(&cid1).await.unwrap());
+        assert!(!store.has(&cid2).await.unwrap());
+        assert!(!store.has(&cid3).await.unwrap());
         // Nodes deleted
-        assert!(storage.read_bytes(&n1_addr).await.is_err());
-        assert!(storage.read_bytes(&n2_addr).await.is_err());
-        assert!(storage.read_bytes(&n3_addr).await.is_err());
+        assert!(!store.has(&n1_cid).await.unwrap());
+        assert!(!store.has(&n2_cid).await.unwrap());
+        assert!(!store.has(&n3_cid).await.unwrap());
         // Retained
-        assert!(storage.read_bytes(&addr4).await.is_ok());
-        assert!(storage.read_bytes(&addr5).await.is_ok());
-        assert!(storage.read_bytes(&garb_addr4).await.is_ok());
+        assert!(store.has(&cid4).await.unwrap());
+        assert!(store.has(&cid5).await.unwrap());
+        assert!(store.has(&garb_cid4).await.unwrap());
     }
 
     /// End-to-end: simulates an incremental index update that replaces leaf,
@@ -996,39 +930,39 @@ mod tests {
             .await
             .unwrap();
 
+        let store = test_store(&storage);
+
         // --- Before GC: all artifacts exist ---
-        assert!(storage.read_bytes(&old_leaf_spot_0_addr).await.is_ok());
-        assert!(storage.read_bytes(&old_leaf_spot_1_addr).await.is_ok());
-        assert!(storage.read_bytes(&old_branch_g1_addr).await.is_ok());
-        assert!(storage.read_bytes(&old_rev_branch_addr).await.is_ok());
-        assert!(storage.read_bytes(&old_rev_leaf_addr).await.is_ok());
-        assert!(storage.read_bytes(&base_root_addr).await.is_ok());
+        assert!(store.has(&old_leaf_spot_0).await.unwrap());
+        assert!(store.has(&old_leaf_spot_1).await.unwrap());
+        assert!(store.has(&old_branch_g1).await.unwrap());
+        assert!(store.has(&old_rev_branch).await.unwrap());
+        assert!(store.has(&old_rev_leaf).await.unwrap());
+        assert!(store.has(&base_root_cid).await.unwrap());
 
         // --- Run GC: max_old_indexes=0 means only keep current ---
         let config = CleanGarbageConfig {
             max_old_indexes: Some(0),
             min_time_garbage_mins: Some(30),
         };
-        let result = clean_garbage(&storage, &new_root_cid, LEDGER, config)
-            .await
-            .unwrap();
+        let result = clean_garbage(&store, &new_root_cid, config).await.unwrap();
 
         // Should delete 1 old index (t=5) and 5 replaced artifacts
         assert_eq!(result.indexes_cleaned, 1);
         assert_eq!(result.nodes_deleted, 5);
 
         // --- All replaced artifacts deleted ---
-        assert!(storage.read_bytes(&old_leaf_spot_0_addr).await.is_err());
-        assert!(storage.read_bytes(&old_leaf_spot_1_addr).await.is_err());
-        assert!(storage.read_bytes(&old_branch_g1_addr).await.is_err());
-        assert!(storage.read_bytes(&old_rev_branch_addr).await.is_err());
-        assert!(storage.read_bytes(&old_rev_leaf_addr).await.is_err());
+        assert!(!store.has(&old_leaf_spot_0).await.unwrap());
+        assert!(!store.has(&old_leaf_spot_1).await.unwrap());
+        assert!(!store.has(&old_branch_g1).await.unwrap());
+        assert!(!store.has(&old_rev_branch).await.unwrap());
+        assert!(!store.has(&old_rev_leaf).await.unwrap());
 
         // --- Old root deleted ---
-        assert!(storage.read_bytes(&base_root_addr).await.is_err());
+        assert!(!store.has(&base_root_cid).await.unwrap());
 
         // --- Current root + its garbage manifest retained ---
-        assert!(storage.read_bytes(&new_root_addr).await.is_ok());
-        assert!(storage.read_bytes(&garb_addr).await.is_ok());
+        assert!(store.has(&new_root_cid).await.unwrap());
+        assert!(store.has(&garb_cid).await.unwrap());
     }
 }

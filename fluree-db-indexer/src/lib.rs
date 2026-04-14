@@ -45,8 +45,8 @@ pub use config::IndexerConfig;
 pub use drop::collect_ledger_cids;
 pub use error::{IndexerError, Result};
 pub use gc::{
-    clean_garbage, load_garbage_record, write_garbage_record, CleanGarbageConfig,
-    CleanGarbageResult, GarbageRecord, DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
+    clean_garbage, write_garbage_record, CleanGarbageConfig, CleanGarbageResult, GarbageRecord,
+    DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS,
 };
 #[cfg(feature = "embedded-orchestrator")]
 pub use orchestrator::{

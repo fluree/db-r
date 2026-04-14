@@ -1841,6 +1841,48 @@ impl FlureeBuilder {
         )
     }
 
+    /// Build an IPFS-backed Fluree instance with an in-memory nameservice.
+    ///
+    /// Stores content-addressed data (commits, indexes) in IPFS via the Kubo
+    /// HTTP RPC API. The nameservice is in-memory only — ledger heads and
+    /// branch metadata do not persist across restarts. For persistent
+    /// nameservice, compose your own with [`build_with`] using
+    /// [`fluree_db_storage_ipfs::IpfsStorage`].
+    ///
+    /// # Arguments
+    ///
+    /// * `api_url` - Kubo RPC API base URL (e.g., `"http://127.0.0.1:5001"`)
+    ///
+    /// # Notes
+    ///
+    /// - Requires the `ipfs` feature.
+    /// - Background indexing is supported. GC unpins replaced CIDs so Kubo's
+    ///   garbage collector can reclaim them.
+    /// - Admin operations that require prefix listing (e.g., fast-path ledger
+    ///   drop) fall back to CID-walking, which is slower but correct.
+    ///
+    /// [`build_with`]: FlureeBuilder::build_with
+    #[cfg(feature = "ipfs")]
+    pub fn build_ipfs(self, api_url: impl Into<String>) -> Fluree<MemoryNameService> {
+        use fluree_db_storage_ipfs::{IpfsConfig, IpfsStorage};
+        let ipfs_store = IpfsStorage::new(IpfsConfig {
+            api_url: api_url.into(),
+            pin_on_put: true,
+        });
+        let backend = StorageBackend::Permanent(Arc::new(ipfs_store));
+        let nameservice = MemoryNameService::new();
+        let index_config = self.derive_indexing();
+        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        Self::finalize_with_backend(
+            self.ledger_cache_config,
+            self.config,
+            backend,
+            nameservice,
+            indexing_mode,
+            index_config,
+        )
+    }
+
     /// Build an S3-backed Fluree instance (storage-backed nameservice).
     ///
     /// Convenience wrapper around JSON-LD config for S3-backed storage.
@@ -3033,26 +3075,15 @@ where
                     );
 
                     // GC old blob if CID changed.
-                    // TODO: For IPFS, unpin the old CID so Kubo's GC can reclaim
-                    // it. This requires adding a `release` method to `ContentStore`
-                    // (does not exist yet).
                     if let Some(old) = old_cid {
                         if old != new_cid {
-                            if let Some(storage) = self.admin_storage() {
-                                let kind = old.content_kind().unwrap_or(ContentKind::LedgerConfig);
-                                let addr = fluree_db_core::content_address(
-                                    storage.storage_method(),
-                                    kind,
-                                    canonical_id,
-                                    &old.digest_hex(),
+                            let cs = self.content_store(canonical_id);
+                            if let Err(e) = cs.release(&old).await {
+                                tracing::debug!(
+                                    %e,
+                                    old_cid = %old,
+                                    "could not release old default context blob"
                                 );
-                                if let Err(e) = storage.delete(&addr).await {
-                                    tracing::debug!(
-                                        %e,
-                                        old_addr = %addr,
-                                        "could not GC old default context blob"
-                                    );
-                                }
                             }
                         }
                     }
@@ -3074,24 +3105,13 @@ where
         }
 
         // All retries exhausted — best-effort GC the orphan blob we wrote.
-        // TODO: For IPFS, unpin the orphan CID so Kubo's GC can reclaim
-        // it. This requires adding a `release` method to `ContentStore`
-        // (does not exist yet).
-        if let Some(storage) = self.admin_storage() {
-            let kind = new_cid.content_kind().unwrap_or(ContentKind::LedgerConfig);
-            let addr = fluree_db_core::content_address(
-                storage.storage_method(),
-                kind,
-                canonical_id,
-                &new_cid.digest_hex(),
+        let cs = self.content_store(canonical_id);
+        if let Err(e) = cs.release(&new_cid).await {
+            tracing::debug!(
+                %e,
+                orphan_cid = %new_cid,
+                "could not release orphan context blob after conflict"
             );
-            if let Err(e) = storage.delete(&addr).await {
-                tracing::debug!(
-                    %e,
-                    orphan_addr = %addr,
-                    "could not GC orphan context blob after conflict"
-                );
-            }
         }
 
         Ok(SetContextResult::Conflict)
@@ -3577,6 +3597,20 @@ mod tests {
             .exists("fluree:memory://nonexistent.json")
             .await
             .unwrap());
+    }
+
+    #[test]
+    #[cfg(feature = "ipfs")]
+    fn test_build_ipfs_constructs_fluree() {
+        // No real Kubo node needed — this only verifies the type plumbing.
+        let fluree = FlureeBuilder::memory().build_ipfs("http://127.0.0.1:5001");
+        // Backend should be Permanent (IPFS), not Managed.
+        assert!(matches!(
+            fluree.backend(),
+            fluree_db_core::StorageBackend::Permanent(_)
+        ));
+        // Admin storage should be None for IPFS (no raw Storage interface).
+        assert!(fluree.admin_storage().is_none());
     }
 }
 

@@ -963,38 +963,26 @@ where
                         );
 
                     // Spawn garbage collection (fire-and-forget, non-fatal).
-                    // GC requires address-based Storage (deletion), so it only
-                    // runs for Managed backends. Permanent backends (IPFS) skip GC.
-                    // TODO: For IPFS, unpin replaced CIDs so Kubo's GC can reclaim
-                    // stale index artifacts. This requires adding a `release` method
-                    // to `ContentStore` (does not exist yet) with a default no-op,
-                    // implemented as `pin_rm` for `IpfsStorage`.
-                    if let Some(gc_storage) = self.backend.admin_storage_cloned() {
-                        let gc_root_id = index_result.root_id.clone();
-                        let gc_ledger_id = index_result.ledger_id.clone();
-                        let gc_config = crate::gc::CleanGarbageConfig {
-                            max_old_indexes: Some(self.config.gc_max_old_indexes),
-                            min_time_garbage_mins: Some(self.config.gc_min_time_mins),
-                        };
-                        tokio::spawn(async move {
-                            if let Err(e) = crate::gc::clean_garbage(
-                                &gc_storage,
-                                &gc_root_id,
-                                &gc_ledger_id,
-                                gc_config,
-                            )
-                            .await
-                            {
-                                warn!(
-                                    error = %e,
-                                    root_id = %gc_root_id,
-                                    "Background GC failed (non-fatal)"
-                                );
-                            } else {
-                                debug!(root_id = %gc_root_id, "Background GC completed");
-                            }
-                        });
-                    }
+                    let gc_store = self.backend.content_store(&index_result.ledger_id);
+                    let gc_root_id = index_result.root_id.clone();
+                    let gc_config = crate::gc::CleanGarbageConfig {
+                        max_old_indexes: Some(self.config.gc_max_old_indexes),
+                        min_time_garbage_mins: Some(self.config.gc_min_time_mins),
+                    };
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            crate::gc::clean_garbage(gc_store.as_ref(), &gc_root_id, gc_config)
+                                .await
+                        {
+                            warn!(
+                                error = %e,
+                                root_id = %gc_root_id,
+                                "Background GC failed (non-fatal)"
+                            );
+                        } else {
+                            debug!(root_id = %gc_root_id, "Background GC completed");
+                        }
+                    });
 
                     // Resolve waiters
                     let mut states = self.states.lock().await;
