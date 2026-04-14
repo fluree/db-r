@@ -1,4 +1,5 @@
 use super::*;
+use crate::ast::pattern::ServiceEndpoint;
 use crate::ast::update::UpdateOperation;
 use crate::ast::{
     BlankNodeValue, DescribeTarget, GroupCondition, IriValue, LiteralValue, OrderDirection,
@@ -1771,4 +1772,110 @@ fn test_rdf_collection_parser_recovers() {
         result.ast.is_some(),
         "Parser should recover and produce an AST despite collection error"
     );
+}
+
+// ── SERVICE pattern tests ──────────────────────────────────────────
+
+#[test]
+fn test_service_iri_endpoint() {
+    let ast = assert_parses("SELECT * WHERE { SERVICE <http://example.org/sparql> { ?s ?p ?o } }");
+    if let QueryBody::Select(q) = &ast.body {
+        match &q.where_clause.pattern {
+            GraphPattern::Service {
+                silent, endpoint, ..
+            } => {
+                assert!(!silent);
+                assert!(
+                    matches!(endpoint, ServiceEndpoint::Iri(iri) if matches!(&iri.value, IriValue::Full(s) if &**s == "http://example.org/sparql"))
+                );
+            }
+            other => panic!("expected Service, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn test_service_var_endpoint() {
+    let ast = assert_parses("SELECT * WHERE { SERVICE ?endpoint { ?s ?p ?o } }");
+    if let QueryBody::Select(q) = &ast.body {
+        match &q.where_clause.pattern {
+            GraphPattern::Service {
+                silent, endpoint, ..
+            } => {
+                assert!(!silent);
+                assert!(matches!(endpoint, ServiceEndpoint::Var(v) if &*v.name == "endpoint"));
+            }
+            other => panic!("expected Service, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn test_service_silent() {
+    let ast =
+        assert_parses("SELECT * WHERE { SERVICE SILENT <http://example.org/sparql> { ?s ?p ?o } }");
+    if let QueryBody::Select(q) = &ast.body {
+        match &q.where_clause.pattern {
+            GraphPattern::Service { silent, .. } => {
+                assert!(silent);
+            }
+            other => panic!("expected Service, got {:?}", other),
+        }
+    }
+}
+
+#[test]
+fn test_service_prefixed_endpoint() {
+    let ast = assert_parses(
+        "PREFIX ex: <http://example.org/> SELECT * WHERE { SERVICE ex:sparql { ?s ?p ?o } }",
+    );
+    if let QueryBody::Select(q) = &ast.body {
+        assert!(matches!(
+            &q.where_clause.pattern,
+            GraphPattern::Service { .. }
+        ));
+    }
+}
+
+#[test]
+fn test_service_with_preceding_bgp() {
+    let ast = assert_parses(
+        "SELECT * WHERE { ?x a <http://example.org/Person> . SERVICE <http://example.org/sparql> { ?x <http://example.org/name> ?name } }",
+    );
+    if let QueryBody::Select(q) = &ast.body {
+        if let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern {
+            assert_eq!(patterns.len(), 2);
+            assert!(matches!(&patterns[0], GraphPattern::Bgp { .. }));
+            assert!(matches!(&patterns[1], GraphPattern::Service { .. }));
+        } else {
+            panic!("expected Group pattern, got {:?}", q.where_clause.pattern);
+        }
+    }
+}
+
+#[test]
+fn test_service_missing_endpoint() {
+    let result = parse("SELECT * WHERE { SERVICE { ?s ?p ?o } }");
+    assert!(result.has_errors());
+}
+
+#[test]
+fn test_service_missing_brace() {
+    let result = parse("SELECT * WHERE { SERVICE <http://example.org/sparql> ?s ?p ?o }");
+    assert!(result.has_errors());
+}
+
+#[test]
+fn test_service_fluree_ledger_endpoint() {
+    let ast = assert_parses("SELECT * WHERE { SERVICE <fluree:ledger:people:main> { ?s ?p ?o } }");
+    if let QueryBody::Select(q) = &ast.body {
+        match &q.where_clause.pattern {
+            GraphPattern::Service { endpoint, .. } => {
+                assert!(
+                    matches!(endpoint, ServiceEndpoint::Iri(iri) if matches!(&iri.value, IriValue::Full(s) if &**s == "fluree:ledger:people:main"))
+                );
+            }
+            other => panic!("expected Service, got {:?}", other),
+        }
+    }
 }

@@ -52,7 +52,7 @@ pub enum GraphSelector {
     ById(GraphId),
     /// Select by graph IRI (resolved via the binary index store).
     ByIri(String),
-    /// Select by well-known name ("default" or "txn-meta").
+    /// Select by well-known name ("default", "txn-meta", or "config").
     ByName(String),
 }
 
@@ -351,6 +351,7 @@ fn resolve_graph_selector(
         GraphSelector::ByName(name) => match name.as_str() {
             "default" | "urn:default" => Ok(0),
             "txn-meta" => Ok(1),
+            "config" => Ok(2),
             other => {
                 // Try as IRI
                 if let Some(store) = store {
@@ -1041,6 +1042,7 @@ where
     ///
     /// - `"default"` -> default graph (g_id = 0)
     /// - `"txn-meta"` -> transaction metadata graph (g_id = 1)
+    /// - `"config"` -> ledger config graph (g_id = 2)
     /// - Any other string is tried as a graph IRI
     pub fn for_graph(mut self, name: &str) -> Self {
         self.options.graph = GraphSelector::ByName(name.to_string());
@@ -1296,5 +1298,11 @@ mod tests {
     fn test_graph_selector_by_name_txn_meta() {
         let sel = GraphSelector::ByName("txn-meta".to_string());
         assert_eq!(resolve_graph_selector(&sel, None).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_graph_selector_by_name_config() {
+        let sel = GraphSelector::ByName("config".to_string());
+        assert_eq!(resolve_graph_selector(&sel, None).unwrap(), 2);
     }
 }

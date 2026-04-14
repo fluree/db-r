@@ -1,6 +1,6 @@
 //! Graph pattern parsing: WHERE, OPTIONAL, UNION, MINUS, FILTER, BIND, VALUES, subqueries.
 
-use crate::ast::pattern::{GraphName, SubSelect, SubSelectOrderBy};
+use crate::ast::pattern::{GraphName, ServiceEndpoint, SubSelect, SubSelectOrderBy};
 use crate::ast::query::SelectVariables;
 use crate::ast::{GraphPattern, Term, Var, WhereClause};
 use crate::diag::{DiagCode, Diagnostic};
@@ -93,6 +93,12 @@ impl<'a> super::Parser<'a> {
 
                 if let Some(graph) = self.parse_graph_pattern() {
                     patterns.push(graph);
+                }
+            } else if self.stream.check_keyword(TokenKind::KwService) {
+                super::flush_current_triples(&mut current_triples, &mut patterns);
+
+                if let Some(service) = self.parse_service_pattern() {
+                    patterns.push(service);
                 }
             } else if self.stream.check_keyword(TokenKind::KwBind) {
                 super::flush_current_triples(&mut current_triples, &mut patterns);
@@ -247,6 +253,40 @@ impl<'a> super::Parser<'a> {
 
         Some(GraphPattern::Graph {
             name,
+            pattern: Box::new(inner),
+            span,
+        })
+    }
+
+    /// Parse a SERVICE pattern: `SERVICE [SILENT] <iri>|?var { ... }`
+    pub(super) fn parse_service_pattern(&mut self) -> Option<GraphPattern> {
+        let start = self.stream.current_span();
+        self.stream.advance(); // consume SERVICE
+
+        let silent = self.stream.match_keyword(TokenKind::KwSilent);
+
+        let endpoint = if let Some((var_name, var_span)) = self.stream.consume_var() {
+            ServiceEndpoint::Var(Var::new(var_name.as_ref(), var_span))
+        } else if let Some(iri) = self.parse_iri_term() {
+            ServiceEndpoint::Iri(iri)
+        } else {
+            self.stream
+                .error_at_current("expected IRI or variable after SERVICE");
+            return None;
+        };
+
+        if !self.stream.match_token(&TokenKind::LBrace) {
+            self.stream
+                .error_at_current("expected '{' after SERVICE endpoint");
+            return None;
+        }
+
+        let inner = self.parse_group_graph_pattern()?;
+        let span = start.union(self.stream.previous_span());
+
+        Some(GraphPattern::Service {
+            silent,
+            endpoint,
             pattern: Box::new(inner),
             span,
         })

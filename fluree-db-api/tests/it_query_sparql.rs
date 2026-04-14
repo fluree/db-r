@@ -3497,3 +3497,85 @@ async fn sparql_star_query_with_optional_and_filter() {
         "Star query with OPTIONAL + FILTER should return matching rows.\nGot: {jsonld:#}"
     );
 }
+
+// ── SERVICE integration tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn sparql_service_self_reference_returns_data() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "people:main").await;
+
+    let query = r#"
+        PREFIX person: <http://example.org/Person#>
+        SELECT ?handle
+        WHERE {
+          SERVICE <fluree:ledger:people:main> {
+            ?s person:handle ?handle .
+          }
+        }
+        ORDER BY ?handle
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("SERVICE self-reference should succeed");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    assert_eq!(
+        jsonld,
+        json!(["bbob", "dankeshön", "jbob", "jdoe"]),
+        "SERVICE self-reference should return all handles.\nGot: {jsonld:#}"
+    );
+}
+
+#[tokio::test]
+async fn sparql_service_external_endpoint_errors() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "people:main").await;
+
+    let query = r#"
+        SELECT * WHERE {
+          SERVICE <http://remote.example.org/sparql> { ?s ?p ?o }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query).await;
+    assert!(
+        result.is_err(),
+        "External SERVICE endpoint should produce an error"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("External SERVICE endpoints not supported"),
+        "Error should mention unsupported external endpoints, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn sparql_service_silent_external_yields_empty() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_people(&fluree, "people:main").await;
+
+    // SERVICE SILENT with an unsupported external endpoint should not error,
+    // and since SERVICE is the only pattern, should yield zero results.
+    let query = r#"
+        SELECT ?s ?p ?o
+        WHERE {
+          SERVICE SILENT <http://remote.example.org/sparql> {
+            ?s ?p ?o .
+          }
+        }
+    "#;
+
+    let result = support::query_sparql(&fluree, &ledger, query)
+        .await
+        .expect("SERVICE SILENT should not error");
+    let jsonld = result.to_jsonld(&ledger.snapshot).expect("to_jsonld");
+    let rows = jsonld.as_array().expect("should be array");
+    assert!(
+        rows.is_empty(),
+        "SERVICE SILENT with external endpoint should yield empty results, got: {jsonld:#}"
+    );
+}
