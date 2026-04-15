@@ -6,9 +6,10 @@
 
 use crate::{
     check_cas_expectation, ref_values_match, AdminPublisher, CasResult, ConfigCasResult,
-    ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord,
-    GraphSourceType, NameService, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher,
-    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    ConfigLookup, ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher,
+    GraphSourceRecord, GraphSourceType, NameService, NsLookupResult, NsRecord, Publisher, RefKind,
+    RefLookup, RefPublisher, RefValue, Result, StatusCasResult, StatusLookup, StatusPayload,
+    StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::format_ledger_id;
@@ -338,7 +339,7 @@ impl AdminPublisher for MemoryNameService {
 }
 
 #[async_trait]
-impl RefPublisher for MemoryNameService {
+impl RefLookup for MemoryNameService {
     async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
         let key = self.normalize_ledger_id(ledger_id);
         let records = self.records.read();
@@ -357,7 +358,10 @@ impl RefPublisher for MemoryNameService {
             },
         }
     }
+}
 
+#[async_trait]
+impl RefPublisher for MemoryNameService {
     async fn compare_and_set_ref(
         &self,
         ledger_id: &str,
@@ -546,7 +550,7 @@ impl GraphSourceLookup for MemoryNameService {
 }
 
 #[async_trait]
-impl StatusPublisher for MemoryNameService {
+impl StatusLookup for MemoryNameService {
     async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
         let key = self.normalize_ledger_id(ledger_id);
         let status_values = self.status_values.read();
@@ -565,7 +569,10 @@ impl StatusPublisher for MemoryNameService {
         // No record exists
         Ok(None)
     }
+}
 
+#[async_trait]
+impl StatusPublisher for MemoryNameService {
     async fn push_status(
         &self,
         ledger_id: &str,
@@ -613,7 +620,7 @@ impl StatusPublisher for MemoryNameService {
 }
 
 #[async_trait]
-impl ConfigPublisher for MemoryNameService {
+impl ConfigLookup for MemoryNameService {
     async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
         let key = self.normalize_ledger_id(ledger_id);
         let config_values = self.config_values.read();
@@ -632,7 +639,10 @@ impl ConfigPublisher for MemoryNameService {
         // No record exists
         Ok(None)
     }
+}
 
+#[async_trait]
+impl ConfigPublisher for MemoryNameService {
     async fn push_config(
         &self,
         ledger_id: &str,

@@ -463,7 +463,7 @@ impl fluree_db_nameservice::AdminPublisher for NameServiceMode {
 }
 
 #[async_trait]
-impl fluree_db_nameservice::ConfigPublisher for NameServiceMode {
+impl fluree_db_nameservice::ConfigLookup for NameServiceMode {
     async fn get_config(
         &self,
         ledger_id: &str,
@@ -478,7 +478,10 @@ impl fluree_db_nameservice::ConfigPublisher for NameServiceMode {
             )),
         }
     }
+}
 
+#[async_trait]
+impl fluree_db_nameservice::ConfigPublisher for NameServiceMode {
     async fn push_config(
         &self,
         ledger_id: &str,
@@ -498,7 +501,7 @@ impl fluree_db_nameservice::ConfigPublisher for NameServiceMode {
 }
 
 #[async_trait]
-impl fluree_db_nameservice::StatusPublisher for NameServiceMode {
+impl fluree_db_nameservice::StatusLookup for NameServiceMode {
     async fn get_status(
         &self,
         ledger_id: &str,
@@ -513,7 +516,10 @@ impl fluree_db_nameservice::StatusPublisher for NameServiceMode {
             )),
         }
     }
+}
 
+#[async_trait]
+impl fluree_db_nameservice::StatusPublisher for NameServiceMode {
     async fn push_status(
         &self,
         ledger_id: &str,
@@ -533,7 +539,7 @@ impl fluree_db_nameservice::StatusPublisher for NameServiceMode {
 }
 
 #[async_trait]
-impl fluree_db_nameservice::RefPublisher for NameServiceMode {
+impl fluree_db_nameservice::RefLookup for NameServiceMode {
     async fn get_ref(
         &self,
         ledger_id: &str,
@@ -549,7 +555,10 @@ impl fluree_db_nameservice::RefPublisher for NameServiceMode {
             )),
         }
     }
+}
 
+#[async_trait]
+impl fluree_db_nameservice::RefPublisher for NameServiceMode {
     async fn compare_and_set_ref(
         &self,
         ledger_id: &str,
@@ -2979,7 +2988,7 @@ impl Fluree {
         let canonical_id = &record.ledger_id;
 
         // Read config to get context CID
-        use fluree_db_nameservice::ConfigPublisher as _;
+        use fluree_db_nameservice::ConfigLookup as _;
         let config = self.nameservice_mode.get_config(canonical_id).await?;
         let ctx_cid = config
             .as_ref()
@@ -3042,7 +3051,7 @@ impl Fluree {
 
         // CAS loop: read current config, push new config
         for attempt in 0..CONTEXT_CAS_MAX_RETRIES {
-            use fluree_db_nameservice::ConfigPublisher as _;
+            use fluree_db_nameservice::ConfigLookup as _;
             let current_config = self.nameservice_mode.get_config(canonical_id).await?;
 
             let old_cid = current_config

@@ -121,6 +121,43 @@ impl ProxyNameService {
 }
 
 #[async_trait]
+impl fluree_db_nameservice::RefLookup for ProxyNameService {
+    async fn get_ref(
+        &self,
+        _ledger_id: &str,
+        _kind: fluree_db_nameservice::RefKind,
+    ) -> Result<Option<fluree_db_nameservice::RefValue>> {
+        Err(NameServiceError::storage(
+            "get_ref not supported in proxy mode".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::StatusLookup for ProxyNameService {
+    async fn get_status(
+        &self,
+        _ledger_id: &str,
+    ) -> Result<Option<fluree_db_nameservice::StatusValue>> {
+        Err(NameServiceError::storage(
+            "get_status not supported in proxy mode".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::ConfigLookup for ProxyNameService {
+    async fn get_config(
+        &self,
+        _ledger_id: &str,
+    ) -> Result<Option<fluree_db_nameservice::ConfigValue>> {
+        Err(NameServiceError::storage(
+            "get_config not supported in proxy mode".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
 impl NameService for ProxyNameService {
     async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
         let url = self.ns_url(ledger_id);

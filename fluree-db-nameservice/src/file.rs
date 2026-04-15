@@ -28,10 +28,10 @@ use crate::ns_format::{
 };
 use crate::{
     check_cas_expectation, deserialize_json, parse_default_context_value, ref_values_match,
-    serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
-    GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
-    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, Result,
-    StatusCasResult, StatusPublisher, StatusValue,
+    serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigLookup, ConfigPublisher,
+    ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
+    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefLookup,
+    RefPublisher, RefValue, Result, StatusCasResult, StatusLookup, StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -1059,7 +1059,7 @@ impl GraphSourceLookup for FileNameService {
 }
 
 #[async_trait]
-impl RefPublisher for FileNameService {
+impl RefLookup for FileNameService {
     async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         match kind {
@@ -1112,7 +1112,10 @@ impl RefPublisher for FileNameService {
             }
         }
     }
+}
 
+#[async_trait]
+impl RefPublisher for FileNameService {
     async fn compare_and_set_ref(
         &self,
         ledger_id: &str,
@@ -1297,7 +1300,7 @@ impl RefPublisher for FileNameService {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl StatusPublisher for FileNameService {
+impl StatusLookup for FileNameService {
     async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::ns_address(&ledger_name, &branch);
@@ -1306,7 +1309,10 @@ impl StatusPublisher for FileNameService {
 
         Ok(main_file.map(|f| f.to_status_value()))
     }
+}
 
+#[async_trait]
+impl StatusPublisher for FileNameService {
     async fn push_status(
         &self,
         ledger_id: &str,
@@ -1368,7 +1374,7 @@ impl StatusPublisher for FileNameService {
 }
 
 #[async_trait]
-impl ConfigPublisher for FileNameService {
+impl ConfigLookup for FileNameService {
     async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::ns_address(&ledger_name, &branch);
@@ -1377,7 +1383,10 @@ impl ConfigPublisher for FileNameService {
 
         Ok(main_file.map(|f| f.to_config_value()))
     }
+}
 
+#[async_trait]
+impl ConfigPublisher for FileNameService {
     async fn push_config(
         &self,
         ledger_id: &str,

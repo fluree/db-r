@@ -352,7 +352,7 @@ pub async fn run_set_origins(ledger: &str, file: &Path, dirs: &FlureeDir) -> Cli
     use fluree_db_core::ContentKind;
     use fluree_db_core::ContentStore;
     use fluree_db_nameservice::{
-        ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue, LedgerConfig,
+        ConfigCasResult, ConfigLookup, ConfigPayload, ConfigPublisher, ConfigValue, LedgerConfig,
     };
 
     let config_json = std::fs::read(file)

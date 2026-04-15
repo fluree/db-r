@@ -406,7 +406,9 @@ pub enum NsLookupResult {
 ///
 /// Implementations provide ledger discovery by ledger ID.
 #[async_trait]
-pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
+pub trait NameService:
+    GraphSourceLookup + RefLookup + StatusLookup + ConfigLookup + Debug + Send + Sync
+{
     /// Look up a ledger by its ledger ID (e.g. "mydb:main")
     ///
     /// Returns `None` if the ledger is not found.
@@ -795,6 +797,21 @@ pub enum CasResult {
     Conflict { actual: Option<RefValue> },
 }
 
+/// Read-only ref access for ledger head pointers.
+///
+/// Provides `get_ref` for reading commit/index head refs.
+/// This is the read-only counterpart to [`RefPublisher`].
+#[async_trait]
+pub trait RefLookup: Debug + Send + Sync {
+    /// Read the current ref value for a ledger ID + kind.
+    ///
+    /// Returns:
+    /// - `Some(RefValue { id: None, t: 0 })` — ref exists, unborn
+    /// - `Some(RefValue { id: Some(..), .. })` — ref exists with CID identity
+    /// - `None` — ledger ID/ref completely unknown
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>>;
+}
+
 /// Explicit ref-level CAS operations for sync.
 ///
 /// CAS compares on **identity** via `id` (ContentId). `t` serves as a
@@ -809,15 +826,7 @@ pub enum CasResult {
 /// ancestry.  If ancestry-based FF is ever needed, commit parent links and a
 /// graph walk would be required — that is out of scope here.
 #[async_trait]
-pub trait RefPublisher: Debug + Send + Sync {
-    /// Read the current ref value for a ledger ID + kind.
-    ///
-    /// Returns:
-    /// - `Some(RefValue { id: None, t: 0 })` — ref exists, unborn
-    /// - `Some(RefValue { id: Some(..), .. })` — ref exists with CID identity
-    /// - `None` — ledger ID/ref completely unknown
-    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>>;
-
+pub trait RefPublisher: RefLookup {
     /// Atomic compare-and-set.
     ///
     /// Updates the ref **only if** the current identity matches `expected`.
@@ -1094,6 +1103,20 @@ pub enum ConfigCasResult {
 // V2 Publisher Traits (Status and Config)
 // ---------------------------------------------------------------------------
 
+/// Read-only status access.
+///
+/// Provides `get_status` for reading ledger operational status.
+/// This is the read-only counterpart to [`StatusPublisher`].
+#[async_trait]
+pub trait StatusLookup: Debug + Send + Sync {
+    /// Get current status for a ledger ID.
+    ///
+    /// Returns:
+    /// - `Some(StatusValue)` — record exists with status
+    /// - `None` — record doesn't exist at all
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>>;
+}
+
 /// Publisher for status concern (v2 extension).
 ///
 /// Status tracks operational metadata like queue depth, locks, progress,
@@ -1102,14 +1125,7 @@ pub enum ConfigCasResult {
 ///
 /// Status always exists once a record is created (initial state is "ready" with v=1).
 #[async_trait]
-pub trait StatusPublisher: Debug + Send + Sync {
-    /// Get current status for a ledger ID.
-    ///
-    /// Returns:
-    /// - `Some(StatusValue)` — record exists with status
-    /// - `None` — record doesn't exist at all
-    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>>;
-
+pub trait StatusPublisher: StatusLookup {
     /// Push status with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.
@@ -1130,6 +1146,20 @@ pub trait StatusPublisher: Debug + Send + Sync {
     ) -> Result<StatusCasResult>;
 }
 
+/// Read-only config access.
+///
+/// Provides `get_config` for reading ledger configuration.
+/// This is the read-only counterpart to [`ConfigPublisher`].
+#[async_trait]
+pub trait ConfigLookup: Debug + Send + Sync {
+    /// Get current config for a ledger ID.
+    ///
+    /// Returns:
+    /// - `Some(ConfigValue)` — record exists (may be unborn with v=0)
+    /// - `None` — record doesn't exist at all
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>>;
+}
+
 /// Publisher for config concern (v2 extension).
 ///
 /// Config tracks settings like default context, index thresholds, and other
@@ -1138,14 +1168,7 @@ pub trait StatusPublisher: Debug + Send + Sync {
 ///
 /// Config can be "unborn" (v=0, payload=None) if no config has been set yet.
 #[async_trait]
-pub trait ConfigPublisher: Debug + Send + Sync {
-    /// Get current config for a ledger ID.
-    ///
-    /// Returns:
-    /// - `Some(ConfigValue)` — record exists (may be unborn with v=0)
-    /// - `None` — record doesn't exist at all
-    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>>;
-
+pub trait ConfigPublisher: ConfigLookup {
     /// Push config with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.

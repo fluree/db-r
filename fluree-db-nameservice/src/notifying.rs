@@ -10,11 +10,11 @@ use async_trait::async_trait;
 use fluree_db_core::ContentId;
 
 use crate::{
-    event_bus::LedgerEventBus, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher,
-    ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
-    NameService, NameServiceEvent, NsLookupResult, NsRecord, NsRecordSnapshot, Publisher, RefKind,
-    RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher, StatusValue, Subscription,
-    SubscriptionScope,
+    event_bus::LedgerEventBus, AdminPublisher, CasResult, ConfigCasResult, ConfigLookup,
+    ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord,
+    GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord, NsRecordSnapshot,
+    Publisher, RefKind, RefLookup, RefPublisher, RefValue, Result, StatusCasResult, StatusLookup,
+    StatusPublisher, StatusValue, Subscription, SubscriptionScope,
 };
 
 /// Decorator that wraps a nameservice and emits events on a [`LedgerEventBus`]
@@ -200,6 +200,20 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// RefLookup — pure delegation
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl<N> RefLookup for NotifyingNameService<N>
+where
+    N: RefLookup,
+{
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
+        self.inner.get_ref(ledger_id, kind).await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // RefPublisher — emit only on successful CAS (Updated)
 // ---------------------------------------------------------------------------
 
@@ -208,10 +222,6 @@ impl<N> RefPublisher for NotifyingNameService<N>
 where
     N: RefPublisher,
 {
-    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
-        self.inner.get_ref(ledger_id, kind).await
-    }
-
     async fn compare_and_set_ref(
         &self,
         ledger_id: &str,
@@ -336,6 +346,20 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// StatusLookup — pure delegation
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl<N> StatusLookup for NotifyingNameService<N>
+where
+    N: StatusLookup,
+{
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
+        self.inner.get_status(ledger_id).await
+    }
+}
+
+// ---------------------------------------------------------------------------
 // StatusPublisher — pure delegation (no events)
 // ---------------------------------------------------------------------------
 
@@ -344,10 +368,6 @@ impl<N> StatusPublisher for NotifyingNameService<N>
 where
     N: StatusPublisher,
 {
-    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
-        self.inner.get_status(ledger_id).await
-    }
-
     async fn push_status(
         &self,
         ledger_id: &str,
@@ -355,6 +375,20 @@ where
         new: &StatusValue,
     ) -> Result<StatusCasResult> {
         self.inner.push_status(ledger_id, expected, new).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfigLookup — pure delegation
+// ---------------------------------------------------------------------------
+
+#[async_trait]
+impl<N> ConfigLookup for NotifyingNameService<N>
+where
+    N: ConfigLookup,
+{
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
+        self.inner.get_config(ledger_id).await
     }
 }
 
@@ -367,10 +401,6 @@ impl<N> ConfigPublisher for NotifyingNameService<N>
 where
     N: ConfigPublisher,
 {
-    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
-        self.inner.get_config(ledger_id).await
-    }
-
     async fn push_config(
         &self,
         ledger_id: &str,
