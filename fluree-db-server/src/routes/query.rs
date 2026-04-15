@@ -11,7 +11,6 @@ use crate::error::{Result, ServerError};
 use crate::extract::{tracking_headers, FlureeHeaders, MaybeCredential, MaybeDataBearer};
 // Note: NeedsRefresh is no longer used - replaced by FreshnessSource trait
 use crate::state::AppState;
-use crate::state::FlureeInstance;
 use crate::telemetry::{
     create_request_span, extract_request_id, extract_trace_id, log_query_text, set_span_error_code,
     should_log_query_text,
@@ -325,10 +324,7 @@ pub async fn query(
             if let Some(max_bytes) = headers.max_bytes() {
                 config = config.with_max_bytes(max_bytes);
             }
-            let result = match &state.fluree {
-                FlureeInstance::File(f) => f.query_from().sparql(&sparql).format(config).execute_formatted().await,
-                FlureeInstance::Proxy(p) => p.query_from().sparql(&sparql).format(config).execute_formatted().await,
-            };
+            let result = state.fluree.query_from().sparql(&sparql).format(config).execute_formatted().await;
             return match result {
                 Ok(json) => {
                     tracing::info!(status = "success", query_kind = "sparql", format = "agent-json");
@@ -344,7 +340,7 @@ pub async fn query(
             };
         }
 
-        match state.fluree.query_connection_sparql_jsonld(&sparql).await {
+        match state.fluree.query_from().sparql(&sparql).execute_formatted().await {
             Ok(result) => {
                 tracing::info!(
                     status = "success",
@@ -654,22 +650,17 @@ pub async fn explain_ledger(
             }
 
             let ledger_id = ledger.clone();
-            let result = if state.config.is_proxy_storage_mode() {
-                state
-                    .fluree
-                    .explain_ledger_sparql(&ledger_id, &sparql)
-                    .await
-                    .map_err(ServerError::Api)?
+            let loaded = if state.config.is_proxy_storage_mode() {
+                state.fluree.ledger(&ledger_id).await.map_err(ServerError::Api)?
             } else {
-                let loaded = load_ledger_for_query(&state, &ledger_id, &span).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
-                state
-                    .fluree
-                    .as_file()
-                    .explain_sparql(&db, &sparql)
-                    .await
-                    .map_err(ServerError::Api)?
+                load_ledger_for_query(&state, &ledger_id, &span).await?
             };
+            let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
+            let result = state
+                .fluree
+                .explain_sparql(&db, &sparql)
+                .await
+                .map_err(ServerError::Api)?;
 
             tracing::info!(status = "success", query_kind = "sparql", "explain completed");
             return Ok(Json(result));
@@ -715,22 +706,17 @@ pub async fn explain_ledger(
         let policy_class = data_auth.default_policy_class.as_deref();
         force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
-        let result = if state.config.is_proxy_storage_mode() {
-            state
-                .fluree
-                .explain_ledger(&ledger_id, &query_json)
-                .await
-                .map_err(ServerError::Api)?
+        let loaded = if state.config.is_proxy_storage_mode() {
+            state.fluree.ledger(&ledger_id).await.map_err(ServerError::Api)?
         } else {
-            let loaded = load_ledger_for_query(&state, &ledger_id, &span).await?;
-            let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
-            state
-                .fluree
-                .as_file()
-                .explain(&db, &query_json)
-                .await
-                .map_err(ServerError::Api)?
+            load_ledger_for_query(&state, &ledger_id, &span).await?
         };
+        let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
+        let result = state
+            .fluree
+            .explain(&db, &query_json)
+            .await
+            .map_err(ServerError::Api)?;
 
         tracing::info!(status = "success", query_kind = "jsonld", "explain completed");
         Ok(Json(result))
@@ -1017,7 +1003,7 @@ async fn execute_query(
             .map(IntoResponse::into_response);
     }
 
-    // In proxy mode, use the unified FlureeInstance methods (no local freshness checking)
+    // In proxy mode, use the unified Fluree methods (no local freshness checking)
     if state.config.is_proxy_storage_mode() {
         if let Some(fmt) = delimited {
             return Err(ServerError::not_acceptable(format!(
@@ -1031,7 +1017,7 @@ async fn execute_query(
     // Shared storage mode: use load_ledger_for_query with freshness checking
     let ledger = load_ledger_for_query(state, ledger_id, &span).await?;
     let graph = GraphDb::from_ledger_state(&ledger);
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
 
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
@@ -1138,7 +1124,7 @@ async fn execute_query(
     .await
 }
 
-/// Execute a JSON-LD query in proxy mode (uses FlureeInstance wrapper methods)
+/// Execute a JSON-LD query in proxy mode (uses Fluree wrapper methods)
 async fn execute_query_proxy(
     state: &AppState,
     ledger_id: &str,
@@ -1147,10 +1133,13 @@ async fn execute_query_proxy(
 ) -> Result<Response> {
     // Check if tracking is requested
     if has_tracking_opts(query_json) {
-        // Execute tracked query via FlureeInstance wrapper
+        // Execute tracked query
         let response = match state
             .fluree
-            .query_ledger_tracked(ledger_id, query_json)
+            .graph(ledger_id)
+            .query()
+            .jsonld(query_json)
+            .execute_tracked()
             .await
         {
             Ok(response) => response,
@@ -1183,10 +1172,13 @@ async fn execute_query_proxy(
         return Ok((headers, Json(response)).into_response());
     }
 
-    // Execute query via FlureeInstance wrapper
+    // Execute query
     let result = match state
         .fluree
-        .query_ledger_jsonld(ledger_id, query_json)
+        .graph(ledger_id)
+        .query()
+        .jsonld(query_json)
+        .execute_formatted()
         .await
     {
         Ok(result) => {
@@ -1257,7 +1249,7 @@ async fn execute_sparql_ledger(
             ));
         }
 
-        // In proxy mode, use the unified FlureeInstance method (returns pre-formatted JSON)
+        // In proxy mode, use the unified Fluree method (returns pre-formatted JSON)
         if state.config.is_proxy_storage_mode() && !has_dataset_clause {
             if wants_sparql_xml {
                 return Err(ServerError::not_acceptable(
@@ -1276,16 +1268,25 @@ async fn execute_sparql_ledger(
                 )));
             }
             let result = match identity {
-                Some(id) => state
-                    .fluree
-                    .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
-                    .await
-                    .inspect_err(|_| {
-                        set_span_error_code(&span, "error:QueryFailed");
-                    })?,
+                Some(id) => {
+                    let opts = fluree_db_api::QueryConnectionOptions {
+                        identity: Some(id.to_string()),
+                        ..Default::default()
+                    };
+                    let view = state.fluree.db_with_policy(ledger_id, &opts).await
+                        .inspect_err(|_| { set_span_error_code(&span, "error:QueryFailed"); })?;
+                    view.query(state.fluree.as_ref())
+                        .sparql(sparql)
+                        .execute_formatted()
+                        .await
+                        .inspect_err(|_| { set_span_error_code(&span, "error:QueryFailed"); })?
+                }
                 None => state
                     .fluree
-                    .query_ledger_sparql_jsonld(ledger_id, sparql)
+                    .graph(ledger_id)
+                    .query()
+                    .sparql(sparql)
+                    .execute_formatted()
                     .await
                     .inspect_err(|_| {
                         set_span_error_code(&span, "error:QueryFailed");
@@ -1318,9 +1319,15 @@ async fn execute_sparql_ledger(
                     fmt.name().to_uppercase()
                 )));
             }
-            let result = state
-                .fluree
-                .query_ledger_sparql_with_identity(ledger_id, sparql, Some(id))
+            let opts = fluree_db_api::QueryConnectionOptions {
+                identity: Some(id.to_string()),
+                ..Default::default()
+            };
+            let view = state.fluree.db_with_policy(ledger_id, &opts).await
+                .inspect_err(|_| { set_span_error_code(&span, "error:QueryFailed"); })?;
+            let result = view.query(state.fluree.as_ref())
+                .sparql(sparql)
+                .execute_formatted()
                 .await
                 .inspect_err(|_| {
                     set_span_error_code(&span, "error:QueryFailed");
@@ -1467,26 +1474,13 @@ async fn execute_sparql_ledger(
                     ));
                 }
                 let tracking_opts = headers.to_tracking_options();
-                let response = match &state.fluree {
-                    FlureeInstance::File(f) => {
-                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(f.as_ref())
-                            .sparql(sparql)
-                            .tracking(tracking_opts)
-                            .execute_tracked()
-                            .await
-                    }
-                    FlureeInstance::Proxy(p) => {
-                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(p.as_ref())
-                            .sparql(sparql)
-                            .tracking(tracking_opts)
-                            .execute_tracked()
-                            .await
-                    }
-                };
+                let dataset = state.fluree.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                let response = dataset
+                    .query(state.fluree.as_ref())
+                    .sparql(sparql)
+                    .tracking(tracking_opts)
+                    .execute_tracked()
+                    .await;
                 let response = match response {
                     Ok(r) => r,
                     Err(e) => {
@@ -1511,28 +1505,14 @@ async fn execute_sparql_ledger(
 
             // SPARQL Results XML: execute and format as XML string (SELECT/ASK only)
             if wants_sparql_xml {
-                let xml = match &state.fluree {
-                    FlureeInstance::File(f) => {
-                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(f.as_ref())
-                            .sparql(sparql)
-                            .format(fluree_db_api::FormatterConfig::sparql_xml())
-                            .execute_formatted_string()
-                            .await
-                            .map_err(ServerError::Api)?
-                    }
-                    FlureeInstance::Proxy(p) => {
-                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(p.as_ref())
-                            .sparql(sparql)
-                            .format(fluree_db_api::FormatterConfig::sparql_xml())
-                            .execute_formatted_string()
-                            .await
-                            .map_err(ServerError::Api)?
-                    }
-                };
+                let dataset = state.fluree.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                let xml = dataset
+                    .query(state.fluree.as_ref())
+                    .sparql(sparql)
+                    .format(fluree_db_api::FormatterConfig::sparql_xml())
+                    .execute_formatted_string()
+                    .await
+                    .map_err(ServerError::Api)?;
                 let content_type = "application/sparql-results+xml; charset=utf-8";
                 return Ok((
                     [(axum::http::header::CONTENT_TYPE, content_type)],
@@ -1555,28 +1535,14 @@ async fn execute_sparql_ledger(
                     ));
                 }
 
-                let xml = match &state.fluree {
-                    FlureeInstance::File(f) => {
-                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(f.as_ref())
-                            .sparql(sparql)
-                            .format(fluree_db_api::FormatterConfig::rdf_xml())
-                            .execute_formatted_string()
-                            .await
-                            .map_err(ServerError::Api)?
-                    }
-                    FlureeInstance::Proxy(p) => {
-                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(p.as_ref())
-                            .sparql(sparql)
-                            .format(fluree_db_api::FormatterConfig::rdf_xml())
-                            .execute_formatted_string()
-                            .await
-                            .map_err(ServerError::Api)?
-                    }
-                };
+                let dataset = state.fluree.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                let xml = dataset
+                    .query(state.fluree.as_ref())
+                    .sparql(sparql)
+                    .format(fluree_db_api::FormatterConfig::rdf_xml())
+                    .execute_formatted_string()
+                    .await
+                    .map_err(ServerError::Api)?;
                 let content_type = "application/rdf+xml; charset=utf-8";
                 return Ok((
                     [(axum::http::header::CONTENT_TYPE, content_type)],
@@ -1599,28 +1565,14 @@ async fn execute_sparql_ledger(
                 if let Some(max_bytes) = headers.max_bytes() {
                     config = config.with_max_bytes(max_bytes);
                 }
-                let result = match &state.fluree {
-                    FlureeInstance::File(f) => {
-                        let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(f.as_ref())
-                            .sparql(sparql)
-                            .format(config)
-                            .execute_formatted()
-                            .await
-                            .map_err(ServerError::Api)?
-                    }
-                    FlureeInstance::Proxy(p) => {
-                        let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                        dataset
-                            .query(p.as_ref())
-                            .sparql(sparql)
-                            .format(config)
-                            .execute_formatted()
-                            .await
-                            .map_err(ServerError::Api)?
-                    }
-                };
+                let dataset = state.fluree.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+                let result = dataset
+                    .query(state.fluree.as_ref())
+                    .sparql(sparql)
+                    .format(config)
+                    .execute_formatted()
+                    .await
+                    .map_err(ServerError::Api)?;
                 let content_type = "application/vnd.fluree.agent+json; charset=utf-8";
                 return Ok((
                     [(axum::http::header::CONTENT_TYPE, content_type)],
@@ -1629,26 +1581,13 @@ async fn execute_sparql_ledger(
                     .into_response());
             }
 
-            let result = match &state.fluree {
-                FlureeInstance::File(f) => {
-                    let dataset = f.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                    dataset
-                        .query(f.as_ref())
-                        .sparql(sparql)
-                        .execute_formatted()
-                        .await
-                        .map_err(ServerError::Api)?
-                }
-                FlureeInstance::Proxy(p) => {
-                    let dataset = p.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
-                    dataset
-                        .query(p.as_ref())
-                        .sparql(sparql)
-                        .execute_formatted()
-                        .await
-                        .map_err(ServerError::Api)?
-                }
-            };
+            let dataset = state.fluree.build_dataset_view(&spec).await.map_err(ServerError::Api)?;
+            let result = dataset
+                .query(state.fluree.as_ref())
+                .sparql(sparql)
+                .execute_formatted()
+                .await
+                .map_err(ServerError::Api)?;
 
             return Ok((HeaderMap::new(), Json(result)).into_response());
         }
@@ -1660,7 +1599,7 @@ async fn execute_sparql_ledger(
                 set_span_error_code(&span, "error:LedgerLoad");
             })?;
         let graph = GraphDb::from_ledger_state(&ledger);
-        let fluree = state.fluree.as_file();
+        let fluree = &state.fluree;
 
         // Tracked SPARQL: if tracking headers are present, use tracked execution path
         if headers.has_tracking() {
@@ -1941,26 +1880,14 @@ pub async fn explain(
                 }
             }
 
-            let result = if state.config.is_proxy_storage_mode() {
-                match state.fluree.explain_ledger_sparql(&ledger_id, &sparql).await {
-                    Ok(result) => {
-                        tracing::info!(status = "success", "explain completed (proxy)");
-                        result
-                    }
-                    Err(e) => {
-                        let server_error = ServerError::Api(e);
-                        set_span_error_code(&span, "error:InvalidQuery");
-                        tracing::error!(
-                            error = %server_error,
-                            "explain execution failed (proxy)"
-                        );
-                        return Err(server_error);
-                    }
-                }
+            let loaded = if state.config.is_proxy_storage_mode() {
+                state.fluree.ledger(&ledger_id).await.map_err(ServerError::Api)?
             } else {
-                let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
-                match state.fluree.as_file().explain_sparql(&db, &sparql).await {
+                load_ledger_for_query(&state, &ledger_id, &span).await?
+            };
+            let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
+            let result = {
+                match state.fluree.explain_sparql(&db, &sparql).await {
                     Ok(result) => {
                         tracing::info!(status = "success", "explain completed");
                         result
@@ -2023,35 +1950,22 @@ pub async fn explain(
         force_query_auth_opts(&mut query_json, identity.as_deref(), policy_class);
 
         // Execute explain
-        let result = if state.config.is_proxy_storage_mode() {
-            // Proxy mode: use FlureeInstance wrapper
-            match state.fluree.explain_ledger(&ledger_id, &query_json).await {
-                Ok(result) => {
-                    tracing::info!(status = "success", "explain completed (proxy)");
-                    result
-                }
-                Err(e) => {
-                    let server_error = ServerError::Api(e);
-                    set_span_error_code(&span, "error:InvalidQuery");
-                    tracing::error!(error = %server_error, "explain execution failed (proxy)");
-                    return Err(server_error);
-                }
-            }
+        let loaded = if state.config.is_proxy_storage_mode() {
+            state.fluree.ledger(&ledger_id).await.map_err(ServerError::Api)?
         } else {
-            // Shared storage mode: use load_ledger_for_query with freshness checking
-            let ledger = load_ledger_for_query(&state, &ledger_id, &span).await?;
-            let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
-            match state.fluree.as_file().explain(&db, &query_json).await {
-                Ok(result) => {
-                    tracing::info!(status = "success", "explain completed");
-                    result
-                }
-                Err(e) => {
-                    let server_error = ServerError::Api(e);
-                    set_span_error_code(&span, "error:InvalidQuery");
-                    tracing::error!(error = %server_error, "explain execution failed");
-                    return Err(server_error);
-                }
+            load_ledger_for_query(&state, &ledger_id, &span).await?
+        };
+        let db = fluree_db_api::GraphDb::from_ledger_state(&loaded);
+        let result = match state.fluree.explain(&db, &query_json).await {
+            Ok(result) => {
+                tracing::info!(status = "success", "explain completed");
+                result
+            }
+            Err(e) => {
+                let server_error = ServerError::Api(e);
+                set_span_error_code(&span, "error:InvalidQuery");
+                tracing::error!(error = %server_error, "explain execution failed");
+                return Err(server_error);
             }
         };
 
@@ -2066,7 +1980,7 @@ pub async fn explain(
 /// Load a ledger for query, handling peer mode freshness checking.
 ///
 /// **Note**: This function is only used for non-proxy storage modes (file-backed Fluree).
-/// In proxy mode, routes use `FlureeInstance` wrapper methods instead.
+/// In proxy mode, routes use `Fluree` wrapper methods instead.
 ///
 /// Load a ledger for query execution
 ///
@@ -2078,7 +1992,7 @@ pub(crate) async fn load_ledger_for_query(
     ledger_id: &str,
     span: &tracing::Span,
 ) -> Result<LedgerState> {
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
 
     // Get cached handle (loads if not cached)
     let handle = fluree.ledger_cached(ledger_id).await.map_err(|e| {
@@ -2161,7 +2075,13 @@ async fn execute_history_query(
 
     // Execute through the connection path which handles dataset/history parsing
     if has_tracking_opts(&query) {
-        let response = match state.fluree.query_connection_jsonld_tracked(&query).await {
+        let response = match state
+            .fluree
+            .query_from()
+            .jsonld(&query)
+            .execute_tracked()
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 let server_error =
@@ -2200,7 +2120,13 @@ async fn execute_history_query(
         );
         Ok((headers, Json(response)).into_response())
     } else {
-        match state.fluree.query_connection_jsonld(&query).await {
+        match state
+            .fluree
+            .query_from()
+            .jsonld(&query)
+            .execute_formatted()
+            .await
+        {
             Ok(result) => {
                 tracing::info!(
                     status = "success",
@@ -2251,7 +2177,13 @@ async fn execute_dataset_query(
 
     // Execute through the connection path which handles dataset parsing
     if has_tracking_opts(&query) {
-        let response = match state.fluree.query_connection_jsonld_tracked(&query).await {
+        let response = match state
+            .fluree
+            .query_from()
+            .jsonld(&query)
+            .execute_tracked()
+            .await
+        {
             Ok(response) => response,
             Err(e) => {
                 let server_error =
@@ -2290,7 +2222,13 @@ async fn execute_dataset_query(
         );
         Ok((headers, Json(response)).into_response())
     } else {
-        match state.fluree.query_connection_jsonld(&query).await {
+        match state
+            .fluree
+            .query_from()
+            .jsonld(&query)
+            .execute_formatted()
+            .await
+        {
             Ok(result) => {
                 tracing::info!(
                     status = "success",

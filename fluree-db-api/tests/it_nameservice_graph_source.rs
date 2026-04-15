@@ -1,7 +1,6 @@
 mod support;
 
 use fluree_db_api::{Bm25CreateConfig, Bm25DropResult, FlureeBuilder};
-use fluree_db_nameservice::GraphSourceLookup;
 use serde_json::json;
 
 /// Test creating BM25 graph sources via API

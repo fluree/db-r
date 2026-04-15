@@ -6,7 +6,6 @@
 mod support;
 
 use fluree_db_api::FlureeBuilder;
-use fluree_db_nameservice::NameService;
 use serde_json::json;
 
 /// Extract sorted name strings from query result rows.
@@ -288,51 +287,26 @@ async fn branches_count_tracks_children() {
     fluree.insert(ledger, &txn).await.unwrap();
 
     // main starts with branches == 0
-    let record = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
+    let record = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
     assert_eq!(record.branches, 0);
 
     // Create two child branches
     fluree.create_branch("mydb", "dev", None).await.unwrap();
-    let record = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
+    let record = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
     assert_eq!(record.branches, 1);
 
     fluree.create_branch("mydb", "staging", None).await.unwrap();
-    let record = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
+    let record = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
     assert_eq!(record.branches, 2);
 
     // Drop one
     fluree.drop_branch("mydb", "dev").await.unwrap();
-    let record = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
+    let record = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
     assert_eq!(record.branches, 1);
 
     // Drop the other
     fluree.drop_branch("mydb", "staging").await.unwrap();
-    let record = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
+    let record = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
     assert_eq!(record.branches, 0);
 }
 
@@ -357,12 +331,7 @@ async fn drop_branch_with_children_deferred() {
         .unwrap();
 
     // dev now has branches == 1
-    let record = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
     assert_eq!(record.branches, 1);
 
     // Drop dev — should be deferred because it has a child
@@ -370,12 +339,7 @@ async fn drop_branch_with_children_deferred() {
     assert!(report.deferred, "branch with children should be deferred");
 
     // dev is retracted but still present
-    let record = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
     assert!(record.retracted);
 
     // feature still works (can transact)

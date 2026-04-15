@@ -22,7 +22,7 @@
 use crate::dataset::QueryConnectionOptions;
 use crate::format::iri::IriCompactor;
 use crate::graph::Graph;
-use crate::{policy_builder, ApiError, NameService, Result};
+use crate::{policy_builder, ApiError, Result};
 use fluree_db_core::commit::codec::read_commit;
 use fluree_db_core::{ContentId, ContentStore, FlakeValue, OverlayProvider, Tracker};
 use fluree_db_novelty::Commit;
@@ -170,8 +170,8 @@ enum CommitRef {
 /// Builder for fetching and decoding a single commit.
 ///
 /// Created via [`Graph::commit()`] or [`Graph::commit_prefix()`].
-pub struct CommitBuilder<'a, 'g, N> {
-    graph: &'g Graph<'a, N>,
+pub struct CommitBuilder<'a, 'g> {
+    graph: &'g Graph<'a>,
     commit_ref: CommitRef,
     user_context: Option<ParsedContext>,
     /// Authenticated identity IRI for policy filtering.
@@ -180,11 +180,8 @@ pub struct CommitBuilder<'a, 'g, N> {
     policy_class: Option<String>,
 }
 
-impl<'a, 'g, N> CommitBuilder<'a, 'g, N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
-    pub(crate) fn new(graph: &'g Graph<'a, N>, commit_id: ContentId) -> Self {
+impl<'a, 'g> CommitBuilder<'a, 'g> {
+    pub(crate) fn new(graph: &'g Graph<'a>, commit_id: ContentId) -> Self {
         Self {
             graph,
             commit_ref: CommitRef::Exact(commit_id),
@@ -194,7 +191,7 @@ where
         }
     }
 
-    pub(crate) fn from_prefix(graph: &'g Graph<'a, N>, prefix: String) -> Self {
+    pub(crate) fn from_prefix(graph: &'g Graph<'a>, prefix: String) -> Self {
         Self {
             graph,
             commit_ref: CommitRef::Prefix(prefix),
@@ -204,7 +201,7 @@ where
         }
     }
 
-    pub(crate) fn from_t(graph: &'g Graph<'a, N>, t: i64) -> Self {
+    pub(crate) fn from_t(graph: &'g Graph<'a>, t: i64) -> Self {
         Self {
             graph,
             commit_ref: CommitRef::T(t),

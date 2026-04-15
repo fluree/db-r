@@ -20,14 +20,11 @@ fn ctx() -> serde_json::Value {
     })
 }
 
-async fn count_matches<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+async fn count_matches(
+    fluree: &fluree_db_api::Fluree,
     ledger: &fluree_db_api::LedgerState,
     where_obj: serde_json::Value,
-) -> usize
-where
-    N: fluree_db_api::NameService,
-{
+) -> usize {
     let q = json!({
         "@context": ctx(),
         "select": ["?o"],

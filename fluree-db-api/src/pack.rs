@@ -29,7 +29,6 @@ use fluree_db_core::commit::codec::envelope::decode_envelope;
 use fluree_db_core::commit::codec::format::{CommitHeader, HEADER_LEN};
 pub use fluree_db_core::pack::PackRequest;
 use fluree_db_core::{ContentId, ContentStore};
-use fluree_db_nameservice::{NameService, RefPublisher};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
@@ -281,15 +280,12 @@ pub fn validate_pack_request(request: &PackRequest) -> std::result::Result<(), S
 /// frame before returning.
 ///
 /// This function is meant to be `tokio::spawn`ed by the HTTP handler.
-pub async fn stream_pack<N>(
-    fluree: &crate::Fluree<N>,
+pub async fn stream_pack(
+    fluree: &crate::Fluree,
     handle: &LedgerHandle,
     request: &PackRequest,
     frame_tx: mpsc::Sender<PackChunk>,
-) -> PackStreamResult
-where
-    N: NameService + RefPublisher + Send + Sync,
-{
+) -> PackStreamResult {
     let result = stream_pack_inner(fluree, handle, request, &frame_tx).await;
 
     match result {
@@ -316,15 +312,12 @@ where
     }
 }
 
-async fn stream_pack_inner<N>(
-    fluree: &crate::Fluree<N>,
+async fn stream_pack_inner(
+    fluree: &crate::Fluree,
     handle: &LedgerHandle,
     request: &PackRequest,
     frame_tx: &mpsc::Sender<PackChunk>,
-) -> std::result::Result<PackStreamResult, String>
-where
-    N: NameService + RefPublisher + Send + Sync,
-{
+) -> std::result::Result<PackStreamResult, String> {
     let ledger_id = handle.ledger_id();
     let content_store = fluree.content_store(ledger_id);
 

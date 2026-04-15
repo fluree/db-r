@@ -1,23 +1,18 @@
 use std::sync::Arc;
 
-use crate::{
-    ApiError, Fluree, HistoricalLedgerView, LedgerState, NameService, Result, TypeErasedStore,
-};
+use crate::{ApiError, Fluree, HistoricalLedgerView, LedgerState, Result, TypeErasedStore};
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
 use fluree_db_core::DictNovelty;
-use fluree_db_nameservice::{NameServiceError, NsRecord, Publisher};
+use fluree_db_nameservice::{NameServiceError, NsRecord};
 
-impl<N> Fluree<N>
-where
-    N: NameService,
-{
+impl Fluree {
     /// Load a ledger by address (e.g., "mydb:main")
     ///
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
     pub async fn ledger(&self, ledger_id: &str) -> Result<LedgerState> {
-        let mut state = LedgerState::load(&self.nameservice, ledger_id, self.backend()).await?;
+        let mut state = LedgerState::load(&self.nameservice_mode, ledger_id, self.backend()).await?;
 
         // If nameservice has an index address, require that the binary index root is
         // readable and loadable. This ensures `fluree.ledger()` always returns a
@@ -172,7 +167,7 @@ where
         target_t: i64,
     ) -> Result<HistoricalLedgerView> {
         let view =
-            HistoricalLedgerView::load_at(&self.nameservice, ledger_id, self.backend(), target_t)
+            HistoricalLedgerView::load_at(&self.nameservice_mode, ledger_id, self.backend(), target_t)
                 .await?;
 
         Ok(view)
@@ -183,10 +178,7 @@ where
 // Ledger Creation
 // =============================================================================
 
-impl<N> Fluree<N>
-where
-    N: NameService + Publisher,
-{
+impl Fluree {
     /// Create a new empty ledger with genesis state
     ///
     /// This operation:
@@ -221,7 +213,11 @@ where
         info!(ledger_id = %ledger_id, "Creating ledger");
 
         // 2. Register in nameservice via Publisher (fails if already exists)
-        match self.nameservice.publish_ledger_init(&ledger_id).await {
+        match self
+            .publisher()?
+            .publish_ledger_init(&ledger_id)
+            .await
+        {
             Ok(()) => {}
             Err(NameServiceError::LedgerAlreadyExists(a)) => {
                 return Err(ApiError::ledger_exists(a));
@@ -278,7 +274,7 @@ where
 
         // Look up the source branch to capture its commit state
         let source_record = self
-            .nameservice
+            .nameservice()
             .lookup(&source_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(source_id.clone()))?;
@@ -291,7 +287,7 @@ where
             )));
         }
 
-        self.nameservice
+        self.nameservice()
             .create_branch(ledger_name, new_branch, source)
             .await
             .map_err(|e| match e {
@@ -312,13 +308,13 @@ where
                 );
             } else {
                 // Register the copied index in the new branch's nameservice record
-                self.nameservice
+                self.publisher()?
                     .publish_index(&new_id, source_record.index_t, index_cid)
                     .await?;
             }
         }
 
-        let record = self.nameservice.lookup(&new_id).await?.ok_or_else(|| {
+        let record = self.nameservice().lookup(&new_id).await?.ok_or_else(|| {
             ApiError::internal(format!(
                 "Branch {} was created but not found in nameservice",
                 new_id
@@ -444,12 +440,9 @@ where
     }
 }
 
-impl<N> Fluree<N>
-where
-    N: NameService,
-{
+impl Fluree {
     /// List all non-retracted branches for a ledger.
     pub async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
-        Ok(self.nameservice.list_branches(ledger_name).await?)
+        Ok(self.nameservice().list_branches(ledger_name).await?)
     }
 }

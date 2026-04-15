@@ -47,7 +47,7 @@ use crate::{publish_index_result, IndexResult};
 #[cfg(feature = "embedded-orchestrator")]
 use fluree_db_core::Storage;
 use fluree_db_core::StorageBackend;
-use fluree_db_nameservice::{NameService, Publisher};
+use fluree_db_nameservice::ReadWriteNameService;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -223,18 +223,19 @@ use fluree_db_ledger::{IndexConfig, LedgerState};
 ///
 /// Note: Does not spawn background tasks. Use in a single-threaded async context
 /// (e.g., `LocalSet`) or manage threading at a higher level.
-pub struct IndexerOrchestrator<N> {
+pub struct IndexerOrchestrator {
     backend: StorageBackend,
-    nameservice: Arc<N>,
+    nameservice: Arc<dyn ReadWriteNameService>,
     config: IndexerConfig,
 }
 
-impl<N> IndexerOrchestrator<N>
-where
-    N: NameService + Publisher + 'static,
-{
+impl IndexerOrchestrator {
     /// Create a new indexer orchestrator
-    pub fn new(backend: StorageBackend, nameservice: Arc<N>, config: IndexerConfig) -> Self {
+    pub fn new(
+        backend: StorageBackend,
+        nameservice: Arc<dyn ReadWriteNameService>,
+        config: IndexerConfig,
+    ) -> Self {
         Self {
             backend,
             nameservice,
@@ -295,7 +296,7 @@ where
     }
 
     /// Get a reference to the nameservice
-    pub fn nameservice(&self) -> &Arc<N> {
+    pub fn nameservice(&self) -> &Arc<dyn ReadWriteNameService> {
         &self.nameservice
     }
 
@@ -521,23 +522,20 @@ impl IndexerHandle {
 /// - Exponential backoff on failures (capped at 30s)
 /// - Cooperative cancellation
 /// - Clean shutdown when all handles are dropped
-pub struct BackgroundIndexerWorker<N> {
+pub struct BackgroundIndexerWorker {
     backend: StorageBackend,
-    nameservice: Arc<N>,
+    nameservice: Arc<dyn ReadWriteNameService>,
     config: IndexerConfig,
     states: Arc<Mutex<LedgerStates>>,
     tick_rx: watch::Receiver<u64>,
     idle_notify: Arc<Notify>,
 }
 
-impl<N> BackgroundIndexerWorker<N>
-where
-    N: NameService + Publisher + 'static,
-{
+impl BackgroundIndexerWorker {
     /// Create a new worker and its associated handle
     pub fn new(
         backend: StorageBackend,
-        nameservice: Arc<N>,
+        nameservice: Arc<dyn ReadWriteNameService>,
         config: IndexerConfig,
     ) -> (Self, IndexerHandle) {
         let states = Arc::new(Mutex::new(BTreeMap::new()));
@@ -1096,9 +1094,9 @@ fn current_ns_record(ledger: &LedgerState) -> Option<&fluree_db_nameservice::NsR
 }
 
 #[cfg(feature = "embedded-orchestrator")]
-pub async fn maybe_refresh_after_commit<S, N>(
+pub async fn maybe_refresh_after_commit<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn ReadWriteNameService,
     mut ledger: LedgerState,
     index_config: &IndexConfig,
     indexer_config: IndexerConfig,
@@ -1106,7 +1104,6 @@ pub async fn maybe_refresh_after_commit<S, N>(
 ) -> (LedgerState, PostCommitIndexResult)
 where
     S: Storage + fluree_db_core::StorageMethod + Clone + Send + Sync + 'static,
-    N: fluree_db_nameservice::NameService + Publisher,
 {
     // Check threshold
     if ledger.maybe_trigger_index(index_config).is_none() {
@@ -1214,16 +1211,15 @@ where
 /// - Should typically run *before* staging (since `stage()` also checks max novelty).
 /// - Errors are fatal here because the caller is explicitly trying to unblock commits.
 #[cfg(feature = "embedded-orchestrator")]
-pub async fn require_refresh_before_commit<S, N>(
+pub async fn require_refresh_before_commit<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn ReadWriteNameService,
     mut ledger: LedgerState,
     indexer_config: IndexerConfig,
     _target_t: i64,
 ) -> Result<LedgerState>
 where
     S: Storage + fluree_db_core::StorageMethod + Clone + Send + Sync + 'static,
-    N: fluree_db_nameservice::NameService + Publisher,
 {
     let ledger_addr = ledger.ledger_id().to_string();
     let cs: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
@@ -1256,6 +1252,7 @@ mod tests {
         ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid,
     };
     use fluree_db_nameservice::memory::MemoryNameService;
+    use fluree_db_nameservice::{NameService, Publisher};
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;
 
@@ -1926,6 +1923,7 @@ mod embedded_tests {
     };
     use fluree_db_ledger::LedgerState;
     use fluree_db_nameservice::memory::MemoryNameService;
+    use fluree_db_nameservice::Publisher;
     use fluree_db_novelty::{Commit, Novelty};
     use std::collections::HashMap;
 

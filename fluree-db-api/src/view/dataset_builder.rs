@@ -4,10 +4,7 @@
 //! specifications, applying time travel, policy, and reasoning wrappers.
 
 use crate::view::{DataSetDb, GraphDb};
-use crate::{
-    dataset, time_resolve, ApiError, DatasetSpec, Fluree, NameService, QueryConnectionOptions,
-    Result,
-};
+use crate::{dataset, time_resolve, ApiError, DatasetSpec, Fluree, QueryConnectionOptions, Result};
 use chrono::DateTime;
 
 macro_rules! build_dataset_view_from_spec {
@@ -91,10 +88,7 @@ macro_rules! try_single_view_from_spec {
 // Dataset View Builder
 // ============================================================================
 
-impl<N> Fluree<N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Build a `DataSetDb` from a `DatasetSpec`.
     ///
     /// This loads views for all graphs in the spec, applying time travel
@@ -411,17 +405,17 @@ mod tests {
     async fn test_is_single_ledger_fast_path() {
         // No time spec - fast path
         let spec = DatasetSpec::new().with_default(GraphSource::new("testdb:main"));
-        assert!(Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(Fluree::is_single_ledger_fast_path(&spec));
 
         // With time spec - not fast path (needs time resolution)
         let spec = DatasetSpec::new()
             .with_default(GraphSource::new("testdb:main").with_time(dataset::TimeSpec::AtT(5)));
-        assert!(!Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(!Fluree::is_single_ledger_fast_path(&spec));
 
         // Multiple graphs - not fast path
         let spec = DatasetSpec::new()
             .with_default(GraphSource::new("db1:main"))
             .with_default(GraphSource::new("db2:main"));
-        assert!(!Fluree::<crate::MemoryNameService>::is_single_ledger_fast_path(&spec));
+        assert!(!Fluree::is_single_ledger_fast_path(&spec));
     }
 }

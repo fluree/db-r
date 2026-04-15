@@ -46,18 +46,11 @@ pub async fn get_context(
             }
         }
 
-        let ctx = match &state.fluree {
-            crate::state::FlureeInstance::File(f) => f
-                .get_default_context(&ledger)
-                .await
-                .map_err(ServerError::Api)?,
-            crate::state::FlureeInstance::Proxy(p) => {
-                // Proxy mode: ConfigPublisher not available, return simplified response
-                // by loading ledger and reading cached context
-                let ledger_state = p.ledger(&ledger).await.map_err(ServerError::Api)?;
-                ledger_state.default_context.clone()
-            }
-        };
+        let ctx = state
+            .fluree
+            .get_default_context(&ledger)
+            .await
+            .map_err(ServerError::Api)?;
 
         Ok(Json(serde_json::json!({ "@context": ctx })).into_response())
     }
@@ -128,7 +121,7 @@ pub async fn set_context(
             ));
         }
 
-        let f = state.fluree.as_file();
+        let f = &state.fluree;
         match f
             .set_default_context(&ledger, &context)
             .await

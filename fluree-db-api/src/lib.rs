@@ -248,245 +248,69 @@ pub use fluree_graph_json_ld::ParsedContext;
 // Dynamic runtime wrappers (single JSON-LD "source of truth")
 // ============================================================================
 
-/// A dynamically-dispatched nameservice + publisher.
-pub trait NameServicePublisher:
-    fluree_db_nameservice::NameService
-    + fluree_db_nameservice::Publisher
-    + fluree_db_nameservice::RefPublisher
-    + fluree_db_nameservice::GraphSourcePublisher
-{
-}
-impl<T> NameServicePublisher for T where
-    T: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::RefPublisher
-        + fluree_db_nameservice::GraphSourcePublisher
-{
-}
+// Re-export the combined read-write nameservice trait from the nameservice crate.
+pub use fluree_db_nameservice::NameServicePublisher;
 
-#[derive(Clone)]
-pub struct AnyNameService(Arc<dyn NameServicePublisher>);
-
-impl std::fmt::Debug for AnyNameService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("AnyNameService").field(&self.0).finish()
-    }
-}
-
-impl AnyNameService {
-    pub fn new(inner: Arc<dyn NameServicePublisher>) -> Self {
-        Self(inner)
-    }
-}
-
-#[async_trait]
-impl fluree_db_nameservice::NameService for AnyNameService {
-    async fn lookup(
-        &self,
-        ledger_id: &str,
-    ) -> std::result::Result<
-        Option<fluree_db_nameservice::NsRecord>,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.0.lookup(ledger_id).await
-    }
-
-    async fn all_records(
-        &self,
-    ) -> std::result::Result<
-        Vec<fluree_db_nameservice::NsRecord>,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.0.all_records().await
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        source_branch: &str,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
-            .create_branch(ledger_name, new_branch, source_branch)
-            .await
-    }
-
-    async fn drop_branch(
-        &self,
-        ledger_id: &str,
-    ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
-        self.0.drop_branch(ledger_id).await
-    }
-
-    async fn reset_head(
-        &self,
-        ledger_id: &str,
-        snapshot: fluree_db_nameservice::NsRecordSnapshot,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.reset_head(ledger_id, snapshot).await
-    }
-}
-
-#[async_trait]
-impl fluree_db_nameservice::Publisher for AnyNameService {
-    async fn publish_ledger_init(
-        &self,
-        alias: &str,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_ledger_init(alias).await
-    }
-
-    async fn publish_commit(
-        &self,
-        alias: &str,
-        commit_t: i64,
-        commit_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_commit(alias, commit_t, commit_id).await
-    }
-
-    async fn publish_index(
-        &self,
-        alias: &str,
-        index_t: i64,
-        index_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.publish_index(alias, index_t, index_id).await
-    }
-
-    async fn retract(
-        &self,
-        alias: &str,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.retract(alias).await
-    }
-
-    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
-        self.0.publishing_ledger_id(ledger_id)
-    }
-}
-
-#[async_trait]
-impl fluree_db_nameservice::RefPublisher for AnyNameService {
-    async fn get_ref(
-        &self,
-        ledger_id: &str,
-        kind: fluree_db_nameservice::RefKind,
-    ) -> std::result::Result<
-        Option<fluree_db_nameservice::RefValue>,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.0.get_ref(ledger_id, kind).await
-    }
-
-    async fn compare_and_set_ref(
-        &self,
-        ledger_id: &str,
-        kind: fluree_db_nameservice::RefKind,
-        expected: Option<&fluree_db_nameservice::RefValue>,
-        new: &fluree_db_nameservice::RefValue,
-    ) -> std::result::Result<
-        fluree_db_nameservice::CasResult,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.0
-            .compare_and_set_ref(ledger_id, kind, expected, new)
-            .await
-    }
-}
-
-#[async_trait]
-impl fluree_db_nameservice::GraphSourcePublisher for AnyNameService {
-    async fn publish_graph_source(
-        &self,
-        name: &str,
-        branch: &str,
-        source_type: fluree_db_nameservice::GraphSourceType,
-        config: &str,
-        dependencies: &[String],
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
-            .publish_graph_source(name, branch, source_type, config, dependencies)
-            .await
-    }
-
-    async fn publish_graph_source_index(
-        &self,
-        name: &str,
-        branch: &str,
-        index_id: &fluree_db_core::ContentId,
-        index_t: i64,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0
-            .publish_graph_source_index(name, branch, index_id, index_t)
-            .await
-    }
-
-    async fn retract_graph_source(
-        &self,
-        name: &str,
-        branch: &str,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.0.retract_graph_source(name, branch).await
-    }
-}
-
-#[async_trait]
-impl fluree_db_nameservice::GraphSourceLookup for AnyNameService {
-    async fn lookup_graph_source(
-        &self,
-        graph_source_id: &str,
-    ) -> std::result::Result<
-        Option<fluree_db_nameservice::GraphSourceRecord>,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.0.lookup_graph_source(graph_source_id).await
-    }
-
-    async fn lookup_any(
-        &self,
-        resource_id: &str,
-    ) -> std::result::Result<
-        fluree_db_nameservice::NsLookupResult,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.0.lookup_any(resource_id).await
-    }
-
-    async fn all_graph_source_records(
-        &self,
-    ) -> std::result::Result<
-        Vec<fluree_db_nameservice::GraphSourceRecord>,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.0.all_graph_source_records().await
-    }
-}
-
-/// Transparent delegating nameservice wrapper.
+/// Runtime nameservice selection.
 ///
-/// This wrapper is retained so that builder call-sites do not need
-/// restructuring — it simply delegates every call to `inner`.
-#[derive(Clone, Debug)]
-struct DelegatingNameService<N> {
-    inner: N,
+/// Encodes whether this Fluree instance has full read-write nameservice access
+/// or is a read-only proxy that forwards writes to a remote transaction server.
+///
+/// Analogous to [`StorageBackend`] for storage.
+#[derive(Clone)]
+pub enum NameServiceMode {
+    /// Full read-write nameservice (File, Memory, S3, DynamoDB).
+    ReadWrite(Arc<dyn NameServicePublisher>),
+    /// Read-only proxy nameservice.
+    /// Writes are forwarded to the remote transaction server via HTTP.
+    ReadOnly(Arc<dyn NameService>),
 }
 
-impl<N> DelegatingNameService<N> {
-    fn new(inner: N) -> Self {
-        Self { inner }
+impl std::fmt::Debug for NameServiceMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadWrite(ns) => f.debug_tuple("ReadWrite").field(ns).finish(),
+            Self::ReadOnly(ns) => f.debug_tuple("ReadOnly").field(ns).finish(),
+        }
     }
 }
 
-#[async_trait::async_trait]
-impl<N> fluree_db_nameservice::NameService for DelegatingNameService<N>
-where
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + std::fmt::Debug
-        + Send
-        + Sync,
-{
+impl NameServiceMode {
+    /// Get read-only nameservice access (always available).
+    pub fn reader(&self) -> &dyn NameService {
+        match self {
+            Self::ReadWrite(ns) => ns.as_ref(),
+            Self::ReadOnly(ns) => ns.as_ref(),
+        }
+    }
+
+    /// Get read-write nameservice access (only for ReadWrite mode).
+    pub fn publisher(&self) -> Option<&dyn NameServicePublisher> {
+        match self {
+            Self::ReadWrite(ns) => Some(ns.as_ref()),
+            Self::ReadOnly(_) => None,
+        }
+    }
+
+    /// Get a cloned `Arc` to the read-write nameservice (only for ReadWrite mode).
+    ///
+    /// Useful when callers need an owned `Arc<dyn NameServicePublisher>` for
+    /// passing into subsystems like `SyncDriver`.
+    pub fn publisher_arc(&self) -> Option<Arc<dyn NameServicePublisher>> {
+        match self {
+            Self::ReadWrite(ns) => Some(Arc::clone(ns)),
+            Self::ReadOnly(_) => None,
+        }
+    }
+
+    /// Whether this is a read-only (proxy) instance.
+    pub fn is_read_only(&self) -> bool {
+        matches!(self, Self::ReadOnly(_))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::NameService for NameServiceMode {
     async fn lookup(
         &self,
         ledger_id: &str,
@@ -494,7 +318,7 @@ where
         Option<fluree_db_nameservice::NsRecord>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.inner.lookup(ledger_id).await
+        self.reader().lookup(ledger_id).await
     }
 
     async fn all_records(
@@ -503,7 +327,7 @@ where
         Vec<fluree_db_nameservice::NsRecord>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.inner.all_records().await
+        self.reader().all_records().await
     }
 
     async fn create_branch(
@@ -512,7 +336,7 @@ where
         new_branch: &str,
         source_branch: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner
+        self.reader()
             .create_branch(ledger_name, new_branch, source_branch)
             .await
     }
@@ -521,7 +345,7 @@ where
         &self,
         ledger_id: &str,
     ) -> std::result::Result<Option<u32>, fluree_db_nameservice::NameServiceError> {
-        self.inner.drop_branch(ledger_id).await
+        self.reader().drop_branch(ledger_id).await
     }
 
     async fn reset_head(
@@ -529,66 +353,152 @@ where
         ledger_id: &str,
         snapshot: fluree_db_nameservice::NsRecordSnapshot,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner.reset_head(ledger_id, snapshot).await
+        self.reader().reset_head(ledger_id, snapshot).await
     }
 }
 
-#[async_trait::async_trait]
-impl<N> fluree_db_nameservice::Publisher for DelegatingNameService<N>
-where
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + std::fmt::Debug
-        + Send
-        + Sync,
-{
-    async fn publish_ledger_init(
+#[async_trait]
+impl fluree_db_nameservice::GraphSourceLookup for NameServiceMode {
+    async fn lookup_graph_source(
         &self,
-        alias: &str,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner.publish_ledger_init(alias).await
+        graph_source_id: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.reader().lookup_graph_source(graph_source_id).await
     }
 
-    async fn publish_commit(
+    async fn lookup_any(
         &self,
-        alias: &str,
-        commit_t: i64,
-        commit_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner.publish_commit(alias, commit_t, commit_id).await
+        resource_id: &str,
+    ) -> std::result::Result<
+        fluree_db_nameservice::NsLookupResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.reader().lookup_any(resource_id).await
     }
 
-    async fn publish_index(
+    async fn all_graph_source_records(
         &self,
-        alias: &str,
+    ) -> std::result::Result<
+        Vec<fluree_db_nameservice::GraphSourceRecord>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        self.reader().all_graph_source_records().await
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::GraphSourcePublisher for NameServiceMode {
+    async fn publish_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+        source_type: fluree_db_nameservice::GraphSourceType,
+        config: &str,
+        dependencies: &[String],
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        match self {
+            Self::ReadWrite(ns) => {
+                ns.publish_graph_source(name, branch, source_type, config, dependencies)
+                    .await
+            }
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "publish_graph_source not available on read-only nameservice".into(),
+            )),
+        }
+    }
+
+    async fn publish_graph_source_index(
+        &self,
+        name: &str,
+        branch: &str,
+        index_id: &fluree_db_core::ContentId,
+        index_t: i64,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        match self {
+            Self::ReadWrite(ns) => {
+                ns.publish_graph_source_index(name, branch, index_id, index_t)
+                    .await
+            }
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "publish_graph_source_index not available on read-only nameservice".into(),
+            )),
+        }
+    }
+
+    async fn retract_graph_source(
+        &self,
+        name: &str,
+        branch: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        match self {
+            Self::ReadWrite(ns) => ns.retract_graph_source(name, branch).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "retract_graph_source not available on read-only nameservice".into(),
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::AdminPublisher for NameServiceMode {
+    async fn publish_index_allow_equal(
+        &self,
+        ledger_id: &str,
         index_t: i64,
         index_id: &fluree_db_core::ContentId,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner.publish_index(alias, index_t, index_id).await
-    }
-
-    async fn retract(
-        &self,
-        alias: &str,
-    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner.retract(alias).await
-    }
-
-    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
-        self.inner.publishing_ledger_id(ledger_id)
+        match self {
+            Self::ReadWrite(ns) => {
+                ns.publish_index_allow_equal(ledger_id, index_t, index_id)
+                    .await
+            }
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "publish_index_allow_equal not available on read-only nameservice".into(),
+            )),
+        }
     }
 }
 
-#[async_trait::async_trait]
-impl<N> fluree_db_nameservice::RefPublisher for DelegatingNameService<N>
-where
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::RefPublisher
-        + std::fmt::Debug
-        + Send
-        + Sync,
-{
+#[async_trait]
+impl fluree_db_nameservice::ConfigPublisher for NameServiceMode {
+    async fn get_config(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::ConfigValue>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        match self {
+            Self::ReadWrite(ns) => ns.get_config(ledger_id).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "get_config not available on read-only nameservice".into(),
+            )),
+        }
+    }
+
+    async fn push_config(
+        &self,
+        ledger_id: &str,
+        expected: Option<&fluree_db_nameservice::ConfigValue>,
+        new: &fluree_db_nameservice::ConfigValue,
+    ) -> std::result::Result<
+        fluree_db_nameservice::ConfigCasResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        match self {
+            Self::ReadWrite(ns) => ns.push_config(ledger_id, expected, new).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "push_config not available on read-only nameservice".into(),
+            )),
+        }
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::RefPublisher for NameServiceMode {
     async fn get_ref(
         &self,
         ledger_id: &str,
@@ -597,7 +507,12 @@ where
         Option<fluree_db_nameservice::RefValue>,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.inner.get_ref(ledger_id, kind).await
+        match self {
+            Self::ReadWrite(ns) => ns.get_ref(ledger_id, kind).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "get_ref not available on read-only nameservice".into(),
+            )),
+        }
     }
 
     async fn compare_and_set_ref(
@@ -610,92 +525,86 @@ where
         fluree_db_nameservice::CasResult,
         fluree_db_nameservice::NameServiceError,
     > {
-        self.inner
-            .compare_and_set_ref(ledger_id, kind, expected, new)
-            .await
+        match self {
+            Self::ReadWrite(ns) => ns.compare_and_set_ref(ledger_id, kind, expected, new).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "compare_and_set_ref not available on read-only nameservice".into(),
+            )),
+        }
     }
 }
 
-#[async_trait::async_trait]
-impl<N> fluree_db_nameservice::GraphSourcePublisher for DelegatingNameService<N>
-where
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::GraphSourcePublisher
-        + std::fmt::Debug
-        + Send
-        + Sync,
-{
-    async fn publish_graph_source(
+#[async_trait]
+impl fluree_db_nameservice::Publisher for NameServiceMode {
+    async fn publish_ledger_init(
         &self,
-        name: &str,
-        branch: &str,
-        source_type: fluree_db_nameservice::GraphSourceType,
-        config: &str,
-        dependencies: &[String],
+        ledger_id: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner
-            .publish_graph_source(name, branch, source_type, config, dependencies)
-            .await
+        match self {
+            Self::ReadWrite(ns) => ns.publish_ledger_init(ledger_id).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "publish_ledger_init not available on read-only nameservice".into(),
+            )),
+        }
     }
 
-    async fn publish_graph_source_index(
+    async fn publish_commit(
         &self,
-        name: &str,
-        branch: &str,
-        index_id: &fluree_db_core::ContentId,
+        ledger_id: &str,
+        commit_t: i64,
+        commit_id: &fluree_db_core::ContentId,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        match self {
+            Self::ReadWrite(ns) => ns.publish_commit(ledger_id, commit_t, commit_id).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "publish_commit not available on read-only nameservice".into(),
+            )),
+        }
+    }
+
+    async fn publish_index(
+        &self,
+        ledger_id: &str,
         index_t: i64,
+        index_id: &fluree_db_core::ContentId,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner
-            .publish_graph_source_index(name, branch, index_id, index_t)
-            .await
+        match self {
+            Self::ReadWrite(ns) => ns.publish_index(ledger_id, index_t, index_id).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "publish_index not available on read-only nameservice".into(),
+            )),
+        }
     }
 
-    async fn retract_graph_source(
+    async fn retract(
         &self,
-        name: &str,
-        branch: &str,
+        ledger_id: &str,
     ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
-        self.inner.retract_graph_source(name, branch).await
-    }
-}
-
-#[async_trait::async_trait]
-impl<N> fluree_db_nameservice::GraphSourceLookup for DelegatingNameService<N>
-where
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + std::fmt::Debug
-        + Send
-        + Sync,
-{
-    async fn lookup_graph_source(
-        &self,
-        graph_source_id: &str,
-    ) -> std::result::Result<
-        Option<fluree_db_nameservice::GraphSourceRecord>,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.inner.lookup_graph_source(graph_source_id).await
+        match self {
+            Self::ReadWrite(ns) => ns.retract(ledger_id).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "retract not available on read-only nameservice".into(),
+            )),
+        }
     }
 
-    async fn lookup_any(
+    async fn purge(
         &self,
-        resource_id: &str,
-    ) -> std::result::Result<
-        fluree_db_nameservice::NsLookupResult,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.inner.lookup_any(resource_id).await
+        ledger_id: &str,
+    ) -> std::result::Result<(), fluree_db_nameservice::NameServiceError> {
+        match self {
+            Self::ReadWrite(ns) => ns.purge(ledger_id).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "purge not available on read-only nameservice".into(),
+            )),
+        }
     }
 
-    async fn all_graph_source_records(
-        &self,
-    ) -> std::result::Result<
-        Vec<fluree_db_nameservice::GraphSourceRecord>,
-        fluree_db_nameservice::NameServiceError,
-    > {
-        self.inner.all_graph_source_records().await
+    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
+        match self {
+            Self::ReadWrite(ns) => ns.publishing_ledger_id(ledger_id),
+            Self::ReadOnly(_) => None,
+        }
     }
 }
 
@@ -1017,7 +926,10 @@ impl StorageMethod for AddressIdentifierResolverStorage {
 }
 
 /// Type-erased Fluree runtime type returned by `FlureeBuilder::build_client()`.
-pub type FlureeClient = Fluree<AnyNameService>;
+///
+/// Now that `Fluree` no longer has a type parameter, this is a simple alias
+/// kept for backward compatibility.
+pub type FlureeClient = Fluree;
 
 fn decode_encryption_key_base64(key_str: &str) -> Result<[u8; 32]> {
     use base64::Engine;
@@ -1220,7 +1132,7 @@ fn derive_index_config(config: &ConnectionConfig) -> IndexConfig {
 /// ## Typed vs Dynamic Builds
 ///
 /// - **Typed builds** (`build()`, `build_memory()`, `build_s3()`) return concrete
-///   `Fluree<N>` types — best for Rust embedders who know the storage backend
+///   `Fluree` types — best for Rust embedders who know the storage backend
 ///   at compile time.
 /// - **Dynamic build** (`build_client()`) returns `FlureeClient` (type-erased) —
 ///   used when the storage backend is determined at runtime from config.
@@ -1655,7 +1567,7 @@ impl FlureeBuilder {
     /// When indexing is enabled via `with_indexing()`, a `BackgroundIndexerWorker`
     /// is spawned on the tokio runtime. This must be called within a tokio context.
     #[cfg(feature = "native")]
-    pub fn build(mut self) -> Result<Fluree<FileNameService>> {
+    pub fn build(mut self) -> Result<Fluree> {
         let path = self
             .storage_path
             .take()
@@ -1665,12 +1577,13 @@ impl FlureeBuilder {
         let nameservice = FileNameService::new(&path);
         let backend = StorageBackend::Managed(Arc::new(storage));
         let index_config = self.derive_indexing();
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
         let indexing_mode = self.start_background_indexing(&backend, &nameservice);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
-            nameservice,
+            ns_mode,
             indexing_mode,
             index_config,
         ))
@@ -1683,11 +1596,11 @@ impl FlureeBuilder {
     /// methods (e.g. proxy storage for peer mode).
     ///
     /// Honors the builder's cache and indexing settings.
-    pub fn build_with<S, N>(self, storage: S, nameservice: N) -> Fluree<N>
-    where
-        S: Storage + 'static,
-        N: NameService + Clone + Send + Sync + 'static,
-    {
+    pub fn build_with(
+        self,
+        storage: impl Storage + 'static,
+        nameservice: NameServiceMode,
+    ) -> Fluree {
         let index_config = self.derive_indexing();
         Self::finalize(
             self.ledger_cache_config,
@@ -1728,7 +1641,7 @@ impl FlureeBuilder {
     /// Note: The input `[u8; 32]` passed to this method is not automatically zeroized;
     /// callers should zeroize their own key copies if needed.
     #[cfg(feature = "native")]
-    pub fn build_encrypted(self, key: [u8; 32]) -> Result<Fluree<FileNameService>> {
+    pub fn build_encrypted(self, key: [u8; 32]) -> Result<Fluree> {
         // Always use the explicitly provided key
         self.build_encrypted_internal(key)
     }
@@ -1761,7 +1674,7 @@ impl FlureeBuilder {
     ///     .build_encrypted_from_config()?;
     /// ```
     #[cfg(feature = "native")]
-    pub fn build_encrypted_from_config(self) -> Result<Fluree<FileNameService>> {
+    pub fn build_encrypted_from_config(self) -> Result<Fluree> {
         let key = self.encryption_key.ok_or_else(|| {
             ApiError::config("No encryption key configured. Set via with_encryption_key(), with_encryption_key_base64(), or AES256Key in JSON-LD config")
         })?;
@@ -1770,7 +1683,7 @@ impl FlureeBuilder {
 
     /// Internal helper to build encrypted storage
     #[cfg(feature = "native")]
-    fn build_encrypted_internal(mut self, key: [u8; 32]) -> Result<Fluree<FileNameService>> {
+    fn build_encrypted_internal(mut self, key: [u8; 32]) -> Result<Fluree> {
         let path = self
             .storage_path
             .take()
@@ -1783,12 +1696,13 @@ impl FlureeBuilder {
         let nameservice = FileNameService::new(&path);
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(Arc::new(storage));
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
         let indexing_mode = self.start_background_indexing(&backend, &nameservice);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
-            nameservice,
+            ns_mode,
             indexing_mode,
             index_config,
         ))
@@ -1803,15 +1717,16 @@ impl FlureeBuilder {
     ///
     /// Indexing is disabled by default; use `set_indexing_mode` after building
     /// to enable background indexing.
-    pub fn build_memory(self) -> Fluree<MemoryNameService> {
+    pub fn build_memory(self) -> Fluree {
         let storage = MemoryStorage::new();
         let nameservice = MemoryNameService::new();
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice));
         let index_config = self.derive_indexing();
         Self::finalize(
             self.ledger_cache_config,
             self.config,
             storage,
-            nameservice,
+            ns_mode,
             tx::IndexingMode::Disabled,
             index_config,
         )
@@ -1824,18 +1739,19 @@ impl FlureeBuilder {
     /// # Arguments
     ///
     /// * `key` - 32-byte AES-256 encryption key
-    pub fn build_memory_encrypted(self, key: [u8; 32]) -> Fluree<MemoryNameService> {
+    pub fn build_memory_encrypted(self, key: [u8; 32]) -> Fluree {
         let mem_storage = MemoryStorage::new();
         let encryption_key = EncryptionKey::new(key, 0);
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(mem_storage, key_provider);
         let nameservice = MemoryNameService::new();
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice));
         let index_config = self.derive_indexing();
         Self::finalize(
             self.ledger_cache_config,
             self.config,
             storage,
-            nameservice,
+            ns_mode,
             tx::IndexingMode::Disabled,
             index_config,
         )
@@ -1863,7 +1779,7 @@ impl FlureeBuilder {
     ///
     /// [`build_with`]: FlureeBuilder::build_with
     #[cfg(feature = "ipfs")]
-    pub fn build_ipfs(self, api_url: impl Into<String>) -> Fluree<MemoryNameService> {
+    pub fn build_ipfs(self, api_url: impl Into<String>) -> Fluree {
         use fluree_db_storage_ipfs::{IpfsConfig, IpfsStorage};
         let ipfs_store = IpfsStorage::new(IpfsConfig {
             api_url: api_url.into(),
@@ -1871,13 +1787,14 @@ impl FlureeBuilder {
         });
         let backend = StorageBackend::Permanent(Arc::new(ipfs_store));
         let nameservice = MemoryNameService::new();
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
         let index_config = self.derive_indexing();
         let indexing_mode = self.start_background_indexing(&backend, &nameservice);
         Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
-            nameservice,
+            ns_mode,
             indexing_mode,
             index_config,
         )
@@ -1892,9 +1809,7 @@ impl FlureeBuilder {
     /// - Uses the AWS default credential/region chain.
     /// - Ledger caching is enabled when `ledger_cache_config` is set on the builder.
     #[cfg(feature = "aws")]
-    pub async fn build_s3(
-        self,
-    ) -> Result<Fluree<StorageNameService<fluree_db_storage_aws::S3Storage>>> {
+    pub async fn build_s3(self) -> Result<Fluree> {
         use fluree_db_connection::aws;
         use fluree_db_connection::config::S3StorageConfig;
         use fluree_db_storage_aws::{S3Config, S3Storage};
@@ -1934,6 +1849,7 @@ impl FlureeBuilder {
 
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage.clone(), "");
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(Arc::new(storage));
         let indexing_mode = self.start_background_indexing(&backend, &nameservice);
@@ -1941,7 +1857,7 @@ impl FlureeBuilder {
             self.ledger_cache_config,
             self.config,
             backend,
-            nameservice,
+            ns_mode,
             indexing_mode,
             index_config,
         ))
@@ -1961,16 +1877,7 @@ impl FlureeBuilder {
     ///
     /// * `key` - 32-byte AES-256 encryption key
     #[cfg(feature = "aws")]
-    pub async fn build_s3_encrypted(
-        self,
-        key: [u8; 32],
-    ) -> Result<
-        Fluree<
-            StorageNameService<
-                EncryptedStorage<fluree_db_storage_aws::S3Storage, StaticKeyProvider>,
-            >,
-        >,
-    > {
+    pub async fn build_s3_encrypted(self, key: [u8; 32]) -> Result<Fluree> {
         use fluree_db_connection::aws;
         use fluree_db_connection::config::S3StorageConfig;
         use fluree_db_storage_aws::{S3Config, S3Storage};
@@ -2013,6 +1920,7 @@ impl FlureeBuilder {
 
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage.clone(), "");
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(Arc::new(storage));
         let indexing_mode = self.start_background_indexing(&backend, &nameservice);
@@ -2020,7 +1928,7 @@ impl FlureeBuilder {
             self.ledger_cache_config,
             self.config,
             backend,
-            nameservice,
+            ns_mode,
             indexing_mode,
             index_config,
         ))
@@ -2054,10 +1962,22 @@ impl FlureeBuilder {
     where
         N: NameService + fluree_db_nameservice::Publisher + Clone + 'static,
     {
+        self.start_background_indexing_dyn(backend, Arc::new(nameservice.clone()))
+    }
+
+    /// Spawn the background indexer with an already-`Arc`'d nameservice.
+    ///
+    /// Used by AWS paths where the nameservice is already type-erased behind
+    /// an `Arc<dyn ReadWriteNameService>`.
+    fn start_background_indexing_dyn(
+        &self,
+        backend: &StorageBackend,
+        nameservice: Arc<dyn fluree_db_nameservice::ReadWriteNameService>,
+    ) -> tx::IndexingMode {
         if let Some(ref idx_config) = self.indexing_config {
             let (worker, handle) = BackgroundIndexerWorker::new(
                 backend.clone(),
-                Arc::new(nameservice.clone()),
+                nameservice,
                 idx_config.indexer_config.clone(),
             );
             tokio::spawn(worker.run());
@@ -2067,7 +1987,7 @@ impl FlureeBuilder {
         }
     }
 
-    /// Assemble a `Fluree<N>` with the builder's caching config.
+    /// Assemble a `Fluree` with the builder's caching config.
     ///
     /// This is the **single source of truth** for:
     /// - LeafletCache creation
@@ -2079,18 +1999,14 @@ impl FlureeBuilder {
     /// and passing the result as `indexing`. This separation exists because
     /// indexing requires `N: Publisher`, which not all callers can guarantee
     /// (e.g., `build_with()` accepts arbitrary `N: NameService`).
-    fn finalize<S, N>(
+    fn finalize(
         ledger_cache_config: Option<LedgerManagerConfig>,
         config: ConnectionConfig,
-        storage: S,
-        nameservice: N,
+        storage: impl Storage + 'static,
+        nameservice: NameServiceMode,
         indexing_mode: tx::IndexingMode,
         index_config: IndexConfig,
-    ) -> Fluree<N>
-    where
-        S: Storage + 'static,
-        N: NameService + Clone + Send + Sync + 'static,
-    {
+    ) -> Fluree {
         Self::finalize_with_backend(
             ledger_cache_config,
             config,
@@ -2102,17 +2018,14 @@ impl FlureeBuilder {
     }
 
     /// Shared finalize logic taking a pre-built `StorageBackend`.
-    fn finalize_with_backend<N>(
+    fn finalize_with_backend(
         ledger_cache_config: Option<LedgerManagerConfig>,
         config: ConnectionConfig,
         backend: StorageBackend,
-        nameservice: N,
+        nameservice: NameServiceMode,
         indexing_mode: tx::IndexingMode,
         index_config: IndexConfig,
-    ) -> Fluree<N>
-    where
-        N: NameService + Clone + Send + Sync + 'static,
-    {
+    ) -> Fluree {
         let leaflet_cache = make_leaflet_cache(&config);
 
         let ledger_manager = ledger_cache_config.map(|mut lm_config| {
@@ -2129,7 +2042,7 @@ impl FlureeBuilder {
         Fluree {
             config,
             backend,
-            nameservice,
+            nameservice_mode: nameservice,
             leaflet_cache,
             indexing_mode,
             index_config,
@@ -2182,9 +2095,8 @@ impl FlureeBuilder {
         // Wrap with address identifier routing if configured
         let storage = self.wrap_address_identifiers(base_storage)?;
 
-        let nameservice_inner = MemoryNameService::new();
-        let nameservice =
-            AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
+        let nameservice = MemoryNameService::new();
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
 
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(storage);
@@ -2193,7 +2105,7 @@ impl FlureeBuilder {
             self.ledger_cache_config,
             self.config,
             backend,
-            nameservice,
+            ns_mode,
             indexing_mode,
             index_config,
         ))
@@ -2229,9 +2141,8 @@ impl FlureeBuilder {
             // Wrap with address identifier routing if configured
             let storage = self.wrap_address_identifiers(base_storage)?;
 
-            let nameservice_inner = FileNameService::new(path.as_ref());
-            let nameservice =
-                AnyNameService::new(Arc::new(DelegatingNameService::new(nameservice_inner)));
+            let nameservice = FileNameService::new(path.as_ref());
+            let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
 
             let index_config = self.derive_indexing();
             let backend = StorageBackend::Managed(storage);
@@ -2240,7 +2151,7 @@ impl FlureeBuilder {
                 self.ledger_cache_config,
                 self.config,
                 backend,
-                nameservice,
+                ns_mode,
                 indexing_mode,
                 index_config,
             ))
@@ -2274,18 +2185,19 @@ impl FlureeBuilder {
             .wrap_address_identifiers_aws(base_storage, aws_handle.config())
             .await?;
 
-        let nameservice_inner = aws_handle.nameservice().clone();
-        let nameservice_wrapped = DelegatingNameService::new(nameservice_inner);
-        let nameservice = AnyNameService::new(Arc::new(nameservice_wrapped));
+        let ns_arc: Arc<dyn NameServicePublisher> = aws_handle.nameservice_arc().clone();
+        let ns_mode = NameServiceMode::ReadWrite(ns_arc.clone());
 
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(storage);
-        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        let ns_rw: Arc<dyn fluree_db_nameservice::ReadWriteNameService> =
+            aws_handle.nameservice_arc().clone();
+        let indexing_mode = self.start_background_indexing_dyn(&backend, ns_rw);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             aws_handle.config().clone(),
             backend,
-            nameservice,
+            ns_mode,
             indexing_mode,
             index_config,
         ))
@@ -2338,16 +2250,13 @@ impl FlureeBuilder {
 ///
 /// Combines connection management, nameservice, and query execution
 /// into a unified interface.
-///
-/// Type parameters:
-/// - `N`: NameService implementation
-pub struct Fluree<N> {
+pub struct Fluree {
     /// Connection configuration
     config: ConnectionConfig,
     /// Storage backend (managed or permanent).
     backend: StorageBackend,
-    /// Nameservice for ledger discovery
-    nameservice: N,
+    /// Nameservice for ledger discovery and publishing.
+    nameservice_mode: NameServiceMode,
     /// Shared global cache for decoded index artifacts (one budget).
     leaflet_cache: std::sync::Arc<fluree_db_binary_index::LeafletCache>,
     /// Indexing mode (disabled or background with handle)
@@ -2365,17 +2274,18 @@ pub struct Fluree<N> {
     ///
     /// Loaded ledgers are cached for reuse across queries and transactions.
     /// Disabled via `FlureeBuilder::without_ledger_caching()` for one-shot use.
-    ledger_manager: Option<Arc<LedgerManager<N>>>,
+    ledger_manager: Option<Arc<LedgerManager>>,
 }
 
-impl<N> Fluree<N>
-where
-    N: NameService,
-{
+impl Fluree {
     /// Create a new Fluree instance with custom components
     ///
     /// Most users should use `FlureeBuilder` instead.
-    pub fn new(config: ConnectionConfig, storage: impl Storage + 'static, nameservice: N) -> Self {
+    pub fn new(
+        config: ConnectionConfig,
+        storage: impl Storage + 'static,
+        nameservice: NameServiceMode,
+    ) -> Self {
         Self::from_backend(
             config,
             StorageBackend::Managed(Arc::new(storage)),
@@ -2384,12 +2294,16 @@ where
     }
 
     /// Create a new Fluree instance from a pre-built `StorageBackend`.
-    pub fn from_backend(config: ConnectionConfig, backend: StorageBackend, nameservice: N) -> Self {
+    pub fn from_backend(
+        config: ConnectionConfig,
+        backend: StorageBackend,
+        nameservice: NameServiceMode,
+    ) -> Self {
         let leaflet_cache = make_leaflet_cache(&config);
         Self {
             config,
             backend,
-            nameservice,
+            nameservice_mode: nameservice,
             leaflet_cache,
             indexing_mode: tx::IndexingMode::Disabled,
             index_config: IndexConfig::default(),
@@ -2403,14 +2317,14 @@ where
     pub fn with_indexing_mode(
         config: ConnectionConfig,
         storage: impl Storage + 'static,
-        nameservice: N,
+        nameservice: NameServiceMode,
         indexing_mode: tx::IndexingMode,
     ) -> Self {
         let leaflet_cache = make_leaflet_cache(&config);
         Self {
             config,
             backend: StorageBackend::Managed(Arc::new(storage)),
-            nameservice,
+            nameservice_mode: nameservice,
             leaflet_cache,
             indexing_mode,
             index_config: IndexConfig::default(),
@@ -2445,9 +2359,21 @@ where
             .unwrap_or(true)
     }
 
-    /// Get a reference to the nameservice
-    pub fn nameservice(&self) -> &N {
-        &self.nameservice
+    /// Get read-only nameservice access (always available).
+    pub fn nameservice(&self) -> &dyn NameService {
+        self.nameservice_mode.reader()
+    }
+
+    /// Get read-write nameservice access, or error if read-only.
+    pub fn publisher(&self) -> Result<&dyn NameServicePublisher> {
+        self.nameservice_mode
+            .publisher()
+            .ok_or_else(|| ApiError::internal("write operations require a read-write nameservice"))
+    }
+
+    /// Get the raw nameservice mode (for mode checks or `publisher_arc()`).
+    pub fn nameservice_mode(&self) -> &NameServiceMode {
+        &self.nameservice_mode
     }
 
     /// Get the in-process event bus for subscribing to ledger/graph-source changes.
@@ -2499,15 +2425,12 @@ where
     }
 
     /// Get the ledger manager (if caching is enabled)
-    pub fn ledger_manager(&self) -> Option<&Arc<LedgerManager<N>>> {
+    pub fn ledger_manager(&self) -> Option<&Arc<LedgerManager>> {
         self.ledger_manager.as_ref()
     }
 }
 
-impl<N> Fluree<N>
-where
-    N: NameService + Send + Sync + 'static,
-{
+impl Fluree {
     /// Resolve the binary-store disk cache directory for this instance.
     ///
     /// When ledger caching is enabled, binary-store reloads must use the
@@ -2521,10 +2444,7 @@ where
     }
 }
 
-impl<N> Fluree<N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Create a builder for a new ledger.
     ///
     /// Returns a [`CreateBuilder`] that supports `.import(path)` for bulk import
@@ -2544,7 +2464,7 @@ where
     /// let view = fluree.db("mydb").await?;
     /// let qr = fluree.query(&view, "SELECT * WHERE { ?s ?p ?o } LIMIT 10").await?;
     /// ```
-    pub fn create(&self, ledger_id: &str) -> import::CreateBuilder<'_, N> {
+    pub fn create(&self, ledger_id: &str) -> import::CreateBuilder<'_> {
         import::CreateBuilder::new(self, ledger_id.to_string())
     }
 
@@ -2575,7 +2495,7 @@ where
     /// // Materialize for reuse
     /// let db = fluree.graph("mydb:main").load().await?;
     /// ```
-    pub fn graph(&self, ledger_id: &str) -> Graph<'_, N> {
+    pub fn graph(&self, ledger_id: &str) -> Graph<'_> {
         Graph::new(self, ledger_id.to_string(), TimeSpec::Latest)
     }
 
@@ -2594,15 +2514,12 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
-    pub fn graph_at(&self, ledger_id: &str, spec: TimeSpec) -> Graph<'_, N> {
+    pub fn graph_at(&self, ledger_id: &str, spec: TimeSpec) -> Graph<'_> {
         Graph::new(self, ledger_id.to_string(), spec)
     }
 }
 
-impl<N> Fluree<N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Create a transaction builder using a cached [`LedgerHandle`].
     ///
     /// This is the recommended way to transact in server/application contexts.
@@ -2617,10 +2534,7 @@ where
     ///     .insert(&data)
     ///     .execute().await?;
     /// ```
-    pub fn stage<'a>(&'a self, handle: &'a LedgerHandle) -> RefTransactBuilder<'a, N>
-    where
-        N: Publisher,
-    {
+    pub fn stage<'a>(&'a self, handle: &'a LedgerHandle) -> RefTransactBuilder<'a> {
         RefTransactBuilder::new(self, handle)
     }
 
@@ -2641,10 +2555,7 @@ where
     ///     .execute().await?;
     /// let ledger = result.ledger;
     /// ```
-    pub fn stage_owned(&self, ledger: LedgerState) -> OwnedTransactBuilder<'_, N>
-    where
-        N: Publisher,
-    {
+    pub fn stage_owned(&self, ledger: LedgerState) -> OwnedTransactBuilder<'_> {
         OwnedTransactBuilder::new(self, ledger)
     }
 
@@ -2666,7 +2577,7 @@ where
     /// When the `iceberg` feature is compiled, R2RML/Iceberg graph source
     /// support is automatically enabled — graph sources referenced via
     /// `FROM` or `GRAPH` patterns resolve transparently.
-    pub fn query_from(&self) -> FromQueryBuilder<'_, N> {
+    pub fn query_from(&self) -> FromQueryBuilder<'_> {
         let builder = FromQueryBuilder::new(self);
         #[cfg(feature = "iceberg")]
         let builder = builder.with_r2rml();
@@ -2686,7 +2597,7 @@ where
     ///     .execute()
     ///     .await?;
     /// ```
-    pub fn ledger_info(&self, ledger_id: &str) -> ledger_info::LedgerInfoBuilder<'_, N> {
+    pub fn ledger_info(&self, ledger_id: &str) -> ledger_info::LedgerInfoBuilder<'_> {
         ledger_info::LedgerInfoBuilder::new(self, ledger_id.to_string())
     }
 
@@ -2709,7 +2620,7 @@ where
     /// }
     /// ```
     pub async fn ledger_exists(&self, ledger_id: &str) -> Result<bool> {
-        Ok(self.nameservice.lookup(ledger_id).await?.is_some())
+        Ok(self.nameservice().lookup(ledger_id).await?.is_some())
     }
 
     /// Get a cached ledger handle (loads if not cached).
@@ -2898,7 +2809,7 @@ where
 
         // Step B: Lookup nameservice record
         // The nameservice handles address resolution (mydb -> mydb:main, etc.)
-        let ns_record = match self.nameservice.lookup(ledger_id).await? {
+        let ns_record = match self.nameservice().lookup(ledger_id).await? {
             Some(record) => record,
             None => return Ok(None), // Ledger doesn't exist in nameservice
         };
@@ -2959,10 +2870,7 @@ pub enum SetContextResult {
 /// Maximum retries for CAS conflict during context update.
 const CONTEXT_CAS_MAX_RETRIES: usize = 3;
 
-impl<N> Fluree<N>
-where
-    N: NameService + ConfigPublisher + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Create an export builder for streaming RDF data from a ledger.
     ///
     /// # Example
@@ -2975,7 +2883,7 @@ where
     ///     .write_to(&mut writer)
     ///     .await?;
     /// ```
-    pub fn export(&self, ledger_id: &str) -> export_builder::ExportBuilder<'_, N> {
+    pub fn export(&self, ledger_id: &str) -> export_builder::ExportBuilder<'_> {
         export_builder::ExportBuilder::new(self, ledger_id.to_string())
     }
 
@@ -2986,14 +2894,15 @@ where
     pub async fn get_default_context(&self, ledger_id: &str) -> Result<Option<serde_json::Value>> {
         // Resolve to canonical ledger ID (e.g., "mydb" -> "mydb:main")
         let record = self
-            .nameservice
+            .nameservice()
             .lookup(ledger_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(ledger_id.to_string()))?;
         let canonical_id = &record.ledger_id;
 
         // Read config to get context CID
-        let config = self.nameservice.get_config(canonical_id).await?;
+        use fluree_db_nameservice::ConfigPublisher as _;
+        let config = self.nameservice_mode.get_config(canonical_id).await?;
         let ctx_cid = config
             .as_ref()
             .and_then(|c| c.payload.as_ref())
@@ -3037,7 +2946,7 @@ where
 
         // Resolve to canonical ledger ID (e.g., "mydb" -> "mydb:main")
         let record = self
-            .nameservice
+            .nameservice()
             .lookup(ledger_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(ledger_id.to_string()))?;
@@ -3055,7 +2964,8 @@ where
 
         // CAS loop: read current config, push new config
         for attempt in 0..CONTEXT_CAS_MAX_RETRIES {
-            let current_config = self.nameservice.get_config(canonical_id).await?;
+            use fluree_db_nameservice::ConfigPublisher as _;
+            let current_config = self.nameservice_mode.get_config(canonical_id).await?;
 
             let old_cid = current_config
                 .as_ref()
@@ -3073,7 +2983,7 @@ where
             let new_config = ConfigValue::new(new_v, Some(new_payload));
 
             match self
-                .nameservice
+                .nameservice_mode
                 .push_config(canonical_id, current_config.as_ref(), &new_config)
                 .await?
             {
@@ -3134,14 +3044,14 @@ where
 ///
 /// This is the most common configuration for production use.
 #[cfg(feature = "native")]
-pub fn fluree_file(path: impl Into<String>) -> Result<Fluree<FileNameService>> {
+pub fn fluree_file(path: impl Into<String>) -> Result<Fluree> {
     FlureeBuilder::file(path).build()
 }
 
 /// Create a memory-backed Fluree instance
 ///
 /// Useful for testing or when persistence is not needed.
-pub fn fluree_memory() -> Fluree<MemoryNameService> {
+pub fn fluree_memory() -> Fluree {
     FlureeBuilder::memory().build_memory()
 }
 
@@ -3270,14 +3180,14 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_noop_when_not_cached() {
         use fluree_db_core::{ContentId, ContentKind};
-        use fluree_db_nameservice::Publisher;
 
         let fluree = FlureeBuilder::memory().build_memory();
         let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish a record to nameservice directly (without caching the ledger)
         fluree
-            .nameservice()
+            .publisher()
+            .unwrap()
             .publish_commit("mydb:main", 5, &cid)
             .await
             .unwrap();
@@ -3308,14 +3218,14 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_with_alias_resolution() {
         use fluree_db_core::{ContentId, ContentKind};
-        use fluree_db_nameservice::Publisher;
 
         let fluree = FlureeBuilder::memory().build_memory();
         let cid = ContentId::new(ContentKind::Commit, b"commit-1");
 
         // Publish with canonical alias
         fluree
-            .nameservice()
+            .publisher()
+            .unwrap()
             .publish_commit("mydb:main", 5, &cid)
             .await
             .unwrap();

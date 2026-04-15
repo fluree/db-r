@@ -28,13 +28,7 @@ fn ctx() -> JsonValue {
 }
 
 /// Helper: build a memory-backed Fluree and seed it with initial data.
-async fn seed(
-    ledger_id: &str,
-    seed_data: JsonValue,
-) -> (
-    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
-    LedgerState,
-) {
+async fn seed(ledger_id: &str, seed_data: JsonValue) -> (fluree_db_api::Fluree, LedgerState) {
     let fluree = FlureeBuilder::memory().build_memory();
     let db0 = LedgerSnapshot::genesis(ledger_id);
     let ledger0 = LedgerState::new(db0, Novelty::new(0));
@@ -55,7 +49,7 @@ async fn seed(
 
 /// Helper: query a single entity by @id and return all properties.
 async fn query_entity(
-    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
+    fluree: &fluree_db_api::Fluree,
     ledger: &LedgerState,
     entity_id: &str,
 ) -> JsonValue {

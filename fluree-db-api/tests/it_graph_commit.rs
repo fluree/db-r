@@ -118,7 +118,7 @@ async fn commit_t_resolves_indexed_commit_from_txn_meta_post_lookup() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 

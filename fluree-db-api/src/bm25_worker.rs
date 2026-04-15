@@ -29,7 +29,7 @@
 //! ```
 
 use crate::{ApiError, Result};
-use fluree_db_nameservice::{GraphSourcePublisher, NameService, NameServiceEvent, Publisher};
+use fluree_db_nameservice::{GraphSourcePublisher, NameService, NameServiceEvent};
 use futures::StreamExt;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -257,19 +257,16 @@ impl Bm25WorkerHandle {
 ///
 /// Monitors nameservice events and automatically syncs BM25 indexes when their
 /// source ledgers are updated.
-pub struct Bm25MaintenanceWorker<'a, N> {
-    fluree: &'a crate::Fluree<N>,
+pub struct Bm25MaintenanceWorker<'a> {
+    fluree: &'a crate::Fluree,
     config: Bm25WorkerConfig,
     state: Rc<RefCell<Bm25WorkerState>>,
     stop_requested: Rc<RefCell<bool>>,
 }
 
-impl<'a, N> Bm25MaintenanceWorker<'a, N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl<'a> Bm25MaintenanceWorker<'a> {
     /// Create a new maintenance worker.
-    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree) -> Self {
         Self {
             fluree,
             config: Bm25WorkerConfig::default(),
@@ -279,7 +276,7 @@ where
     }
 
     /// Create a new maintenance worker with custom config.
-    pub fn with_config(fluree: &'a crate::Fluree<N>, config: Bm25WorkerConfig) -> Self {
+    pub fn with_config(fluree: &'a crate::Fluree, config: Bm25WorkerConfig) -> Self {
         Self {
             fluree,
             config,

@@ -21,7 +21,7 @@ use crate::format::FormatterConfig;
 use crate::query::helpers::parse_dataset_spec;
 use crate::view::{DataSetDb, GraphDb, QueryInput};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, QueryResult, Result, TrackedErrorResponse,
+    ApiError, Fluree, PolicyContext, QueryResult, Result, TrackedErrorResponse,
     TrackedQueryResponse, TrackingOptions,
 };
 
@@ -180,18 +180,15 @@ impl<'a> QueryCore<'a> {
 ///     .jsonld(&query)
 ///     .execute().await?;
 /// ```
-pub struct ViewQueryBuilder<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct ViewQueryBuilder<'a> {
+    fluree: &'a Fluree,
     view: &'a GraphDb,
     core: QueryCore<'a>,
 }
 
-impl<'a, N> ViewQueryBuilder<'a, N>
-where
-    N: NameService,
-{
+impl<'a> ViewQueryBuilder<'a> {
     /// Create a new builder (called by `GraphDb::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<N>, view: &'a GraphDb) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree, view: &'a GraphDb) -> Self {
         Self {
             fluree,
             view,
@@ -429,18 +426,15 @@ where
 ///     .jsonld(&query)
 ///     .execute().await?;
 /// ```
-pub struct DatasetQueryBuilder<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct DatasetQueryBuilder<'a> {
+    fluree: &'a Fluree,
     dataset: &'a DataSetDb,
     core: QueryCore<'a>,
 }
 
-impl<'a, N> DatasetQueryBuilder<'a, N>
-where
-    N: NameService,
-{
+impl<'a> DatasetQueryBuilder<'a> {
     /// Create a new builder (called by `DataSetDb::query()`).
-    pub(crate) fn new(fluree: &'a Fluree<N>, dataset: &'a DataSetDb) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree, dataset: &'a DataSetDb) -> Self {
         Self {
             fluree,
             dataset,
@@ -687,18 +681,15 @@ where
 ///     .policy(ctx)
 ///     .execute().await?;
 /// ```
-pub struct FromQueryBuilder<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct FromQueryBuilder<'a> {
+    fluree: &'a Fluree,
     core: QueryCore<'a>,
     policy: Option<Arc<PolicyContext>>,
 }
 
-impl<'a, N> FromQueryBuilder<'a, N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl<'a> FromQueryBuilder<'a> {
     /// Create a new builder (called by `Fluree::query_from()`).
-    pub(crate) fn new(fluree: &'a Fluree<N>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree) -> Self {
         Self {
             fluree,
             core: QueryCore::new(),

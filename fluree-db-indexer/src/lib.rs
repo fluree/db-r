@@ -202,15 +202,12 @@ pub async fn build_index_for_record(
 ///
 /// Returns early if the index is already current (no work needed).
 /// Use `rebuild_index_from_commits` directly to force a rebuild regardless.
-pub async fn build_index_for_ledger<N>(
+pub async fn build_index_for_ledger(
     content_store: std::sync::Arc<dyn ContentStore>,
-    nameservice: &N,
+    nameservice: &dyn NameService,
     ledger_id: &str,
     config: IndexerConfig,
-) -> Result<IndexResult>
-where
-    N: NameService,
-{
+) -> Result<IndexResult> {
     let record = nameservice
         .lookup(ledger_id)
         .await
@@ -291,7 +288,7 @@ pub async fn upload_dicts_from_disk(
 }
 
 /// Publish index result to nameservice
-pub async fn publish_index_result<P: Publisher>(publisher: &P, result: &IndexResult) -> Result<()> {
+pub async fn publish_index_result(publisher: &dyn Publisher, result: &IndexResult) -> Result<()> {
     publisher
         .publish_index(&result.ledger_id, result.index_t, &result.root_id)
         .await

@@ -32,7 +32,6 @@
 
 use crate::error::ApiError;
 use fluree_db_core::{ContentId, ContentKind, ContentStore, Storage};
-use fluree_db_nameservice::{NameService, Publisher};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -649,28 +648,15 @@ fn resolve_chunk_source(
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct ImportBuilder<'a, N> {
-    fluree: &'a super::Fluree<N>,
+pub struct ImportBuilder<'a> {
+    fluree: &'a super::Fluree,
     ledger_id: String,
     import_path: PathBuf,
     config: ImportConfig,
 }
 
-impl<'a, N> ImportBuilder<'a, N>
-where
-    N: NameService
-        + Publisher
-        + fluree_db_nameservice::ConfigPublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
-    pub(crate) fn new(
-        fluree: &'a super::Fluree<N>,
-        ledger_id: String,
-        import_path: PathBuf,
-    ) -> Self {
+impl<'a> ImportBuilder<'a> {
+    pub(crate) fn new(fluree: &'a super::Fluree, ledger_id: String, import_path: PathBuf) -> Self {
         Self {
             fluree,
             ledger_id,
@@ -788,7 +774,7 @@ where
             })?;
         run_import_pipeline(
             &storage,
-            self.fluree.nameservice(),
+            self.fluree.publisher()?,
             &self.ledger_id,
             &self.import_path,
             &self.config,
@@ -804,35 +790,21 @@ where
 /// Intermediate builder returned by `fluree.create("mydb")`.
 ///
 /// Supports `.import(path)` for bulk import, or `.execute()` for empty ledger creation.
-pub struct CreateBuilder<'a, N> {
-    fluree: &'a super::Fluree<N>,
+pub struct CreateBuilder<'a> {
+    fluree: &'a super::Fluree,
     ledger_id: String,
 }
 
-impl<'a, N> CreateBuilder<'a, N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
-    pub(crate) fn new(fluree: &'a super::Fluree<N>, ledger_id: String) -> Self {
+impl<'a> CreateBuilder<'a> {
+    pub(crate) fn new(fluree: &'a super::Fluree, ledger_id: String) -> Self {
         Self { fluree, ledger_id }
     }
-}
 
-impl<'a, N> CreateBuilder<'a, N>
-where
-    N: NameService
-        + Publisher
-        + fluree_db_nameservice::ConfigPublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
     /// Attach a bulk import to this create operation.
     ///
     /// `path` can be a directory containing `.ttl`/`.trig`/`.jsonld` files
     /// (sorted lexicographically), or a single `.ttl`/`.jsonld` file.
-    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a, N> {
+    pub fn import(self, path: impl AsRef<Path>) -> ImportBuilder<'a> {
         ImportBuilder::new(self.fluree, self.ledger_id, path.as_ref().to_path_buf())
     }
 }
@@ -939,16 +911,15 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
 // ============================================================================
 
 /// Core import pipeline. Orchestrates all phases.
-async fn run_import_pipeline<S, N>(
+async fn run_import_pipeline<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn crate::NameServicePublisher,
     alias: &str,
     import_path: &Path,
     config: &ImportConfig,
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     let pipeline_start = Instant::now();
     let span = tracing::debug_span!("bulk_import", alias = %alias);
@@ -1135,9 +1106,9 @@ struct IndexBuildInput<'a> {
 ///
 /// Separated from `run_import_pipeline` to enable clean error-path handling:
 /// on failure, the caller keeps the session dir for debugging.
-async fn run_pipeline_phases<S, N>(
+async fn run_pipeline_phases<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn crate::NameServicePublisher,
     alias: &str,
     chunk_source: &std::sync::Arc<ChunkSource>,
     paths: PipelinePaths<'_>,
@@ -1146,7 +1117,6 @@ async fn run_pipeline_phases<S, N>(
 ) -> std::result::Result<ImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher + fluree_db_nameservice::ConfigPublisher,
 {
     // ---- Phase 2: Import TTL → commits + streaming runs ----
     let import_result = run_import_chunks(
@@ -1293,9 +1263,9 @@ struct ChunkImportResult {
 }
 
 /// Import all TTL chunks: parallel parse + serial commit + streaming runs.
-async fn run_import_chunks<S, N>(
+async fn run_import_chunks<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn crate::NameServicePublisher,
     alias: &str,
     chunk_source: &std::sync::Arc<ChunkSource>,
     run_dir: &Path,
@@ -1303,7 +1273,6 @@ async fn run_import_chunks<S, N>(
 ) -> std::result::Result<ChunkImportResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher,
 {
     use fluree_db_indexer::run_index::{persist_namespaces, SortedCommitInfo};
     use fluree_db_transact::import::{
@@ -1391,11 +1360,11 @@ where
     }
 
     /// Shared immutable environment for the serial commit pipeline.
-    struct CommitPipelineEnv<'a, S, N> {
+    struct CommitPipelineEnv<'a, S> {
         estimated_total: usize,
         run_start: Instant,
         storage: &'a S,
-        nameservice: &'a N,
+        nameservice: &'a dyn crate::NameServicePublisher,
         alias: &'a str,
         config: &'a ImportConfig,
         sort_write_semaphore: &'a Arc<tokio::sync::Semaphore>,
@@ -1407,9 +1376,9 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn commit_parsed_chunks_in_order<S, N>(
+    async fn commit_parsed_chunks_in_order<S>(
         result_rx: std::sync::mpsc::Receiver<std::result::Result<(usize, ParsedChunk), String>>,
-        env: &CommitPipelineEnv<'_, S, N>,
+        env: &CommitPipelineEnv<'_, S>,
         state: &mut ImportState,
         published_codes: &mut rustc_hash::FxHashSet<u16>,
         compute_ns_delta: impl Fn(
@@ -1426,7 +1395,6 @@ where
     ) -> std::result::Result<usize, ImportError>
     where
         S: Storage,
-        N: NameService + Publisher,
     {
         // Serial commit loop: receive parsed chunks, reorder, finalize in order.
         // Parsed chunks arrive out of order from parallel workers.
@@ -2710,9 +2678,9 @@ struct IndexUploadResult {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn build_and_upload<S, N>(
+async fn build_and_upload<S>(
     storage: &S,
-    _nameservice: &N,
+    _nameservice: &dyn crate::NameServicePublisher,
     alias: &str,
     input: IndexBuildInput<'_>,
     config: &ImportConfig,
@@ -2722,7 +2690,6 @@ async fn build_and_upload<S, N>(
 ) -> std::result::Result<IndexUploadResult, ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: NameService + Publisher,
 {
     use fluree_db_binary_index::RunSortOrder;
     use fluree_db_indexer::upload_dicts_from_disk;
@@ -3620,15 +3587,14 @@ fn derive_session_dir<S: Storage>(_storage: &S, alias_prefix: &str, sid: &str) -
 
 /// Build a JSON-LD @context from turtle prefix declarations + built-in namespaces,
 /// write it to CAS, and push it as the ledger's default context via nameservice config.
-async fn store_default_context<S, N>(
+async fn store_default_context<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn crate::NameServicePublisher,
     alias: &str,
     turtle_prefix_map: &HashMap<String, String>,
 ) -> std::result::Result<(), ImportError>
 where
     S: Storage + Clone + Send + Sync + 'static,
-    N: fluree_db_nameservice::ConfigPublisher,
 {
     use fluree_db_nameservice::{ConfigPayload, ConfigValue};
 

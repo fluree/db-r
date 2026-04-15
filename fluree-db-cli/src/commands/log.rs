@@ -1,7 +1,6 @@
 use crate::context;
 use crate::error::{CliError, CliResult};
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_nameservice::NameService;
 use futures::StreamExt;
 
 pub async fn run(

@@ -220,41 +220,6 @@ impl fluree_db_nameservice::GraphSourceLookup for ProxyNameService {
     }
 }
 
-#[async_trait]
-impl fluree_db_nameservice::GraphSourcePublisher for ProxyNameService {
-    async fn publish_graph_source(
-        &self,
-        _name: &str,
-        _branch: &str,
-        _source_type: fluree_db_nameservice::GraphSourceType,
-        _config: &str,
-        _dependencies: &[String],
-    ) -> Result<()> {
-        Err(NameServiceError::storage(
-            "Graph source publishing is not supported in proxy mode. \
-             Forward the request to the transaction server.",
-        ))
-    }
-
-    async fn publish_graph_source_index(
-        &self,
-        _name: &str,
-        _branch: &str,
-        _index_id: &fluree_db_core::ContentId,
-        _index_t: i64,
-    ) -> Result<()> {
-        Err(NameServiceError::storage(
-            "Graph source index publishing is not supported in proxy mode.",
-        ))
-    }
-
-    async fn retract_graph_source(&self, _name: &str, _branch: &str) -> Result<()> {
-        Err(NameServiceError::storage(
-            "Graph source retraction is not supported in proxy mode.",
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

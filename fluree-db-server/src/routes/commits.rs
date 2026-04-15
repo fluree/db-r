@@ -69,12 +69,11 @@ async fn commits_ledger_local(
     // Load cached ledger handle.
     let handle = state
         .fluree
-        .as_file()
         .ledger_cached(&ledger)
         .await
         .map_err(ServerError::Api)?;
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let resp = fluree
         .export_commit_range(&handle, &params)
         .await

@@ -570,6 +570,16 @@ pub trait Publisher: Debug + Send + Sync {
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String>;
 }
 
+/// Combined read-write nameservice trait.
+///
+/// A convenience super-trait for components that need both `NameService`
+/// (lookup) and `Publisher` (write) access via a single `dyn` reference.
+/// All types that implement both `NameService` and `Publisher` automatically
+/// implement this trait via the blanket impl.
+pub trait ReadWriteNameService: NameService + Publisher {}
+
+impl<T> ReadWriteNameService for T where T: NameService + Publisher {}
+
 /// Admin-level publisher operations
 ///
 /// Unlike `Publisher`, these methods allow non-monotonic updates
@@ -1154,6 +1164,30 @@ pub trait ConfigPublisher: Debug + Send + Sync {
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult>;
+}
+
+/// A dynamically-dispatched nameservice with full read-write capability.
+///
+/// This is the complete set of nameservice traits needed for full read-write
+/// access to a nameservice. All concrete nameservice backends (File, Memory,
+/// DynamoDB, S3 storage-backed) implement this automatically via the blanket
+/// impl.
+///
+/// Use `Arc<dyn NameServicePublisher>` when a component needs ownership of a
+/// nameservice that supports all operations.
+pub trait NameServicePublisher:
+    NameService + Publisher + AdminPublisher + RefPublisher + GraphSourcePublisher + ConfigPublisher
+{
+}
+
+impl<T> NameServicePublisher for T where
+    T: NameService
+        + Publisher
+        + AdminPublisher
+        + RefPublisher
+        + GraphSourcePublisher
+        + ConfigPublisher
+{
 }
 
 #[cfg(test)]

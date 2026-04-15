@@ -13,7 +13,7 @@ use fluree_db_core::{
     ledger_id::split_ledger_id, ContentId, ContentStore, OverlayProvider, Storage,
 };
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
+use fluree_db_nameservice::GraphSourceType;
 use fluree_db_query::bm25::{Bm25IndexBuilder, Bm25Manifest, Bm25SnapshotEntry, PropertyDeps};
 use fluree_db_query::parse::parse_query;
 use fluree_db_query::{execute_with_overlay, ExecutableQuery, QueryOutput, VarRegistry};
@@ -55,10 +55,7 @@ fn snapshot_retention() -> usize {
 // BM25 Index Creation
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Create a BM25 full-text search index.
     ///
     /// This operation:
@@ -98,11 +95,7 @@ where
         );
 
         // Check if graph source already exists (prevent duplicates)
-        if let Some(existing) = self
-            .nameservice
-            .lookup_graph_source(&graph_source_id)
-            .await?
-        {
+        if let Some(existing) = self.nameservice().lookup_graph_source(&graph_source_id).await? {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
                     "Graph source '{}' already exists",
@@ -177,7 +170,7 @@ where
             "query": config.query,
         }))?;
 
-        self.nameservice
+        self.publisher()?
             .publish_graph_source(
                 &config.name,
                 config.effective_branch(),
@@ -421,7 +414,7 @@ where
             .put(fluree_db_core::ContentKind::IndexRoot, &bytes)
             .await?;
 
-        self.nameservice
+        self.publisher()?
             .publish_graph_source_index(&name, &branch, &index_id, index_t)
             .await?;
 
@@ -433,10 +426,7 @@ where
 // BM25 Manifest Loading (read-only helpers)
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Load the current BM25 manifest from CAS, or create a new empty one.
     ///
     /// Reads the manifest address from the nameservice head pointer,
@@ -446,11 +436,7 @@ where
         &self,
         graph_source_id: &str,
     ) -> Result<Bm25Manifest> {
-        match self
-            .nameservice
-            .lookup_graph_source(graph_source_id)
-            .await?
-        {
+        match self.nameservice().lookup_graph_source(graph_source_id).await? {
             Some(record) if record.index_id.is_some() => {
                 let index_cid = record.index_id.as_ref().unwrap();
                 let cs = self.content_store(graph_source_id);
@@ -467,7 +453,7 @@ where
     /// Returns an error if the graph source is not found or has no index.
     pub(crate) async fn load_bm25_manifest(&self, graph_source_id: &str) -> Result<Bm25Manifest> {
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -489,10 +475,7 @@ where
 // BM25 Index Loading (for queries)
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Select the best BM25 snapshot for a given `as_of_t`.
     ///
     /// Loads the BM25 manifest from CAS and selects the snapshot with the
@@ -790,7 +773,7 @@ where
     pub async fn check_bm25_staleness(&self, graph_source_id: &str) -> Result<Bm25StalenessCheck> {
         // Look up graph source record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -809,7 +792,7 @@ where
         // Check minimum head across all dependencies
         let mut ledger_t: Option<i64> = None;
         for dep in &record.dependencies {
-            let ledger_record = self.nameservice.lookup(dep).await?.ok_or_else(|| {
+            let ledger_record = self.nameservice().lookup(dep).await?.ok_or_else(|| {
                 crate::ApiError::NotFound(format!("Source ledger not found: {}", dep))
             })?;
             ledger_t = Some(match ledger_t {
@@ -838,10 +821,7 @@ where
 // BM25 Index Sync (Maintenance)
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Sync a BM25 index to catch up with ledger updates.
     ///
     /// This operation performs incremental updates when possible,
@@ -855,7 +835,7 @@ where
 
         // 1. Look up graph source record to get config and index address
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -1048,7 +1028,7 @@ where
 
         // 1. Look up graph source record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -1158,7 +1138,7 @@ where
     )> {
         // Look up graph source record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -1175,13 +1155,9 @@ where
             .clone();
 
         // Look up source ledger record
-        let ledger_record = self
-            .nameservice
-            .lookup(&source_ledger)
-            .await?
-            .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Source ledger not found: {}", source_ledger))
-            })?;
+        let ledger_record = self.nameservice().lookup(&source_ledger).await?.ok_or_else(|| {
+            crate::ApiError::NotFound(format!("Source ledger not found: {}", source_ledger))
+        })?;
 
         let index_t = record.index_t;
         let ledger_t = ledger_record.commit_t;
@@ -1236,7 +1212,7 @@ where
 
         // 1. Look up graph source record to get config
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -1372,10 +1348,7 @@ where {
         info!(graph_source_id = %graph_source_id, "Dropping BM25 full-text index");
 
         // 1. Look up graph source record to verify it exists
-        let record = self
-            .nameservice
-            .lookup_graph_source(graph_source_id)
-            .await?;
+        let record = self.nameservice().lookup_graph_source(graph_source_id).await?;
 
         let record = match record {
             Some(r) => r,
@@ -1401,7 +1374,7 @@ where {
         let manifest = self.load_or_create_bm25_manifest(graph_source_id).await?;
 
         // 3. Retract graph source in nameservice
-        self.nameservice
+        self.publisher()?
             .retract_graph_source(&record.name, &record.branch)
             .await?;
 

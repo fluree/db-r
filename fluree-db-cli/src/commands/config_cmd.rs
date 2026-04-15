@@ -373,7 +373,7 @@ pub async fn run_set_origins(ledger: &str, file: &Path, dirs: &FlureeDir) -> Cli
 
     // Update config_id on the NsRecord via ConfigPublisher.
     let current = fluree
-        .nameservice()
+        .nameservice_mode()
         .get_config(&ledger_id)
         .await
         .map_err(|e| CliError::Config(format!("failed to get config: {e}")))?;
@@ -390,7 +390,7 @@ pub async fn run_set_origins(ledger: &str, file: &Path, dirs: &FlureeDir) -> Cli
         }),
     );
     match fluree
-        .nameservice()
+        .nameservice_mode()
         .push_config(&ledger_id, current.as_ref(), &new_config)
         .await
         .map_err(|e| CliError::Config(format!("failed to set config: {e}")))?

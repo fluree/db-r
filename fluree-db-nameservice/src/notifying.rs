@@ -141,11 +141,12 @@ where
         self.inner
             .publish_index(ledger_id, index_t, index_id)
             .await?;
-        self.event_bus.notify(NameServiceEvent::LedgerIndexPublished {
-            ledger_id: ledger_id.to_string(),
-            index_id: index_id.clone(),
-            index_t,
-        });
+        self.event_bus
+            .notify(NameServiceEvent::LedgerIndexPublished {
+                ledger_id: ledger_id.to_string(),
+                index_id: index_id.clone(),
+                index_t,
+            });
         Ok(())
     }
 
@@ -188,11 +189,12 @@ where
         self.inner
             .publish_index_allow_equal(ledger_id, index_t, index_id)
             .await?;
-        self.event_bus.notify(NameServiceEvent::LedgerIndexPublished {
-            ledger_id: ledger_id.to_string(),
-            index_id: index_id.clone(),
-            index_t,
-        });
+        self.event_bus
+            .notify(NameServiceEvent::LedgerIndexPublished {
+                ledger_id: ledger_id.to_string(),
+                index_id: index_id.clone(),
+                index_t,
+            });
         Ok(())
     }
 }
@@ -234,11 +236,12 @@ where
                             });
                     }
                     RefKind::IndexHead => {
-                        self.event_bus.notify(NameServiceEvent::LedgerIndexPublished {
-                            ledger_id: ledger_id.to_string(),
-                            index_id: cid.clone(),
-                            index_t: new.t,
-                        });
+                        self.event_bus
+                            .notify(NameServiceEvent::LedgerIndexPublished {
+                                ledger_id: ledger_id.to_string(),
+                                index_id: cid.clone(),
+                                index_t: new.t,
+                            });
                     }
                 }
             }

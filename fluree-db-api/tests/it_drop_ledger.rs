@@ -12,7 +12,6 @@ mod support;
 use fluree_db_api::{DropMode, DropStatus, FlureeBuilder, IndexConfig, LedgerState, Novelty};
 use fluree_db_core::address_path::ledger_id_to_path_prefix;
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::start_background_indexer_local;
@@ -51,11 +50,7 @@ async fn drop_ledger_soft_mode_retracts_only() {
     );
 
     // Verify retracted in nameservice
-    let record = fluree
-        .nameservice()
-        .lookup(ledger_id)
-        .await
-        .expect("lookup");
+    let record = fluree.nameservice().lookup(ledger_id).await.expect("lookup");
     assert!(record.is_some(), "Record should still exist");
     assert!(record.unwrap().retracted, "Record should be retracted");
 
@@ -123,11 +118,7 @@ async fn drop_ledger_hard_mode_deletes_files() {
 
     // Verify nameservice purged (hard drop removes the record entirely,
     // allowing the alias to be reused — unlike soft drop which only retracts).
-    let record = fluree
-        .nameservice()
-        .lookup(ledger_id)
-        .await
-        .expect("lookup");
+    let record = fluree.nameservice().lookup(ledger_id).await.expect("lookup");
     assert!(
         record.is_none(),
         "Hard drop purges the record so it no longer exists"
@@ -236,7 +227,7 @@ async fn drop_ledger_cancels_pending_indexing() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));

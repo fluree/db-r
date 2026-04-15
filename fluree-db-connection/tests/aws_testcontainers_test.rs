@@ -205,7 +205,7 @@ async fn localstack_s3_and_dynamodb_smoke() {
     let alias = "mydb:main";
 
     // Init materializes all concern items (meta, head, index, status, config)
-    aws.nameservice()
+    aws.nameservice_arc()
         .publish_ledger_init(alias)
         .await
         .expect("publish_ledger_init should succeed");

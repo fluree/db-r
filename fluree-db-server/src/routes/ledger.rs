@@ -124,7 +124,7 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
 
         // Create the ledger (empty, t=0)
         // Ledger creation is only in transaction mode (peers forward)
-        let ledger = match state.fluree.as_file().create_ledger(&alias).await {
+        let ledger = match state.fluree.create_ledger(&alias).await {
             Ok(ledger) => ledger,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -260,7 +260,7 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
 
         // Ledger drop is only in transaction mode (peers forward).
         // Try ledger first, then fall back to graph source if not found.
-        let report = match state.fluree.as_file().drop_ledger(&req.ledger, mode).await {
+        let report = match state.fluree.drop_ledger(&req.ledger, mode).await {
             Ok(report) => report,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -274,7 +274,6 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
         if matches!(report.status, DropStatus::NotFound) {
             let gs_report = match state
                 .fluree
-                .as_file()
                 .drop_graph_source(&req.ledger, None, mode)
                 .await
             {
@@ -332,12 +331,14 @@ pub struct ListEntry {
 pub async fn list_ledgers(State(state): State<Arc<AppState>>) -> Result<Json<Vec<ListEntry>>> {
     let ledger_records = state
         .fluree
-        .all_ns_records()
+        .nameservice()
+        .all_records()
         .await
         .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {}", e)))?;
 
     let gs_records = state
         .fluree
+        .nameservice()
         .all_graph_source_records()
         .await
         .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {}", e)))?;
@@ -508,7 +509,7 @@ pub async fn info(
             Ok(ls) => ls,
             Err(ServerError::Api(ref e)) if e.is_not_found() => {
                 // Try graph source lookup
-                if let Ok(Some(gs)) = state.fluree.lookup_graph_source(alias).await {
+                if let Ok(Some(gs)) = state.fluree.nameservice().lookup_graph_source(alias).await {
                     tracing::info!(status = "success", "graph source info retrieved");
                     return Ok(Json(graph_source_info_json(&gs)).into_response());
                 }
@@ -595,7 +596,7 @@ pub async fn info_ledger_tail(
 /// Falls back to graph source lookup if ledger is not found.
 async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) -> Result<Response> {
     // Lookup ledger in nameservice
-    match state.fluree.nameservice_lookup(alias).await {
+    match state.fluree.nameservice().lookup(alias).await {
         Ok(Some(record)) => {
             tracing::info!(
                 status = "success",
@@ -620,7 +621,7 @@ async fn info_simplified(state: &AppState, alias: &str, span: &tracing::Span) ->
     }
 
     // Try graph source lookup
-    if let Ok(Some(gs)) = state.fluree.lookup_graph_source(alias).await {
+    if let Ok(Some(gs)) = state.fluree.nameservice().lookup_graph_source(alias).await {
         tracing::info!(status = "success", "graph source info retrieved");
         return Ok(Json(graph_source_info_json(&gs)).into_response());
     }
@@ -855,7 +856,6 @@ async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<i
 
         let record = match state
             .fluree
-            .as_file()
             .create_branch(&ledger, &branch, Some(&source))
             .await
         {
@@ -1053,12 +1053,7 @@ async fn drop_branch_local(
             "branch drop requested"
         );
 
-        let report = match state
-            .fluree
-            .as_file()
-            .drop_branch(&req.ledger, &req.branch)
-            .await
-        {
+        let report = match state.fluree.drop_branch(&req.ledger, &req.branch).await {
             Ok(report) => report,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -1175,7 +1170,6 @@ async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl Int
 
         let report = match state
             .fluree
-            .as_file()
             .rebase_branch(&req.ledger, &req.branch, strategy)
             .await
         {
@@ -1311,7 +1305,6 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
 
         let report = match state
             .fluree
-            .as_file()
             .merge_branch(&req.ledger, &req.source, req.target.as_deref(), strategy)
             .await
         {

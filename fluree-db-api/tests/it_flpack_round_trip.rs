@@ -20,16 +20,12 @@ use fluree_db_core::pack::{
     read_stream_preamble, write_stream_preamble, PackFrame, PackHeader, DEFAULT_MAX_PAYLOAD,
 };
 use fluree_db_core::{ContentKind, ContentStore};
-use fluree_db_nameservice::NameService;
 use fluree_db_nameservice_sync::ingest_pack_frame;
 use serde_json::json;
 use std::collections::HashSet;
 
 /// Export a ledger to an in-memory `.flpack` byte buffer.
-async fn export_ledger_to_bytes<N>(fluree: &fluree_db_api::Fluree<N>, ledger_id: &str) -> Vec<u8>
-where
-    N: NameService + Send + Sync,
-{
+async fn export_ledger_to_bytes(fluree: &fluree_db_api::Fluree, ledger_id: &str) -> Vec<u8> {
     let ns_record = fluree
         .nameservice()
         .lookup(ledger_id)
@@ -153,20 +149,7 @@ where
 }
 
 /// Import a `.flpack` byte buffer into a Fluree instance under the given ledger name.
-async fn import_ledger_from_bytes<N>(
-    fluree: &fluree_db_api::Fluree<N>,
-    ledger_id: &str,
-    data: &[u8],
-) where
-    N: NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::ConfigPublisher
-        + fluree_db_nameservice::RefPublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
+async fn import_ledger_from_bytes(fluree: &fluree_db_api::Fluree, ledger_id: &str, data: &[u8]) {
     fluree
         .create_ledger(ledger_id)
         .await
@@ -373,7 +356,7 @@ async fn flpack_export_import_round_trip_with_index() {
 
     let (local, handle) = start_background_indexer_local(
         src_fluree.backend().clone(),
-        src_fluree.nameservice().clone(),
+        src_fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
     src_fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));

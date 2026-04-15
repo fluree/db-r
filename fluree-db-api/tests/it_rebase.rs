@@ -6,7 +6,6 @@
 mod support;
 
 use fluree_db_api::{ConflictStrategy, FlureeBuilder};
-use fluree_db_nameservice::NameService;
 use serde_json::json;
 
 /// Extract sorted name strings from query result rows.
@@ -161,12 +160,7 @@ async fn rebase_abort_on_conflict() {
     fluree.insert(main_ledger, &main_data).await.unwrap();
 
     // Capture pre-rebase state
-    let pre_record = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let pre_record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
 
     // Rebase with abort should fail
     let err = fluree
@@ -181,12 +175,7 @@ async fn rebase_abort_on_conflict() {
     );
 
     // Branch should be unchanged (no commits written)
-    let post_record = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let post_record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
     assert_eq!(pre_record.commit_t, post_record.commit_t);
     assert_eq!(pre_record.commit_head_id, post_record.commit_head_id);
 }
@@ -420,12 +409,7 @@ async fn rebase_branch_point_updated() {
     });
     fluree.insert(main_ledger, &main_data).await.unwrap();
 
-    let source_after = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
+    let source_after = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
 
     // Rebase
     fluree
@@ -434,12 +418,7 @@ async fn rebase_branch_point_updated() {
         .unwrap();
 
     // Verify branch point updated
-    let dev_record = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let dev_record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
     // After rebase, the branch's commit_t should match the source's commit_t
     // (fast-forward rebase advances the branch to the source HEAD).
     assert_eq!(dev_record.commit_t, source_after.commit_t);
@@ -651,12 +630,7 @@ async fn rebase_rollback_on_mid_replay_failure() {
     fluree.insert(main_ledger, &main_data).await.unwrap();
 
     // Capture pre-rebase state
-    let pre_record = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let pre_record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
 
     // Attempt rebase — should fail when replaying the named-graph commit
     let result = fluree
@@ -667,12 +641,7 @@ async fn rebase_rollback_on_mid_replay_failure() {
         // Rebase failed as expected — verify rollback
         eprintln!("Rebase failed (expected): {e}");
 
-        let post_record = fluree
-            .nameservice()
-            .lookup("mydb:dev")
-            .await
-            .unwrap()
-            .unwrap();
+        let post_record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
 
         // Nameservice state should be restored to pre-rebase values
         assert_eq!(

@@ -32,7 +32,7 @@ pub use graph::ConfigGraph;
 
 // AWS re-exports
 #[cfg(feature = "aws")]
-pub use aws::{AwsConnectionHandle, AwsNameService};
+pub use aws::AwsConnectionHandle;
 
 // Re-export core types commonly used with connections
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
@@ -326,7 +326,7 @@ async fn create_aws_connection(
                             e
                         ))
                     })?;
-                aws::AwsNameService::DynamoDb(Arc::new(ns))
+                Arc::new(ns) as Arc<dyn aws::AwsNameServiceDyn>
             }
             PublisherType::Storage { storage } => {
                 // Storage-backed nameservice - use registry for storage sharing
@@ -340,7 +340,7 @@ async fn create_aws_connection(
                 };
                 // StorageNameService prefix is empty - S3Storage has the bucket prefix
                 let ns = StorageNameService::new((*ns_storage).clone(), "");
-                aws::AwsNameService::Storage(Arc::new(ns))
+                Arc::new(ns) as Arc<dyn aws::AwsNameServiceDyn>
             }
             PublisherType::Unsupported { type_iri, .. } => {
                 return Err(ConnectionError::unsupported_component(type_iri));
@@ -362,7 +362,7 @@ async fn create_aws_connection(
                         e
                     ))
                 })?;
-            aws::AwsNameService::DynamoDb(Arc::new(ns))
+            Arc::new(ns) as Arc<dyn aws::AwsNameServiceDyn>
         }
     };
 

@@ -32,7 +32,7 @@ use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::trace_commits_by_id;
 use fluree_db_core::{ledger_id::normalize_ledger_id, ContentId, ContentStore, StorageBackend};
 use fluree_db_ledger::{LedgerState, TypeErasedStore};
-use fluree_db_nameservice::{NameService, NsRecord};
+use fluree_db_nameservice::NsRecord;
 use fluree_db_novelty::Novelty;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
@@ -661,38 +661,36 @@ pub(crate) async fn load_and_attach_binary_store(
 ///
 /// Provides single-flight loading (concurrent requests share one I/O operation)
 /// and idle eviction.
-pub struct LedgerManager<N> {
+pub struct LedgerManager {
     /// Cached ledger handles + loading state
     entries: RwLock<HashMap<String, LoadState>>,
     /// Storage backend for ledger loading
     backend: StorageBackend,
     /// Shared cache for index nodes
     /// Nameservice for ledger lookup/loading
-    nameservice: N,
+    nameservice_mode: crate::NameServiceMode,
     /// Configuration
     config: LedgerManagerConfig,
     /// Shutdown flag — prevents load/reload leaders from re-inserting after disconnect_all
     shutdown: AtomicBool,
 }
 
-// Unconstrained accessors (no trait bounds needed — just field access).
-impl<N> LedgerManager<N> {
+impl LedgerManager {
     /// Get the shared leaflet cache (if configured).
     pub fn leaflet_cache(&self) -> Option<&Arc<LeafletCache>> {
         self.config.leaflet_cache.as_ref()
     }
-}
 
-impl<N> LedgerManager<N>
-where
-    N: NameService + Send + Sync + 'static,
-{
     /// Create a new ledger manager
-    pub fn new(backend: StorageBackend, nameservice: N, config: LedgerManagerConfig) -> Self {
+    pub fn new(
+        backend: StorageBackend,
+        nameservice: crate::NameServiceMode,
+        config: LedgerManagerConfig,
+    ) -> Self {
         Self {
             entries: RwLock::new(HashMap::new()),
             backend,
-            nameservice,
+            nameservice_mode: nameservice,
             config,
             shutdown: AtomicBool::new(false),
         }
@@ -776,7 +774,7 @@ where
         // We're the loader - do the I/O without holding manager lock
         // Note: We pass the original address to nameservice (it handles resolution),
         // but cache under the canonical address for consistent lookup
-        let result = LedgerState::load(&self.nameservice, ledger_id, &self.backend)
+        let result = LedgerState::load(&self.nameservice_mode, ledger_id, &self.backend)
             .await
             .map_err(ApiError::from); // Convert LedgerError to ApiError
 
@@ -964,7 +962,7 @@ where
                 // We're the reload leader - do I/O without manager lock
                 let mut write_guard = handle.lock_for_write().await;
 
-                let result = LedgerState::load(&self.nameservice, ledger_id, &self.backend)
+                let result = LedgerState::load(&self.nameservice_mode, ledger_id, &self.backend)
                     .await
                     .map_err(ApiError::from); // Convert LedgerError to ApiError
 
@@ -1301,10 +1299,7 @@ pub struct RefreshResult {
     pub action: NotifyResult,
 }
 
-impl<N> LedgerManager<N>
-where
-    N: NameService + Send + Sync + 'static,
-{
+impl LedgerManager {
     /// Handle nameservice update notification
     ///
     /// Uses update planning to determine minimal action:
@@ -1326,7 +1321,7 @@ where
         // Get fresh record from nameservice if not provided
         let ns_record = match input.record {
             Some(r) => r,
-            None => match self.nameservice.lookup(&input.ledger_id).await? {
+            None => match self.nameservice_mode.reader().lookup(&input.ledger_id).await? {
                 Some(r) => r,
                 None => return Ok(NotifyResult::Current), // Ledger doesn't exist
             },
@@ -1790,8 +1785,9 @@ mod tests {
         let storage = MemoryStorage::new();
         let backend = StorageBackend::Managed(Arc::new(storage));
         let ns = MemoryNameService::new();
+        let ns_mode = crate::NameServiceMode::ReadWrite(Arc::new(ns));
         let config = LedgerManagerConfig::default();
-        let mgr = LedgerManager::new(backend, ns, config);
+        let mgr = LedgerManager::new(backend, ns_mode, config);
 
         // Directly insert Loading entries (simulates in-flight loads)
         {
@@ -1823,8 +1819,9 @@ mod tests {
         let storage = MemoryStorage::new();
         let backend = StorageBackend::Managed(Arc::new(storage));
         let ns = MemoryNameService::new();
+        let ns_mode = crate::NameServiceMode::ReadWrite(Arc::new(ns));
         let config = LedgerManagerConfig::default();
-        let mgr = LedgerManager::new(backend, ns, config);
+        let mgr = LedgerManager::new(backend, ns_mode, config);
 
         // Simulate: disconnect_all sets shutdown flag and clears entries
         mgr.disconnect_all().await;

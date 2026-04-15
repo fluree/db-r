@@ -7,7 +7,6 @@
 mod support;
 
 use fluree_db_api::{ConflictStrategy, FlureeBuilder};
-use fluree_db_nameservice::NameService;
 use serde_json::json;
 
 /// Extract sorted name strings from query result rows.
@@ -342,12 +341,7 @@ async fn merge_target_head_updated() {
     fluree.insert(dev_ledger, &dev_data).await.unwrap();
 
     // Capture source state before merge
-    let source_record = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let source_record = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
 
     let report = fluree
         .merge_branch("mydb", "dev", None, ConflictStrategy::default())
@@ -355,12 +349,7 @@ async fn merge_target_head_updated() {
         .unwrap();
 
     // Target's HEAD should now match what was the source's HEAD
-    let target_record = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
+    let target_record = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
 
     assert_eq!(
         target_record.commit_head_id, source_record.commit_head_id,
@@ -401,12 +390,7 @@ async fn merge_source_branch_point_updated() {
 
     // After merge, the source branch should still track its source_branch
     // and the merge report should reflect the new target HEAD
-    let source_after = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let source_after = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
     assert_eq!(
         source_after.source_branch.as_deref(),
         Some("main"),
@@ -578,18 +562,8 @@ async fn merge_abort_leaves_nameservice_unchanged() {
     fluree.insert(main_ledger, &main_data).await.unwrap();
 
     // Capture pre-merge state
-    let pre_main = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
-    let pre_dev = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let pre_main = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
+    let pre_dev = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
 
     // Attempt merge with Abort strategy (should fail on conflict)
     let _err = fluree
@@ -598,18 +572,8 @@ async fn merge_abort_leaves_nameservice_unchanged() {
         .expect_err("merge should fail with abort strategy on conflicts");
 
     // Both branches should be unchanged
-    let post_main = fluree
-        .nameservice()
-        .lookup("mydb:main")
-        .await
-        .unwrap()
-        .unwrap();
-    let post_dev = fluree
-        .nameservice()
-        .lookup("mydb:dev")
-        .await
-        .unwrap()
-        .unwrap();
+    let post_main = fluree.nameservice().lookup("mydb:main").await.unwrap().unwrap();
+    let post_dev = fluree.nameservice().lookup("mydb:dev").await.unwrap().unwrap();
 
     assert_eq!(pre_main.commit_t, post_main.commit_t);
     assert_eq!(pre_main.commit_head_id, post_main.commit_head_id);

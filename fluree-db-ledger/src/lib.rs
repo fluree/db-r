@@ -136,8 +136,8 @@ impl LedgerState {
     ///
     /// This is resilient to missing index - if the nameservice has commits
     /// but no index yet, it creates a genesis LedgerSnapshot and loads all commits as novelty.
-    pub async fn load<N: NameService>(
-        ns: &N,
+    pub async fn load(
+        ns: &dyn NameService,
         ledger_id: &str,
         backend: &StorageBackend,
     ) -> Result<Self> {
@@ -163,8 +163,8 @@ impl LedgerState {
     ///
     /// Each branch gets its own namespace store with its parent(s) as fallbacks.
     /// Currently branches have a single parent; merges will add multiple parents.
-    pub async fn build_branched_store<N: NameService>(
-        ns: &N,
+    pub async fn build_branched_store(
+        ns: &dyn NameService,
         record: &NsRecord,
         backend: &StorageBackend,
     ) -> Result<BranchedContentStore> {
@@ -732,9 +732,9 @@ impl LedgerState {
     /// - `NotFound` if the ledger is not in the nameservice
     /// - `MissingIndexAddress` if nameservice has index_t but no index CID
     /// - Other errors from `apply_index`
-    pub async fn maybe_apply_newer_index<N: NameService>(
+    pub async fn maybe_apply_newer_index(
         &mut self,
-        ns: &N,
+        ns: &dyn NameService,
         cs: &dyn ContentStore,
     ) -> Result<bool> {
         let record = ns

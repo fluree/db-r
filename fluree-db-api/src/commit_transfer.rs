@@ -33,7 +33,7 @@ use fluree_db_core::{
 use fluree_db_core::{RangeMatch, RangeOptions, RangeTest, Storage};
 use fluree_db_core::{CODEC_FLUREE_COMMIT, CODEC_FLUREE_TXN};
 use fluree_db_ledger::LedgerState;
-use fluree_db_nameservice::{CasResult, NameService, RefKind, RefPublisher, RefValue};
+use fluree_db_nameservice::{CasResult, RefKind, RefValue};
 use fluree_db_novelty::{generate_commit_flakes, stamp_graph_on_commit_flakes, Novelty};
 use fluree_db_policy::PolicyContext;
 use serde::{Deserialize, Serialize};
@@ -112,10 +112,7 @@ pub struct PushedHead {
 ///
 /// This acquires the ledger write mutex for the duration of validation + publish,
 /// so pushes are serialized with normal transactions.
-impl<N> Fluree<N>
-where
-    N: NameService + RefPublisher + Send + Sync + 'static,
-{
+impl Fluree {
     pub async fn push_commits_with_handle(
         &self,
         handle: &LedgerHandle,
@@ -133,7 +130,7 @@ where
 
         // 1) Read current head ref (CAS expected).
         let current_ref = self
-            .nameservice()
+            .publisher()?
             .get_ref(base_state.ledger_id(), RefKind::CommitHead)
             .await?;
         let Some(current_ref) = current_ref else {
@@ -304,7 +301,7 @@ where
 
         // 6) CAS update CommitHead (single CAS, strict).
         match self
-            .nameservice()
+            .publisher()?
             .compare_and_set_ref(
                 base_state.ledger_id(),
                 RefKind::CommitHead,
@@ -1010,10 +1007,7 @@ pub struct ExportCommitsResponse {
 /// regardless of total ledger size.
 ///
 /// Commits are returned newest → oldest. The client reverses for import.
-impl<N> Fluree<N>
-where
-    N: NameService + RefPublisher + Send + Sync,
-{
+impl Fluree {
     pub async fn export_commit_range(
         &self,
         handle: &LedgerHandle,
@@ -1032,7 +1026,7 @@ where
 
         // Read current head.
         let head_ref = self
-            .nameservice()
+            .publisher()?
             .get_ref(ledger_id, RefKind::CommitHead)
             .await?;
         let Some(head_ref) = head_ref else {
@@ -1173,10 +1167,7 @@ pub struct CommitImportResult {
     pub indexing: IndexingStatus,
 }
 
-impl<N> Fluree<N>
-where
-    N: NameService + RefPublisher + Send + Sync,
-{
+impl Fluree {
     /// Bulk-import commit blobs to local CAS (clone path).
     ///
     /// Writes commit and txn blobs without validation or novelty updates.
@@ -1259,12 +1250,12 @@ where
 
         // Read current head for CAS.
         let current_ref = self
-            .nameservice()
+            .publisher()?
             .get_ref(ledger_id, RefKind::CommitHead)
             .await?;
 
         match self
-            .nameservice()
+            .publisher()?
             .compare_and_set_ref(
                 ledger_id,
                 RefKind::CommitHead,
@@ -1302,12 +1293,12 @@ where
         };
 
         let current_ref = self
-            .nameservice()
+            .publisher()?
             .get_ref(ledger_id, RefKind::IndexHead)
             .await?;
 
         match self
-            .nameservice()
+            .publisher()?
             .compare_and_set_ref(
                 ledger_id,
                 RefKind::IndexHead,
@@ -1348,7 +1339,7 @@ where
 
         // 1) Read current head ref.
         let current_ref = self
-            .nameservice()
+            .publisher()?
             .get_ref(base_state.ledger_id(), RefKind::CommitHead)
             .await?;
         let Some(current_ref) = current_ref else {
@@ -1394,7 +1385,7 @@ where
 
         // 7) CAS update CommitHead.
         match self
-            .nameservice()
+            .publisher()?
             .compare_and_set_ref(
                 base_state.ledger_id(),
                 RefKind::CommitHead,

@@ -809,7 +809,6 @@ ex:bob a ex:User ;
 
     // Phase 3: Trigger V3 rebuild from commits.
     // Get the nameservice record for the ledger.
-    use fluree_db_nameservice::NameService;
     let ns_record = fluree
         .nameservice()
         .lookup("test/v3-rebuild:main")
@@ -843,9 +842,9 @@ ex:bob a ex:User ;
     );
 
     // Phase 4: Publish the rebuilt root to nameservice so ledger() loads it.
-    use fluree_db_nameservice::Publisher;
     fluree
-        .nameservice()
+        .publisher()
+        .unwrap()
         .publish_index(
             "test/v3-rebuild:main",
             index_result.index_t,
@@ -982,7 +981,6 @@ ex:bob a ex:User ;
         .expect("V3 import should succeed");
 
     // Phase 2: Explicit rebuild to get a clean FIR6 root published.
-    use fluree_db_nameservice::{NameService, Publisher};
     let ns_record = fluree
         .nameservice()
         .lookup("test/v3-incr:main")
@@ -1002,7 +1000,8 @@ ex:bob a ex:User ;
     .expect("V3 rebuild should succeed");
 
     fluree
-        .nameservice()
+        .publisher()
+        .unwrap()
         .publish_index(
             "test/v3-incr:main",
             rebuild_result.index_t,
@@ -1091,7 +1090,8 @@ ex:bob a ex:User ;
 
     // Phase 5: Publish and reload.
     fluree
-        .nameservice()
+        .publisher()
+        .unwrap()
         .publish_index(
             "test/v3-incr:main",
             index_result.index_t,
@@ -1255,7 +1255,6 @@ ex:remove a ex:User ;
     assert!(txn_result.receipt.flake_count > 0);
 
     // Rebuild V3 from commits.
-    use fluree_db_nameservice::NameService;
     let ns_record = fluree
         .nameservice()
         .lookup("test/v3-retract:main")
@@ -1275,9 +1274,9 @@ ex:remove a ex:User ;
     .expect("V3 rebuild should succeed");
 
     // Publish and reload.
-    use fluree_db_nameservice::Publisher;
     fluree
-        .nameservice()
+        .publisher()
+        .unwrap()
         .publish_index(
             "test/v3-retract:main",
             index_result.index_t,

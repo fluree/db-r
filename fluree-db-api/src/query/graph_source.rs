@@ -2,12 +2,9 @@ use serde_json::Value as JsonValue;
 
 use crate::query::helpers::{build_query_result, parse_jsonld_query, parse_sparql_to_ir};
 use crate::query::nameservice_builder::NameserviceQueryBuilder;
-use crate::{ExecutableQuery, Fluree, GraphSourcePublisher, LedgerState, QueryResult, Result};
+use crate::{ExecutableQuery, Fluree, LedgerState, QueryResult, Result};
 
-impl<N> Fluree<N>
-where
-    N: crate::NameService + GraphSourcePublisher + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Create a builder for querying nameservice metadata.
     ///
     /// Returns a [`NameserviceQueryBuilder`] for fluent query construction
@@ -44,7 +41,7 @@ where
     /// - `f:branch` - Branch name
     /// - `f:graphSourceConfig` - Configuration
     /// - `f:graphSourceDependencies` - Source ledgers
-    pub fn nameservice_query(&self) -> NameserviceQueryBuilder<'_, N> {
+    pub fn nameservice_query(&self) -> NameserviceQueryBuilder<'_> {
         NameserviceQueryBuilder::new(self)
     }
 
@@ -60,7 +57,7 @@ where
     ///
     /// For more control over formatting, use [`nameservice_query()`](Self::nameservice_query).
     pub async fn query_nameservice(&self, query_json: &JsonValue) -> Result<JsonValue> {
-        crate::nameservice_query::query_nameservice(&self.nameservice, query_json).await
+        crate::nameservice_query::query_nameservice(&self.nameservice_mode, query_json).await
     }
 
     /// Execute a JSON-LD query with R2RML graph source support.

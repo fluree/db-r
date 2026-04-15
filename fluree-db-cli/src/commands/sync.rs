@@ -11,7 +11,7 @@ use fluree_db_core::storage::ContentAddressedWrite;
 use fluree_db_core::ContentKind;
 use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{
-    ConfigPayload, ConfigPublisher, ConfigValue, FileTrackingStore, LedgerConfig, NameService,
+    ConfigPayload, ConfigPublisher, ConfigValue, FileTrackingStore, LedgerConfig,
     RefKind, RefPublisher, RemoteName, RemoteTrackingStore,
 };
 use fluree_db_nameservice_sync::{
@@ -111,8 +111,10 @@ async fn build_sync_driver(dirs: &FlureeDir) -> CliResult<(SyncDriver, Arc<TomlS
     let config_store = Arc::new(TomlSyncConfigStore::new(dirs.config_dir().to_path_buf()));
 
     // Get the nameservice as RefPublisher
-    let ns = fluree.nameservice();
-    let local: Arc<dyn RefPublisher> = Arc::new(ns.clone());
+    let local: Arc<dyn RefPublisher> = fluree
+        .nameservice_mode()
+        .publisher_arc()
+        .ok_or_else(|| CliError::Config("sync requires a read-write nameservice".into()))?;
 
     // Create a FileTrackingStore using the same storage path
     let storage = resolve_storage_path(dirs);
@@ -275,7 +277,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
         .admin_storage_cloned()
         .ok_or_else(|| CliError::Config("sync requires managed storage backend".into()))?;
     let local_ref = fluree
-        .nameservice()
+        .nameservice_mode()
         .get_ref(&ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
@@ -306,7 +308,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
                 let pack_request = if !no_indexes {
                     if let Some(ref remote_index_id) = remote_ns.index_head_id {
                         let local_index_id = fluree
-                            .nameservice()
+                            .nameservice_mode()
                             .get_ref(&ledger_id, RefKind::IndexHead)
                             .await
                             .ok()
@@ -652,7 +654,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
     // Resolve local head.
     let fluree = context::build_fluree(dirs)?;
     let local_ref = fluree
-        .nameservice()
+        .nameservice_mode()
         .get_ref(&ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
@@ -864,7 +866,7 @@ pub async fn run_publish(
     // Resolve local head.
     let fluree = context::build_fluree(dirs)?;
     let local_ref = fluree
-        .nameservice()
+        .nameservice_mode()
         .get_ref(&ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
@@ -1590,7 +1592,7 @@ pub async fn run_clone_origin(
 
         // Update the config_id on the local NsRecord via ConfigPublisher.
         let current = fluree
-            .nameservice()
+            .nameservice_mode()
             .get_config(&local_id)
             .await
             .map_err(|e| CliError::Config(format!("clone failed (get config): {e}")))?;
@@ -1607,7 +1609,7 @@ pub async fn run_clone_origin(
             }),
         );
         match fluree
-            .nameservice()
+            .nameservice_mode()
             .push_config(&local_id, current.as_ref(), &new_config)
             .await
             .map_err(|e| CliError::Config(format!("clone failed (push config): {e}")))?
@@ -1718,7 +1720,7 @@ async fn run_pull_via_origins(
 
     // Resolve local head.
     let local_ref = fluree
-        .nameservice()
+        .nameservice_mode()
         .get_ref(ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
@@ -1741,7 +1743,7 @@ async fn run_pull_via_origins(
     let pack_request = if !no_indexes {
         if let Some(ref remote_index_id) = remote_ns.index_head_id {
             let local_index_id = fluree
-                .nameservice()
+                .nameservice_mode()
                 .get_ref(ledger_id, RefKind::IndexHead)
                 .await
                 .ok()
