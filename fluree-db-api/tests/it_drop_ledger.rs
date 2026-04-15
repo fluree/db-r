@@ -50,7 +50,11 @@ async fn drop_ledger_soft_mode_retracts_only() {
     );
 
     // Verify retracted in nameservice
-    let record = fluree.nameservice().lookup(ledger_id).await.expect("lookup");
+    let record = fluree
+        .nameservice()
+        .lookup(ledger_id)
+        .await
+        .expect("lookup");
     assert!(record.is_some(), "Record should still exist");
     assert!(record.unwrap().retracted, "Record should be retracted");
 
@@ -118,7 +122,11 @@ async fn drop_ledger_hard_mode_deletes_files() {
 
     // Verify nameservice purged (hard drop removes the record entirely,
     // allowing the alias to be reused — unlike soft drop which only retracts).
-    let record = fluree.nameservice().lookup(ledger_id).await.expect("lookup");
+    let record = fluree
+        .nameservice()
+        .lookup(ledger_id)
+        .await
+        .expect("lookup");
     assert!(
         record.is_none(),
         "Hard drop purges the record so it no longer exists"

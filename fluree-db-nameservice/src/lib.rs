@@ -1176,7 +1176,13 @@ pub trait ConfigPublisher: Debug + Send + Sync {
 /// Use `Arc<dyn NameServicePublisher>` when a component needs ownership of a
 /// nameservice that supports all operations.
 pub trait NameServicePublisher:
-    NameService + Publisher + AdminPublisher + RefPublisher + GraphSourcePublisher + ConfigPublisher
+    NameService
+    + Publisher
+    + AdminPublisher
+    + RefPublisher
+    + GraphSourcePublisher
+    + StatusPublisher
+    + ConfigPublisher
 {
 }
 
@@ -1186,6 +1192,7 @@ impl<T> NameServicePublisher for T where
         + AdminPublisher
         + RefPublisher
         + GraphSourcePublisher
+        + StatusPublisher
         + ConfigPublisher
 {
 }

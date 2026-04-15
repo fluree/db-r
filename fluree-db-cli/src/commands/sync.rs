@@ -11,8 +11,8 @@ use fluree_db_core::storage::ContentAddressedWrite;
 use fluree_db_core::ContentKind;
 use fluree_db_core::ContentStore;
 use fluree_db_nameservice::{
-    ConfigPayload, ConfigPublisher, ConfigValue, FileTrackingStore, LedgerConfig,
-    RefKind, RefPublisher, RemoteName, RemoteTrackingStore,
+    ConfigPayload, ConfigPublisher, ConfigValue, FileTrackingStore, LedgerConfig, RefKind,
+    RefPublisher, RemoteName, RemoteTrackingStore,
 };
 use fluree_db_nameservice_sync::{
     ingest_pack_stream, ingest_pack_stream_with_header, peek_pack_header, FetchResult,

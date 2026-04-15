@@ -12,7 +12,8 @@ impl Fluree {
     /// This loads the ledger state using the connection-wide cache.
     /// The ledger state combines the indexed database with any uncommitted novelty transactions.
     pub async fn ledger(&self, ledger_id: &str) -> Result<LedgerState> {
-        let mut state = LedgerState::load(&self.nameservice_mode, ledger_id, self.backend()).await?;
+        let mut state =
+            LedgerState::load(&self.nameservice_mode, ledger_id, self.backend()).await?;
 
         // If nameservice has an index address, require that the binary index root is
         // readable and loadable. This ensures `fluree.ledger()` always returns a
@@ -166,9 +167,13 @@ impl Fluree {
         ledger_id: &str,
         target_t: i64,
     ) -> Result<HistoricalLedgerView> {
-        let view =
-            HistoricalLedgerView::load_at(&self.nameservice_mode, ledger_id, self.backend(), target_t)
-                .await?;
+        let view = HistoricalLedgerView::load_at(
+            &self.nameservice_mode,
+            ledger_id,
+            self.backend(),
+            target_t,
+        )
+        .await?;
 
         Ok(view)
     }
@@ -213,11 +218,7 @@ impl Fluree {
         info!(ledger_id = %ledger_id, "Creating ledger");
 
         // 2. Register in nameservice via Publisher (fails if already exists)
-        match self
-            .publisher()?
-            .publish_ledger_init(&ledger_id)
-            .await
-        {
+        match self.publisher()?.publish_ledger_init(&ledger_id).await {
             Ok(()) => {}
             Err(NameServiceError::LedgerAlreadyExists(a)) => {
                 return Err(ApiError::ledger_exists(a));

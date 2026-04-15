@@ -165,9 +165,12 @@ impl crate::Fluree {
         }
 
         // Build a BranchedContentStore for reading commits across namespaces.
-        let branch_store =
-            LedgerState::build_branched_store(&self.nameservice_mode, &branch_record, self.backend())
-                .await?;
+        let branch_store = LedgerState::build_branched_store(
+            &self.nameservice_mode,
+            &branch_record,
+            self.backend(),
+        )
+        .await?;
 
         // Compute common ancestor by walking commit chains.
         let branch_head_id = branch_record
@@ -535,9 +538,12 @@ impl crate::Fluree {
             "building inline index mid-rebase to flush novelty"
         );
 
-        let branch_store =
-            LedgerState::build_branched_store(&self.nameservice_mode, branch_record, self.backend())
-                .await?;
+        let branch_store = LedgerState::build_branched_store(
+            &self.nameservice_mode,
+            branch_record,
+            self.backend(),
+        )
+        .await?;
 
         let record = self
             .nameservice()

@@ -1321,7 +1321,12 @@ impl LedgerManager {
         // Get fresh record from nameservice if not provided
         let ns_record = match input.record {
             Some(r) => r,
-            None => match self.nameservice_mode.reader().lookup(&input.ledger_id).await? {
+            None => match self
+                .nameservice_mode
+                .reader()
+                .lookup(&input.ledger_id)
+                .await?
+            {
                 Some(r) => r,
                 None => return Ok(NotifyResult::Current), // Ledger doesn't exist
             },

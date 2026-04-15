@@ -617,7 +617,10 @@ impl crate::Fluree {
         };
 
         // 1. Lookup graph source record (for status)
-        let record = self.nameservice().lookup_graph_source(&graph_source_id).await?;
+        let record = self
+            .nameservice()
+            .lookup_graph_source(&graph_source_id)
+            .await?;
         let status = match &record {
             None => DropStatus::NotFound,
             Some(r) if r.retracted => DropStatus::AlreadyRetracted,
@@ -658,11 +661,7 @@ impl crate::Fluree {
         }
 
         // 3. Retract from nameservice (always attempt, idempotent)
-        if let Err(e) = self
-            .publisher()?
-            .retract_graph_source(name, branch)
-            .await
-        {
+        if let Err(e) = self.publisher()?.retract_graph_source(name, branch).await {
             warn!(name = %name, branch = %branch, error = %e, "Nameservice graph source retract warning");
             report.warnings.push(format!("Nameservice retract: {}", e));
         }
@@ -1007,9 +1006,13 @@ impl crate::Fluree {
         );
 
         // 4. Conflict detection: check if ledger advanced during rebuild
-        let final_record = self.nameservice().lookup(&ledger_id).await?.ok_or_else(|| {
-            ApiError::NotFound(format!("Ledger disappeared during reindex: {}", ledger_id))
-        })?;
+        let final_record = self
+            .nameservice()
+            .lookup(&ledger_id)
+            .await?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Ledger disappeared during reindex: {}", ledger_id))
+            })?;
 
         if final_record.commit_t != initial_commit_t {
             return Err(ApiError::ReindexConflict {

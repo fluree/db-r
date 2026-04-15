@@ -94,7 +94,11 @@ impl crate::Fluree {
         );
 
         // Check if graph source already exists (prevent duplicates)
-        if let Some(existing) = self.nameservice().lookup_graph_source(&graph_source_id).await? {
+        if let Some(existing) = self
+            .nameservice()
+            .lookup_graph_source(&graph_source_id)
+            .await?
+        {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
                     "Graph source '{}' already exists",

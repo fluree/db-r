@@ -95,7 +95,11 @@ impl crate::Fluree {
         );
 
         // Check if graph source already exists (prevent duplicates)
-        if let Some(existing) = self.nameservice().lookup_graph_source(&graph_source_id).await? {
+        if let Some(existing) = self
+            .nameservice()
+            .lookup_graph_source(&graph_source_id)
+            .await?
+        {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
                     "Graph source '{}' already exists",
@@ -436,7 +440,11 @@ impl crate::Fluree {
         &self,
         graph_source_id: &str,
     ) -> Result<Bm25Manifest> {
-        match self.nameservice().lookup_graph_source(graph_source_id).await? {
+        match self
+            .nameservice()
+            .lookup_graph_source(graph_source_id)
+            .await?
+        {
             Some(record) if record.index_id.is_some() => {
                 let index_cid = record.index_id.as_ref().unwrap();
                 let cs = self.content_store(graph_source_id);
@@ -1155,9 +1163,13 @@ impl crate::Fluree {
             .clone();
 
         // Look up source ledger record
-        let ledger_record = self.nameservice().lookup(&source_ledger).await?.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("Source ledger not found: {}", source_ledger))
-        })?;
+        let ledger_record = self
+            .nameservice()
+            .lookup(&source_ledger)
+            .await?
+            .ok_or_else(|| {
+                crate::ApiError::NotFound(format!("Source ledger not found: {}", source_ledger))
+            })?;
 
         let index_t = record.index_t;
         let ledger_t = ledger_record.commit_t;
@@ -1348,7 +1360,10 @@ where {
         info!(graph_source_id = %graph_source_id, "Dropping BM25 full-text index");
 
         // 1. Look up graph source record to verify it exists
-        let record = self.nameservice().lookup_graph_source(graph_source_id).await?;
+        let record = self
+            .nameservice()
+            .lookup_graph_source(graph_source_id)
+            .await?;
 
         let record = match record {
             Some(r) => r,
