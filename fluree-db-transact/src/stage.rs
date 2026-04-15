@@ -10,7 +10,7 @@
 //! data conforms to the defined shape constraints.
 
 use crate::error::{Result, TransactError};
-use crate::generate::{apply_cancellation, dedup_retractions, infer_datatype, FlakeGenerator};
+use crate::generate::{infer_datatype, FlakeAccumulator, FlakeGenerator};
 use crate::ir::InlineValues;
 use crate::ir::{TemplateTerm, TripleTemplate, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
@@ -317,26 +317,24 @@ pub async fn stage(
         .instrument(delete_span)
         .await?;
 
-        let flakes = if pure_delete {
-            // Pure DELETE: no assertions to generate, no cross-op cancellation
-            // possible. Just dedup retractions and free the WHERE Batch immediately.
+        // Stream retractions (and assertions, if any) into a single accumulator
+        // so we never hold the full retraction Vec + full assertion Vec + a
+        // separate cancellation result simultaneously. The accumulator's mode
+        // mirrors the staging shape: pure-DELETE skips assertion bookkeeping
+        // entirely; mixed mode tracks per-fact counts for set-semantics
+        // cancellation.
+        let mut acc = if pure_delete {
+            FlakeAccumulator::pure_delete(retractions.len())
+        } else {
+            FlakeAccumulator::mixed(retractions.len())
+        };
+        let retraction_count = retractions.len();
+        acc.push_retractions(retractions);
+
+        let assertion_count: usize = if pure_delete {
+            // No INSERT templates and not Upsert — bindings are no longer needed.
             drop(bindings);
-            let _dedup_span = tracing::debug_span!(
-                "dedup_retractions",
-                retraction_count = retractions.len()
-            )
-            .entered();
-            let before = retractions.len();
-            let flakes = dedup_retractions(retractions);
-            if flakes.len() != before {
-                tracing::debug!(
-                    before,
-                    after = flakes.len(),
-                    cancelled = before - flakes.len(),
-                    "duplicate retractions collapsed"
-                );
-            }
-            flakes
+            0
         } else {
             // Generate assertions from INSERT templates.
             //
@@ -365,27 +363,48 @@ pub async fn stage(
                 insert_span.record("assertion_count", assertions.len() as u64);
                 assertions
             };
-
-            // The WHERE batch is no longer needed once both retraction and assertion
-            // generation have completed. Drop it before cancellation so its memory is
-            // reclaimed during the per-fact bucket pass.
+            // All template materialization is done; release the WHERE Batch
+            // before finalize so its memory is reclaimed during the sort.
             drop(bindings);
+            let count = assertions.len();
+            acc.push_assertions(assertions);
+            count
+        };
 
-            // Apply cancellation (retraction cancels assertion and vice versa)
-            let _cancel_span = tracing::debug_span!("cancellation").entered();
-            let mut all_flakes = retractions;
-            all_flakes.extend(assertions);
-            let total_before_cancel = all_flakes.len();
-            let flakes = apply_cancellation(all_flakes);
-            if flakes.len() != total_before_cancel {
+        let total_inputs = retraction_count + assertion_count;
+        let flakes = if pure_delete {
+            let _span = tracing::debug_span!(
+                "dedup_retractions",
+                retraction_count = retraction_count
+            )
+            .entered();
+            let f = acc.finalize();
+            if f.len() != total_inputs {
                 tracing::debug!(
-                    before = total_before_cancel,
-                    after = flakes.len(),
-                    cancelled = total_before_cancel - flakes.len(),
+                    before = total_inputs,
+                    after = f.len(),
+                    cancelled = total_inputs - f.len(),
+                    "duplicate retractions collapsed"
+                );
+            }
+            f
+        } else {
+            let _span = tracing::debug_span!(
+                "cancellation",
+                retraction_count = retraction_count,
+                assertion_count = assertion_count,
+            )
+            .entered();
+            let f = acc.finalize();
+            if f.len() != total_inputs {
+                tracing::debug!(
+                    before = total_inputs,
+                    after = f.len(),
+                    cancelled = total_inputs - f.len(),
                     "cancellation applied"
                 );
             }
-            flakes
+            f
         };
 
         // Count fuel per staged non-schema flake (mirrors query-side fuel counting).
@@ -964,6 +983,16 @@ fn lower_sparql_where_patterns(
 ///
 /// Transaction flake generation (`FlakeGenerator`) expects concrete `Binding::Sid` and
 /// `Binding::Lit` values, and will error on encoded bindings.
+///
+/// This consumes `batch` by value and rewrites encoded bindings in place. Two
+/// short-circuits keep the steady state cheap:
+///
+/// - If no binary store is configured, encoded bindings cannot appear and the
+///   batch is returned as-is.
+/// - Per column: a one-pass scan checks whether the column contains any
+///   `Encoded*` variant. Already-concrete columns are left untouched (no
+///   per-binding clone, no Vec reallocation). Only columns that need it pay
+///   for in-place rewriting.
 fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> Result<Batch> {
     if batch.is_empty() {
         return Ok(batch);
@@ -978,116 +1007,134 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
     };
 
     let gv = fluree_db_binary_index::BinaryGraphView::new(Arc::clone(&store), 0);
-    let store_ref = gv.store();
 
-    let schema: Arc<[VarId]> = Arc::from(batch.schema().to_vec().into_boxed_slice());
-    let mut columns: Vec<Vec<Binding>> = Vec::with_capacity(schema.len());
+    let (schema, mut columns, len) = batch.into_parts();
 
-    for col_idx in 0..schema.len() {
-        let mut out_col: Vec<Binding> = Vec::with_capacity(batch.len());
-        let Some(col) = batch.column_by_idx(col_idx) else {
-            return Err(TransactError::Query(fluree_db_query::QueryError::Internal(
-                "batch column missing during materialization".to_string(),
-            )));
-        };
-
-        for b in col.iter() {
-            let materialized = match b {
-                Binding::EncodedSid { s_id } => {
-                    let iri = store_ref.resolve_subject_iri(*s_id).map_err(|e| {
-                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                            "resolve_subject_iri: {e}"
-                        )))
-                    })?;
-                    let sid = ledger.snapshot.encode_iri(&iri).ok_or_else(|| {
-                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                            "encode_iri returned None for subject IRI: {iri}"
-                        )))
-                    })?;
-                    Binding::Sid(sid)
-                }
-                Binding::EncodedPid { p_id } => {
-                    let iri = store_ref.resolve_predicate_iri(*p_id).ok_or_else(|| {
-                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                            "unknown predicate id: {p_id}"
-                        )))
-                    })?;
-                    let sid = ledger.snapshot.encode_iri(iri).ok_or_else(|| {
-                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                            "encode_iri returned None for predicate IRI: {iri}"
-                        )))
-                    })?;
-                    Binding::Sid(sid)
-                }
-                Binding::EncodedLit {
-                    o_kind,
-                    o_key,
-                    p_id,
-                    dt_id,
-                    lang_id,
-                    i_val,
-                    t,
-                } => {
-                    let val = gv
-                        .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
-                        .map_err(|e| {
-                            TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                                "decode_value_from_kind: {e}"
-                            )))
-                        })?;
-
-                    match val {
-                        FlakeValue::Ref(sid) => Binding::Sid(sid),
-                        other => {
-                            let dt_sid = store_ref
-                                .dt_sids()
-                                .get(*dt_id as usize)
-                                .cloned()
-                                .unwrap_or_else(|| Sid::new(0, ""));
-                            let dt_iri = store_ref.sid_to_iri(&dt_sid).ok_or_else(|| {
-                                TransactError::Query(fluree_db_query::QueryError::Internal(
-                                    format!(
-                                        "sid_to_iri failed: unknown namespace code {} for datatype {:?}",
-                                        dt_sid.namespace_code, dt_sid.name
-                                    ),
-                                ))
-                            })?;
-                            let dt = ledger.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
-                                TransactError::Query(fluree_db_query::QueryError::Internal(
-                                    format!("encode_iri returned None for datatype IRI: {dt_iri}"),
-                                ))
-                            })?;
-                            let meta = store_ref.decode_meta(*lang_id, *i_val);
-                            let dtc = meta
-                                .as_ref()
-                                .and_then(|m| m.lang.as_ref())
-                                .map(|s| {
-                                    fluree_db_core::DatatypeConstraint::LangTag(
-                                        std::sync::Arc::from(s.as_str()),
-                                    )
-                                })
-                                .unwrap_or_else(|| {
-                                    fluree_db_core::DatatypeConstraint::Explicit(dt)
-                                });
-                            Binding::Lit {
-                                val: other,
-                                dtc,
-                                t: Some(*t),
-                                op: None,
-                                p_id: Some(*p_id),
-                            }
-                        }
-                    }
-                }
-                _ => b.clone(),
-            };
-            out_col.push(materialized);
+    for col in columns.iter_mut() {
+        if !column_needs_materialization(col) {
+            continue;
         }
-
-        columns.push(out_col);
+        for b in col.iter_mut() {
+            materialize_one_binding(b, ledger, &gv)?;
+        }
     }
 
-    Batch::new(schema, columns).map_err(|e| TransactError::Query(e.into()))
+    // Use `from_parts` (not `Batch::new`) so the row count survives when
+    // `columns` is empty — e.g. an `empty_schema_with_len(N)` batch produced
+    // by `project_owned` against an all-literal template set must keep `N`
+    // so flake generation fires once per WHERE solution row, not once total.
+    Batch::from_parts(schema, columns, len).map_err(|e| TransactError::Query(e.into()))
+}
+
+/// True if any binding in `col` is an `Encoded*` variant requiring rewrite.
+/// Tight loop with no allocation; `Encoded*` columns return early on first hit.
+fn column_needs_materialization(col: &[Binding]) -> bool {
+    col.iter().any(|b| {
+        matches!(
+            b,
+            Binding::EncodedSid { .. } | Binding::EncodedPid { .. } | Binding::EncodedLit { .. }
+        )
+    })
+}
+
+/// Rewrite a single `Binding` in place if it is an `Encoded*` variant.
+/// Already-concrete bindings are left untouched (no clone).
+fn materialize_one_binding(
+    b: &mut Binding,
+    ledger: &LedgerState,
+    gv: &fluree_db_binary_index::BinaryGraphView,
+) -> Result<()> {
+    let store_ref = gv.store();
+    match b {
+        Binding::EncodedSid { s_id } => {
+            let iri = store_ref.resolve_subject_iri(*s_id).map_err(|e| {
+                TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                    "resolve_subject_iri: {e}"
+                )))
+            })?;
+            let sid = ledger.snapshot.encode_iri(&iri).ok_or_else(|| {
+                TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                    "encode_iri returned None for subject IRI: {iri}"
+                )))
+            })?;
+            *b = Binding::Sid(sid);
+        }
+        Binding::EncodedPid { p_id } => {
+            let iri = store_ref.resolve_predicate_iri(*p_id).ok_or_else(|| {
+                TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                    "unknown predicate id: {p_id}"
+                )))
+            })?;
+            let sid = ledger.snapshot.encode_iri(iri).ok_or_else(|| {
+                TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                    "encode_iri returned None for predicate IRI: {iri}"
+                )))
+            })?;
+            *b = Binding::Sid(sid);
+        }
+        Binding::EncodedLit {
+            o_kind,
+            o_key,
+            p_id,
+            dt_id,
+            lang_id,
+            i_val,
+            t,
+        } => {
+            let (o_kind, o_key, p_id, dt_id, lang_id, i_val, t) =
+                (*o_kind, *o_key, *p_id, *dt_id, *lang_id, *i_val, *t);
+            let val = gv
+                .decode_value_from_kind(o_kind, o_key, p_id, dt_id, lang_id)
+                .map_err(|e| {
+                    TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                        "decode_value_from_kind: {e}"
+                    )))
+                })?;
+            match val {
+                FlakeValue::Ref(sid) => {
+                    *b = Binding::Sid(sid);
+                }
+                other => {
+                    let dt_sid = store_ref
+                        .dt_sids()
+                        .get(dt_id as usize)
+                        .cloned()
+                        .unwrap_or_else(|| Sid::new(0, ""));
+                    let dt_iri = store_ref.sid_to_iri(&dt_sid).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "sid_to_iri failed: unknown namespace code {} for datatype {:?}",
+                            dt_sid.namespace_code, dt_sid.name
+                        )))
+                    })?;
+                    let dt = ledger.snapshot.encode_iri(&dt_iri).ok_or_else(|| {
+                        TransactError::Query(fluree_db_query::QueryError::Internal(format!(
+                            "encode_iri returned None for datatype IRI: {dt_iri}"
+                        )))
+                    })?;
+                    let meta = store_ref.decode_meta(lang_id, i_val);
+                    let dtc = meta
+                        .as_ref()
+                        .and_then(|m| m.lang.as_ref())
+                        .map(|s| {
+                            fluree_db_core::DatatypeConstraint::LangTag(std::sync::Arc::from(
+                                s.as_str(),
+                            ))
+                        })
+                        .unwrap_or_else(|| fluree_db_core::DatatypeConstraint::Explicit(dt));
+                    *b = Binding::Lit {
+                        val: other,
+                        dtc,
+                        t: Some(t),
+                        op: None,
+                        p_id: Some(p_id),
+                    };
+                }
+            }
+        }
+        // Already-concrete bindings need no rewrite.
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Lower UnresolvedPattern list to Pattern list
@@ -1670,6 +1717,37 @@ mod tests {
     /// Helper to create an UnresolvedPattern::Triple for WHERE clauses in tests
     fn where_triple(s: UnresolvedTerm, p: &str, o: UnresolvedTerm) -> UnresolvedPattern {
         UnresolvedPattern::Triple(UnresolvedTriplePattern::new(s, UnresolvedTerm::iri(p), o))
+    }
+
+    #[test]
+    fn column_needs_materialization_detects_each_encoded_variant() {
+        // Already-concrete bindings — must NOT trigger rewrite.
+        let concrete = vec![
+            Binding::Sid(Sid::new(1, "a")),
+            Binding::Unbound,
+            Binding::Poisoned,
+        ];
+        assert!(!column_needs_materialization(&concrete));
+
+        // Each Encoded* variant must trigger rewrite individually.
+        assert!(column_needs_materialization(&[Binding::EncodedSid { s_id: 7 }]));
+        assert!(column_needs_materialization(&[Binding::EncodedPid { p_id: 3 }]));
+        assert!(column_needs_materialization(&[Binding::EncodedLit {
+            o_kind: 0,
+            o_key: 0,
+            p_id: 0,
+            dt_id: 0,
+            lang_id: 0,
+            i_val: 0,
+            t: 0,
+        }]));
+
+        // A column with a single encoded entry among many concrete entries
+        // must still trigger — early-exit on first hit.
+        let mut mixed = vec![Binding::Sid(Sid::new(1, "a")); 8];
+        mixed.push(Binding::EncodedSid { s_id: 1 });
+        mixed.extend(std::iter::repeat_n(Binding::Unbound, 4));
+        assert!(column_needs_materialization(&mixed));
     }
 
     #[tokio::test]

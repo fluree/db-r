@@ -108,7 +108,7 @@ impl RecallEngine {
         current_branch: Option<&str>,
     ) -> Vec<ScoredMemory> {
         const MIN_SCORE: f64 = 10.0;
-        const LIMIT: usize = 3;
+        const LIMIT: usize = 2;
 
         let scored = if bm25_hits.is_empty() {
             Self::recall_metadata_only(content, all_memories, current_branch, Some(LIMIT + 2))
@@ -447,11 +447,11 @@ mod tests {
         // mem:fact-a has high score (~34 with tag bonus), mem:fact-b (~17 with recency)
         // mem:fact-c (~12.5 with recency) should be below 50% of top and get clipped
         assert!(!results.is_empty());
-        assert!(results.len() <= 3);
+        assert!(results.len() <= 2);
     }
 
     #[test]
-    fn find_related_caps_at_three() {
+    fn find_related_caps_at_two() {
         let mut memories = vec![make_memory(
             "mem:fact-new",
             "common topic",
@@ -474,7 +474,7 @@ mod tests {
 
         let results =
             RecallEngine::find_related("mem:fact-new", "common topic", &bm25_hits, &memories, None);
-        assert!(results.len() <= 3);
+        assert!(results.len() <= 2);
     }
 
     #[test]

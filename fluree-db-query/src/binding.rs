@@ -1032,6 +1032,60 @@ impl Batch {
         Some(view.to_batch())
     }
 
+    /// Decompose into `(schema, columns, len)` for in-place column transformation
+    /// pipelines. Recompose via [`Batch::from_parts`], which preserves `len`
+    /// even when `columns` is empty.
+    pub fn into_parts(self) -> (Arc<[VarId]>, Vec<Vec<Binding>>, usize) {
+        (self.schema, self.columns, self.len)
+    }
+
+    /// Reconstruct a `Batch` from explicit `(schema, columns, len)`.
+    ///
+    /// Unlike [`Batch::new`], which *infers* `len` from the first column and
+    /// therefore reports `len = 0` whenever `columns` is empty, this preserves
+    /// the caller-supplied row count. That matters for empty-schema batches
+    /// (e.g. produced by [`Batch::empty_schema_with_len`] or by projecting
+    /// away every variable while preserving the WHERE solution count) — the
+    /// downstream flake-generation loop iterates `len` times, so losing `len`
+    /// silently changes "fire once per solution row" into "fire once total"
+    /// for all-literal templates.
+    ///
+    /// Validates:
+    /// - `schema.len() == columns.len()`
+    /// - no duplicate `VarId` in `schema`
+    /// - every column has exactly `len` bindings
+    pub fn from_parts(
+        schema: Arc<[VarId]>,
+        columns: Vec<Vec<Binding>>,
+        len: usize,
+    ) -> Result<Self, BatchError> {
+        if schema.len() != columns.len() {
+            return Err(BatchError::SchemaColumnMismatch {
+                schema_len: schema.len(),
+                columns_len: columns.len(),
+            });
+        }
+        for (i, &var_id) in schema.iter().enumerate() {
+            if schema.iter().take(i).any(|&v| v == var_id) {
+                return Err(BatchError::DuplicateVarId(var_id));
+            }
+        }
+        for (i, col) in columns.iter().enumerate() {
+            if col.len() != len {
+                return Err(BatchError::ColumnLengthMismatch {
+                    expected: len,
+                    got: col.len(),
+                    column: i,
+                });
+            }
+        }
+        Ok(Self {
+            len,
+            schema,
+            columns,
+        })
+    }
+
     /// Owning projection: drop columns not in `vars` without cloning the kept ones.
     ///
     /// Vars in `vars` that aren't present in the schema are silently ignored.
@@ -1459,6 +1513,65 @@ mod tests {
         assert_eq!(projected.schema(), &[] as &[VarId]);
         assert_eq!(projected.len(), 3);
         assert!(!projected.is_empty());
+    }
+
+    #[test]
+    fn test_batch_new_loses_len_for_empty_schema() {
+        // Pin the surprising-but-real Batch::new behavior: with no columns,
+        // it infers len = 0 regardless of the caller's intent. This is why
+        // `from_parts` exists — pipelines that round-trip via
+        // `into_parts` -> mutate -> reconstruct must use `from_parts` or
+        // they will silently lose the row count for empty-schema batches.
+        let schema: Arc<[VarId]> = Arc::from(Vec::<VarId>::new().into_boxed_slice());
+        let columns: Vec<Vec<Binding>> = Vec::new();
+        let inferred = Batch::new(schema, columns).unwrap();
+        assert_eq!(
+            inferred.len(),
+            0,
+            "Batch::new with no columns infers len = 0"
+        );
+    }
+
+    #[test]
+    fn test_batch_from_parts_preserves_len_for_empty_schema() {
+        // Counterpart to `test_batch_new_loses_len_for_empty_schema`:
+        // `from_parts` is the proper inverse of `into_parts` and preserves
+        // the explicit row count even when `columns` is empty.
+        let original = Batch::empty_schema_with_len(3);
+        let (schema, columns, len) = original.into_parts();
+        let reconstructed = Batch::from_parts(schema, columns, len).unwrap();
+        assert_eq!(reconstructed.len(), 3);
+        assert_eq!(reconstructed.schema(), &[] as &[VarId]);
+        assert!(!reconstructed.is_empty());
+    }
+
+    #[test]
+    fn test_batch_from_parts_round_trips_normal_batch() {
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let columns = vec![
+            vec![Binding::Sid(test_sid()), Binding::Unbound],
+            vec![
+                Binding::lit(FlakeValue::Long(1), xsd_long()),
+                Binding::lit(FlakeValue::Long(2), xsd_long()),
+            ],
+        ];
+        let original = Batch::new(schema, columns).unwrap();
+        let original_len = original.len();
+        let (schema, columns, len) = original.into_parts();
+        let reconstructed = Batch::from_parts(schema, columns, len).unwrap();
+        assert_eq!(reconstructed.len(), original_len);
+        assert_eq!(reconstructed.schema().len(), 2);
+    }
+
+    #[test]
+    fn test_batch_from_parts_rejects_column_length_mismatch() {
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let columns = vec![vec![Binding::Unbound]]; // len 1
+        let result = Batch::from_parts(schema, columns, 2); // claim len 2
+        assert!(matches!(
+            result,
+            Err(BatchError::ColumnLengthMismatch { .. })
+        ));
     }
 
     #[test]

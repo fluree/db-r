@@ -22,7 +22,7 @@
 
 mod support;
 
-use fluree_db_api::FlureeBuilder;
+use fluree_db_api::{FlureeBuilder, ReindexOptions};
 use serde_json::{json, Value as JsonValue};
 
 fn ctx() -> JsonValue {
@@ -250,6 +250,85 @@ async fn pure_delete_all_literal_template_over_multirow_where_dedups() {
     );
 
     // Person subjects untouched.
+    assert_eq!(
+        count_subjects_with_predicate(&fluree, &out.ledger, "ex:alice", "@type").await,
+        1
+    );
+}
+
+/// All-literal pure DELETE over a multi-row WHERE *with the binary index
+/// engaged*. Same shape as `pure_delete_all_literal_template_over_multirow_where_dedups`,
+/// but a `reindex` is forced first so that:
+///
+/// 1. `ledger.binary_store` is `Some(_)`, which means
+///    `materialize_encoded_bindings_for_txn` runs its in-place rewrite path
+///    instead of the no-binary-store early return.
+/// 2. The WHERE result may contain `Encoded*` bindings that exercise the
+///    materialization step.
+///
+/// The historically-broken shape was: `project_owned(&[])` produces an
+/// `empty_schema_with_len(N)` batch; the materialize step round-trips it
+/// through `into_parts` -> `Batch::new(schema, columns)`, and `Batch::new`
+/// infers `len = 0` when `columns` is empty. That silently turns "fire once
+/// per WHERE solution" into "fire once total" — currently masked by dedup,
+/// but still a real semantic regression. This test pins the post-fix
+/// behavior end-to-end.
+#[tokio::test]
+async fn pure_delete_all_literal_template_post_reindex_engages_binary_store() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().to_str().expect("path");
+
+    let fluree = FlureeBuilder::file(path).build().expect("build");
+    let ledger0 = fluree
+        .create_ledger("tx/pure-delete-all-literal-indexed:main")
+        .await
+        .expect("create");
+
+    let insert = json!({
+        "@context": ctx(),
+        "@graph": [
+            { "@id": "ex:alice",  "@type": "ex:Person" },
+            { "@id": "ex:bob",    "@type": "ex:Person" },
+            { "@id": "ex:carol",  "@type": "ex:Person" },
+            { "@id": "ex:system", "ex:status": "active" }
+        ]
+    });
+    let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
+
+    // Force a reindex so subsequent WHERE execution reads from the binary
+    // index — this is what makes `binary_store` Some and routes through the
+    // materialization path that exercises into_parts/from_parts.
+    let _ = fluree
+        .reindex(
+            "tx/pure-delete-all-literal-indexed:main",
+            ReindexOptions::default(),
+        )
+        .await
+        .expect("reindex");
+
+    assert_eq!(
+        count_subjects_with_predicate(&fluree, &receipt.ledger, "ex:system", "ex:status").await,
+        1,
+        "precondition: ex:system has status post-reindex"
+    );
+
+    let delete_txn = json!({
+        "@context": ctx(),
+        "where":  { "@id": "?s", "@type": "ex:Person" },
+        "delete": { "@id": "ex:system", "ex:status": "active" }
+    });
+    let out = fluree
+        .update(receipt.ledger, &delete_txn)
+        .await
+        .expect("post-reindex pure-delete all-literal");
+
+    assert_eq!(
+        count_subjects_with_predicate(&fluree, &out.ledger, "ex:system", "ex:status").await,
+        0,
+        "ex:status should be retracted exactly once even with binary store engaged"
+    );
+
+    // Person types must remain.
     assert_eq!(
         count_subjects_with_predicate(&fluree, &out.ledger, "ex:alice", "@type").await,
         1

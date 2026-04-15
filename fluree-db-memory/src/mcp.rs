@@ -262,7 +262,7 @@ impl MemoryToolService {
             .next()
             .unwrap_or("")
             .chars()
-            .take(80)
+            .take(40)
             .collect();
         let ellipsis = if content.len() > preview.len() {
             "..."
@@ -621,9 +621,9 @@ impl MemoryToolService {
     ///
     /// Returns `None` if no related memories score above threshold.
     async fn find_related_memories(&self, new_id: &str, content: &str) -> Option<String> {
-        // fetch_n = 3 (LIMIT) + 2: one extra for the self-match that gets
+        // fetch_n = 2 (LIMIT) + 2: one extra for the self-match that gets
         // filtered out, one extra for the score cliff peek-ahead.
-        let bm25_hits = self.store.recall_fulltext(content, 5).await.ok()?;
+        let bm25_hits = self.store.recall_fulltext(content, 4).await.ok()?;
         let filter = MemoryFilter::default();
         let all = self.store.current_memories(&filter).await.ok()?;
         let branch = crate::detect_git_branch_from(self.store.memory_dir());

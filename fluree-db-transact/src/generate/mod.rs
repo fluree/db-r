@@ -4,9 +4,11 @@
 //! into concrete flakes, handling variable substitution, blank node
 //! skolemization, and assertion/retraction cancellation.
 
+pub mod accumulator;
 pub mod cancellation;
 pub mod flakes;
 
+pub use accumulator::FlakeAccumulator;
 pub use cancellation::{apply_cancellation, dedup_retractions};
 pub use flakes::{infer_datatype, FlakeGenerator};
 pub(crate) use flakes::{

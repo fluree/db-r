@@ -7,8 +7,8 @@
 //! Uses `Flake`'s existing `Eq`/`Hash` implementation which ignores
 //! `t` and `op` but includes metadata `m`.
 
-use fluree_db_core::{Flake, IndexType};
-use rustc_hash::FxHashMap;
+use crate::generate::accumulator::FlakeAccumulator;
+use fluree_db_core::Flake;
 
 /// Apply cancellation to a set of flakes
 ///
@@ -27,69 +27,27 @@ pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
     if flakes.is_empty() {
         return flakes;
     }
-
-    // Per-fact stats keyed by reference into `flakes` (no Flake clones).
-    // Flake's Eq/Hash ignores `t` and `op`, so duplicate facts share a bucket.
-    struct FactStats {
-        assert_count: u32,
-        retract_count: u32,
-        last_assert_idx: u32,
-        last_retract_idx: u32,
-    }
-
-    let mut stats: FxHashMap<&Flake, FactStats> =
-        FxHashMap::with_capacity_and_hasher(flakes.len(), Default::default());
-
-    for (idx, flake) in flakes.iter().enumerate() {
-        let entry = stats.entry(flake).or_insert(FactStats {
-            assert_count: 0,
-            retract_count: 0,
-            last_assert_idx: 0,
-            last_retract_idx: 0,
-        });
-        if flake.op {
-            entry.assert_count += 1;
-            entry.last_assert_idx = idx as u32;
+    let mut acc = FlakeAccumulator::mixed(flakes.len());
+    for f in flakes {
+        if f.op {
+            acc.push_assertions(std::iter::once(f));
         } else {
-            entry.retract_count += 1;
-            entry.last_retract_idx = idx as u32;
+            acc.push_retractions(std::iter::once(f));
         }
     }
-
-    // Mark which input indices survive. RDF set semantics: at most one
-    // assertion + one retraction per unique fact (duplicates collapse).
-    let mut keep = vec![false; flakes.len()];
-    for fs in stats.values() {
-        let cancel = fs.assert_count.min(fs.retract_count);
-        if fs.assert_count > cancel {
-            keep[fs.last_assert_idx as usize] = true;
-        }
-        if fs.retract_count > cancel {
-            keep[fs.last_retract_idx as usize] = true;
-        }
-    }
-    drop(stats); // release borrow of `flakes` so we can move it
-
-    let mut result: Vec<Flake> = flakes
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(f, k)| if k { Some(f) } else { None })
-        .collect();
-
-    result.sort_by(|a, b| IndexType::Spot.compare(a, b));
-    result
+    acc.finalize()
 }
 
-/// Dedup a Vec of retractions in place (cheap path for pure-DELETE transactions).
+/// Dedup a Vec of retractions (cheap path for pure-DELETE transactions).
 ///
-/// All retractions in a single transaction share `t` and `op=false`, so SPOT
-/// sort places equal-by-Eq flakes adjacent and `Vec::dedup` collapses them.
-/// Avoids the per-fact hashmap that `apply_cancellation` builds for the
-/// general assertion/retraction case.
-pub fn dedup_retractions(mut retractions: Vec<Flake>) -> Vec<Flake> {
-    retractions.sort_by(|a, b| IndexType::Spot.compare(a, b));
-    retractions.dedup();
-    retractions
+/// Thin wrapper over [`FlakeAccumulator::pure_delete`] kept for backward
+/// compatibility with callers that already hold an owned `Vec<Flake>`. New
+/// code should construct a [`FlakeAccumulator`] directly so retractions can
+/// stream from multiple sources without the intermediate `Vec`.
+pub fn dedup_retractions(retractions: Vec<Flake>) -> Vec<Flake> {
+    let mut acc = FlakeAccumulator::pure_delete(retractions.len());
+    acc.push_retractions(retractions);
+    acc.finalize()
 }
 
 #[cfg(test)]

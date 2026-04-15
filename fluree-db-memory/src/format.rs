@@ -221,7 +221,7 @@ pub fn format_related_memories(related: &[ScoredMemory]) -> String {
         "\n\nExisting memories listed below may overlap with what you just stored. \
          Help clean up stale memories!\n\
          - Superseded or redundant: memory_forget(id=\"<old-id>\")\n\
-         - Could be improved: memory_update(id=\"<old-id>\") with only the fields to change (content, tags, or refs)\n",
+         - Could be improved: memory_update(id=\"<old-id>\") with only the fields to change (content, tags, or refs)\n\n",
     );
     out.push_str("<related-memories>\n");
 

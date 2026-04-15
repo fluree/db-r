@@ -1337,6 +1337,21 @@ mem:constraint-01kp8yczz09ndt54ztchbheeyb a mem:Constraint ;
     mem:createdAt "2026-04-15T16:08:15.584179+00:00"^^xsd:dateTime ;
     mem:rationale "Prevents silent data corruption: a literal like `{\"@value\": \"urn:isbn:123\"}` must round-trip as a string. Distinct from the strict compact-IRI GUARD (check_unresolved_iri) which stays — that runs only in IRI positions (@id, @type, predicate, datatype) and errors on unresolved prefixes rather than guessing." .
 
+mem:decision-01kp938r33m9e5fzksf47hcfgc a mem:Decision ;
+    mem:content "For a future batched query API, the primary use case is independent page-view reads, not ordered multi-step execution. Same-t guarantees should be cheap and strong for same-ledger batches by reusing one resolved view/handle; federated or multi-ledger batches may need extra per-source time resolution and should not promise the same semantics by default." ;
+    mem:tag "api" ;
+    mem:tag "batch" ;
+    mem:tag "federation" ;
+    mem:tag "query" ;
+    mem:tag "time-travel" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-api/src/query/bm25.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/dataset_query.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-15T17:33:19.331308+00:00"^^xsd:dateTime ;
+    mem:rationale "Captures the preferred semantics for batch query design so future API work does not overfit SQL-style transactions or overpromise cross-ledger consistency." .
+
 mem:fact-01kp4rwg9hcyj1ypqmfmygdxym a mem:Fact ;
     mem:content "Strict compact-IRI policy: as of commit 170bccc9, JSON-LD transactions default `strict_compact_iri=true`. Any compact IRI (e.g. `rdf:JSON`, `xsd:string`, `ex:name`) used in data/query/update must have its prefix declared in `@context`, otherwise parsing returns `UnresolvedCompactIri`. The former PR #148 \"Layer 2 fallback\" for well-known prefixes (rdf:, xsd:) is gone. When tests fail with `UnresolvedCompactIri`, fix is to add the prefix to the test's explicit `@context` (per user preference: never rely on default/implicit context in tests). Override via `opts.strict_compact_iri = false` or JSON `opts: {strictCompactIri: false}` if legacy behavior required." ;
     mem:tag "json-ld" ;
