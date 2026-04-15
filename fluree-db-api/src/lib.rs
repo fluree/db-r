@@ -471,12 +471,7 @@ impl fluree_db_nameservice::ConfigLookup for NameServiceMode {
         Option<fluree_db_nameservice::ConfigValue>,
         fluree_db_nameservice::NameServiceError,
     > {
-        match self {
-            Self::ReadWrite(ns) => ns.get_config(ledger_id).await,
-            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
-                "get_config not available on read-only nameservice".into(),
-            )),
-        }
+        self.reader().get_config(ledger_id).await
     }
 }
 
@@ -509,12 +504,7 @@ impl fluree_db_nameservice::StatusLookup for NameServiceMode {
         Option<fluree_db_nameservice::StatusValue>,
         fluree_db_nameservice::NameServiceError,
     > {
-        match self {
-            Self::ReadWrite(ns) => ns.get_status(ledger_id).await,
-            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
-                "get_status not available on read-only nameservice".into(),
-            )),
-        }
+        self.reader().get_status(ledger_id).await
     }
 }
 
@@ -548,12 +538,7 @@ impl fluree_db_nameservice::RefLookup for NameServiceMode {
         Option<fluree_db_nameservice::RefValue>,
         fluree_db_nameservice::NameServiceError,
     > {
-        match self {
-            Self::ReadWrite(ns) => ns.get_ref(ledger_id, kind).await,
-            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
-                "get_ref not available on read-only nameservice".into(),
-            )),
-        }
+        self.reader().get_ref(ledger_id, kind).await
     }
 }
 
