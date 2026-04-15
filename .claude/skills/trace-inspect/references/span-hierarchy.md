@@ -44,13 +44,21 @@ Applies to insert, transact, and upsert operations.
 request (info, otel.name = "transact:fql" / "insert:fql" / "upsert:fql" / etc.)
 └── transact_execute (debug)
     ├── txn_stage (debug, insert_count, delete_count)
-    │   ├── where_exec (debug, pattern_count, binding_rows)
-    │   ├── delete_gen (debug, retraction_count)
-    │   ├── insert_gen (debug, assertion_count)
-    │   ├── cancellation (debug)
+    │   ├── where_exec (debug, pattern_count, binding_rows, retraction_count, assertion_count)
+    │   │   ├── delete_gen (debug, template_count, retraction_count) [per batch]
+    │   │   └── insert_gen (debug, template_count, assertion_count)   [per batch, mixed only]
+    │   ├── cancellation (debug)        [mixed DELETE+INSERT]
+    │   ├── dedup_retractions (debug)   [pure DELETE]
     │   └── policy_enforce (debug)
     └── txn_commit (debug, flake_count, delta_bytes, current_novelty_bytes)
 ```
+
+`delete_gen` / `insert_gen` are emitted **per streaming-WHERE batch** and nest
+under `where_exec` (the previous eager path emitted them as siblings of
+`where_exec`). A WHERE result that fans out across N batches produces N
+`delete_gen` spans (and N `insert_gen` spans for mixed updates).
+`cancellation` is emitted only for mixed DELETE+INSERT transactions;
+pure-DELETE transactions emit `dedup_retractions` instead.
 
 **Turtle format** (different staging span):
 ```
@@ -134,8 +142,9 @@ These sub-microsecond metadata operations appear as zero-duration in Jaeger (dur
 - `commit_publish_nameservice`
 - `commit_generate_metadata_flakes`
 - `commit_populate_dict_novelty`
-- `where_exec` (when no WHERE clause)
+- `where_exec` (when no WHERE clause — cursor emits one empty batch, loop body is trivial)
 - `cancellation` (when no cancellation needed)
+- `dedup_retractions` (when pure DELETE had zero duplicate retractions)
 - `delete_gen` (when no deletes)
 
 ## Tag Catalog

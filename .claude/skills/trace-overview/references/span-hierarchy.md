@@ -44,10 +44,11 @@ Applies to insert, transact, and upsert operations.
 request (info, otel.name = "transact:fql" / "insert:fql" / "upsert:fql" / etc.)
 └── transact_execute (debug)
     ├── txn_stage (debug, insert_count, delete_count)
-    │   ├── where_exec (debug, pattern_count, binding_rows)
-    │   ├── delete_gen (debug, retraction_count)
-    │   ├── insert_gen (debug, assertion_count)
-    │   ├── cancellation (debug)
+    │   ├── where_exec (debug, pattern_count, binding_rows, retraction_count, assertion_count)
+    │   │   ├── delete_gen (debug, template_count, retraction_count) [per batch]
+    │   │   └── insert_gen (debug, template_count, assertion_count)   [per batch, mixed only]
+    │   ├── cancellation (debug)        [mixed DELETE+INSERT]
+    │   ├── dedup_retractions (debug)   [pure DELETE]
     │   └── policy_enforce (debug)
     └── txn_commit (debug, flake_count, delta_bytes, current_novelty_bytes)
 ```

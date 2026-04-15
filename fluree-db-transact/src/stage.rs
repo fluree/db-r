@@ -221,21 +221,6 @@ pub async fn stage(
             ])
         };
 
-        // Execute WHERE patterns to get bindings
-        // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
-        let where_span = tracing::debug_span!(
-            "where_exec",
-            pattern_count = txn.where_patterns.len(),
-            binding_rows = tracing::field::Empty,
-        );
-        let bindings = async {
-            let bindings = execute_where(&ledger, &mut txn, &template_vars).await?;
-            tracing::Span::current().record("binding_rows", bindings.len() as u64);
-            Ok::<_, TransactError>(bindings)
-        }
-        .instrument(where_span)
-        .await?;
-
         // Generate transaction ID for blank node skolemization
         let txn_id = generate_txn_id();
 
@@ -265,125 +250,96 @@ pub async fn stage(
         let mut generator = FlakeGenerator::new(new_t, &mut ns_registry, txn_id)
             .with_graph_sids(graph_sids.clone());
 
-        // Per SPARQL 1.1 Update spec (§3.1.3): INSERT/DELETE templates are
-        // instantiated once per solution row from WHERE. Zero solutions = zero
-        // instantiations, regardless of whether templates contain variables or
-        // only literals. This ensures conditional update patterns (CAS, state
-        // machines, guards) correctly produce no-ops when WHERE doesn't match.
-        //
-        // We check this at the stage level rather than in generate_flakes because
-        // a WHERE clause with zero variables produces a Batch with empty schema,
-        // which is indistinguishable from "no WHERE clause" inside generate_flakes.
-        //
-        // Only applies when the transaction has an explicit WHERE clause. Update
-        // transactions with no WHERE (insert-only through the update path) should
-        // still fire templates once.
-        let where_returned_no_rows = has_where_clause && bindings.is_empty();
+        // Stream the WHERE result into a single accumulator per-batch,
+        // projecting / materializing / hydrating in the same step. This keeps
+        // peak memory bounded by one batch (plus the accumulator's survivor
+        // set) rather than by the total WHERE cardinality.
+        let mut acc = if pure_delete {
+            FlakeAccumulator::pure_delete(64)
+        } else {
+            FlakeAccumulator::mixed(64)
+        };
 
-        // Generate retractions from DELETE templates
-        let delete_span = tracing::debug_span!(
-            "delete_gen",
-            template_count = txn.delete_templates.len(),
+        let where_span = tracing::debug_span!(
+            "where_exec",
+            pattern_count = txn.where_patterns.len(),
+            binding_rows = tracing::field::Empty,
             retraction_count = tracing::field::Empty,
+            assertion_count = tracing::field::Empty,
         );
-        let retractions = async {
-            let mut retractions = if where_returned_no_rows {
-                vec![]
-            } else {
-                generator.generate_retractions(&txn.delete_templates, &bindings)?
-            };
-
-            // DELETE templates often omit list indices even when
-            // retracting `@list` values. Hydrate retractions by copying the stored
-            // list-index meta from the currently asserted flake (if present).
-            hydrate_list_index_meta_for_retractions(&ledger, &mut retractions, &reverse_graph)
-                .await?;
-
-            // For Upsert: also generate deletions for existing values
-            if txn.txn_type == TxnType::Upsert {
-                tracing::debug!("generating upsert deletions");
-                let upsert_retractions =
-                    generate_upsert_deletions(&ledger, &txn, new_t, &graph_sids).await?;
-                tracing::debug!(
-                    upsert_retraction_count = upsert_retractions.len(),
-                    "upsert deletions generated"
-                );
-                retractions.extend(upsert_retractions);
-            }
-
-            tracing::Span::current().record("retraction_count", retractions.len() as u64);
-            Ok::<_, TransactError>(retractions)
+        let stream_stats = async {
+            let stats = stream_where_into_accumulator(
+                &ledger,
+                &mut txn,
+                &template_vars,
+                &mut generator,
+                pure_delete,
+                &reverse_graph,
+                &mut acc,
+            )
+            .await?;
+            let span = tracing::Span::current();
+            span.record("binding_rows", stats.total_binding_rows);
+            span.record("retraction_count", stats.retraction_count as u64);
+            span.record("assertion_count", stats.assertion_count as u64);
+            Ok::<_, TransactError>(stats)
         }
-        .instrument(delete_span)
+        .instrument(where_span)
         .await?;
 
-        // Stream retractions (and assertions, if any) into a single accumulator
-        // so we never hold the full retraction Vec + full assertion Vec + a
-        // separate cancellation result simultaneously. The accumulator's mode
-        // mirrors the staging shape: pure-DELETE skips assertion bookkeeping
-        // entirely; mixed mode tracks per-fact counts for set-semantics
-        // cancellation.
-        let mut acc = if pure_delete {
-            FlakeAccumulator::pure_delete(retractions.len())
-        } else {
-            FlakeAccumulator::mixed(retractions.len())
-        };
-        let retraction_count = retractions.len();
-        acc.push_retractions(retractions);
-
-        let assertion_count: usize = if pure_delete {
-            // No INSERT templates and not Upsert — bindings are no longer needed.
-            drop(bindings);
-            0
-        } else {
-            // Generate assertions from INSERT templates.
-            //
-            // Unlike DELETE (which is skipped on empty WHERE), INSERT templates
-            // are always evaluated. When WHERE returns no solutions, templates
-            // with variables produce 0 flakes (variables are unbound), but
-            // all-literal templates still fire once. This supports the common
-            // "delete-if-exists, always insert" pattern:
-            //   WHERE { ?s :prop ?old } DELETE { ?s :prop ?old } INSERT { :s :prop "new" }
-            let insert_span = tracing::debug_span!(
-                "insert_gen",
-                template_count = txn.insert_templates.len(),
-                assertion_count = tracing::field::Empty,
-            );
-            let assertions = {
-                let _guard = insert_span.enter();
-                let assertions = if where_returned_no_rows {
-                    // WHERE returned 0 rows. Use a single empty solution so that
-                    // all-literal INSERT templates fire once (templates with variables
-                    // will naturally produce 0 flakes since the variables are unbound).
-                    let empty_solution = Batch::single_empty();
-                    generator.generate_assertions(&txn.insert_templates, &empty_solution)?
-                } else {
-                    generator.generate_assertions(&txn.insert_templates, &bindings)?
-                };
-                insert_span.record("assertion_count", assertions.len() as u64);
-                assertions
-            };
-            // All template materialization is done; release the WHERE Batch
-            // before finalize so its memory is reclaimed during the sort.
-            drop(bindings);
-            let count = assertions.len();
+        // Per SPARQL 1.1 Update spec (§3.1.3): INSERT/DELETE templates are
+        // instantiated once per solution row from WHERE. Zero solutions = zero
+        // instantiations *except* for all-literal INSERT templates, which
+        // must still fire once against a single empty solution (supports the
+        // common "delete-if-exists, always insert" pattern).
+        //
+        // The signal must be "total emitted rows == 0", not "cursor yielded
+        // any batch". Operators like VALUES, geo/vector search, and some
+        // join/optional shapes legitimately emit `Some(empty_batch)` to
+        // represent a zero-row result while still signalling completion —
+        // the old eager path detected this via `bindings.is_empty()` on the
+        // merged batch. Using `saw_any_batch` would flip that semantic and
+        // suppress the post-loop fallback for valid zero-row cases.
+        //
+        // has_where_clause gates the fallback so the no-WHERE case (where
+        // the SingleEmpty cursor emits an empty-schema-empty batch that
+        // already fires all-literal templates once via the in-loop path)
+        // doesn't double-fire.
+        let where_returned_no_rows = has_where_clause && stream_stats.total_binding_rows == 0;
+        if where_returned_no_rows && !pure_delete {
+            let empty_solution = Batch::single_empty();
+            let assertions =
+                generator.generate_assertions(&txn.insert_templates, &empty_solution)?;
             acc.push_assertions(assertions);
-            count
-        };
+        }
 
-        let total_inputs = retraction_count + assertion_count;
+        // Upsert second wave: retractions derived from direct ledger lookups
+        // (not WHERE). These flakes already carry correct `m` from the
+        // underlying asserted flakes, so no hydration is needed.
+        if txn.txn_type == TxnType::Upsert {
+            tracing::debug!("generating upsert deletions");
+            let upsert_retractions =
+                generate_upsert_deletions(&ledger, &txn, new_t, &graph_sids).await?;
+            tracing::debug!(
+                upsert_retraction_count = upsert_retractions.len(),
+                "upsert deletions generated"
+            );
+            acc.push_retractions(upsert_retractions);
+        }
+
+        let retraction_count = stream_stats.retraction_count;
+        let assertion_count = stream_stats.assertion_count;
+        let total_inputs = acc.input_count();
         let flakes = if pure_delete {
-            let _span = tracing::debug_span!(
-                "dedup_retractions",
-                retraction_count = retraction_count
-            )
-            .entered();
+            let _span =
+                tracing::debug_span!("dedup_retractions", retraction_count = retraction_count)
+                    .entered();
             let f = acc.finalize();
-            if f.len() != total_inputs {
+            if f.len() as u64 != total_inputs {
                 tracing::debug!(
                     before = total_inputs,
                     after = f.len(),
-                    cancelled = total_inputs - f.len(),
+                    cancelled = total_inputs - f.len() as u64,
                     "duplicate retractions collapsed"
                 );
             }
@@ -396,11 +352,11 @@ pub async fn stage(
             )
             .entered();
             let f = acc.finalize();
-            if f.len() != total_inputs {
+            if f.len() as u64 != total_inputs {
                 tracing::debug!(
                     before = total_inputs,
                     after = f.len(),
-                    cancelled = total_inputs - f.len(),
+                    cancelled = total_inputs - f.len() as u64,
                     "cancellation applied"
                 );
             }
@@ -711,18 +667,47 @@ fn collect_template_vars(template_groups: &[&[TripleTemplate]]) -> Vec<VarId> {
     out
 }
 
-/// Execute WHERE patterns and return bindings, projected to template-used vars.
+/// Stats collected while streaming the WHERE result into the accumulator.
 ///
-/// `template_vars` is the union of variables actually referenced by the
-/// transaction's INSERT/DELETE templates. Columns outside that set are dropped
-/// before encoded-binding materialization, since flake generation never reads
-/// them. This avoids cloning WHERE-only helper bindings during materialization
-/// and keeps peak staging memory tied to *template* width, not *WHERE* width.
-async fn execute_where(
+/// - `total_binding_rows` is the sum of row counts across all batches. The
+///   caller uses this (combined with `has_where_clause`) to decide whether
+///   all-literal INSERT templates should fire once post-loop against
+///   `Batch::single_empty()`. Using the emitted-row total rather than
+///   "any batch arrived" is important: operators like VALUES, geo/vector
+///   search, and some join/optional shapes legitimately emit an empty
+///   batch to signal a zero-row result, and those cases must be treated
+///   as "WHERE matched nothing" for fallback purposes.
+/// - `retraction_count` / `assertion_count` are the pre-dedup totals pushed
+///   into the accumulator (for tracing).
+struct WhereStreamStats {
+    total_binding_rows: u64,
+    retraction_count: usize,
+    assertion_count: usize,
+}
+
+/// Stream the WHERE result into `acc`, projecting → materializing encoded
+/// bindings in place → generating retractions → hydrating list-index meta →
+/// pushing into the accumulator, one batch at a time. Assertions are
+/// generated and pushed on the same batch when not in pure-delete mode.
+///
+/// `template_vars` is the union of variables referenced by INSERT/DELETE
+/// templates; WHERE-only helper columns are dropped before materialization
+/// to keep per-batch memory tied to template width, not WHERE width.
+///
+/// **Hydration must run before push.** `Flake` identity includes `m`, so a
+/// raw retraction with `m = None` would collapse with its peers in the
+/// accumulator before hydrate had a chance to fill in the list-index — we'd
+/// end up retracting only one of N list entries. Hydrating per batch keeps
+/// `m` correct on every retraction before it reaches the dedup layer.
+async fn stream_where_into_accumulator(
     ledger: &LedgerState,
     txn: &mut Txn,
     template_vars: &[VarId],
-) -> Result<Batch> {
+    generator: &mut FlakeGenerator<'_>,
+    pure_delete: bool,
+    reverse_graph: &HashMap<Sid, GraphId>,
+    acc: &mut FlakeAccumulator,
+) -> Result<WhereStreamStats> {
     // Lower transaction WHERE clause to query patterns.
     //
     // - JSON-LD updates: `txn.where_patterns` is an UnresolvedPattern list, lowered here using the
@@ -743,11 +728,11 @@ async fn execute_where(
         query_patterns.insert(0, values_pattern);
     }
 
-    // If no patterns at all (no WHERE, no VALUES), return empty batch for simple INSERTs
-    if query_patterns.is_empty() {
-        let schema: Arc<[VarId]> = Arc::new([]);
-        return Batch::empty(schema).map_err(|e| TransactError::Query(e.into()));
-    }
+    // If no patterns at all (no WHERE, no VALUES), the streaming cursor's
+    // SingleEmpty variant emits one empty batch (schema=[], len=0) so the
+    // per-batch loop below still fires — `generate_retractions` /
+    // `generate_assertions` interpret an empty-schema-empty batch as "single
+    // empty solution", letting all-literal templates fire once.
 
     // Select the default graph(s) for WHERE execution.
     //
@@ -923,10 +908,10 @@ async fn execute_where(
         }
     }
 
-    // Execute using the clean public API that handles multi-pattern joins.
-    //
-    // IMPORTANT: Execute "as of" the ledger's current t (which may be ahead of db.t when novelty exists).
-    let batches = fluree_db_query::execute_where_with_overlay_at_strict_in_dataset(
+    // Open the streaming WHERE cursor. For empty patterns it emits one
+    // empty-schema/empty-len batch then EOF, mirroring the eager API's
+    // `vec![Batch::empty(...)]` behavior.
+    let mut cursor = fluree_db_query::execute_where_streaming_in_dataset(
         base_db,
         &txn.vars,
         &query_patterns,
@@ -936,20 +921,68 @@ async fn execute_where(
     .await
     .map_err(TransactError::Query)?;
 
-    // Merge batches into one
-    let merged = merge_batches(batches, &txn.vars)?;
+    let mut total_binding_rows: u64 = 0;
+    let mut retraction_count: usize = 0;
+    let mut assertion_count: usize = 0;
 
-    // Drop columns not referenced by INSERT/DELETE templates *before* materializing
-    // encoded bindings. Materialization rebuilds every column it sees, so projecting
-    // first cuts both peak memory and per-row work proportionally to how many WHERE
-    // helper vars are unused downstream. Row count is preserved (via empty-schema-with-len)
-    // so all-literal templates still fire once per solution.
-    let projected = merged.project_owned(template_vars);
+    while let Some(batch) = cursor.next_batch().await.map_err(TransactError::Query)? {
+        total_binding_rows += batch.len() as u64;
 
-    // Transaction flake generation requires concrete (materialized) bindings.
-    // Query execution may return late-materialized `Binding::Encoded*` values
-    // when the binary index store is available.
-    materialize_encoded_bindings_for_txn(ledger, projected)
+        // Per-batch shape: project → materialize in place → generate →
+        // hydrate (retractions only) → push. Batch drops at end of iter.
+        let batch = batch.project_owned(template_vars);
+        let batch = materialize_encoded_bindings_for_txn(ledger, batch)?;
+
+        // Per-batch `delete_gen` span. Nested under `where_exec`. Fields:
+        // `template_count` (stable per txn), `retraction_count` (per-batch
+        // generated count, recorded deferred).
+        let delete_span = tracing::debug_span!(
+            "delete_gen",
+            template_count = txn.delete_templates.len(),
+            retraction_count = tracing::field::Empty,
+        );
+        let retractions = {
+            let _g = delete_span.enter();
+            let mut r = generator.generate_retractions(&txn.delete_templates, &batch)?;
+
+            // Hydrate BEFORE push. `Flake::eq` includes `m`, so raw retractions
+            // with `m = None` must have their list-index filled in from the
+            // asserted flake before they reach the accumulator — otherwise
+            // N list entries with the same `(s,p,o,dt)` would collapse to one
+            // retraction survivor and only one list entry would actually be
+            // retracted from the index.
+            hydrate_list_index_meta_for_retractions(ledger, &mut r, reverse_graph).await?;
+
+            delete_span.record("retraction_count", r.len() as u64);
+            r
+        };
+        retraction_count += retractions.len();
+        acc.push_retractions(retractions);
+
+        if !pure_delete {
+            // Per-batch `insert_gen` span. Nested under `where_exec`.
+            let insert_span = tracing::debug_span!(
+                "insert_gen",
+                template_count = txn.insert_templates.len(),
+                assertion_count = tracing::field::Empty,
+            );
+            let assertions = {
+                let _g = insert_span.enter();
+                let a = generator.generate_assertions(&txn.insert_templates, &batch)?;
+                insert_span.record("assertion_count", a.len() as u64);
+                a
+            };
+            assertion_count += assertions.len();
+            acc.push_assertions(assertions);
+        }
+    }
+    cursor.close();
+
+    Ok(WhereStreamStats {
+        total_binding_rows,
+        retraction_count,
+        assertion_count,
+    })
 }
 
 /// Lower a stored SPARQL WHERE clause (from SPARQL UPDATE) into query patterns.
@@ -1149,43 +1182,6 @@ fn lower_where_patterns(
     let mut pp_counter: u32 = 0;
     lower_unresolved_patterns(patterns, db, vars, &mut pp_counter)
         .map_err(|e| TransactError::Parse(format!("WHERE pattern lowering: {}", e)))
-}
-
-/// Merge multiple batches into a single batch
-fn merge_batches(batches: Vec<Batch>, vars: &VarRegistry) -> Result<Batch> {
-    if batches.is_empty() {
-        // Return empty batch with schema from vars
-        let schema: Arc<[VarId]> = Arc::from(
-            (0..vars.len())
-                .map(|i| VarId(i as u16))
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
-        return Batch::empty(schema).map_err(|e| TransactError::Query(e.into()));
-    }
-
-    if batches.len() == 1 {
-        return Ok(batches.into_iter().next().unwrap());
-    }
-
-    // Merge multiple batches
-    let schema: Arc<[VarId]> = batches[0].schema().into();
-    let num_cols = schema.len();
-    let total_rows: usize = batches.iter().map(|b| b.len()).sum();
-
-    let mut columns: Vec<Vec<Binding>> = (0..num_cols)
-        .map(|_| Vec::with_capacity(total_rows))
-        .collect();
-
-    for batch in batches {
-        for (col_idx, col) in columns.iter_mut().enumerate() {
-            if let Some(src_col) = batch.column_by_idx(col_idx) {
-                col.extend(src_col.iter().cloned());
-            }
-        }
-    }
-
-    Batch::new(schema, columns).map_err(|e| TransactError::Query(e.into()))
 }
 
 /// Generate a unique transaction ID for blank node skolemization
@@ -1730,8 +1726,12 @@ mod tests {
         assert!(!column_needs_materialization(&concrete));
 
         // Each Encoded* variant must trigger rewrite individually.
-        assert!(column_needs_materialization(&[Binding::EncodedSid { s_id: 7 }]));
-        assert!(column_needs_materialization(&[Binding::EncodedPid { p_id: 3 }]));
+        assert!(column_needs_materialization(&[Binding::EncodedSid {
+            s_id: 7
+        }]));
+        assert!(column_needs_materialization(&[Binding::EncodedPid {
+            p_id: 3
+        }]));
         assert!(column_needs_materialization(&[Binding::EncodedLit {
             o_kind: 0,
             o_key: 0,

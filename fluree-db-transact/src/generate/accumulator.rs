@@ -252,10 +252,7 @@ mod tests {
     #[test]
     fn pure_delete_input_count_tracks_total_pushes() {
         let mut acc = FlakeAccumulator::pure_delete(2);
-        acc.push_retractions(vec![
-            flake(1, 1, 100, 5, false),
-            flake(1, 1, 100, 5, false),
-        ]);
+        acc.push_retractions(vec![flake(1, 1, 100, 5, false), flake(1, 1, 100, 5, false)]);
         assert_eq!(acc.input_count(), 2);
         assert_eq!(acc.finalize().len(), 1);
     }

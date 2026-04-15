@@ -250,6 +250,6 @@ KNOWN_ZERO_DURATION = {
     "commit_namespace_delta", "commit_build_record", "commit_verify_sequencing",
     "commit_publish_nameservice", "commit_generate_metadata_flakes",
     "commit_clone_novelty", "commit_populate_dict_novelty",
-    "where_exec", "cancellation", "delete_gen",
+    "where_exec", "cancellation", "dedup_retractions", "delete_gen",
     "sort_build_rows_batch",  # zero-duration in lightweight sort batches
 }

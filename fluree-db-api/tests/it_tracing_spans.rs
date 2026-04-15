@@ -249,11 +249,16 @@ async fn ac2a_insert_waterfall() {
         "insert_gen should be DEBUG"
     );
 
-    // Verify parent-child relationships
+    // Verify parent-child relationships.
+    //
+    // Post streaming-WHERE refactor, `insert_gen` is emitted per-batch
+    // inside the `where_exec` loop (was previously a sibling of `where_exec`
+    // under `txn_stage` in the eager path). `cancellation` stays a direct
+    // child of `txn_stage` since it runs after the WHERE stream closes.
     assert_eq!(
         ig.parent_name.as_deref(),
-        Some("txn_stage"),
-        "insert_gen should be child of txn_stage"
+        Some("where_exec"),
+        "insert_gen should be child of where_exec (per-batch emission)"
     );
 
     let cancel = store.find_span("cancellation").unwrap();
@@ -370,10 +375,12 @@ async fn ac2b_update_waterfall() {
         tracing::Level::DEBUG,
         "delete_gen should be DEBUG"
     );
+    // Post streaming-WHERE refactor, `delete_gen` is emitted per-batch
+    // inside the `where_exec` loop.
     assert_eq!(
         dg.parent_name.as_deref(),
-        Some("txn_stage"),
-        "delete_gen should be child of txn_stage"
+        Some("where_exec"),
+        "delete_gen should be child of where_exec (per-batch emission)"
     );
 
     // And insert_gen + cancellation

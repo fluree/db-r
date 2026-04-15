@@ -408,6 +408,142 @@ pub async fn execute_where_with_overlay_at_strict_in_dataset<'a>(
     Ok(batches)
 }
 
+/// Cursor handle over a WHERE operator tree that yields result batches
+/// incrementally via [`WhereCursor::next_batch`].
+///
+/// This is the streaming counterpart to
+/// [`execute_where_with_overlay_at_strict_in_dataset`]. Instead of driving
+/// the operator to completion and collecting a `Vec<Batch>`, the caller
+/// pulls one batch at a time — typically to process (materialize, generate
+/// flakes, push into an accumulator) and drop before pulling the next.
+/// That keeps transact-side peak memory bounded by one batch plus whatever
+/// the caller chooses to retain, independent of total WHERE result size.
+///
+/// Non-blocking operators (BGP scans, filters, inner joins, union,
+/// optional, distinct, limit/offset, project) naturally emit incrementally
+/// and benefit directly. Blocking operators (GROUP BY, SORT, some
+/// aggregates) still materialize their input internally, but the top-level
+/// cursor only surfaces batches as they become available — in the worst
+/// case this is equivalent to the eager path.
+///
+/// The operator is `open`ed on construction and `close`d when the cursor
+/// is dropped, or explicitly via [`WhereCursor::close`]. Calling
+/// `next_batch` after a `None` return is safe and continues to return
+/// `None`.
+pub struct WhereCursor<'a> {
+    inner: CursorInner<'a>,
+}
+
+enum CursorInner<'a> {
+    /// Normal case: a real operator tree to drive. Boxed because
+    /// `ExecutionContext` is ~300 bytes and dwarfs the other variant;
+    /// keeping the enum body small avoids pessimizing every `WhereCursor`.
+    Operator(Box<WhereCursorOperator<'a>>),
+    /// Empty-patterns case: mirror the eager function's
+    /// `vec![Batch::empty(Arc::new([]))]` return by emitting one empty
+    /// batch and then signalling end-of-stream.
+    SingleEmpty { schema: Arc<[VarId]>, emitted: bool },
+}
+
+struct WhereCursorOperator<'a> {
+    operator: BoxedOperator,
+    ctx: ExecutionContext<'a>,
+    closed: bool,
+}
+
+impl<'a> WhereCursor<'a> {
+    /// Pull the next result batch. Returns `Ok(None)` when the operator is
+    /// exhausted; further calls continue to return `Ok(None)`.
+    pub async fn next_batch(&mut self) -> Result<Option<Batch>> {
+        match &mut self.inner {
+            CursorInner::Operator(state) => {
+                if state.closed {
+                    return Ok(None);
+                }
+                let result = state.operator.next_batch(&state.ctx).await?;
+                if result.is_none() {
+                    state.operator.close();
+                    state.closed = true;
+                }
+                Ok(result)
+            }
+            CursorInner::SingleEmpty { schema, emitted } => {
+                if *emitted {
+                    Ok(None)
+                } else {
+                    *emitted = true;
+                    Ok(Some(Batch::empty(schema.clone())?))
+                }
+            }
+        }
+    }
+
+    /// Close the cursor. After this call, `next_batch` returns `Ok(None)`
+    /// for every subsequent invocation. Idempotent; called automatically on
+    /// drop.
+    ///
+    /// For the `Operator` variant this closes the underlying operator tree.
+    /// For the `SingleEmpty` variant it marks the empty batch as already
+    /// emitted, so a caller that closes before pulling the first batch
+    /// observes end-of-stream rather than a late empty batch.
+    pub fn close(&mut self) {
+        match &mut self.inner {
+            CursorInner::Operator(state) => {
+                if !state.closed {
+                    state.operator.close();
+                    state.closed = true;
+                }
+            }
+            CursorInner::SingleEmpty { emitted, .. } => {
+                *emitted = true;
+            }
+        }
+    }
+}
+
+impl<'a> Drop for WhereCursor<'a> {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+/// Open a streaming WHERE cursor. Same input shape and execution semantics
+/// as [`execute_where_with_overlay_at_strict_in_dataset`], but returns a
+/// [`WhereCursor`] for per-batch consumption instead of buffering the
+/// entire result into a `Vec<Batch>`.
+pub async fn execute_where_streaming_in_dataset<'a>(
+    db: GraphDbRef<'a>,
+    vars: &'a VarRegistry,
+    patterns: &[Pattern],
+    from_t: Option<i64>,
+    dataset: Option<&'a DataSet<'a>>,
+) -> Result<WhereCursor<'a>> {
+    if patterns.is_empty() {
+        let schema: Arc<[VarId]> = Arc::new([]);
+        return Ok(WhereCursor {
+            inner: CursorInner::SingleEmpty {
+                schema,
+                emitted: false,
+            },
+        });
+    }
+
+    let mut ctx =
+        ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t).with_strict_bind_errors();
+    if let Some(ds) = dataset {
+        ctx = ctx.with_dataset(ds);
+    }
+    let mut operator = build_where_operators_seeded(None, patterns, None, None)?;
+    operator.open(&ctx).await?;
+    Ok(WhereCursor {
+        inner: CursorInner::Operator(Box::new(WhereCursorOperator {
+            operator,
+            ctx,
+            closed: false,
+        })),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +559,83 @@ mod tests {
             Ref::Var(s),
             Ref::Sid(fluree_db_core::Sid::new(100, "name")),
             Term::Var(o),
+        );
+    }
+
+    /// Empty-patterns cursor yields one empty batch then end-of-stream,
+    /// matching the eager `execute_where_with_overlay_at_strict_in_dataset`
+    /// behavior of returning `vec![Batch::empty(schema)?]`.
+    #[tokio::test]
+    async fn test_streaming_cursor_empty_patterns() {
+        use crate::binding::Batch;
+        use fluree_db_core::{overlay::NoOverlay, GraphDbRef, LedgerSnapshot};
+
+        let vars = VarRegistry::new();
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let overlay = NoOverlay;
+        let db = GraphDbRef::new(&snapshot, 0, &overlay, 0);
+
+        let mut cursor = execute_where_streaming_in_dataset(db, &vars, &[], None, None)
+            .await
+            .expect("cursor");
+
+        let first: Option<Batch> = cursor.next_batch().await.expect("first");
+        assert!(first.is_some(), "empty-patterns cursor emits one batch");
+        let b = first.unwrap();
+        assert_eq!(b.len(), 0);
+        assert_eq!(b.schema().len(), 0);
+
+        let second = cursor.next_batch().await.expect("second");
+        assert!(second.is_none(), "second call returns None");
+
+        let third = cursor.next_batch().await.expect("third");
+        assert!(third.is_none(), "further calls keep returning None");
+    }
+
+    /// Explicit close is idempotent and leaves the cursor returning `None`.
+    #[tokio::test]
+    async fn test_streaming_cursor_close_is_idempotent() {
+        use fluree_db_core::{overlay::NoOverlay, GraphDbRef, LedgerSnapshot};
+
+        let vars = VarRegistry::new();
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let overlay = NoOverlay;
+        let db = GraphDbRef::new(&snapshot, 0, &overlay, 0);
+
+        let mut cursor = execute_where_streaming_in_dataset(db, &vars, &[], None, None)
+            .await
+            .expect("cursor");
+
+        let _ = cursor.next_batch().await.expect("first");
+        cursor.close();
+        cursor.close(); // idempotent
+        let after = cursor.next_batch().await.expect("after close");
+        assert!(after.is_none());
+    }
+
+    /// Regression: calling `close()` on a fresh `SingleEmpty` cursor must
+    /// suppress the pending empty batch — `next_batch` should return `None`
+    /// rather than emitting the empty batch after close. Contradicts an
+    /// earlier version that only terminated the `Operator` variant on close.
+    #[tokio::test]
+    async fn test_streaming_cursor_close_terminates_single_empty() {
+        use fluree_db_core::{overlay::NoOverlay, GraphDbRef, LedgerSnapshot};
+
+        let vars = VarRegistry::new();
+        let snapshot = LedgerSnapshot::genesis("test:main");
+        let overlay = NoOverlay;
+        let db = GraphDbRef::new(&snapshot, 0, &overlay, 0);
+
+        let mut cursor = execute_where_streaming_in_dataset(db, &vars, &[], None, None)
+            .await
+            .expect("cursor");
+
+        // Close BEFORE consuming the pending empty batch.
+        cursor.close();
+        let after = cursor.next_batch().await.expect("after close");
+        assert!(
+            after.is_none(),
+            "close() must suppress the pending empty batch for SingleEmpty cursors"
         );
     }
 }
