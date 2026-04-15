@@ -292,27 +292,9 @@ impl PeerSyncTask {
             );
         }
 
-        // 5. Emit events on the event bus (AFTER NS and watermarks are updated)
-        if let Some(ref cid) = record.commit_head_id {
-            self.fluree
-                .event_bus()
-                .notify(NameServiceEvent::LedgerCommitPublished {
-                    ledger_id: record.ledger_id.clone(),
-                    commit_id: cid.clone(),
-                    commit_t: record.commit_t,
-                });
-        }
-        if let Some(ref cid) = record.index_head_id {
-            self.fluree
-                .event_bus()
-                .notify(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: record.ledger_id.clone(),
-                    index_id: cid.clone(),
-                    index_t: record.index_t,
-                });
-        }
-
-        // 6. Notify LedgerManager (AFTER NS is updated, so reload sees new refs)
+        // 5. Notify LedgerManager (AFTER NS is updated, so reload sees new refs)
+        // Note: events are emitted automatically by NotifyingNameService when
+        // the CAS operations above succeed — no manual emission needed here.
         self.refresh_cached_ledger(record).await;
     }
 
@@ -331,17 +313,12 @@ impl PeerSyncTask {
             );
         }
 
-        // 2. Emit retraction event
-        self.fluree
-            .event_bus()
-            .notify(NameServiceEvent::LedgerRetracted {
-                ledger_id: ledger_id.to_string(),
-            });
+        // Note: retraction event emitted automatically by NotifyingNameService.
 
-        // 3. Clear in-memory watermarks
+        // 2. Clear in-memory watermarks
         self.peer_state.remove_ledger(ledger_id).await;
 
-        // 4. Evict from cache
+        // 3. Evict from cache
         self.fluree.disconnect_ledger(ledger_id).await;
 
         tracing::info!(ledger_id = %ledger_id, "Ledger retracted from remote");
