@@ -37,6 +37,7 @@ pub mod admin;
 pub mod block_fetch;
 pub mod bm25_worker;
 pub mod commit_transfer;
+pub mod commit_upgrade;
 pub mod config_resolver;
 #[cfg(feature = "credential")]
 pub mod credential;
@@ -100,6 +101,7 @@ pub use commit_transfer::{
     Base64Bytes, BulkImportResult, CommitImportResult, ExportCommitsRequest, ExportCommitsResponse,
     PushCommitsRequest, PushCommitsResponse,
 };
+pub use commit_upgrade::{CommitUpgradeAudit, MissingFlake, MissingKind};
 pub use dataset::{
     sparql_dataset_ledger_ids, DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions,
     TimeSpec,

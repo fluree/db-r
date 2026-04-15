@@ -287,6 +287,27 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             .await
         }
 
+        Commands::Commit { action } => {
+            let fluree_dir = config::require_fluree_dir_or_global(config_path)?;
+            match action {
+                cli::CommitAction::Upgrade {
+                    ledger,
+                    dry_run,
+                    force,
+                    remote,
+                } => {
+                    commands::commit_upgrade::run(
+                        &ledger,
+                        dry_run,
+                        force,
+                        remote.as_deref(),
+                        &fluree_dir,
+                    )
+                    .await
+                }
+            }
+        }
+
         Commands::Config { action } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             match action {
