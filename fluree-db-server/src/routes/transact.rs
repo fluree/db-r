@@ -1274,6 +1274,11 @@ async fn execute_transaction(
         // TxnOpts: unchanged by identity; commit provenance flows through CommitOpts.
         let txn_opts = TxnOpts::default();
 
+        // Build and execute the transaction via the builder API.
+        // Hoisted above CommitOpts assembly so we can spawn the raw-txn upload
+        // in parallel with the rest of the pipeline when the request is signed.
+        let fluree = state.fluree.as_direct();
+
         // If the request was signed, ALWAYS store the original signed envelope for provenance.
         // (No opt-in needed; this is the primary reason to store txn payloads.)
         let mut commit_opts = match &did {
@@ -1281,11 +1286,10 @@ async fn execute_transaction(
             None => CommitOpts::default(),
         };
         if let Some(raw_txn) = raw_txn_from_credential(credential) {
-            commit_opts = commit_opts.with_raw_txn(raw_txn);
+            let content_store = fluree.content_store(handle.ledger_id());
+            commit_opts = commit_opts.with_raw_txn_spawned(content_store, raw_txn);
         }
 
-        // Build and execute the transaction via the builder API
-        let fluree = state.fluree.as_direct();
         let builder = fluree.stage(&handle);
         let builder = match txn_type {
             TxnType::Insert => builder.insert(body),
@@ -1429,17 +1433,20 @@ async fn execute_turtle_transaction(
 
         let txn_opts = TxnOpts::default();
 
+        // Build fluree handle first so we can spawn the raw-txn upload in
+        // parallel with the rest of the pipeline.
+        let fluree = state.fluree.as_direct();
+
         // If the request was signed, ALWAYS store the original signed envelope for provenance.
         let mut commit_opts = match &did {
             Some(d) => CommitOpts::default().identity(d.clone()),
             None => CommitOpts::default(),
         };
         if let Some(raw_txn) = raw_txn_from_credential(credential) {
-            commit_opts = commit_opts.with_raw_txn(raw_txn);
+            let content_store = fluree.content_store(handle.ledger_id());
+            commit_opts = commit_opts.with_raw_txn_spawned(content_store, raw_txn);
         }
 
-        // Build and execute the transaction via the builder API
-        let fluree = state.fluree.as_direct();
         let builder = fluree.stage(&handle);
         let builder = match txn_type {
             // Insert with plain Turtle: use fast direct flake path
@@ -1698,8 +1705,10 @@ async fn execute_sparql_update_request(
         commit_opts = commit_opts.identity(d.clone());
     }
     // If the request was signed, ALWAYS store the original signed envelope for provenance.
+    // Spawn the upload in parallel with the rest of the pipeline.
     if let Some(raw_txn) = raw_txn_from_credential(credential) {
-        commit_opts = commit_opts.with_raw_txn(raw_txn);
+        let content_store = fluree.content_store(handle.ledger_id());
+        commit_opts = commit_opts.with_raw_txn_spawned(content_store, raw_txn);
     }
     builder = builder.commit_opts(commit_opts);
     if let Some(config) = &state.index_config {

@@ -153,14 +153,7 @@ pub fn extract_txn_meta(
             if key.starts_with('@') {
                 continue;
             }
-            extract_one_entry(
-                key,
-                value,
-                block_context,
-                ns_registry,
-                strict,
-                &mut entries,
-            )?;
+            extract_one_entry(key, value, block_context, ns_registry, strict, &mut entries)?;
         }
     }
 
@@ -912,8 +905,7 @@ mod tests {
         assert!(result.iter().any(|e| e.predicate_name == "message"));
         assert!(result
             .iter()
-            .any(|e| e.predicate_name == "batchId"
-                && matches!(&e.value, TxnMetaValue::Long(7))));
+            .any(|e| e.predicate_name == "batchId" && matches!(&e.value, TxnMetaValue::Long(7))));
     }
 
     #[test]

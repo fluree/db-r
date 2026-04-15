@@ -41,6 +41,7 @@ pub mod ir;
 pub mod lower_sparql_update;
 pub mod namespace;
 pub mod parse;
+pub mod raw_txn_upload;
 pub mod stage;
 mod value_convert;
 
@@ -65,6 +66,7 @@ pub use parse::{
     parse_transaction, parse_trig_phase1, resolve_trig_meta, NamedGraphBlock, RawObject, RawTerm,
     RawTrigMeta, RawTriple, TrigPhase1Result,
 };
+pub use raw_txn_upload::PendingRawTxnUpload;
 pub use stage::{generate_txn_id, stage, stage_flakes, StageOptions};
 
 #[cfg(feature = "shacl")]

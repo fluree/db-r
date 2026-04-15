@@ -181,13 +181,13 @@ request (info)                              ────────────
     txn_commit (debug)                      ──────────── 195ms
       commit_nameservice_lookup (debug)     ── 2ms
       commit_verify_sequencing (debug)      ── 1ms
-      commit_write_raw_txn (debug)          ────── 85ms
+      commit_write_raw_txn (debug)          ── 5ms  (await of spawned upload)
       commit_build_record (debug)           ── 3ms
       commit_write_commit_blob (debug)      ────── 65ms
       commit_publish_nameservice (debug)    ────── 35ms
 ```
 
-Here the bottleneck is I/O during commit: `commit_write_raw_txn` (85ms) and `commit_write_commit_blob` (65ms). On AWS S3 storage, this is expected; on local file storage, it may indicate disk contention.
+When `store_raw_txn` is opted in, the raw-transaction bytes are uploaded on a Tokio task spawned at the top of the pipeline (see `PendingRawTxnUpload`). `commit_write_raw_txn` then measures just the **await** of that task — usually a few ms, even on S3, because the upload overlapped staging CPU work. If you see `commit_write_raw_txn` approaching the upload's intrinsic latency (50-100ms on S3), staging finished faster than the upload; otherwise the overlap has absorbed it. The bottleneck on S3 is now typically `commit_write_commit_blob` alone.
 
 ### Anatomy of an indexing trace
 
@@ -226,11 +226,11 @@ index_build (debug)                         ────────────
 
 ### 3. Commit I/O on S3
 
-**Symptom:** `commit_write_raw_txn` and `commit_write_commit_blob` each take 50-200ms.
+**Symptom:** `commit_write_commit_blob` takes 50-200ms. `commit_write_raw_txn` may also show time if staging completed before the parallel upload finished.
 
-**Cause:** S3 PutObject latency (~50-100ms per call).
+**Cause:** S3 PutObject latency (~50-100ms per call). The raw-txn upload is parallelized with staging, so its cost is usually absorbed, but the commit-blob write is serial on the critical path.
 
-**Fix:** This is inherent to S3. Batch multiple small transactions into fewer larger ones. Consider file storage for latency-sensitive workloads.
+**Fix:** S3 latency is inherent. Batch multiple small transactions into fewer larger ones. Consider file storage for latency-sensitive workloads. If `commit_write_raw_txn` is non-trivial, it indicates staging finished faster than the raw-txn upload — the overlap helped but couldn't fully hide it.
 
 ### 4. Indexing backlog
 

@@ -1868,10 +1868,7 @@ async fn test_txn_meta_sidecar_on_update() {
         after.novelty.as_ref(),
         IndexType::Post,
         RangeTest::Eq,
-        RangeMatch::predicate_object(
-            msg_pred,
-            FlakeValue::String("rename Alice → Alicia".into()),
-        ),
+        RangeMatch::predicate_object(msg_pred, FlakeValue::String("rename Alice → Alicia".into())),
         fluree_db_core::RangeOptions::default().with_to_t(t),
     )
     .await

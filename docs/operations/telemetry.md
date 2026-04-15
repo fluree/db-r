@@ -304,7 +304,7 @@ transact_execute (debug)
     ├── commit_nameservice_lookup (debug)
     ├── commit_verify_sequencing (debug)
     ├── commit_namespace_delta (debug)
-    ├── commit_write_raw_txn (debug)
+    ├── commit_write_raw_txn (debug)  ← await of upload task spawned at pipeline entry
     ├── commit_build_record (debug)
     ├── commit_write_commit_blob (debug)
     ├── commit_publish_nameservice (debug)

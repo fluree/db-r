@@ -1082,6 +1082,20 @@ where
         let opts = input.txn_json.as_object().and_then(|o| o.get("opts"));
         let tracker = Tracker::new(TrackingOptions::from_opts_value(opts));
 
+        // Spawn raw transaction upload in parallel with staging when opted in.
+        // Upload overlaps with parse/policy/flake-generation CPU work; commit()
+        // awaits the handle just before writing the commit blob, so durability
+        // is preserved but serial latency is eliminated on fast paths.
+        let commit_opts = if commit_opts.raw_txn.is_none()
+            && commit_opts.raw_txn_upload.is_none()
+            && store_raw_txn
+        {
+            let content_store = self.content_store(ledger.ledger_id());
+            commit_opts.with_raw_txn_spawned(content_store, txn_json_for_commit)
+        } else {
+            commit_opts
+        };
+
         let StageResult {
             view,
             ns_registry,
@@ -1090,14 +1104,6 @@ where
         } = self
             .stage_transaction_tracked_with_policy(ledger, input, Some(index_config), &tracker)
             .await?;
-
-        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
-        // (e.g., signed credential envelope for provenance).
-        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
-            commit_opts.with_raw_txn(txn_json_for_commit)
-        } else {
-            commit_opts
-        };
 
         // Add extracted transaction metadata and graph delta to commit opts
         let commit_opts = commit_opts
@@ -1174,6 +1180,17 @@ where
     ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
+        // Spawn raw_txn upload in parallel with staging when opted in.
+        let commit_opts = if commit_opts.raw_txn.is_none()
+            && commit_opts.raw_txn_upload.is_none()
+            && store_raw_txn
+        {
+            let content_store = self.content_store(ledger.ledger_id());
+            commit_opts.with_raw_txn_spawned(content_store, txn_json.clone())
+        } else {
+            commit_opts
+        };
+
         let StageResult {
             view,
             ns_registry,
@@ -1182,14 +1199,6 @@ where
         } = self
             .stage_transaction(ledger, txn_type, txn_json, txn_opts, Some(index_config))
             .await?;
-
-        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
-        // (e.g., signed credential envelope for provenance).
-        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
-            commit_opts.with_raw_txn(txn_json.clone())
-        } else {
-            commit_opts
-        };
 
         // Add extracted transaction metadata and graph delta to commit opts
         let commit_opts = commit_opts
@@ -1264,6 +1273,17 @@ where
     ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
+        // Spawn raw_txn upload in parallel with staging when opted in.
+        let commit_opts = if commit_opts.raw_txn.is_none()
+            && commit_opts.raw_txn_upload.is_none()
+            && store_raw_txn
+        {
+            let content_store = self.content_store(ledger.ledger_id());
+            commit_opts.with_raw_txn_spawned(content_store, txn_json.clone())
+        } else {
+            commit_opts
+        };
+
         let StageResult {
             view,
             ns_registry,
@@ -1279,14 +1299,6 @@ where
                 trig_meta,
             )
             .await?;
-
-        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
-        // (e.g., signed credential envelope for provenance).
-        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
-            commit_opts.with_raw_txn(txn_json.clone())
-        } else {
-            commit_opts
-        };
 
         // Add extracted transaction metadata and graph delta to commit opts
         let commit_opts = commit_opts
@@ -1361,6 +1373,17 @@ where
     ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
+        // Spawn raw_txn upload in parallel with staging when opted in.
+        let commit_opts = if commit_opts.raw_txn.is_none()
+            && commit_opts.raw_txn_upload.is_none()
+            && store_raw_txn
+        {
+            let content_store = self.content_store(ledger.ledger_id());
+            commit_opts.with_raw_txn_spawned(content_store, txn_json.clone())
+        } else {
+            commit_opts
+        };
+
         let StageResult {
             view,
             ns_registry,
@@ -1377,14 +1400,6 @@ where
                 named_graphs,
             )
             .await?;
-
-        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
-        // (e.g., signed credential envelope for provenance).
-        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
-            commit_opts.with_raw_txn(txn_json.clone())
-        } else {
-            commit_opts
-        };
 
         // Add extracted transaction metadata and graph delta to commit opts
         let commit_opts = commit_opts
@@ -1518,6 +1533,17 @@ where
     ) -> Result<TransactResult> {
         let store_raw_txn = txn_opts.store_raw_txn.unwrap_or(false);
 
+        // Spawn raw Turtle upload in parallel with staging when opted in.
+        let commit_opts = if commit_opts.raw_txn.is_none()
+            && commit_opts.raw_txn_upload.is_none()
+            && store_raw_txn
+        {
+            let content_store = self.content_store(ledger.ledger_id());
+            commit_opts.with_raw_txn_spawned(content_store, JsonValue::String(turtle.to_string()))
+        } else {
+            commit_opts
+        };
+
         let stage_result = self
             .stage_turtle_insert(ledger, turtle, Some(index_config))
             .await?;
@@ -1528,13 +1554,6 @@ where
             txn_meta,
             graph_delta,
         } = stage_result;
-
-        // Store raw Turtle text when explicitly opted-in (same pattern as JSON path)
-        let commit_opts = if commit_opts.raw_txn.is_none() && store_raw_txn {
-            commit_opts.with_raw_txn(JsonValue::String(turtle.to_string()))
-        } else {
-            commit_opts
-        };
 
         // Add transaction metadata and graph delta (graph_delta typically empty for Turtle)
         let commit_opts = commit_opts
@@ -1887,10 +1906,13 @@ where
         };
 
         // CommitOpts: identity for provenance (emitted as f:identity), raw_txn
-        // for storage, txn_signature for audit.
+        // upload (spawned in parallel with staging), txn_signature for audit.
+        // Spawn happens here — after credential verification succeeds — so a
+        // failed verification never uploads.
+        let content_store = self.content_store(ledger.ledger_id());
         let commit_opts = CommitOpts::default()
             .identity(verified.did.clone())
-            .with_raw_txn(raw_credential)
+            .with_raw_txn_spawned(content_store, raw_credential)
             .with_txn_signature(fluree_db_novelty::TxnSignature {
                 signer: verified.did.clone(),
                 txn_id: Some(txn_id),

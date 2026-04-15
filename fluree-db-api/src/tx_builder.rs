@@ -450,11 +450,18 @@ where
         let trig_meta = parsed.trig_meta;
         let named_graphs = parsed.named_graphs;
 
-        // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
-        // (e.g., signed credential envelope for provenance).
+        // Spawn raw transaction upload in parallel with the rest of the
+        // pipeline when explicitly opted-in, or let downstream attach it if
+        // a signed credential envelope has already been pre-set.
         let store_raw_txn = self.core.txn_opts.store_raw_txn.unwrap_or(false);
-        let commit_opts = if self.core.commit_opts.raw_txn.is_none() && store_raw_txn {
-            self.core.commit_opts.with_raw_txn(txn_json.clone())
+        let commit_opts = if self.core.commit_opts.raw_txn.is_none()
+            && self.core.commit_opts.raw_txn_upload.is_none()
+            && store_raw_txn
+        {
+            let content_store = self.fluree.content_store(self.ledger.ledger_id());
+            self.core
+                .commit_opts
+                .with_raw_txn_spawned(content_store, txn_json.clone())
         } else {
             self.core.commit_opts
         };
@@ -764,13 +771,21 @@ where
 
             // Direct flake path for InsertTurtle (bypass JSON-LD / IR)
             if let TransactOperation::InsertTurtle(turtle) = op {
+                let ledger_id = ledger_state.ledger_id().to_string();
                 let stage_result = fluree
                     .stage_turtle_insert(ledger_state, turtle, Some(&index_config))
                     .await?;
-                // Store raw Turtle text when explicitly opted-in
-                let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
-                    core.commit_opts
-                        .with_raw_txn(serde_json::Value::String(turtle.to_string()))
+                // Spawn raw Turtle upload when explicitly opted-in — overlaps
+                // with the commit prelude (sequencing lookup, envelope apply).
+                let commit_opts = if core.commit_opts.raw_txn.is_none()
+                    && core.commit_opts.raw_txn_upload.is_none()
+                    && store_raw_txn
+                {
+                    let content_store = fluree.content_store(&ledger_id);
+                    core.commit_opts.with_raw_txn_spawned(
+                        content_store,
+                        serde_json::Value::String(turtle.to_string()),
+                    )
                 } else {
                     core.commit_opts
                 };
@@ -782,11 +797,17 @@ where
                 let txn_json = parsed.json;
                 let trig_meta = parsed.trig_meta;
                 let named_graphs = parsed.named_graphs;
+                let ledger_id = ledger_state.ledger_id().to_string();
 
-                // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided
-                // (e.g., signed credential envelope for provenance).
-                let commit_opts = if core.commit_opts.raw_txn.is_none() && store_raw_txn {
-                    core.commit_opts.with_raw_txn(txn_json.clone())
+                // Spawn raw_txn upload when explicitly opted-in, or skip if a
+                // signed credential envelope has already been pre-set.
+                let commit_opts = if core.commit_opts.raw_txn.is_none()
+                    && core.commit_opts.raw_txn_upload.is_none()
+                    && store_raw_txn
+                {
+                    let content_store = fluree.content_store(&ledger_id);
+                    core.commit_opts
+                        .with_raw_txn_spawned(content_store, txn_json.clone())
                 } else {
                     core.commit_opts
                 };
@@ -928,18 +949,24 @@ where
         let base_head_id = snap.head_commit_id.clone();
         let ledger_state = snap.to_ledger_state();
 
+        let ledger_id = ledger_state.ledger_id().to_string();
         let (stage_result, txn_type, commit_opts) = match &op_plan {
             OpPlan::InsertTurtle(turtle) => {
-                let stage_result = fluree
-                    .stage_turtle_insert(ledger_state, turtle, Some(&index_config))
-                    .await?;
+                // Spawn raw Turtle upload in parallel with staging when opted in.
+                // On retry, the prior attempt's pending upload was released via its
+                // Drop guard; this iteration re-spawns a fresh upload.
                 let commit_opts = if commit_opts_base.raw_txn.is_none() && store_raw_txn {
-                    commit_opts_base
-                        .clone()
-                        .with_raw_txn(serde_json::Value::String((*turtle).to_string()))
+                    let content_store = fluree.content_store(&ledger_id);
+                    commit_opts_base.clone().with_raw_txn_spawned(
+                        content_store,
+                        serde_json::Value::String((*turtle).to_string()),
+                    )
                 } else {
                     commit_opts_base.clone()
                 };
+                let stage_result = fluree
+                    .stage_turtle_insert(ledger_state, turtle, Some(&index_config))
+                    .await?;
                 (stage_result, TxnType::Insert, commit_opts)
             }
             OpPlan::JsonLike {
@@ -948,9 +975,12 @@ where
                 trig_meta,
                 named_graphs,
             } => {
-                // Store raw transaction JSON ONLY when explicitly opted-in, or when already provided.
+                // Spawn raw_txn upload in parallel with staging when opted in.
                 let commit_opts = if commit_opts_base.raw_txn.is_none() && store_raw_txn {
-                    commit_opts_base.clone().with_raw_txn(txn_json.clone())
+                    let content_store = fluree.content_store(&ledger_id);
+                    commit_opts_base
+                        .clone()
+                        .with_raw_txn_spawned(content_store, txn_json.clone())
                 } else {
                     commit_opts_base.clone()
                 };

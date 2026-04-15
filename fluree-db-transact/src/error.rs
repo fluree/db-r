@@ -115,6 +115,10 @@ pub enum TransactError {
     #[error("{0}")]
     FuelExceeded(#[from] fluree_db_core::FuelExceededError),
 
+    /// Raw transaction upload failed (parallel `store_raw_txn` path).
+    #[error("Raw transaction upload failed: {0}")]
+    RawTxnUpload(String),
+
     /// Unique constraint violation (`f:enforceUnique`).
     ///
     /// A property annotated with `f:enforceUnique true` has duplicate values

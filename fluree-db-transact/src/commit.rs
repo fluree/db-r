@@ -5,6 +5,7 @@
 
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
+use crate::raw_txn_upload::PendingRawTxnUpload;
 use chrono::Utc;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::{ContentId, ContentKind, ContentStore, DictNovelty, Flake, TXN_META_GRAPH_ID};
@@ -28,7 +29,15 @@ pub struct CommitReceipt {
 }
 
 /// Options for commit operation
-#[derive(Clone, Default)]
+///
+/// **Clone behavior:** `CommitOpts` implements `Clone` manually and **omits**
+/// the `raw_txn_upload` field (the clone receives `None`). A `PendingRawTxnUpload`
+/// owns a Tokio `JoinHandle` plus a Drop-guard release task, so cloning it would
+/// either duplicate the release or split ownership — neither is sound. In every
+/// current call path the `commit_opts_base.clone()` pattern happens **before**
+/// `with_raw_txn_spawned`, so the pending upload is only attached on the final,
+/// un-cloned `CommitOpts` that flows into `commit()`.
+#[derive(Default)]
 pub struct CommitOpts {
     /// Authenticated/impersonated identity acting on the transaction.
     ///
@@ -40,10 +49,22 @@ pub struct CommitOpts {
     /// `f:message` and `f:author` are **not** fields here — they are user
     /// claims and flow through the transaction body as regular txn-meta.
     pub identity: Option<String>,
-    /// Original transaction JSON for storage
-    /// When present, the raw transaction JSON is stored separately and
-    /// can be retrieved via history queries with `txn: true`.
+    /// Original transaction JSON for storage (inline fallback path).
+    ///
+    /// When present, the raw transaction JSON is uploaded to the content store
+    /// serially from inside `commit()`. Prefer `raw_txn_upload` (populated by
+    /// [`CommitOpts::with_raw_txn_spawned`]) whenever a content store handle
+    /// is available at attach time — that variant parallelizes the upload
+    /// with staging CPU work. This inline field remains for callers (tests,
+    /// pre-built commits) that cannot spawn.
     pub raw_txn: Option<serde_json::Value>,
+    /// In-flight parallel upload of the raw transaction JSON.
+    ///
+    /// Populated by [`CommitOpts::with_raw_txn_spawned`]. Takes precedence over
+    /// `raw_txn` when both are present (the spawned upload is already running).
+    /// Awaited inside `commit()` just before the commit blob is written, so the
+    /// upload overlaps staging CPU work on the caller's path.
+    pub raw_txn_upload: Option<PendingRawTxnUpload>,
     /// Ed25519 signing key for commit signatures (opt-in).
     /// When set, the commit blob includes a trailing signature block.
     pub signing_key: Option<Arc<SigningKey>>,
@@ -93,6 +114,7 @@ impl std::fmt::Debug for CommitOpts {
         f.debug_struct("CommitOpts")
             .field("identity", &self.identity)
             .field("raw_txn", &self.raw_txn.is_some())
+            .field("raw_txn_upload", &self.raw_txn_upload.is_some())
             .field("signing_key", &self.signing_key.is_some())
             .field(
                 "txn_signature",
@@ -111,6 +133,29 @@ impl std::fmt::Debug for CommitOpts {
     }
 }
 
+impl Clone for CommitOpts {
+    // The `raw_txn_upload` field is intentionally omitted: a PendingRawTxnUpload
+    // owns a tokio JoinHandle + Drop-guard release and is not safely cloneable.
+    // All current builder paths clone the base CommitOpts *before* attaching the
+    // spawned upload, so the clone correctly starts with no upload.
+    fn clone(&self) -> Self {
+        Self {
+            identity: self.identity.clone(),
+            raw_txn: self.raw_txn.clone(),
+            raw_txn_upload: None,
+            signing_key: self.signing_key.clone(),
+            txn_signature: self.txn_signature.clone(),
+            txn_meta: self.txn_meta.clone(),
+            graph_delta: self.graph_delta.clone(),
+            namespace_delta: self.namespace_delta.clone(),
+            skip_backpressure: self.skip_backpressure,
+            skip_sequencing: self.skip_sequencing,
+            merge_parents: self.merge_parents.clone(),
+            timestamp: self.timestamp.clone(),
+        }
+    }
+}
+
 impl CommitOpts {
     /// Set the authenticated identity for this commit.
     ///
@@ -121,9 +166,30 @@ impl CommitOpts {
         self
     }
 
-    /// Set the raw transaction JSON for storage
+    /// Attach the raw transaction JSON for storage (inline/fallback path).
+    ///
+    /// The upload will happen serially inside `commit()`. Prefer
+    /// [`with_raw_txn_spawned`](Self::with_raw_txn_spawned) when a content
+    /// store handle is available at attach time so the upload overlaps staging.
     pub fn with_raw_txn(mut self, txn: serde_json::Value) -> Self {
         self.raw_txn = Some(txn);
+        self
+    }
+
+    /// Spawn a parallel upload of the raw transaction JSON to the content
+    /// store and attach the handle.
+    ///
+    /// The upload runs concurrently with staging CPU work. `commit()` awaits
+    /// the handle just before writing the commit blob, so durability is
+    /// preserved but the serial latency on the caller's path is reduced. On
+    /// error paths that drop `CommitOpts` without reaching `commit()`, the
+    /// pending upload's Drop guard releases any content that was stored.
+    pub fn with_raw_txn_spawned(
+        mut self,
+        content_store: Arc<dyn fluree_db_core::ContentStore>,
+        txn: serde_json::Value,
+    ) -> Self {
+        self.raw_txn_upload = Some(PendingRawTxnUpload::spawn(content_store, txn));
         self
     }
 
@@ -237,6 +303,7 @@ where
     let CommitOpts {
         identity,
         raw_txn,
+        raw_txn_upload,
         signing_key,
         txn_signature,
         mut txn_meta,
@@ -278,7 +345,7 @@ where
         delta_bytes = tracing::field::Empty,
         current_novelty_bytes = tracing::field::Empty,
         max_novelty_bytes = index_config.reindex_max_bytes,
-        has_raw_txn = raw_txn.is_some(),
+        has_raw_txn = raw_txn.is_some() || raw_txn_upload.is_some(),
     );
     async move {
         let commit_span = tracing::Span::current();
@@ -348,8 +415,22 @@ where
         // Use caller-provided timestamp or default to wall clock.
         let timestamp = opt_timestamp.unwrap_or_else(|| Utc::now().to_rfc3339());
 
-        // Store original transaction JSON if provided
-        let txn_id: Option<ContentId> = if let Some(txn_json) = &raw_txn {
+        // Store the original transaction JSON.
+        //
+        // Preferred path: the caller spawned the upload in parallel via
+        // `CommitOpts::with_raw_txn_spawned`, so we just await the handle here.
+        // On fast storage the upload has already completed; on slow storage
+        // (S3) the wait overlaps with staging rather than being additive.
+        //
+        // Fallback path: caller attached `raw_txn` without spawning — we
+        // upload serially.
+        let txn_id: Option<ContentId> = if let Some(pending) = raw_txn_upload {
+            let txn_cid = pending
+                .finish()
+                .instrument(tracing::debug_span!("commit_write_raw_txn"))
+                .await?;
+            Some(txn_cid)
+        } else if let Some(txn_json) = &raw_txn {
             let txn_cid = async {
                 let txn_bytes = serde_json::to_vec(txn_json)?;
                 let cid = content_store.put(ContentKind::Txn, &txn_bytes).await?;
@@ -362,108 +443,151 @@ where
         } else {
             None
         };
+        // Hold a clone for release-on-error. Once the commit has published
+        // successfully (nameservice CAS wins), this is dropped without
+        // releasing — the CID is referenced by the durable commit record.
+        let txn_id_for_release: Option<ContentId> = txn_id.clone();
 
-        let mut commit_record = {
-            let span = tracing::debug_span!("commit_build_record");
-            let _g = span.enter();
-            Commit::new(new_t, flakes)
-                .with_namespace_delta(ns_delta)
-                .with_time(timestamp)
-        };
-
-        // Add txn CID to commit record (must be before computing commit ID)
-        if let Some(txn_cid) = txn_id {
-            commit_record = commit_record.with_txn(txn_cid);
-        }
-
-        // Add txn signature if provided (audit metadata)
-        if let Some(txn_sig) = txn_signature {
-            commit_record = commit_record.with_txn_signature(txn_sig);
-        }
-
-        // Add user-provided transaction metadata
-        if !txn_meta.is_empty() {
-            commit_record = commit_record.with_txn_meta(txn_meta);
-        }
-
-        // Add named graph delta (g_id -> IRI mappings)
-        if !graph_delta.is_empty() {
-            commit_record.graph_delta = graph_delta;
-        }
-
-        // Persist the split mode in the genesis commit (first commit, no parent).
-        if base.head_commit_id.is_none() {
-            commit_record.ns_split_mode = Some(ns_registry.split_mode());
-        }
-
-        // Build previous commit reference from the head commit's ContentId.
-        if let Some(cid) = base.head_commit_id.clone() {
-            commit_record = commit_record.with_previous_ref(CommitRef::new(cid));
-        }
-        // Append additional merge parent references.
-        for merge_parent in &merge_parents {
-            commit_record = commit_record.with_previous_ref(CommitRef::new(merge_parent.clone()));
-        }
-
-        // 7. Content-address + write (storage-owned)
-        //
-        // The on-disk commit blob is written *without* `id` set (to avoid
-        // self-reference). The ContentId is SHA-256 of the full blob.
-
-        let commit_cid = {
-            let span = tracing::debug_span!("commit_write_commit_blob");
-            let _g = span.enter();
-            let signing = signing_key
-                .as_ref()
-                .map(|key| (key.as_ref(), base.ledger_id()));
-            let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
-            let commit_cid = content_store
-                .put(ContentKind::Commit, &result.bytes)
-                .await?;
-            tracing::info!(commit_bytes = result.bytes.len(), "commit blob stored");
-            commit_cid
-        };
-
-        // Update in-memory commit with its ContentId
-        commit_record.id = Some(commit_cid.clone());
-
-        // 8. Publish to nameservice through the explicit ref-CAS API so
-        // callers get a real conflict if another writer wins the race.
-        let new_head_ref = RefValue {
-            id: Some(commit_cid.clone()),
-            t: new_t,
-        };
-        let publish_result = if skip_sequencing {
-            nameservice
-                .fast_forward_commit(base.ledger_id(), &new_head_ref, 3)
-                .instrument(tracing::debug_span!("commit_publish_nameservice"))
-                .await?
+        // Build commit record, write the commit blob, and publish the new
+        // head to the nameservice. Wrapped in an inner async block so that
+        // any failure in this region releases the already-uploaded raw
+        // transaction content (see `txn_id_for_release`).
+        let head_commit_id = base.head_commit_id.clone();
+        let ledger_id_for_publish = base.ledger_id().to_string();
+        let ns_split_mode_for_genesis = if base.head_commit_id.is_none() {
+            Some(ns_registry.split_mode())
         } else {
-            nameservice
-                .compare_and_set_ref(
-                    base.ledger_id(),
-                    RefKind::CommitHead,
-                    expected_head_ref.as_ref(),
-                    &new_head_ref,
-                )
-                .instrument(tracing::debug_span!("commit_publish_nameservice"))
-                .await?
+            None
         };
-        match publish_result {
-            CasResult::Updated => {}
-            CasResult::Conflict { actual } => {
-                return Err(TransactError::PublishLostRace {
-                    ledger_id: base.ledger_id().to_string(),
-                    attempted_t: new_t,
-                    attempted_commit_id: commit_cid.to_string(),
-                    published_t: actual.as_ref().map(|r| r.t).unwrap_or(0),
-                    published_commit_id: actual
-                        .and_then(|r| r.id)
-                        .map(|cid| cid.to_string())
-                        .unwrap_or_else(|| "None".to_string()),
-                });
+
+        let write_and_publish = async move {
+            let mut commit_record = {
+                let span = tracing::debug_span!("commit_build_record");
+                let _g = span.enter();
+                Commit::new(new_t, flakes)
+                    .with_namespace_delta(ns_delta)
+                    .with_time(timestamp)
+            };
+
+            // Add txn CID to commit record (must be before computing commit ID)
+            if let Some(txn_cid) = txn_id {
+                commit_record = commit_record.with_txn(txn_cid);
             }
-        }
+
+            // Add txn signature if provided (audit metadata)
+            if let Some(txn_sig) = txn_signature {
+                commit_record = commit_record.with_txn_signature(txn_sig);
+            }
+
+            // Add user-provided transaction metadata
+            if !txn_meta.is_empty() {
+                commit_record = commit_record.with_txn_meta(txn_meta);
+            }
+
+            // Add named graph delta (g_id -> IRI mappings)
+            if !graph_delta.is_empty() {
+                commit_record.graph_delta = graph_delta;
+            }
+
+            // Persist the split mode in the genesis commit (first commit, no parent).
+            if let Some(split_mode) = ns_split_mode_for_genesis {
+                commit_record.ns_split_mode = Some(split_mode);
+            }
+
+            // Build previous commit reference from the head commit's ContentId.
+            if let Some(cid) = head_commit_id.clone() {
+                commit_record = commit_record.with_previous_ref(CommitRef::new(cid));
+            }
+            // Append additional merge parent references.
+            for merge_parent in &merge_parents {
+                commit_record =
+                    commit_record.with_previous_ref(CommitRef::new(merge_parent.clone()));
+            }
+
+            // 7. Content-address + write (storage-owned)
+            //
+            // The on-disk commit blob is written *without* `id` set (to avoid
+            // self-reference). The ContentId is SHA-256 of the full blob.
+            let commit_cid = {
+                let span = tracing::debug_span!("commit_write_commit_blob");
+                let _g = span.enter();
+                let signing = signing_key
+                    .as_ref()
+                    .map(|key| (key.as_ref(), ledger_id_for_publish.as_str()));
+                let result = crate::commit_v2::write_commit(&commit_record, true, signing)?;
+                let commit_cid = content_store
+                    .put(ContentKind::Commit, &result.bytes)
+                    .await?;
+                tracing::info!(commit_bytes = result.bytes.len(), "commit blob stored");
+                commit_cid
+            };
+
+            // Update in-memory commit with its ContentId
+            commit_record.id = Some(commit_cid.clone());
+
+            // 8. Publish to nameservice through the explicit ref-CAS API so
+            // callers get a real conflict if another writer wins the race.
+            let new_head_ref = RefValue {
+                id: Some(commit_cid.clone()),
+                t: new_t,
+            };
+            let publish_result = if skip_sequencing {
+                nameservice
+                    .fast_forward_commit(ledger_id_for_publish.as_str(), &new_head_ref, 3)
+                    .instrument(tracing::debug_span!("commit_publish_nameservice"))
+                    .await?
+            } else {
+                nameservice
+                    .compare_and_set_ref(
+                        ledger_id_for_publish.as_str(),
+                        RefKind::CommitHead,
+                        expected_head_ref.as_ref(),
+                        &new_head_ref,
+                    )
+                    .instrument(tracing::debug_span!("commit_publish_nameservice"))
+                    .await?
+            };
+            match publish_result {
+                CasResult::Updated => {}
+                CasResult::Conflict { actual } => {
+                    return Err(TransactError::PublishLostRace {
+                        ledger_id: ledger_id_for_publish.clone(),
+                        attempted_t: new_t,
+                        attempted_commit_id: commit_cid.to_string(),
+                        published_t: actual.as_ref().map(|r| r.t).unwrap_or(0),
+                        published_commit_id: actual
+                            .and_then(|r| r.id)
+                            .map(|cid| cid.to_string())
+                            .unwrap_or_else(|| "None".to_string()),
+                    });
+                }
+            }
+
+            Ok::<_, TransactError>((commit_cid, commit_record))
+        };
+
+        let (commit_cid, mut commit_record) = match write_and_publish.await {
+            Ok(v) => v,
+            Err(e) => {
+                // Release the raw-txn content we uploaded earlier (parallel path)
+                // or inline-uploaded above — the commit never published, so that
+                // CID is now unreferenced by any durable commit record.
+                if let Some(cid) = &txn_id_for_release {
+                    if let Err(release_err) = content_store.release(cid).await {
+                        tracing::warn!(
+                            error = %release_err,
+                            raw_txn_cid = %cid,
+                            "failed to release raw txn after commit failure"
+                        );
+                    }
+                }
+                return Err(e);
+            }
+        };
+        // Commit published — raw_txn CID is now durably referenced by the
+        // commit record, so no release is needed. The `txn_id_for_release`
+        // Option falls out of scope normally.
+        let _ = txn_id_for_release;
 
         // 9. Generate commit metadata flakes
         // Note: We merge these into novelty only, not into commit_record.flakes

@@ -151,7 +151,10 @@ pub async fn run(
                 let json: serde_json::Value = serde_json::from_str(&content)?;
                 let policy_ctx = build_policy_ctx(&fluree, &alias, policy).await?;
                 let graph = fluree.graph(&alias);
-                let mut b = graph.transact().update(&json).commit_opts(CommitOpts::default());
+                let mut b = graph
+                    .transact()
+                    .update(&json)
+                    .commit_opts(CommitOpts::default());
                 if let Some(ctx) = policy_ctx {
                     b = b.policy(ctx);
                 }

@@ -949,8 +949,8 @@ pub async fn run_memory_import(
         // Build commit metadata from the git commit. f:message is a user
         // claim — supply it via the txn-meta sidecar (works for update-shape
         // transactions which have no @graph envelope).
-        let commit_opts = fluree_db_api::CommitOpts::default()
-            .with_timestamp(commit.timestamp.clone());
+        let commit_opts =
+            fluree_db_api::CommitOpts::default().with_timestamp(commit.timestamp.clone());
 
         // Single transaction: retract all existing memory triples + insert new state.
         // The WHERE pivots on mem:content to target only memory instances (not schema).
