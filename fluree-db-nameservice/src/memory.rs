@@ -7,9 +7,8 @@
 use crate::{
     check_cas_expectation, ref_values_match, AdminPublisher, CasResult, ConfigCasResult,
     ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord,
-    GraphSourceType, NameService, NameServiceEvent, NsLookupResult, NsRecord, Publication,
-    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPayload,
-    StatusPublisher, StatusValue, Subscription,
+    GraphSourceType, NameService, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher,
+    RefValue, Result, StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::format_ledger_id;
@@ -19,8 +18,6 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
-use tokio::sync::broadcast;
-
 /// In-memory nameservice for testing
 ///
 /// Stores all records in a `HashMap` with `Arc<RwLock>` for interior mutability.
@@ -35,20 +32,15 @@ pub struct MemoryNameService {
     status_values: Arc<RwLock<HashMap<String, StatusValue>>>,
     /// Config values keyed by canonical address (v2 extension)
     config_values: Arc<RwLock<HashMap<String, ConfigValue>>>,
-    /// In-process event sender for reactive subscriptions.
-    event_tx: broadcast::Sender<NameServiceEvent>,
 }
 
 impl Default for MemoryNameService {
     fn default() -> Self {
-        // Small buffer; consumers should treat this as best-effort.
-        let (event_tx, _event_rx) = broadcast::channel(128);
         Self {
             records: Arc::new(RwLock::new(HashMap::new())),
             graph_source_records: Arc::new(RwLock::new(HashMap::new())),
             status_values: Arc::new(RwLock::new(HashMap::new())),
             config_values: Arc::new(RwLock::new(HashMap::new())),
-            event_tx,
         }
     }
 }
@@ -228,14 +220,12 @@ impl Publisher for MemoryNameService {
     ) -> Result<()> {
         let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
-        let mut did_update = false;
 
         if let Some(record) = records.get_mut(&key) {
             // Only update if new_t > existing_t (strictly monotonic)
             if commit_t > record.commit_t {
                 record.commit_head_id = Some(commit_id.clone());
                 record.commit_t = commit_t;
-                did_update = true;
             }
             // If commit_t <= existing, silently ignore (monotonic guarantee)
         } else {
@@ -245,16 +235,8 @@ impl Publisher for MemoryNameService {
             record.commit_head_id = Some(commit_id.clone());
             record.commit_t = commit_t;
             records.insert(key, record);
-            did_update = true;
         }
 
-        if did_update {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                ledger_id: self.normalize_ledger_id(ledger_id),
-                commit_id: commit_id.clone(),
-                commit_t,
-            });
-        }
         Ok(())
     }
 
@@ -266,14 +248,12 @@ impl Publisher for MemoryNameService {
     ) -> Result<()> {
         let key = self.normalize_ledger_id(ledger_id);
         let mut records = self.records.write();
-        let mut did_update = false;
 
         if let Some(record) = records.get_mut(&key) {
             // Only update if new_t > existing_t (strictly monotonic)
             if index_t > record.index_t {
                 record.index_head_id = Some(index_id.clone());
                 record.index_t = index_t;
-                did_update = true;
             }
             // If index_t <= existing, silently ignore (monotonic guarantee)
         } else {
@@ -283,16 +263,8 @@ impl Publisher for MemoryNameService {
             record.index_head_id = Some(index_id.clone());
             record.index_t = index_t;
             records.insert(key, record);
-            did_update = true;
         }
 
-        if did_update {
-            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                ledger_id: self.normalize_ledger_id(ledger_id),
-                index_id: index_id.clone(),
-                index_t,
-            });
-        }
         Ok(())
     }
 
@@ -313,13 +285,9 @@ impl Publisher for MemoryNameService {
             let mut status_values = self.status_values.write();
             let current_v = status_values.get(&key).map(|s| s.v).unwrap_or(1); // Default to 1 if no status exists
             status_values.insert(
-                key.clone(),
+                key,
                 StatusValue::new(current_v + 1, StatusPayload::new("retracted")),
             );
-
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
         }
         Ok(())
     }
@@ -329,9 +297,6 @@ impl Publisher for MemoryNameService {
         self.records.write().remove(&key);
         self.status_values.write().remove(&key);
         self.config_values.write().remove(&key);
-        let _ = self
-            .event_tx
-            .send(NameServiceEvent::LedgerRetracted { ledger_id: key });
         Ok(())
     }
 
@@ -357,13 +322,6 @@ impl AdminPublisher for MemoryNameService {
             if index_t >= record.index_t {
                 record.index_head_id = Some(index_id.clone());
                 record.index_t = index_t;
-
-                // Emit event (preserve semantics with regular publish_index)
-                let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                    ledger_id: key.clone(),
-                    index_id: index_id.clone(),
-                    index_t,
-                });
             }
             // If index_t < existing, silently ignore (protect time-travel invariants)
         } else {
@@ -372,13 +330,7 @@ impl AdminPublisher for MemoryNameService {
             let mut record = NsRecord::new(ledger_name, branch);
             record.index_head_id = Some(index_id.clone());
             record.index_t = index_t;
-            records.insert(key.clone(), record);
-
-            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                ledger_id: key,
-                index_id: index_id.clone(),
-                index_t,
-            });
+            records.insert(key, record);
         }
 
         Ok(())
@@ -444,28 +396,7 @@ impl RefPublisher for MemoryNameService {
                         record.index_t = new.t;
                     }
                 }
-                records.insert(key.clone(), record);
-                // Emit event for new record creation.
-                match kind {
-                    RefKind::CommitHead => {
-                        if let Some(cid) = &new.id {
-                            let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                                ledger_id: key,
-                                commit_id: cid.clone(),
-                                commit_t: new.t,
-                            });
-                        }
-                    }
-                    RefKind::IndexHead => {
-                        if let Some(cid) = &new.id {
-                            let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                                ledger_id: key,
-                                index_id: cid.clone(),
-                                index_t: new.t,
-                            });
-                        }
-                    }
-                }
+                records.insert(key, record);
                 return Ok(CasResult::Updated);
             }
             (None, Some(actual)) => {
@@ -505,48 +436,14 @@ impl RefPublisher for MemoryNameService {
             RefKind::CommitHead => {
                 record.commit_head_id = new.id.clone();
                 record.commit_t = new.t;
-                // Emit event.
-                if let Some(cid) = &new.id {
-                    let _ = self.event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                        ledger_id: key.clone(),
-                        commit_id: cid.clone(),
-                        commit_t: new.t,
-                    });
-                }
             }
             RefKind::IndexHead => {
                 record.index_head_id = new.id.clone();
                 record.index_t = new.t;
-                if let Some(cid) = &new.id {
-                    let _ = self.event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                        ledger_id: key.clone(),
-                        index_id: cid.clone(),
-                        index_t: new.t,
-                    });
-                }
             }
         }
 
         Ok(CasResult::Updated)
-    }
-}
-
-#[async_trait]
-impl Publication for MemoryNameService {
-    async fn subscribe(&self, scope: crate::SubscriptionScope) -> Result<Subscription> {
-        Ok(Subscription {
-            scope,
-            receiver: self.event_tx.subscribe(),
-        })
-    }
-
-    async fn unsubscribe(&self, _scope: &crate::SubscriptionScope) -> Result<()> {
-        Ok(())
-    }
-
-    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
-        // CID-only nameservice no longer stores storage addresses.
-        Ok(vec![])
     }
 }
 
@@ -580,13 +477,6 @@ impl GraphSourcePublisher for MemoryNameService {
             graph_source_records.insert(key, record);
         }
 
-        let _ = self
-            .event_tx
-            .send(NameServiceEvent::GraphSourceConfigPublished {
-                graph_source_id: core_ledger_id::format_ledger_id(name, branch),
-                source_type,
-                dependencies: dependencies.to_vec(),
-            });
         Ok(())
     }
 
@@ -599,47 +489,29 @@ impl GraphSourcePublisher for MemoryNameService {
     ) -> Result<()> {
         let key = core_ledger_id::format_ledger_id(name, branch);
         let mut graph_source_records = self.graph_source_records.write();
-        let mut did_update = false;
 
         if let Some(record) = graph_source_records.get_mut(&key) {
             // Strictly monotonic: only update if new_t > existing_t
             if index_t > record.index_t {
                 record.index_id = Some(index_id.clone());
                 record.index_t = index_t;
-                did_update = true;
             }
         }
         // If graph source doesn't exist, silently ignore (index requires config first)
 
-        if did_update {
-            let _ = self
-                .event_tx
-                .send(NameServiceEvent::GraphSourceIndexPublished {
-                    graph_source_id: key,
-                    index_id: index_id.clone(),
-                    index_t,
-                });
-        }
         Ok(())
     }
 
     async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()> {
         let key = core_ledger_id::format_ledger_id(name, branch);
         let mut graph_source_records = self.graph_source_records.write();
-        let mut did_update = false;
 
         if let Some(record) = graph_source_records.get_mut(&key) {
             if !record.retracted {
                 record.retracted = true;
-                did_update = true;
             }
         }
 
-        if did_update {
-            let _ = self.event_tx.send(NameServiceEvent::GraphSourceRetracted {
-                graph_source_id: key,
-            });
-        }
         Ok(())
     }
 }
@@ -820,7 +692,6 @@ mod tests {
     use super::*;
     use crate::{ConfigPayload, StatusPayload};
     use fluree_db_core::ContentKind;
-    use tokio::sync::broadcast::error::TryRecvError;
 
     fn test_commit_id(label: &str) -> ContentId {
         ContentId::new(ContentKind::Commit, label.as_bytes())
@@ -946,34 +817,6 @@ mod tests {
             ns.publishing_ledger_id("mydb:dev"),
             Some("mydb:dev".to_string())
         );
-    }
-
-    #[tokio::test]
-    async fn test_memory_ns_emits_events_on_publish_commit_monotonic() {
-        let ns = MemoryNameService::new();
-        let mut sub = ns
-            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
-            .await
-            .unwrap();
-
-        ns.publish_commit("mydb:main", 1, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
-        let evt = sub.receiver.recv().await.unwrap();
-        assert_eq!(
-            evt,
-            NameServiceEvent::LedgerCommitPublished {
-                ledger_id: "mydb:main".to_string(),
-                commit_id: test_commit_id("commit-1"),
-                commit_t: 1
-            }
-        );
-
-        // Lower t should not emit a new event.
-        ns.publish_commit("mydb:main", 0, &test_commit_id("commit-old"))
-            .await
-            .unwrap();
-        assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
     }
 
     // ========== Graph Source Tests ==========
@@ -1358,70 +1201,6 @@ mod tests {
                 assert_eq!(actual, None);
             }
             _ => panic!("expected conflict when ref doesn't exist"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_ref_cas_emits_commit_event() {
-        let ns = MemoryNameService::new();
-        let mut sub = ns
-            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
-            .await
-            .unwrap();
-
-        let new_ref = RefValue {
-            id: Some(test_commit_id("commit-1")),
-            t: 1,
-        };
-        ns.compare_and_set_ref("mydb:main", RefKind::CommitHead, None, &new_ref)
-            .await
-            .unwrap();
-
-        match sub.receiver.recv().await.unwrap() {
-            NameServiceEvent::LedgerCommitPublished {
-                ledger_id,
-                commit_id,
-                commit_t,
-            } => {
-                assert_eq!(ledger_id, "mydb:main");
-                assert_eq!(commit_id, test_commit_id("commit-1"));
-                assert_eq!(commit_t, 1);
-            }
-            other => panic!("expected LedgerCommitPublished, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_ref_cas_emits_index_event() {
-        let ns = MemoryNameService::new();
-        ns.publish_commit("mydb:main", 5, &test_commit_id("commit-1"))
-            .await
-            .unwrap();
-        let mut sub = ns
-            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
-            .await
-            .unwrap();
-
-        let expected = RefValue { id: None, t: 0 };
-        let new_ref = RefValue {
-            id: Some(test_index_id("index-1")),
-            t: 5,
-        };
-        ns.compare_and_set_ref("mydb:main", RefKind::IndexHead, Some(&expected), &new_ref)
-            .await
-            .unwrap();
-
-        match sub.receiver.recv().await.unwrap() {
-            NameServiceEvent::LedgerIndexPublished {
-                ledger_id,
-                index_id,
-                index_t,
-            } => {
-                assert_eq!(ledger_id, "mydb:main");
-                assert_eq!(index_id, test_index_id("index-1"));
-                assert_eq!(index_t, 5);
-            }
-            other => panic!("expected LedgerIndexPublished, got {:?}", other),
         }
     }
 

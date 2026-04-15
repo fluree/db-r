@@ -23,7 +23,7 @@ use axum::{
 };
 use chrono::Utc;
 use fluree_db_nameservice::{
-    GraphSourcePublisher, GraphSourceRecord, NameService, NameServiceEvent, NsRecord, Publication,
+    GraphSourcePublisher, GraphSourceRecord, NameService, NameServiceEvent, NsRecord,
     SubscriptionScope,
 };
 use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
@@ -439,10 +439,11 @@ pub async fn events(
 
     // 1. SUBSCRIBE FIRST (events during snapshot queue in receiver)
     // This ensures no gap between snapshot and live events
-    let subscription = ns
-        .subscribe(SubscriptionScope::All)
-        .await
-        .map_err(|e| ServerError::internal(format!("Failed to subscribe to events: {}", e)))?;
+    let subscription = state
+        .fluree
+        .as_file()
+        .event_bus()
+        .subscribe(SubscriptionScope::All);
 
     // 2. Build initial snapshot using effective params
     let initial_events = build_initial_snapshot(&ns, &effective_params).await;

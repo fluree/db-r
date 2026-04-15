@@ -31,9 +31,7 @@
 #[cfg(feature = "vector")]
 use crate::{ApiError, Result};
 #[cfg(feature = "vector")]
-use fluree_db_nameservice::{
-    GraphSourcePublisher, NameService, NameServiceEvent, Publication, Publisher,
-};
+use fluree_db_nameservice::{GraphSourcePublisher, NameService, NameServiceEvent, Publisher};
 #[cfg(feature = "vector")]
 use futures::StreamExt;
 #[cfg(feature = "vector")]
@@ -281,7 +279,7 @@ pub struct VectorMaintenanceWorker<'a, N> {
 #[cfg(feature = "vector")]
 impl<'a, N> VectorMaintenanceWorker<'a, N>
 where
-    N: NameService + Publisher + GraphSourcePublisher + Publication,
+    N: NameService + Publisher + GraphSourcePublisher,
 {
     /// Create a new maintenance worker.
     pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
@@ -406,9 +404,8 @@ where
         // Subscribe to all nameservice events (ledger and graph source changes).
         let mut subscription = self
             .fluree
-            .nameservice()
-            .subscribe(fluree_db_nameservice::SubscriptionScope::All)
-            .await?;
+            .event_bus()
+            .subscribe(fluree_db_nameservice::SubscriptionScope::All);
 
         // Debounced batching: we accumulate graph sources to sync and flush them after `debounce_ms`.
         let mut pending: HashSet<String> = HashSet::new();
@@ -480,9 +477,8 @@ where
                             warn!(error = %e, "Event channel error, resubscribing");
                             subscription = self
                                 .fluree
-                                .nameservice()
-                                .subscribe(fluree_db_nameservice::SubscriptionScope::All)
-                                .await?;
+                                .event_bus()
+                                .subscribe(fluree_db_nameservice::SubscriptionScope::All);
                         }
                     }
                 }

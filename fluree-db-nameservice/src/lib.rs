@@ -1,12 +1,15 @@
 //! Nameservice traits and implementations for Fluree DB
 //!
-//! This crate provides the core abstractions for ledger discovery, publishing,
-//! and subscription. It defines four main traits:
+//! This crate provides the core abstractions for ledger discovery and publishing.
+//! Main traits:
 //!
 //! - [`NameService`]: Read-only lookup of ledger metadata
 //! - [`Publisher`]: Publishing commit and index updates
 //! - [`RefPublisher`]: Explicit compare-and-set ref operations for sync
-//! - [`Publication`]: Optional subscription support for reactive updates
+//!
+//! Event notification is provided by [`LedgerEventBus`], a standalone
+//! broadcast channel. Wrap any nameservice in [`NotifyingNameService`] to
+//! get automatic event emission after successful writes.
 //!
 //! # Implementations
 //!
@@ -15,10 +18,12 @@
 //! - [`StorageNameService`]: Storage-backed implementation using CAS operations
 
 mod error;
+mod event_bus;
 #[cfg(feature = "native")]
 pub mod file;
 pub mod ledger_config;
 pub mod memory;
+mod notifying;
 pub(crate) mod ns_format;
 pub mod storage_ns;
 pub mod tracking;
@@ -26,7 +31,9 @@ pub mod tracking;
 pub mod tracking_file;
 
 pub use error::{NameServiceError, Result};
+pub use event_bus::LedgerEventBus;
 pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
+pub use notifying::NotifyingNameService;
 
 use fluree_db_core::StorageExtError;
 
@@ -732,26 +739,6 @@ pub struct Subscription {
     pub scope: SubscriptionScope,
     /// Receiver for nameservice events (in-process).
     pub receiver: broadcast::Receiver<NameServiceEvent>,
-}
-
-/// Optional publication trait for reactive updates
-///
-/// This trait is only implemented where the backend supports pubsub.
-/// Not all nameservice implementations support subscriptions.
-#[async_trait]
-pub trait Publication: Debug + Send + Sync {
-    /// Subscribe to nameservice events with a given scope
-    ///
-    /// Returns a subscription handle that can be used to receive events.
-    /// The receiver will receive all events; filtering by scope is the
-    /// caller's responsibility (allows uniform broadcast channel usage).
-    async fn subscribe(&self, scope: SubscriptionScope) -> Result<Subscription>;
-
-    /// Unsubscribe from updates (no-op for stateless implementations)
-    async fn unsubscribe(&self, scope: &SubscriptionScope) -> Result<()>;
-
-    /// Get all known ledger IDs for a ledger (commit history)
-    async fn known_ledger_ids(&self, ledger_id: &str) -> Result<Vec<String>>;
 }
 
 // ---------------------------------------------------------------------------

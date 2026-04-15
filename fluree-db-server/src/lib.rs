@@ -272,19 +272,12 @@ impl FlureeServer {
         &self,
         sweep_interval: std::time::Duration,
     ) -> std::result::Result<tokio::task::JoinHandle<()>, fluree_db_api::ApiError> {
-        use fluree_db_nameservice::{Publication, SubscriptionScope};
+        use fluree_db_nameservice::SubscriptionScope;
 
         let subscription = match &self.state.fluree {
-            state::FlureeInstance::File(f) => {
-                f.nameservice().subscribe(SubscriptionScope::All).await
-            }
-            state::FlureeInstance::Proxy(p) => {
-                p.nameservice().subscribe(SubscriptionScope::All).await
-            }
-        }
-        .map_err(|e| {
-            fluree_db_api::ApiError::internal(format!("Failed to subscribe for registry: {}", e))
-        })?;
+            state::FlureeInstance::File(f) => f.event_bus().subscribe(SubscriptionScope::All),
+            state::FlureeInstance::Proxy(p) => p.event_bus().subscribe(SubscriptionScope::All),
+        };
 
         let handle = registry::LedgerRegistry::spawn_maintenance_task(
             self.state.registry.clone(),

@@ -2134,6 +2134,7 @@ impl FlureeBuilder {
             indexing_mode,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
+            event_bus: Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024)),
             ledger_manager,
         }
     }
@@ -2358,6 +2359,8 @@ pub struct Fluree<N> {
     index_config: IndexConfig,
     /// R2RML cache for compiled mappings and table metadata
     r2rml_cache: std::sync::Arc<graph_source::R2rmlCache>,
+    /// In-process event bus for ledger/graph-source change notifications.
+    event_bus: Arc<fluree_db_nameservice::LedgerEventBus>,
     /// Ledger manager for connection-level caching (enabled by default).
     ///
     /// Loaded ledgers are cached for reuse across queries and transactions.
@@ -2391,6 +2394,7 @@ where
             indexing_mode: tx::IndexingMode::Disabled,
             index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
+            event_bus: Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024)),
             ledger_manager: None,
         }
     }
@@ -2411,6 +2415,7 @@ where
             indexing_mode,
             index_config: IndexConfig::default(),
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
+            event_bus: Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024)),
             ledger_manager: None,
         }
     }
@@ -2443,6 +2448,11 @@ where
     /// Get a reference to the nameservice
     pub fn nameservice(&self) -> &N {
         &self.nameservice
+    }
+
+    /// Get the in-process event bus for subscribing to ledger/graph-source changes.
+    pub fn event_bus(&self) -> &Arc<fluree_db_nameservice::LedgerEventBus> {
+        &self.event_bus
     }
 
     /// Get a reference to the connection config

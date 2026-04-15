@@ -5,14 +5,11 @@
 //! credentials.
 
 use async_trait::async_trait;
-use fluree_db_nameservice::{
-    NameService, NameServiceError, NsRecord, Publication, Result, Subscription, SubscriptionScope,
-};
+use fluree_db_nameservice::{NameService, NameServiceError, NsRecord, Result};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::fmt::Debug;
 use std::time::Duration;
-use tokio::sync::broadcast;
 
 /// NameService implementation that proxies lookups through the transaction server
 #[derive(Clone)]
@@ -197,29 +194,6 @@ impl NameService for ProxyNameService {
         Err(NameServiceError::storage(
             "reset_head not supported in proxy mode".to_string(),
         ))
-    }
-}
-
-#[async_trait]
-impl Publication for ProxyNameService {
-    async fn subscribe(&self, scope: SubscriptionScope) -> Result<Subscription> {
-        // Create a dummy broadcast channel that will never receive events.
-        // In proxy mode, peers don't serve the /fluree/events endpoint;
-        // they subscribe to the tx server's events via HTTP/SSE instead.
-        // This implementation exists for type compatibility only.
-        let (_, receiver) = broadcast::channel(1);
-        Ok(Subscription { scope, receiver })
-    }
-
-    async fn unsubscribe(&self, _scope: &SubscriptionScope) -> Result<()> {
-        // No-op for proxy mode
-        Ok(())
-    }
-
-    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
-        // Proxy mode doesn't track commit history locally.
-        // Return empty - the transaction server has this information.
-        Ok(Vec::new())
     }
 }
 

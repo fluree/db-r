@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use fluree_db_api::{NotifyResult, NsNotify};
 use fluree_db_nameservice::{
-    CasResult, NameServiceError, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
+    CasResult, NameServiceError, NameServiceEvent, NsRecord, Publisher, RefKind, RefPublisher,
+    RefValue,
 };
 use fluree_db_nameservice_sync::watch::{RemoteEvent, RemoteWatch};
 use fluree_db_nameservice_sync::SseRemoteWatch;
@@ -98,6 +99,16 @@ impl PeerSyncTask {
                         .await;
 
                     if changed {
+                        // Emit event for graph source index update
+                        if let Some(ref index_id) = record.index_id {
+                            self.fluree.event_bus().notify(
+                                NameServiceEvent::GraphSourceIndexPublished {
+                                    graph_source_id: graph_source_id.clone(),
+                                    index_id: index_id.clone(),
+                                    index_t: record.index_t,
+                                },
+                            );
+                        }
                         tracing::info!(
                             graph_source_id = %graph_source_id,
                             index_t = record.index_t,
@@ -107,6 +118,11 @@ impl PeerSyncTask {
                 }
                 RemoteEvent::GraphSourceRetracted { graph_source_id } => {
                     self.peer_state.remove_graph_source(&graph_source_id).await;
+                    self.fluree
+                        .event_bus()
+                        .notify(NameServiceEvent::GraphSourceRetracted {
+                            graph_source_id: graph_source_id.clone(),
+                        });
                     tracing::info!(graph_source_id = %graph_source_id, "Graph source retracted from remote");
                 }
             }
@@ -275,7 +291,27 @@ impl PeerSyncTask {
             );
         }
 
-        // 5. Notify LedgerManager (AFTER NS is updated, so reload sees new refs)
+        // 5. Emit events on the event bus (AFTER NS and watermarks are updated)
+        if let Some(ref cid) = record.commit_head_id {
+            self.fluree
+                .event_bus()
+                .notify(NameServiceEvent::LedgerCommitPublished {
+                    ledger_id: record.ledger_id.clone(),
+                    commit_id: cid.clone(),
+                    commit_t: record.commit_t,
+                });
+        }
+        if let Some(ref cid) = record.index_head_id {
+            self.fluree
+                .event_bus()
+                .notify(NameServiceEvent::LedgerIndexPublished {
+                    ledger_id: record.ledger_id.clone(),
+                    index_id: cid.clone(),
+                    index_t: record.index_t,
+                });
+        }
+
+        // 6. Notify LedgerManager (AFTER NS is updated, so reload sees new refs)
         self.refresh_cached_ledger(record).await;
     }
 
@@ -291,10 +327,17 @@ impl PeerSyncTask {
             );
         }
 
-        // 2. Clear in-memory watermarks
+        // 2. Emit retraction event
+        self.fluree
+            .event_bus()
+            .notify(NameServiceEvent::LedgerRetracted {
+                ledger_id: ledger_id.to_string(),
+            });
+
+        // 3. Clear in-memory watermarks
         self.peer_state.remove_ledger(ledger_id).await;
 
-        // 3. Evict from cache
+        // 4. Evict from cache
         self.fluree.disconnect_ledger(ledger_id).await;
 
         tracing::info!(ledger_id = %ledger_id, "Ledger retracted from remote");

@@ -692,18 +692,14 @@ impl AppState {
     }
 
     /// Subscribe to nameservice events with a given scope
-    ///
-    /// Convenience method for accessing the nameservice subscription functionality.
-    /// Note: In proxy mode, this returns a dummy subscription since peers don't
-    /// serve the /fluree/events endpoint.
-    pub async fn subscribe_events(
+    /// Subscribe to ledger/graph-source change events via the event bus.
+    pub fn subscribe_events(
         &self,
         scope: fluree_db_nameservice::SubscriptionScope,
-    ) -> fluree_db_nameservice::Result<fluree_db_nameservice::Subscription> {
-        use fluree_db_nameservice::Publication;
+    ) -> fluree_db_nameservice::Subscription {
         match &self.fluree {
-            FlureeInstance::File(f) => f.nameservice().subscribe(scope).await,
-            FlureeInstance::Proxy(f) => f.nameservice().subscribe(scope).await,
+            FlureeInstance::File(f) => f.event_bus().subscribe(scope),
+            FlureeInstance::Proxy(p) => p.event_bus().subscribe(scope),
         }
     }
 }
