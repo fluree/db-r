@@ -23,7 +23,7 @@
 use crate::config::ConnectionConfig;
 use crate::error::{ConnectionError, Result};
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_nameservice::{GraphSourceLookup, NameServicePublisher, StatusPublisher};
+use fluree_db_nameservice::NameServicePublisher;
 use fluree_db_storage_aws::S3Storage;
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
@@ -34,36 +34,19 @@ use std::sync::Arc;
 /// in Lambda environments where cold start latency matters.
 static SDK_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::new();
 
-/// Combined nameservice trait covering all read and write operations.
+/// Full nameservice capability for AWS backends.
 ///
-/// Extends [`NameServicePublisher`] (the core read-write trait) with additional
-/// capabilities needed by AWS backends: `GraphSourceLookup`, `StatusPublisher`,
-/// and `Debug`. Both `DynamoDbNameService` and `StorageNameService<S3Storage>`
-/// implement all these traits, so they automatically satisfy this bound.
+/// Extends [`NameServicePublisher`] with [`ReadWriteNameService`] to enable
+/// trait object coercion for the background indexer. Both `DynamoDbNameService`
+/// and `StorageNameService<S3Storage>` satisfy this automatically.
 ///
-/// This replaces the former `AwsNameService` dispatch enum by using dynamic
-/// dispatch through a single trait object.
+/// Replaces the former `AwsNameService` dispatch enum.
 pub trait AwsNameServiceDyn:
-    NameServicePublisher
-    + fluree_db_nameservice::ReadWriteNameService
-    + GraphSourceLookup
-    + StatusPublisher
-    + std::fmt::Debug
-    + Send
-    + Sync
+    NameServicePublisher + fluree_db_nameservice::ReadWriteNameService
 {
 }
 
-impl<T> AwsNameServiceDyn for T where
-    T: NameServicePublisher
-        + fluree_db_nameservice::ReadWriteNameService
-        + GraphSourceLookup
-        + StatusPublisher
-        + std::fmt::Debug
-        + Send
-        + Sync
-{
-}
+impl<T: NameServicePublisher> AwsNameServiceDyn for T {}
 
 /// AWS-specific connection handle for Lambda deployments
 ///
