@@ -295,10 +295,11 @@ query_execute (debug)
 ```
 transact_execute (debug)
 ├── txn_stage (debug, insert_count, delete_count)
-│   ├── where_exec (debug)
-│   ├── delete_gen (debug)
-│   ├── insert_gen (debug)
-│   ├── cancellation (debug)
+│   ├── where_exec (debug, pattern_count, binding_rows, retraction_count, assertion_count)
+│   │   ├── delete_gen (debug, template_count, retraction_count)  ← per streaming-WHERE batch
+│   │   └── insert_gen (debug, template_count, assertion_count)   ← per batch (mixed DELETE+INSERT only)
+│   ├── cancellation (debug)        ← mixed DELETE+INSERT path
+│   ├── dedup_retractions (debug)   ← pure-DELETE path (no INSERT templates, not Upsert)
 │   └── policy_enforce (debug)
 └── txn_commit (debug, flake_count, delta_bytes)
     ├── commit_nameservice_lookup (debug)
