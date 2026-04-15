@@ -498,6 +498,41 @@ impl fluree_db_nameservice::ConfigPublisher for NameServiceMode {
 }
 
 #[async_trait]
+impl fluree_db_nameservice::StatusPublisher for NameServiceMode {
+    async fn get_status(
+        &self,
+        ledger_id: &str,
+    ) -> std::result::Result<
+        Option<fluree_db_nameservice::StatusValue>,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        match self {
+            Self::ReadWrite(ns) => ns.get_status(ledger_id).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "get_status not available on read-only nameservice".into(),
+            )),
+        }
+    }
+
+    async fn push_status(
+        &self,
+        ledger_id: &str,
+        expected: Option<&fluree_db_nameservice::StatusValue>,
+        new: &fluree_db_nameservice::StatusValue,
+    ) -> std::result::Result<
+        fluree_db_nameservice::StatusCasResult,
+        fluree_db_nameservice::NameServiceError,
+    > {
+        match self {
+            Self::ReadWrite(ns) => ns.push_status(ledger_id, expected, new).await,
+            Self::ReadOnly(_) => Err(fluree_db_nameservice::NameServiceError::Storage(
+                "push_status not available on read-only nameservice".into(),
+            )),
+        }
+    }
+}
+
+#[async_trait]
 impl fluree_db_nameservice::RefPublisher for NameServiceMode {
     async fn get_ref(
         &self,
@@ -1575,15 +1610,19 @@ impl FlureeBuilder {
 
         let storage = FileStorage::new(&path);
         let nameservice = FileNameService::new(&path);
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
         let backend = StorageBackend::Managed(Arc::new(storage));
         let index_config = self.derive_indexing();
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
-        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying.clone()));
+        let indexing_mode = self.start_background_indexing(&backend, &notifying);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
             ns_mode,
+            event_bus,
             indexing_mode,
             index_config,
         ))
@@ -1601,12 +1640,14 @@ impl FlureeBuilder {
         storage: impl Storage + 'static,
         nameservice: NameServiceMode,
     ) -> Fluree {
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
         let index_config = self.derive_indexing();
         Self::finalize(
             self.ledger_cache_config,
             self.config,
             storage,
             nameservice,
+            event_bus,
             tx::IndexingMode::Disabled,
             index_config,
         )
@@ -1694,15 +1735,19 @@ impl FlureeBuilder {
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(file_storage, key_provider);
         let nameservice = FileNameService::new(&path);
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(Arc::new(storage));
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
-        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying.clone()));
+        let indexing_mode = self.start_background_indexing(&backend, &notifying);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
             ns_mode,
+            event_bus,
             indexing_mode,
             index_config,
         ))
@@ -1720,13 +1765,17 @@ impl FlureeBuilder {
     pub fn build_memory(self) -> Fluree {
         let storage = MemoryStorage::new();
         let nameservice = MemoryNameService::new();
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice));
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying));
         let index_config = self.derive_indexing();
         Self::finalize(
             self.ledger_cache_config,
             self.config,
             storage,
             ns_mode,
+            event_bus,
             tx::IndexingMode::Disabled,
             index_config,
         )
@@ -1745,13 +1794,17 @@ impl FlureeBuilder {
         let key_provider = StaticKeyProvider::new(encryption_key);
         let storage = EncryptedStorage::new(mem_storage, key_provider);
         let nameservice = MemoryNameService::new();
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice));
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying));
         let index_config = self.derive_indexing();
         Self::finalize(
             self.ledger_cache_config,
             self.config,
             storage,
             ns_mode,
+            event_bus,
             tx::IndexingMode::Disabled,
             index_config,
         )
@@ -1787,14 +1840,18 @@ impl FlureeBuilder {
         });
         let backend = StorageBackend::Permanent(Arc::new(ipfs_store));
         let nameservice = MemoryNameService::new();
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying.clone()));
         let index_config = self.derive_indexing();
-        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        let indexing_mode = self.start_background_indexing(&backend, &notifying);
         Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
             ns_mode,
+            event_bus,
             indexing_mode,
             index_config,
         )
@@ -1849,15 +1906,19 @@ impl FlureeBuilder {
 
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage.clone(), "");
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying.clone()));
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(Arc::new(storage));
-        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        let indexing_mode = self.start_background_indexing(&backend, &notifying);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
             ns_mode,
+            event_bus,
             indexing_mode,
             index_config,
         ))
@@ -1920,15 +1981,19 @@ impl FlureeBuilder {
 
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage.clone(), "");
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying.clone()));
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(Arc::new(storage));
-        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        let indexing_mode = self.start_background_indexing(&backend, &notifying);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
             ns_mode,
+            event_bus,
             indexing_mode,
             index_config,
         ))
@@ -2004,6 +2069,7 @@ impl FlureeBuilder {
         config: ConnectionConfig,
         storage: impl Storage + 'static,
         nameservice: NameServiceMode,
+        event_bus: Arc<fluree_db_nameservice::LedgerEventBus>,
         indexing_mode: tx::IndexingMode,
         index_config: IndexConfig,
     ) -> Fluree {
@@ -2012,6 +2078,7 @@ impl FlureeBuilder {
             config,
             StorageBackend::Managed(Arc::new(storage)),
             nameservice,
+            event_bus,
             indexing_mode,
             index_config,
         )
@@ -2023,6 +2090,7 @@ impl FlureeBuilder {
         config: ConnectionConfig,
         backend: StorageBackend,
         nameservice: NameServiceMode,
+        event_bus: Arc<fluree_db_nameservice::LedgerEventBus>,
         indexing_mode: tx::IndexingMode,
         index_config: IndexConfig,
     ) -> Fluree {
@@ -2047,7 +2115,7 @@ impl FlureeBuilder {
             indexing_mode,
             index_config,
             r2rml_cache: std::sync::Arc::new(graph_source::R2rmlCache::with_defaults()),
-            event_bus: Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024)),
+            event_bus,
             ledger_manager,
         }
     }
@@ -2096,16 +2164,20 @@ impl FlureeBuilder {
         let storage = self.wrap_address_identifiers(base_storage)?;
 
         let nameservice = MemoryNameService::new();
-        let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+        let notifying =
+            fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
+        let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying.clone()));
 
         let index_config = self.derive_indexing();
         let backend = StorageBackend::Managed(storage);
-        let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+        let indexing_mode = self.start_background_indexing(&backend, &notifying);
         Ok(Self::finalize_with_backend(
             self.ledger_cache_config,
             self.config,
             backend,
             ns_mode,
+            event_bus,
             indexing_mode,
             index_config,
         ))
@@ -2142,16 +2214,20 @@ impl FlureeBuilder {
             let storage = self.wrap_address_identifiers(base_storage)?;
 
             let nameservice = FileNameService::new(path.as_ref());
-            let ns_mode = NameServiceMode::ReadWrite(Arc::new(nameservice.clone()));
+            let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
+            let notifying =
+                fluree_db_nameservice::NotifyingNameService::new(nameservice, event_bus.clone());
+            let ns_mode = NameServiceMode::ReadWrite(Arc::new(notifying.clone()));
 
             let index_config = self.derive_indexing();
             let backend = StorageBackend::Managed(storage);
-            let indexing_mode = self.start_background_indexing(&backend, &nameservice);
+            let indexing_mode = self.start_background_indexing(&backend, &notifying);
             Ok(Self::finalize_with_backend(
                 self.ledger_cache_config,
                 self.config,
                 backend,
                 ns_mode,
+                event_bus,
                 indexing_mode,
                 index_config,
             ))
@@ -2186,6 +2262,7 @@ impl FlureeBuilder {
             .await?;
 
         let ns_arc: Arc<dyn NameServicePublisher> = aws_handle.nameservice_arc().clone();
+        let event_bus = Arc::new(fluree_db_nameservice::LedgerEventBus::new(1024));
         let ns_mode = NameServiceMode::ReadWrite(ns_arc.clone());
 
         let index_config = self.derive_indexing();
@@ -2198,6 +2275,7 @@ impl FlureeBuilder {
             aws_handle.config().clone(),
             backend,
             ns_mode,
+            event_bus,
             indexing_mode,
             index_config,
         ))
