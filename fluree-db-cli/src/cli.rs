@@ -213,6 +213,17 @@ pub enum Commands {
         #[arg(long)]
         from: Option<PathBuf>,
 
+        /// Import memory history from a git-tracked .fluree-memory/ directory.
+        /// Each git commit becomes a Fluree transaction, enabling time-travel
+        /// queries over the memory store's evolution.
+        /// Defaults to the current repo if no path is given.
+        #[arg(long, num_args = 0..=1, default_missing_value = ".")]
+        memory: Option<PathBuf>,
+
+        /// Exclude user-scoped memories (.local/user.ttl) from --memory import
+        #[arg(long)]
+        no_user: bool,
+
         /// Chunk size in MB for splitting large Turtle files (0 = derive from memory budget).
         /// Only used when --from points to a .ttl file.
         #[arg(long, default_value_t = 0)]
@@ -838,7 +849,7 @@ pub enum MemoryAction {
 
     /// Store a new memory
     Add {
-        /// Memory kind: fact, decision, constraint, preference, artifact
+        /// Memory kind: fact, decision, constraint
         #[arg(long, default_value = "fact")]
         kind: String,
 
@@ -862,29 +873,13 @@ pub enum MemoryAction {
         #[arg(long)]
         scope: Option<String>,
 
-        /// Sensitivity: public (default), internal, client, secret
-        #[arg(long)]
-        sensitivity: Option<String>,
-
-        /// Why this decision was made (for kind=decision)
+        /// Why this memory exists (available on any kind)
         #[arg(long)]
         rationale: Option<String>,
 
-        /// Alternatives considered (for kind=decision, comma-separated)
+        /// Alternatives considered (comma-separated)
         #[arg(long)]
         alternatives: Option<String>,
-
-        /// Fact sub-type: command, architecture, dependency, configuration, api
-        #[arg(long)]
-        fact_kind: Option<String>,
-
-        /// Preference convention scope: user, team, repo
-        #[arg(long)]
-        pref_scope: Option<String>,
-
-        /// Artifact sub-type: file, symbol, crate, module, config, endpoint
-        #[arg(long)]
-        artifact_kind: Option<String>,
 
         /// Output format: text or json
         #[arg(long, default_value = "text")]
@@ -946,12 +941,6 @@ pub enum MemoryAction {
     /// Delete a memory
     Forget {
         /// ID of the memory to delete
-        id: String,
-    },
-
-    /// Show the supersession chain for a memory
-    Explain {
-        /// ID of the memory to explain
         id: String,
     },
 

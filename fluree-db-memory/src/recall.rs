@@ -94,12 +94,60 @@ impl RecallEngine {
 
         scored
     }
+
+    /// Find existing memories related to a just-stored memory.
+    ///
+    /// Runs BM25 + metadata re-ranking with the smart score cliff, excludes the
+    /// new memory itself, and applies a minimum score threshold.
+    /// Returns an empty vec when nothing qualifies.
+    pub fn find_related(
+        new_id: &str,
+        content: &str,
+        bm25_hits: &[(String, f64)],
+        all_memories: &[Memory],
+        current_branch: Option<&str>,
+    ) -> Vec<ScoredMemory> {
+        const MIN_SCORE: f64 = 10.0;
+        const LIMIT: usize = 3;
+
+        let scored = if bm25_hits.is_empty() {
+            Self::recall_metadata_only(content, all_memories, current_branch, Some(LIMIT + 2))
+        } else {
+            Self::rerank(content, bm25_hits, all_memories, current_branch)
+        };
+
+        // Filter out the memory we just created (handles compact vs full IRI)
+        // and apply minimum score threshold
+        let mut candidates: Vec<_> = scored
+            .into_iter()
+            .filter(|s| !ids_match(&s.memory.id, new_id) && s.score >= MIN_SCORE)
+            .collect();
+
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // Apply the same smart score cliff as recall: drop below 50% of top
+        let top = candidates[0].score;
+        if top > 0.0 {
+            let threshold = top * 0.5;
+            let keep = candidates
+                .iter()
+                .take_while(|s| s.score >= threshold)
+                .count()
+                .max(1);
+            candidates.truncate(keep);
+        }
+
+        candidates.truncate(LIMIT);
+        candidates
+    }
 }
 
 /// Match memory IDs that may be in different formats:
 /// - Full IRI: `https://ns.flur.ee/memory#fact-01abc`
 /// - Compact prefix: `mem:fact-01abc`
-fn ids_match(full_id: &str, query_id: &str) -> bool {
+pub fn ids_match(full_id: &str, query_id: &str) -> bool {
     if full_id == query_id {
         return true;
     }
@@ -152,8 +200,6 @@ fn metadata_bonus(
         MemoryKind::Fact => &["fact", "facts"][..],
         MemoryKind::Decision => &["decision", "decisions", "decided"][..],
         MemoryKind::Constraint => &["constraint", "constraints", "rule", "rules"][..],
-        MemoryKind::Preference => &["preference", "preferences", "prefer", "preferred"][..],
-        MemoryKind::Artifact => &["artifact", "artifacts", "file", "files"][..],
     };
     if kind_names.iter().any(|kn| query_lower.contains(kn)) {
         bonus += 6.0;
@@ -182,7 +228,7 @@ fn metadata_bonus(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Memory, MemoryKind, Scope, Sensitivity};
+    use crate::types::{Memory, MemoryKind, Scope};
 
     fn make_memory(id: &str, content: &str, tags: &[&str], kind: MemoryKind) -> Memory {
         Memory {
@@ -191,19 +237,12 @@ mod tests {
             content: content.to_string(),
             tags: tags.iter().map(|t| t.to_string()).collect(),
             scope: Scope::Repo,
-            sensitivity: Sensitivity::Public,
             severity: None,
             artifact_refs: Vec::new(),
             branch: None,
-            supersedes: None,
-            valid_from: None,
-            valid_to: None,
             created_at: Utc::now().to_rfc3339(),
             rationale: None,
             alternatives: None,
-            fact_kind: None,
-            pref_scope: None,
-            artifact_kind: None,
         }
     }
 
@@ -276,5 +315,179 @@ mod tests {
         let results =
             RecallEngine::rerank("some query", &bm25_hits, &memories, Some("feature/memory"));
         assert_eq!(results[0].score, 1.0 + 3.0 + 2.0); // bm25 + branch + recency
+    }
+
+    #[test]
+    fn find_related_excludes_self_by_id() {
+        let memories = vec![
+            make_memory(
+                "mem:fact-new",
+                "PSOT returns supersets",
+                &["query"],
+                MemoryKind::Fact,
+            ),
+            make_memory(
+                "mem:fact-old",
+                "PSOT range queries return supersets",
+                &["query"],
+                MemoryKind::Fact,
+            ),
+        ];
+        let bm25_hits = vec![
+            ("mem:fact-new".to_string(), 20.0),
+            ("mem:fact-old".to_string(), 18.0),
+        ];
+
+        let results = RecallEngine::find_related(
+            "mem:fact-new",
+            "PSOT returns supersets",
+            &bm25_hits,
+            &memories,
+            None,
+        );
+        assert!(!results.is_empty());
+        assert!(results.iter().all(|r| r.memory.id != "mem:fact-new"));
+        assert_eq!(results[0].memory.id, "mem:fact-old");
+    }
+
+    #[test]
+    fn find_related_excludes_self_cross_format_ids() {
+        let memories = vec![
+            make_memory(
+                "https://ns.flur.ee/memory#fact-01abc",
+                "PSOT returns supersets",
+                &["query"],
+                MemoryKind::Fact,
+            ),
+            make_memory(
+                "https://ns.flur.ee/memory#fact-02def",
+                "PSOT range queries return supersets",
+                &["query"],
+                MemoryKind::Fact,
+            ),
+        ];
+        let bm25_hits = vec![
+            ("mem:fact-01abc".to_string(), 20.0),
+            ("mem:fact-02def".to_string(), 18.0),
+        ];
+
+        // new_id is compact, Memory.id is full IRI — should still exclude
+        let results = RecallEngine::find_related(
+            "mem:fact-01abc",
+            "PSOT returns supersets",
+            &bm25_hits,
+            &memories,
+            None,
+        );
+        assert!(results
+            .iter()
+            .all(|r| !ids_match(&r.memory.id, "mem:fact-01abc")));
+    }
+
+    #[test]
+    fn find_related_empty_when_below_min_score() {
+        let memories = vec![
+            make_memory(
+                "mem:fact-new",
+                "PSOT returns supersets",
+                &[],
+                MemoryKind::Fact,
+            ),
+            make_memory(
+                "mem:fact-old",
+                "Unrelated content about trees",
+                &[],
+                MemoryKind::Fact,
+            ),
+        ];
+        // Low BM25 scores — below the MIN_SCORE threshold of 10
+        let bm25_hits = vec![
+            ("mem:fact-new".to_string(), 5.0),
+            ("mem:fact-old".to_string(), 3.0),
+        ];
+
+        let results = RecallEngine::find_related(
+            "mem:fact-new",
+            "PSOT returns supersets",
+            &bm25_hits,
+            &memories,
+            None,
+        );
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn find_related_applies_score_cliff() {
+        let memories = vec![
+            make_memory("mem:fact-new", "PSOT supersets", &[], MemoryKind::Fact),
+            make_memory(
+                "mem:fact-a",
+                "PSOT range queries return supersets",
+                &["query"],
+                MemoryKind::Fact,
+            ),
+            make_memory("mem:fact-b", "PSOT is an index type", &[], MemoryKind::Fact),
+            make_memory("mem:fact-c", "Mentioned PSOT once", &[], MemoryKind::Fact),
+        ];
+        // mem:fact-a scores high, mem:fact-b moderate, mem:fact-c below 50% cliff
+        let bm25_hits = vec![
+            ("mem:fact-new".to_string(), 25.0),
+            ("mem:fact-a".to_string(), 24.0),
+            ("mem:fact-b".to_string(), 15.0),
+            ("mem:fact-c".to_string(), 10.5),
+        ];
+
+        let results = RecallEngine::find_related(
+            "mem:fact-new",
+            "PSOT supersets",
+            &bm25_hits,
+            &memories,
+            None,
+        );
+        // mem:fact-a has high score (~34 with tag bonus), mem:fact-b (~17 with recency)
+        // mem:fact-c (~12.5 with recency) should be below 50% of top and get clipped
+        assert!(!results.is_empty());
+        assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn find_related_caps_at_three() {
+        let mut memories = vec![make_memory(
+            "mem:fact-new",
+            "common topic",
+            &[],
+            MemoryKind::Fact,
+        )];
+        let mut bm25_hits = vec![("mem:fact-new".to_string(), 30.0)];
+
+        // Add 5 related memories all with high scores
+        for i in 0..5 {
+            let id = format!("mem:fact-{i}");
+            memories.push(make_memory(
+                &id,
+                "common topic content",
+                &["common"],
+                MemoryKind::Fact,
+            ));
+            bm25_hits.push((id, 25.0));
+        }
+
+        let results =
+            RecallEngine::find_related("mem:fact-new", "common topic", &bm25_hits, &memories, None);
+        assert!(results.len() <= 3);
+    }
+
+    #[test]
+    fn ids_match_compact_vs_full() {
+        assert!(ids_match(
+            "https://ns.flur.ee/memory#fact-01abc",
+            "mem:fact-01abc"
+        ));
+        assert!(ids_match("mem:fact-01abc", "mem:fact-01abc"));
+        assert!(ids_match(
+            "https://ns.flur.ee/memory#fact-01abc",
+            "https://ns.flur.ee/memory#fact-01abc"
+        ));
+        assert!(!ids_match("mem:fact-01abc", "mem:fact-02def"));
     }
 }

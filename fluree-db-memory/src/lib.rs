@@ -13,11 +13,11 @@ pub mod turtle_io;
 pub mod types;
 pub mod vocab;
 
-pub use branch::detect_git_branch;
+pub use branch::{detect_git_branch, detect_git_branch_from};
 pub use error::{MemoryError, Result};
 pub use format::{
-    format_context, format_context_paged, format_explain, format_json, format_recall_json,
-    format_recall_text, format_status_text, format_text,
+    format_context, format_context_paged, format_json, format_recall_json, format_recall_text,
+    format_related_memories, format_status_text, format_text,
 };
 pub use id::generate_memory_id;
 #[cfg(feature = "mcp")]
@@ -27,5 +27,5 @@ pub use secrets::SecretDetector;
 pub use store::MemoryStore;
 pub use types::{
     Memory, MemoryFilter, MemoryInput, MemoryKind, MemoryPreview, MemoryStatus, MemoryUpdate,
-    RecallResult, Scope, ScoredMemory, Sensitivity, Severity,
+    RecallResult, Scope, ScoredMemory, Severity, MAX_CONTENT_LENGTH,
 };

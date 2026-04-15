@@ -29,16 +29,6 @@ pub fn memory_schema_jsonld() -> Value {
                 "@type": "rdfs:Class",
                 "rdfs:label": "Constraint"
             },
-            {
-                "@id": "mem:Preference",
-                "@type": "rdfs:Class",
-                "rdfs:label": "Preference"
-            },
-            {
-                "@id": "mem:Artifact",
-                "@type": "rdfs:Class",
-                "rdfs:label": "Artifact"
-            },
             // Scope named-graph classes
             {
                 "@id": "mem:repo",
@@ -67,11 +57,6 @@ pub fn memory_schema_jsonld() -> Value {
                 "rdfs:range": { "@id": "rdfs:Resource" }
             },
             {
-                "@id": "mem:sensitivity",
-                "@type": "rdf:Property",
-                "rdfs:range": { "@id": "xsd:string" }
-            },
-            {
                 "@id": "mem:severity",
                 "@type": "rdf:Property",
                 "rdfs:range": { "@id": "xsd:string" }
@@ -87,26 +72,10 @@ pub fn memory_schema_jsonld() -> Value {
                 "rdfs:range": { "@id": "xsd:string" }
             },
             {
-                "@id": "mem:supersedes",
-                "@type": "rdf:Property",
-                "rdfs:range": { "@id": "rdfs:Resource" }
-            },
-            {
-                "@id": "mem:validFrom",
-                "@type": "rdf:Property",
-                "rdfs:range": { "@id": "xsd:dateTime" }
-            },
-            {
-                "@id": "mem:validTo",
-                "@type": "rdf:Property",
-                "rdfs:range": { "@id": "xsd:dateTime" }
-            },
-            {
                 "@id": "mem:createdAt",
                 "@type": "rdf:Property",
                 "rdfs:range": { "@id": "xsd:dateTime" }
             },
-            // Type-specific properties
             {
                 "@id": "mem:rationale",
                 "@type": "rdf:Property",
@@ -114,21 +83,6 @@ pub fn memory_schema_jsonld() -> Value {
             },
             {
                 "@id": "mem:alternatives",
-                "@type": "rdf:Property",
-                "rdfs:range": { "@id": "xsd:string" }
-            },
-            {
-                "@id": "mem:factKind",
-                "@type": "rdf:Property",
-                "rdfs:range": { "@id": "xsd:string" }
-            },
-            {
-                "@id": "mem:prefScope",
-                "@type": "rdf:Property",
-                "rdfs:range": { "@id": "xsd:string" }
-            },
-            {
-                "@id": "mem:artifactKind",
                 "@type": "rdf:Property",
                 "rdfs:range": { "@id": "xsd:string" }
             }
@@ -146,7 +100,6 @@ pub fn memory_to_jsonld(mem: &crate::types::Memory) -> Value {
         "@type": mem.kind.class_iri(),
         "mem:content": { "@value": mem.content, "@type": "@fulltext" },
         "mem:scope": { "@id": mem.scope.prefixed() },
-        "mem:sensitivity": mem.sensitivity.as_str(),
         "mem:createdAt": mem.created_at
     });
 
@@ -181,19 +134,6 @@ pub fn memory_to_jsonld(mem: &crate::types::Memory) -> Value {
         obj.insert("mem:branch".to_string(), json!(b));
     }
 
-    if let Some(sup) = &mem.supersedes {
-        obj.insert("mem:supersedes".to_string(), json!({ "@id": sup }));
-    }
-
-    if let Some(vf) = &mem.valid_from {
-        obj.insert("mem:validFrom".to_string(), json!(vf));
-    }
-
-    if let Some(vt) = &mem.valid_to {
-        obj.insert("mem:validTo".to_string(), json!(vt));
-    }
-
-    // Type-specific predicates
     if let Some(r) = &mem.rationale {
         obj.insert(
             "mem:rationale".to_string(),
@@ -202,15 +142,6 @@ pub fn memory_to_jsonld(mem: &crate::types::Memory) -> Value {
     }
     if let Some(a) = &mem.alternatives {
         obj.insert("mem:alternatives".to_string(), json!(a));
-    }
-    if let Some(fk) = &mem.fact_kind {
-        obj.insert("mem:factKind".to_string(), json!(fk));
-    }
-    if let Some(ps) = &mem.pref_scope {
-        obj.insert("mem:prefScope".to_string(), json!(ps));
-    }
-    if let Some(ak) = &mem.artifact_kind {
-        obj.insert("mem:artifactKind".to_string(), json!(ak));
     }
 
     node

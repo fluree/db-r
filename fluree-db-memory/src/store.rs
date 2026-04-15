@@ -269,34 +269,32 @@ impl MemoryStore {
             content: input.content,
             tags: input.tags,
             scope: input.scope,
-            sensitivity: input.sensitivity,
             severity: input.severity,
             artifact_refs: input.artifact_refs,
             branch: input.branch,
-            supersedes: None,
-            valid_from: input.valid_from,
-            valid_to: input.valid_to,
             created_at,
             rationale: input.rationale,
             alternatives: input.alternatives,
-            fact_kind: input.fact_kind,
-            pref_scope: input.pref_scope,
-            artifact_kind: input.artifact_kind,
         };
 
-        // File is truth — write the authoritative .ttl first
+        // File is truth — sorted rewrite so memories from different branches
+        // land in different regions of the file, reducing merge conflicts.
         if let Some(dir) = &self.memory_dir {
-            let (path, header) = match mem.scope {
+            let (path, header, scope_filter) = match mem.scope {
                 Scope::Repo => (
                     crate::turtle_io::repo_ttl_path(dir),
                     crate::turtle_io::REPO_HEADER,
+                    Some(Scope::Repo),
                 ),
                 Scope::User => (
                     crate::turtle_io::user_ttl_path(dir),
                     crate::turtle_io::USER_HEADER,
+                    Some(Scope::User),
                 ),
             };
-            crate::turtle_io::append_memory_to_file(&path, &mem, header)?;
+            let mut all = self.all_memories_for_scope(scope_filter.as_ref()).await?;
+            all.push(mem.clone());
+            crate::turtle_io::write_memory_file(&path, &all, header)?;
         }
 
         // Then update the ledger cache
@@ -327,7 +325,7 @@ impl MemoryStore {
         let id = &expanded;
         let optional = optional_memory_clauses_for_subject(id);
         let sparql = format!(
-            "SELECT ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\n\
+            "SELECT ?type ?content ?scope ?severity ?tag ?artifactRef ?branch ?createdAt ?rationale ?alternatives\n\
 WHERE {{\n\
   <{id}> a ?type .\n\
   <{id}> <https://ns.flur.ee/memory#content> ?content .\n\
@@ -347,15 +345,13 @@ WHERE {{\n\
         parse_memory_from_sparql_results(&compact, &result)
     }
 
-    /// Update (supersede) an existing memory.
+    /// Update a memory in place.
     ///
-    /// Creates a new memory that supersedes the given one.
-    /// Returns the new memory's ID.
+    /// Merges the provided fields over the existing memory, keeping the same ID.
+    /// Returns the memory's (unchanged) ID.
     ///
-    /// In file-based mode, the `.ttl` file is written first (authoritative),
-    /// then the ledger cache is updated. The build hash is only updated after
-    /// the ledger cache commit succeeds so that any cache failure leaves a hash
-    /// mismatch and triggers a rebuild on the next `ensure_synced()`.
+    /// In file-based mode, the `.ttl` file is rewritten first (authoritative),
+    /// then the ledger is updated via retract-all + re-insert.
     pub async fn update(&self, id: &str, update: MemoryUpdate) -> Result<String> {
         self.initialize().await?;
 
@@ -368,62 +364,73 @@ WHERE {{\n\
             .await?
             .ok_or_else(|| MemoryError::NotFound(id.to_string()))?;
 
-        // Build the new memory, applying updates over existing values
-        let new_id = crate::id::generate_memory_id(existing.kind);
-        let created_at = Utc::now().to_rfc3339();
-
+        // Merge updates over existing values, keeping the same ID
         let merged = Memory {
-            id: new_id.clone(),
+            id: compact.clone(),
             kind: existing.kind,
             content: update.content.unwrap_or(existing.content),
             tags: update.tags.unwrap_or(existing.tags),
             scope: existing.scope,
-            sensitivity: existing.sensitivity,
             severity: update.severity.or(existing.severity),
             artifact_refs: update.artifact_refs.unwrap_or(existing.artifact_refs),
             branch: existing.branch,
-            supersedes: Some(compact),
-            valid_from: update.valid_from.or(existing.valid_from),
-            valid_to: update.valid_to.or(existing.valid_to),
-            created_at,
+            created_at: existing.created_at,
             rationale: update.rationale.or(existing.rationale),
             alternatives: update.alternatives.or(existing.alternatives),
-            fact_kind: existing.fact_kind,
-            pref_scope: existing.pref_scope,
-            artifact_kind: existing.artifact_kind,
         };
 
-        // File is truth — append superseding memory first (old one stays — append-only)
+        // File is truth — rewrite with the modified memory in place
         if let Some(dir) = &self.memory_dir {
-            let (path, header) = match merged.scope {
+            let (path, header, scope_filter) = match merged.scope {
                 Scope::Repo => (
                     crate::turtle_io::repo_ttl_path(dir),
                     crate::turtle_io::REPO_HEADER,
+                    Some(Scope::Repo),
                 ),
                 Scope::User => (
                     crate::turtle_io::user_ttl_path(dir),
                     crate::turtle_io::USER_HEADER,
+                    Some(Scope::User),
                 ),
             };
-            crate::turtle_io::append_memory_to_file(&path, &merged, header)?;
+            let updated: Vec<Memory> = self
+                .all_memories_for_scope(scope_filter.as_ref())
+                .await?
+                .into_iter()
+                .map(|m| {
+                    if m.id == compact || m.id == expanded {
+                        merged.clone()
+                    } else {
+                        m
+                    }
+                })
+                .collect();
+            crate::turtle_io::write_memory_file(&path, &updated, header)?;
         }
 
-        // Then update the ledger cache
-        let doc = memory_to_jsonld(&merged);
+        // Ledger: retract all old triples and insert updated ones in a single transaction
+        let mut insert_body = memory_to_jsonld(&merged);
+        insert_body.as_object_mut().unwrap().remove("@context");
+        let update_doc = json!({
+            "@context": { "mem": "https://ns.flur.ee/memory#" },
+            "where": { "@id": &compact, "?p": "?o" },
+            "delete": { "@id": &compact, "?p": "?o" },
+            "insert": insert_body
+        });
         self.fluree
             .graph(MEMORY_LEDGER_ID)
             .transact()
-            .insert(&doc)
+            .update(&update_doc)
             .commit()
             .await?;
 
-        // Update the file watermark only after cache commit succeeds.
+        // Update the file watermark only after cache commits succeed.
         if let Some(dir) = &self.memory_dir {
             crate::file_sync::update_hash(dir)?;
         }
 
-        debug!(new_id = %new_id, supersedes = %id, "Memory updated (superseded)");
-        Ok(new_id)
+        debug!(id = %compact, "Memory updated in place");
+        Ok(compact)
     }
 
     /// Delete a memory by retracting all its triples.
@@ -492,9 +499,9 @@ WHERE {{\n\
         Ok(())
     }
 
-    /// Get ALL memories for a scope (including superseded ones).
+    /// Get ALL memories for a scope.
     ///
-    /// Used by `forget()` to rewrite the Turtle file after deletion.
+    /// Used by `forget()` and `update()` to rewrite the Turtle file.
     async fn all_memories_for_scope(&self, scope: Option<&Scope>) -> Result<Vec<Memory>> {
         self.initialize().await?;
 
@@ -512,7 +519,7 @@ WHERE {{\n\
         }
 
         let sparql = format!(
-            "SELECT ?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\nWHERE {{\n  {}\n  {}\n}}\nORDER BY ASC(?id)",
+            "SELECT ?id ?type ?content ?scope ?severity ?tag ?artifactRef ?branch ?createdAt ?rationale ?alternatives\nWHERE {{\n  {}\n  {}\n}}\nORDER BY ASC(?id)",
             where_clauses.join(" .\n  "),
             optional_memory_clauses(),
         );
@@ -528,7 +535,7 @@ WHERE {{\n\
         parse_memories_from_sparql_results(&result)
     }
 
-    /// Get all current (non-superseded) memories matching the filter.
+    /// Get all memories matching the filter.
     pub async fn current_memories(&self, filter: &MemoryFilter) -> Result<Vec<Memory>> {
         self.initialize().await?;
 
@@ -537,11 +544,6 @@ WHERE {{\n\
             "?id a ?type".to_string(),
             "?id <https://ns.flur.ee/memory#content> ?content".to_string(),
             "?id <https://ns.flur.ee/memory#createdAt> ?createdAt".to_string(),
-        ];
-
-        let filter_clauses = [
-            // Exclude superseded memories
-            "FILTER NOT EXISTS { ?newer <https://ns.flur.ee/memory#supersedes> ?id }".to_string(),
         ];
 
         // Apply kind filter
@@ -577,10 +579,9 @@ WHERE {{\n\
         }
 
         let sparql = format!(
-            "SELECT ?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt ?rationale ?alternatives ?factKind ?prefScope ?artifactKind\nWHERE {{\n  {}\n  {}\n  {}\n}}\nORDER BY DESC(?createdAt)",
+            "SELECT ?id ?type ?content ?scope ?severity ?tag ?artifactRef ?branch ?createdAt ?rationale ?alternatives\nWHERE {{\n  {}\n  {}\n}}\nORDER BY DESC(?createdAt)",
             where_clauses.join(" .\n  "),
             optional_memory_clauses(),
-            filter_clauses.join("\n  "),
         );
 
         let result = self
@@ -647,58 +648,6 @@ WHERE {{\n\
         })
     }
 
-    /// Get the supersession chain for a memory (newest first).
-    pub async fn supersession_chain(&self, id: &str) -> Result<Vec<Memory>> {
-        self.initialize().await?;
-
-        let mut chain = Vec::new();
-
-        // Walk backward through supersession chain
-        let mut current_id = id.to_string();
-        while let Some(mem) = self.get(&current_id).await? {
-            let supersedes = mem.supersedes.clone();
-            chain.push(mem);
-            match supersedes {
-                Some(prev_id) => current_id = prev_id,
-                None => break,
-            }
-        }
-
-        // Also walk backward: find memories that supersede `id`
-        let sparql = format!(
-            r#"SELECT ?newer
-WHERE {{
-  ?newer <https://ns.flur.ee/memory#supersedes> <{id}> .
-}}"#
-        );
-
-        let result = self
-            .fluree
-            .graph(MEMORY_LEDGER_ID)
-            .query()
-            .sparql(&sparql)
-            .execute_formatted()
-            .await?;
-
-        if let Some(bindings) = result.get("results").and_then(|r| r.get("bindings")) {
-            if let Some(arr) = bindings.as_array() {
-                for binding in arr {
-                    if let Some(newer_id) = binding
-                        .get("newer")
-                        .and_then(|v| v.get("value"))
-                        .and_then(|v| v.as_str())
-                    {
-                        if let Some(mem) = self.get(newer_id).await? {
-                            chain.insert(0, mem);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(chain)
-    }
-
     /// Export all memories as JSON.
     pub async fn export(&self) -> Result<Value> {
         self.initialize().await?;
@@ -711,8 +660,6 @@ WHERE {{
     /// Uses the native `@fulltext` datatype and `fulltext()` scoring function
     /// to rank memories by relevance. Returns `(memory_id, bm25_score)` pairs
     /// ordered by descending score, limited to non-zero matches.
-    ///
-    /// Only searches current (non-superseded) memories.
     pub async fn recall_fulltext(
         &self,
         query_text: &str,
@@ -923,7 +870,7 @@ fn parse_from_sparql_bindings(bindings: &[Value]) -> Result<Vec<Memory>> {
 /// Parse memories from Fluree flat row format.
 ///
 /// Expected column order matches the SELECT clause:
-/// `?id ?type ?content ?scope ?sensitivity ?severity ?tag ?artifactRef ?branch ?supersedes ?validFrom ?validTo ?createdAt`
+/// `?id ?type ?content ?scope ?severity ?tag ?artifactRef ?branch ?createdAt ?rationale ?alternatives`
 fn parse_from_flat_rows(rows: &[Value]) -> Result<Vec<Memory>> {
     use std::collections::HashMap;
 
@@ -984,10 +931,6 @@ fn merge_bindings_to_memory(id: &str, bindings: &[&Value]) -> Option<Memory> {
         .and_then(|s| crate::types::Scope::parse_str(&s))
         .unwrap_or_default();
 
-    let sensitivity = extract_binding_value(first, "sensitivity")
-        .and_then(|s| crate::types::Sensitivity::parse_str(&s))
-        .unwrap_or_default();
-
     let severity = extract_binding_value(first, "severity")
         .and_then(|s| crate::types::Severity::parse_str(&s));
 
@@ -997,35 +940,28 @@ fn merge_bindings_to_memory(id: &str, bindings: &[&Value]) -> Option<Memory> {
         content,
         tags,
         scope,
-        sensitivity,
         severity,
         artifact_refs,
         branch: extract_binding_value(first, "branch"),
-        supersedes: extract_binding_value(first, "supersedes"),
-        valid_from: extract_binding_value(first, "validFrom"),
-        valid_to: extract_binding_value(first, "validTo"),
         created_at,
         rationale: extract_binding_value(first, "rationale"),
         alternatives: extract_binding_value(first, "alternatives"),
-        fact_kind: extract_binding_value(first, "factKind"),
-        pref_scope: extract_binding_value(first, "prefScope"),
-        artifact_kind: extract_binding_value(first, "artifactKind"),
     })
 }
 
 fn merge_flat_rows_to_memory(id: &str, rows: &[&Value]) -> Option<Memory> {
     let first = rows.first()?.as_array()?;
-    if first.len() < 13 {
+    if first.len() < 9 {
         return None;
     }
 
     // Column indices match SELECT order:
-    // 0=id, 1=type, 2=content, 3=scope, 4=sensitivity, 5=severity,
-    // 6=tag, 7=artifactRef, 8=branch, 9=supersedes, 10=validFrom, 11=validTo, 12=createdAt,
-    // 13=rationale, 14=alternatives, 15=factKind, 16=prefScope, 17=artifactKind
+    // 0=id, 1=type, 2=content, 3=scope, 4=severity,
+    // 5=tag, 6=artifactRef, 7=branch, 8=createdAt,
+    // 9=rationale, 10=alternatives
     let type_str = first.get(1)?.as_str()?;
     let content = first.get(2)?.as_str()?.to_string();
-    let created_at = first.get(12)?.as_str()?.to_string();
+    let created_at = first.get(8)?.as_str()?.to_string();
 
     let kind = iri_to_kind(type_str)?;
 
@@ -1033,12 +969,12 @@ fn merge_flat_rows_to_memory(id: &str, rows: &[&Value]) -> Option<Memory> {
     let mut artifact_refs: Vec<String> = Vec::new();
     for row in rows {
         if let Some(arr) = row.as_array() {
-            if let Some(tag) = arr.get(6).and_then(|v| v.as_str()) {
+            if let Some(tag) = arr.get(5).and_then(|v| v.as_str()) {
                 if !tags.contains(&tag.to_string()) {
                     tags.push(tag.to_string());
                 }
             }
-            if let Some(aref) = arr.get(7).and_then(|v| v.as_str()) {
+            if let Some(aref) = arr.get(6).and_then(|v| v.as_str()) {
                 if !artifact_refs.contains(&aref.to_string()) {
                     artifact_refs.push(aref.to_string());
                 }
@@ -1052,14 +988,8 @@ fn merge_flat_rows_to_memory(id: &str, rows: &[&Value]) -> Option<Memory> {
         .and_then(crate::types::Scope::parse_str)
         .unwrap_or_default();
 
-    let sensitivity = first
-        .get(4)
-        .and_then(|v| v.as_str())
-        .and_then(crate::types::Sensitivity::parse_str)
-        .unwrap_or_default();
-
     let severity = first
-        .get(5)
+        .get(4)
         .and_then(|v| v.as_str())
         .and_then(crate::types::Severity::parse_str);
 
@@ -1069,19 +999,12 @@ fn merge_flat_rows_to_memory(id: &str, rows: &[&Value]) -> Option<Memory> {
         content,
         tags,
         scope,
-        sensitivity,
         severity,
         artifact_refs,
-        branch: first.get(8).and_then(|v| v.as_str()).map(String::from),
-        supersedes: first.get(9).and_then(|v| v.as_str()).map(String::from),
-        valid_from: first.get(10).and_then(|v| v.as_str()).map(String::from),
-        valid_to: first.get(11).and_then(|v| v.as_str()).map(String::from),
+        branch: first.get(7).and_then(|v| v.as_str()).map(String::from),
         created_at,
-        rationale: first.get(13).and_then(|v| v.as_str()).map(String::from),
-        alternatives: first.get(14).and_then(|v| v.as_str()).map(String::from),
-        fact_kind: first.get(15).and_then(|v| v.as_str()).map(String::from),
-        pref_scope: first.get(16).and_then(|v| v.as_str()).map(String::from),
-        artifact_kind: first.get(17).and_then(|v| v.as_str()).map(String::from),
+        rationale: first.get(9).and_then(|v| v.as_str()).map(String::from),
+        alternatives: first.get(10).and_then(|v| v.as_str()).map(String::from),
     })
 }
 
@@ -1113,19 +1036,12 @@ fn merge_memory_rows(id: &str, memories: &[Memory]) -> Option<Memory> {
         content: first.content.clone(),
         tags,
         scope: first.scope.clone(),
-        sensitivity: first.sensitivity.clone(),
         severity: first.severity.clone(),
         artifact_refs,
         branch: first.branch.clone(),
-        supersedes: first.supersedes.clone(),
-        valid_from: first.valid_from.clone(),
-        valid_to: first.valid_to.clone(),
         created_at: first.created_at.clone(),
         rationale: first.rationale.clone(),
         alternatives: first.alternatives.clone(),
-        fact_kind: first.fact_kind.clone(),
-        pref_scope: first.pref_scope.clone(),
-        artifact_kind: first.artifact_kind.clone(),
     })
 }
 
@@ -1143,8 +1059,8 @@ fn iri_to_kind(iri: &str) -> Option<MemoryKind> {
         "Fact" => Some(MemoryKind::Fact),
         "Decision" => Some(MemoryKind::Decision),
         "Constraint" => Some(MemoryKind::Constraint),
-        "Preference" => Some(MemoryKind::Preference),
-        "Artifact" => Some(MemoryKind::Artifact),
+        // Backwards compat: map removed kinds to Fact
+        "Preference" | "Artifact" => Some(MemoryKind::Fact),
         _ => None,
     }
 }

@@ -745,6 +745,310 @@ fn sanitize_for_filename(s: &str) -> String {
         .collect()
 }
 
+// ============================================================================
+// Memory history import (--memory)
+// ============================================================================
+
+struct GitCommit {
+    sha: String,
+    timestamp: String,
+    message: String,
+}
+
+/// Resolve the repo root for a memory import.
+///
+/// If `path` is `"."`, finds the git root from the current directory.
+/// Otherwise uses the path as-is. Validates that `.fluree-memory/repo.ttl` exists.
+fn resolve_memory_repo(path: &Path) -> CliResult<std::path::PathBuf> {
+    let repo_root = if path == Path::new(".") {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .map_err(|e| CliError::Config(format!("failed to run git: {e}")))?;
+        if !output.status.success() {
+            return Err(CliError::Usage(
+                "not in a git repository; pass an explicit path to --memory".into(),
+            ));
+        }
+        std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim())
+    } else {
+        path.to_path_buf()
+    };
+
+    let repo_ttl = repo_root.join(".fluree-memory/repo.ttl");
+    if !repo_ttl.exists() {
+        return Err(CliError::Usage(format!(
+            "no memory store found at {}",
+            repo_ttl.display()
+        )));
+    }
+    Ok(repo_root)
+}
+
+/// Get git commits that touched the memory TTL files, oldest first.
+fn git_memory_commits(repo_root: &Path, include_user: bool) -> CliResult<Vec<GitCommit>> {
+    let mut args = vec![
+        "log",
+        "--reverse",
+        "--format=%H\t%aI\t%s",
+        "--diff-filter=AMDR",
+        "--",
+        ".fluree-memory/repo.ttl",
+    ];
+    if include_user {
+        args.push(".fluree-memory/.local/user.ttl");
+    }
+
+    let output = std::process::Command::new("git")
+        .current_dir(repo_root)
+        .args(&args)
+        .output()
+        .map_err(|e| CliError::Config(format!("failed to run git log: {e}")))?;
+
+    if !output.status.success() {
+        return Err(CliError::Config(
+            "git log failed — is this a git repository?".into(),
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let commits: Vec<GitCommit> = stdout
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(3, '\t').collect();
+            if parts.len() == 3 {
+                Some(GitCommit {
+                    sha: parts[0].to_string(),
+                    timestamp: parts[1].to_string(),
+                    message: parts[2].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    Ok(commits)
+}
+
+/// Get file content at a specific git commit.
+fn git_show(repo_root: &Path, sha: &str, file: &str) -> CliResult<String> {
+    let output = std::process::Command::new("git")
+        .current_dir(repo_root)
+        .args(["show", &format!("{sha}:{file}")])
+        .output()
+        .map_err(|e| CliError::Config(format!("failed to run git show: {e}")))?;
+
+    if !output.status.success() {
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Import memory history from git into a Fluree ledger with time-travel.
+///
+/// Each git commit that touched `.fluree-memory/repo.ttl` (and optionally
+/// `.local/user.ttl`) becomes a Fluree transaction. The retract-all + insert
+/// pattern at each commit gives a clean snapshot at every `t`.
+pub async fn run_memory_import(
+    ledger: &str,
+    memory_path: &Path,
+    no_user: bool,
+    dirs: &FlureeDir,
+    quiet: bool,
+) -> CliResult<()> {
+    let repo_root = resolve_memory_repo(memory_path)?;
+    let include_user = !no_user;
+    let commits = git_memory_commits(&repo_root, include_user)?;
+
+    let fluree = context::build_fluree(dirs)?;
+
+    // Create ledger + transact memory schema
+    fluree
+        .create_ledger(ledger)
+        .await
+        .map_err(|e| CliError::Config(format!("failed to create ledger: {e}")))?;
+
+    let schema = fluree_db_memory::schema::memory_schema_jsonld();
+    fluree
+        .graph(ledger)
+        .transact()
+        .insert(&schema)
+        .commit()
+        .await
+        .map_err(|e| CliError::Config(format!("failed to transact schema: {e}")))?;
+
+    if commits.is_empty() {
+        // No git history — import current file state as a single transaction
+        let repo_ttl = std::fs::read_to_string(repo_root.join(".fluree-memory/repo.ttl"))
+            .map_err(|e| CliError::Input(format!("failed to read repo.ttl: {e}")))?;
+
+        if let Some(data) = fluree_db_memory::turtle_io::parse_and_inject_fulltext(&repo_ttl)
+            .map_err(|e| CliError::Input(format!("failed to parse repo.ttl: {e}")))?
+        {
+            fluree
+                .graph(ledger)
+                .transact()
+                .insert(&data)
+                .commit()
+                .await?;
+        }
+
+        config::write_active_ledger(dirs.data_dir(), ledger)?;
+        println!(
+            "Created ledger '{}' from current memory state (no git history found)",
+            ledger,
+        );
+        return Ok(());
+    }
+
+    if !quiet {
+        eprintln!(
+            "Importing {} commits into ledger '{}'...",
+            commits.len(),
+            ledger
+        );
+    }
+
+    let mut last_t = 1u64; // t=1 is the schema transaction
+    for (i, commit) in commits.iter().enumerate() {
+        // Extract TTL content at this commit
+        let repo_ttl = git_show(&repo_root, &commit.sha, ".fluree-memory/repo.ttl")?;
+        let user_ttl = if include_user {
+            git_show(&repo_root, &commit.sha, ".fluree-memory/.local/user.ttl")?
+        } else {
+            String::new()
+        };
+
+        // Parse both files into JSON-LD
+        let repo_data = if repo_ttl.is_empty() {
+            None
+        } else {
+            fluree_db_memory::turtle_io::parse_and_inject_fulltext(&repo_ttl).map_err(|e| {
+                CliError::Input(format!(
+                    "failed to parse repo.ttl at {}: {e}",
+                    &commit.sha[..8]
+                ))
+            })?
+        };
+
+        let user_data = if user_ttl.is_empty() {
+            None
+        } else {
+            fluree_db_memory::turtle_io::parse_and_inject_fulltext(&user_ttl).map_err(|e| {
+                CliError::Input(format!(
+                    "failed to parse user.ttl at {}: {e}",
+                    &commit.sha[..8]
+                ))
+            })?
+        };
+
+        // Merge the @graph arrays from both files into one insert payload
+        let insert_nodes = merge_jsonld_graphs(repo_data, user_data);
+
+        // Build commit metadata from the git commit
+        let commit_opts = fluree_db_api::CommitOpts::with_message(format!(
+            "git:{} {}",
+            &commit.sha[..8],
+            commit.message
+        ))
+        .with_timestamp(commit.timestamp.clone());
+
+        // Single transaction: retract all existing memory triples + insert new state.
+        // The WHERE pivots on mem:content to target only memory instances (not schema).
+        // On the first commit the WHERE matches nothing, so DELETE is a no-op.
+        let mut txn = serde_json::json!({
+            "@context": { "mem": "https://ns.flur.ee/memory#" },
+            "where": [
+                { "@id": "?s", "mem:content": "?c" },
+                { "@id": "?s", "?p": "?o" }
+            ],
+            "delete": { "@id": "?s", "?p": "?o" }
+        });
+
+        if let Some(nodes) = &insert_nodes {
+            txn.as_object_mut()
+                .unwrap()
+                .insert("insert".to_string(), nodes.clone());
+        }
+
+        let result = fluree
+            .graph(ledger)
+            .transact()
+            .update(&txn)
+            .commit_opts(commit_opts)
+            .commit()
+            .await?;
+
+        last_t = result.receipt.t.max(0) as u64;
+
+        if !quiet {
+            eprintln!(
+                "  [{}/{}] t={} {} — {}",
+                i + 1,
+                commits.len(),
+                last_t,
+                &commit.sha[..8],
+                commit.message,
+            );
+        }
+    }
+
+    config::write_active_ledger(dirs.data_dir(), ledger)?;
+
+    println!(
+        "Created ledger '{}' with {} commits (t=1..{})",
+        ledger,
+        commits.len(),
+        last_t,
+    );
+    println!(
+        "  Earliest: {} — {}",
+        &commits[0].sha[..8],
+        commits[0].message
+    );
+    println!(
+        "  Latest:   {} — {}",
+        &commits.last().unwrap().sha[..8],
+        commits.last().unwrap().message,
+    );
+    println!();
+    println!("Query with time travel:");
+    println!(
+        "  fluree query {} 'PREFIX mem: <https://ns.flur.ee/memory#> SELECT ?id ?content WHERE {{ ?id a mem:Fact ; mem:content ?content }} LIMIT 5'",
+        ledger
+    );
+    println!(
+        "  fluree query {} --at-t 2 'PREFIX mem: <https://ns.flur.ee/memory#> SELECT ...'   # state at first commit",
+        ledger
+    );
+
+    Ok(())
+}
+
+/// Merge @graph arrays from repo.ttl and user.ttl JSON-LD into a single array.
+fn merge_jsonld_graphs(
+    repo: Option<serde_json::Value>,
+    user: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let mut nodes = Vec::new();
+
+    for data in [repo, user].into_iter().flatten() {
+        if let Some(graph) = data.get("@graph").and_then(|g| g.as_array()) {
+            nodes.extend(graph.iter().cloned());
+        } else if data.is_object() {
+            // Single node (no @graph wrapper)
+            nodes.push(data);
+        }
+    }
+
+    if nodes.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Array(nodes))
+    }
+}
+
 /// Format a u64 with comma-separated thousands (e.g. 543_174_590 → "543,174,590").
 fn format_with_commas(n: u64) -> String {
     let s = n.to_string();

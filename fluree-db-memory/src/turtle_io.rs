@@ -42,8 +42,6 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
         MemoryKind::Fact => "Fact",
         MemoryKind::Decision => "Decision",
         MemoryKind::Constraint => "Constraint",
-        MemoryKind::Preference => "Preference",
-        MemoryKind::Artifact => "Artifact",
     };
     writeln!(s, "mem:{local_id} a mem:{type_local} ;").unwrap();
 
@@ -68,9 +66,6 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
         Scope::User => "mem:user",
     };
     writeln!(s, "    mem:scope {scope_ref} ;").unwrap();
-
-    // mem:sensitivity
-    writeln!(s, "    mem:sensitivity \"{}\" ;", mem.sensitivity.as_str()).unwrap();
 
     // mem:severity (optional)
     if let Some(sev) = &mem.severity {
@@ -99,32 +94,6 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
         writeln!(s, "    mem:branch \"{}\" ;", escape_turtle_string(b)).unwrap();
     }
 
-    // mem:supersedes (optional, IRI reference)
-    if let Some(sup) = &mem.supersedes {
-        let sup_local = mem_local_id(sup);
-        writeln!(s, "    mem:supersedes mem:{sup_local} ;").unwrap();
-    }
-
-    // mem:validFrom (optional)
-    if let Some(vf) = &mem.valid_from {
-        writeln!(
-            s,
-            "    mem:validFrom \"{}\"^^xsd:dateTime ;",
-            escape_turtle_string(vf)
-        )
-        .unwrap();
-    }
-
-    // mem:validTo (optional)
-    if let Some(vt) = &mem.valid_to {
-        writeln!(
-            s,
-            "    mem:validTo \"{}\"^^xsd:dateTime ;",
-            escape_turtle_string(vt)
-        )
-        .unwrap();
-    }
-
     // mem:createdAt (always present)
     writeln!(
         s,
@@ -140,16 +109,6 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
     if let Some(a) = &mem.alternatives {
         writeln!(s, "    mem:alternatives \"{}\" ;", escape_turtle_string(a)).unwrap();
     }
-    if let Some(fk) = &mem.fact_kind {
-        writeln!(s, "    mem:factKind \"{}\" ;", escape_turtle_string(fk)).unwrap();
-    }
-    if let Some(ps) = &mem.pref_scope {
-        writeln!(s, "    mem:prefScope \"{}\" ;", escape_turtle_string(ps)).unwrap();
-    }
-    if let Some(ak) = &mem.artifact_kind {
-        writeln!(s, "    mem:artifactKind \"{}\" ;", escape_turtle_string(ak)).unwrap();
-    }
-
     // Replace the trailing " ;\n" with " .\n" to close the subject block
     if s.ends_with(" ;\n") {
         s.truncate(s.len() - 3);
@@ -187,8 +146,10 @@ pub fn append_memory_to_file(path: &Path, mem: &Memory, header_comment: &str) ->
 
 /// Write a full `.ttl` file from scratch with all memories.
 ///
-/// Used by init migration and `forget` (the one non-append mutation).
-/// Memories are sorted by `@id` ascending (ULID = time order, oldest first).
+/// Used by `add`, `update`, and `forget` for all file mutations.
+/// Memories are sorted by `(branch, id)` so that memories from the same
+/// branch cluster together. This reduces merge conflicts: two feature
+/// branches adding memories will insert into different regions of the file.
 /// **Skips write if the new content is byte-identical** to the existing file.
 pub fn write_memory_file(path: &Path, memories: &[Memory], header_comment: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -199,9 +160,14 @@ pub fn write_memory_file(path: &Path, memories: &[Memory], header_comment: &str)
     content.push_str(header_comment);
     content.push_str(TURTLE_PREFIXES);
 
-    // Sort by ID ascending (ULID-based, time-sortable)
+    // Sort by (branch, id): groups memories by originating branch,
+    // chronological within each branch (ULID encodes time).
     let mut sorted: Vec<&Memory> = memories.iter().collect();
-    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    sorted.sort_by(|a, b| {
+        let branch_a = a.branch.as_deref().unwrap_or("");
+        let branch_b = b.branch.as_deref().unwrap_or("");
+        branch_a.cmp(branch_b).then_with(|| a.id.cmp(&b.id))
+    });
 
     for mem in sorted {
         content.push('\n');
@@ -401,7 +367,7 @@ pub fn user_ttl_path(memory_dir: &Path) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Scope, Sensitivity, Severity};
+    use crate::types::{Scope, Severity};
 
     fn make_test_memory() -> Memory {
         Memory {
@@ -410,19 +376,12 @@ mod tests {
             content: "Run tests with: cargo nextest run --workspace".to_string(),
             tags: vec!["ci".to_string(), "testing".to_string()],
             scope: Scope::Repo,
-            sensitivity: Sensitivity::Public,
             severity: None,
             artifact_refs: vec!["Cargo.toml".to_string()],
             branch: Some("main".to_string()),
-            supersedes: None,
-            valid_from: None,
-            valid_to: None,
             created_at: "2026-02-24T10:30:00+00:00".to_string(),
             rationale: None,
             alternatives: None,
-            fact_kind: Some("command".to_string()),
-            pref_scope: None,
-            artifact_kind: None,
         }
     }
 
@@ -443,18 +402,6 @@ mod tests {
         assert!(block.ends_with(" .\n"));
         // Should contain branch
         assert!(block.contains("mem:branch \"main\""));
-        // Should contain factKind
-        assert!(block.contains("mem:factKind \"command\""));
-    }
-
-    #[test]
-    fn turtle_block_with_supersedes() {
-        let mut mem = make_test_memory();
-        mem.id = "mem:fact-01jefgh0000000000000000".to_string();
-        mem.supersedes = Some("mem:fact-01jdxyz0000000000000000".to_string());
-
-        let block = memory_to_turtle_block(&mem);
-        assert!(block.contains("mem:supersedes mem:fact-01jdxyz0000000000000000"));
     }
 
     #[test]
@@ -523,7 +470,6 @@ mod tests {
         mem2.tags = vec![];
         mem2.artifact_refs = vec![];
         mem2.branch = None;
-        mem2.fact_kind = None;
 
         write_memory_file(&path, &[mem2.clone(), mem1.clone()], REPO_HEADER).unwrap();
 
@@ -532,10 +478,13 @@ mod tests {
         assert!(content.starts_with("# Fluree Memory — repo-scoped"));
         // Should contain prefixes
         assert!(content.contains("@prefix mem:"));
-        // mem1 (lower ID) should appear before mem2 (higher ID)
+        // mem2 (no branch → "") sorts before mem1 (branch "main")
         let pos1 = content.find("fact-01jdxyz").unwrap();
         let pos2 = content.find("fact-01zzzz").unwrap();
-        assert!(pos1 < pos2, "memories should be sorted by ID ascending");
+        assert!(
+            pos2 < pos1,
+            "memories should be sorted by (branch, id) — no-branch before 'main'"
+        );
     }
 
     #[test]
@@ -608,8 +557,6 @@ mod tests {
             (MemoryKind::Fact, "mem:Fact"),
             (MemoryKind::Decision, "mem:Decision"),
             (MemoryKind::Constraint, "mem:Constraint"),
-            (MemoryKind::Preference, "mem:Preference"),
-            (MemoryKind::Artifact, "mem:Artifact"),
         ] {
             let mut mem = make_test_memory();
             mem.kind = kind;

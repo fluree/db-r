@@ -3,13 +3,13 @@
 //! Provides `MemoryToolService` with tools for storing, recalling, updating,
 //! and forgetting memories. Designed for IDE agent integration via stdio transport.
 
-use crate::format::{format_context_paged, format_json, format_status_text};
+use crate::format::{
+    format_context_paged, format_json, format_related_memories, format_status_text,
+};
 use crate::recall::RecallEngine;
 use crate::secrets::SecretDetector;
 use crate::store::MemoryStore;
-use crate::types::{
-    MemoryFilter, MemoryInput, MemoryKind, MemoryUpdate, Scope, Sensitivity, Severity,
-};
+use crate::types::{MemoryFilter, MemoryInput, MemoryKind, MemoryUpdate, Scope, Severity};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
@@ -21,9 +21,9 @@ use tracing::{debug, error, info};
 /// Request parameters for the `memory_add` tool.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MemoryAddRequest {
-    /// The kind of memory: fact, decision, constraint, preference, artifact
+    /// The kind of memory: fact, decision, constraint
     #[schemars(
-        description = "Memory kind: 'fact', 'decision', 'constraint', 'preference', or 'artifact'"
+        description = "Memory kind: 'fact' (things that are true), 'decision' (choices made and why), or 'constraint' (rules that must be followed)"
     )]
     pub kind: String,
 
@@ -48,42 +48,17 @@ pub struct MemoryAddRequest {
     #[serde(default)]
     pub scope: Option<String>,
 
-    /// Sensitivity: public (default), internal, client, secret
-    #[schemars(
-        description = "Sensitivity level: 'public' (default), 'internal', 'client', or 'secret'"
-    )]
-    #[serde(default)]
-    pub sensitivity: Option<String>,
-
     /// Severity for constraints: must, should, prefer
     #[schemars(description = "Severity level for constraints: 'must', 'should', or 'prefer'")]
     pub severity: Option<String>,
 
-    /// Rationale for decisions
-    #[schemars(description = "Why this decision was made (for kind='decision')")]
+    /// Why this fact/decision/constraint exists
+    #[schemars(description = "Why this memory exists — rationale, motivation, or context")]
     pub rationale: Option<String>,
 
-    /// Alternatives considered for decisions
-    #[schemars(
-        description = "What alternatives were considered (for kind='decision', comma-separated)"
-    )]
+    /// Alternatives considered
+    #[schemars(description = "What alternatives were considered (comma-separated)")]
     pub alternatives: Option<String>,
-
-    /// Sub-categorization for facts
-    #[schemars(
-        description = "Fact sub-type: 'command', 'architecture', 'dependency', 'configuration', or 'api'"
-    )]
-    pub fact_kind: Option<String>,
-
-    /// Convention scope for preferences
-    #[schemars(description = "Whether this preference is a 'user', 'team', or 'repo' convention")]
-    pub pref_scope: Option<String>,
-
-    /// Artifact sub-type
-    #[schemars(
-        description = "Artifact sub-type: 'file', 'symbol', 'crate', 'module', 'config', or 'endpoint'"
-    )]
-    pub artifact_kind: Option<String>,
 }
 
 /// Request parameters for the `memory_recall` tool.
@@ -121,7 +96,7 @@ pub struct MemoryRecallRequest {
 /// Request parameters for the `memory_update` tool.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MemoryUpdateRequest {
-    /// ID of the memory to update (supersede)
+    /// ID of the memory to update
     #[schemars(description = "The ID of the memory to update (e.g., 'mem:fact-01JDXYZ...')")]
     pub id: String,
 
@@ -197,12 +172,12 @@ impl MemoryToolService {
         }
     }
 
-    /// Store a new memory (fact, decision, constraint, preference, or artifact).
+    /// Store a new memory (fact, decision, or constraint).
     ///
     /// Memories persist across sessions and are used to maintain project context.
     /// Secrets (API keys, passwords, tokens) are automatically detected and redacted.
     #[tool(
-        description = "Store a new memory that persists across sessions. Choose a kind: 'fact' (commands, architecture, config), 'decision' (choices made and why — include rationale), 'constraint' (rules that must be followed — include severity), 'preference' (conventions, style), 'artifact' (important files/resources). Always include descriptive tags for better searchability. Secrets (API keys, passwords) are auto-detected and redacted."
+        description = "Store a new memory that persists across sessions. Each memory should capture ONE insight — store multiple memories for multiple insights. Choose a kind: 'fact' (things that are true — commands, architecture, config), 'decision' (choices made and why — include rationale and alternatives), 'constraint' (rules that must be followed — include severity). Use 'rationale' on any kind to explain why, and 'refs' for file paths instead of embedding them in content. DO store: invariants, gotchas, decisions with rationale, rules. DO NOT store: implementation walkthroughs, code architecture summaries, session progress, plans, or anything grep/git-log could answer. Always include descriptive tags. Secrets are auto-redacted."
     )]
     async fn memory_add(
         &self,
@@ -220,7 +195,7 @@ impl MemoryToolService {
         let kind = MemoryKind::parse(&req.kind).ok_or_else(|| {
             rmcp::ErrorData::invalid_params(
                 format!(
-                    "Invalid memory kind '{}'. Valid: fact, decision, constraint, preference, artifact",
+                    "Invalid memory kind '{}'. Valid: fact, decision, constraint",
                     req.kind
                 ),
                 None,
@@ -247,6 +222,18 @@ impl MemoryToolService {
             (req.content, false)
         };
 
+        // Enforce content length limit
+        if content.len() > crate::types::MAX_CONTENT_LENGTH {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Memory content is {} characters (max {}). Shorten to a single insight per memory \
+                 and add multiple memories for multiple insights. Lead with the key point, use \
+                 rationale/alternatives fields for supporting detail, and use refs for file paths \
+                 instead of embedding them in content.",
+                content.len(),
+                crate::types::MAX_CONTENT_LENGTH,
+            ))]));
+        }
+
         let scope = req
             .scope
             .as_deref()
@@ -261,26 +248,9 @@ impl MemoryToolService {
             .transpose()?
             .unwrap_or_default();
 
-        let sensitivity = req
-            .sensitivity
-            .as_deref()
-            .map(|s| {
-                Sensitivity::parse_str(s).ok_or_else(|| {
-                    rmcp::ErrorData::invalid_params(
-                        format!(
-                            "Invalid sensitivity '{}'. Valid: public, internal, client, secret",
-                            s
-                        ),
-                        None,
-                    )
-                })
-            })
-            .transpose()?
-            .unwrap_or_default();
+        let branch = crate::detect_git_branch_from(self.store.memory_dir());
 
-        let branch = crate::detect_git_branch();
-
-        // Capture preview before content is moved into MemoryInput
+        // Capture preview and recall query before content is moved into MemoryInput
         let preview: String = content
             .lines()
             .next()
@@ -294,23 +264,18 @@ impl MemoryToolService {
             ""
         };
         let preview_line = format!("{}{}", preview, ellipsis);
+        let recall_query = content.clone();
 
         let input = MemoryInput {
             kind,
             content,
             tags: req.tags,
             scope,
-            sensitivity,
             severity,
             artifact_refs: req.refs,
             branch,
-            valid_from: None,
-            valid_to: None,
             rationale: req.rationale,
             alternatives: req.alternatives,
-            fact_kind: req.fact_kind,
-            pref_scope: req.pref_scope,
-            artifact_kind: req.artifact_kind,
         };
 
         match self.store.add(input).await {
@@ -321,6 +286,11 @@ impl MemoryToolService {
 
                 if redacted {
                     text.push_str("\n\nWarning: Secrets were detected and automatically redacted.");
+                }
+
+                // Surface related memories for housekeeping
+                if let Some(related_text) = self.find_related_memories(&id, &recall_query).await {
+                    text.push_str(&related_text);
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(text)]))
@@ -418,7 +388,7 @@ impl MemoryToolService {
                     total_current = all.len(),
                     "Loaded current memories for re-ranking"
                 );
-                let branch = crate::detect_git_branch();
+                let branch = crate::detect_git_branch_from(self.store.memory_dir());
                 let scored = if bm25_hits.is_empty() {
                     RecallEngine::recall_metadata_only(
                         &req.query,
@@ -494,12 +464,12 @@ impl MemoryToolService {
         }
     }
 
-    /// Update (supersede) an existing memory with new content or metadata.
+    /// Update an existing memory in place.
     ///
-    /// Creates a new memory that supersedes the old one. The old memory remains
-    /// in the graph for audit/explain purposes but is no longer returned by recall.
+    /// Modifies the memory with the given ID, changing only the fields you provide.
+    /// The ID stays the same. History is tracked via git.
     #[tool(
-        description = "Update (supersede) an existing memory. Creates a new version that replaces the old one. The old version is kept for audit purposes. Provide the memory ID and any fields to change."
+        description = "Update an existing memory in place. Only provide the fields you want to change — content, tags, refs, rationale, or alternatives. The memory keeps its ID. History is preserved in git."
     )]
     async fn memory_update(
         &self,
@@ -527,16 +497,14 @@ impl MemoryToolService {
             tags: req.tags,
             severity: None,
             artifact_refs: req.refs,
-            valid_from: None,
-            valid_to: None,
             rationale: req.rationale,
             alternatives: req.alternatives,
         };
 
         match self.store.update(&req.id, update).await {
-            Ok(new_id) => {
-                let mut text = format!("Updated: {} → {}", req.id, new_id);
-                if let Ok(Some(mem)) = self.store.get(&new_id).await {
+            Ok(id) => {
+                let mut text = format!("Updated: {}", id);
+                if let Ok(Some(mem)) = self.store.get(&id).await {
                     text = serde_json::to_string_pretty(&format_json(&mem)).unwrap_or(text);
                 }
                 Ok(CallToolResult::success(vec![Content::text(text)]))
@@ -610,7 +578,7 @@ impl MemoryToolService {
 
     /// Execute a raw SPARQL query against the memory knowledge graph.
     #[tool(
-        description = "Advanced: Execute a raw SPARQL SELECT query against the memory knowledge graph. Prefer memory_recall for searching. Namespace: 'https://ns.flur.ee/memory#' (prefix 'mem:'). Classes: mem:Fact, mem:Decision, mem:Constraint, mem:Preference, mem:Artifact. Key properties: mem:content, mem:tag, mem:scope, mem:severity, mem:createdAt. Example: SELECT ?id ?content WHERE { ?id a mem:Fact ; mem:content ?content } LIMIT 20"
+        description = "Advanced: Execute a raw SPARQL SELECT query against the memory knowledge graph. Prefer memory_recall for searching. Namespace: 'https://ns.flur.ee/memory#' (prefix 'mem:'). Classes: mem:Fact, mem:Decision, mem:Constraint. Key properties: mem:content, mem:tag, mem:scope, mem:severity, mem:rationale, mem:createdAt. Example: SELECT ?id ?content WHERE { ?id a mem:Fact ; mem:content ?content } LIMIT 20"
     )]
     async fn kg_query(
         &self,
@@ -643,6 +611,28 @@ impl MemoryToolService {
 }
 
 impl MemoryToolService {
+    /// Find existing memories related to a just-stored memory.
+    ///
+    /// Returns `None` if no related memories score above threshold.
+    async fn find_related_memories(&self, new_id: &str, content: &str) -> Option<String> {
+        // fetch_n = 3 (LIMIT) + 2: one extra for the self-match that gets
+        // filtered out, one extra for the score cliff peek-ahead.
+        let bm25_hits = self.store.recall_fulltext(content, 5).await.ok()?;
+        let filter = MemoryFilter::default();
+        let all = self.store.current_memories(&filter).await.ok()?;
+        let branch = crate::detect_git_branch_from(self.store.memory_dir());
+
+        let candidates =
+            RecallEngine::find_related(new_id, content, &bm25_hits, &all, branch.as_deref());
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        debug!(new_id = %new_id, related = candidates.len(), "Found related memories after add");
+        Some(format_related_memories(&candidates))
+    }
+
     /// Auto-initialize the memory store if not already initialized.
     async fn ensure_initialized(&self) -> std::result::Result<(), String> {
         if !self.store.is_initialized().await.unwrap_or(false) {
@@ -677,11 +667,11 @@ impl ServerHandler for MemoryToolService {
             },
             instructions: Some(
                 "Fluree Developer Memory MCP server. Stores and retrieves project knowledge \
-                 (facts, decisions, constraints, preferences, artifacts) as an RDF knowledge graph.\n\n\
+                 (facts, decisions, constraints) as an RDF knowledge graph.\n\n\
                  Available tools:\n\
                  - memory_recall: Search for relevant memories. Use at the start of tasks.\n\
                  - memory_add: Store new project knowledge.\n\
-                 - memory_update: Update existing memories (creates a new version).\n\
+                 - memory_update: Update existing memories in place.\n\
                  - memory_forget: Delete incorrect or outdated memories.\n\
                  - memory_status: Check what knowledge is stored.\n\
                  - kg_query: Run raw SPARQL queries against the memory graph.\n\n\
@@ -693,10 +683,9 @@ impl ServerHandler for MemoryToolService {
                     and previews of recent memories.\n\
                  3. When storing memories, choose the right kind:\n\
                     - fact: things that are true (commands, architecture, config)\n\
-                    - decision: choices made and why (with rationale)\n\
-                    - constraint: rules that must be followed\n\
-                    - preference: how things should be done (conventions)\n\
-                    - artifact: important files or resources\n\
+                    - decision: choices made and why (with rationale and alternatives)\n\
+                    - constraint: rules that must be followed (with severity)\n\
+                    Use 'rationale' on any kind to explain why.\n\
                  4. Always add descriptive tags for better recall.\n\
                  5. kg_query is for advanced use only — prefer memory_recall for searching."
                     .to_string(),

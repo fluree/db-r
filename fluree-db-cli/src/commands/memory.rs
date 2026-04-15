@@ -4,7 +4,7 @@ use crate::error::{CliError, CliResult};
 use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_memory::{
     format_context_paged, MemoryFilter, MemoryInput, MemoryKind, MemoryStore, MemoryUpdate,
-    RecallEngine, RecallResult, Scope, SecretDetector, Sensitivity,
+    RecallEngine, RecallResult, Scope, SecretDetector,
 };
 use std::path::{Path, PathBuf};
 
@@ -18,12 +18,8 @@ pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
             refs,
             severity,
             scope,
-            sensitivity,
             rationale,
             alternatives,
-            fact_kind,
-            pref_scope,
-            artifact_kind,
             format,
         } => {
             run_add(
@@ -33,12 +29,8 @@ pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
                 refs,
                 severity,
                 scope,
-                sensitivity,
                 rationale,
                 alternatives,
-                fact_kind,
-                pref_scope,
-                artifact_kind,
                 &format,
                 dirs,
             )
@@ -61,7 +53,6 @@ pub async fn run(action: MemoryAction, dirs: &FlureeDir) -> CliResult<()> {
             format,
         } => run_update(&id, text, tags, refs, &format, dirs).await,
         MemoryAction::Forget { id } => run_forget(&id, dirs).await,
-        MemoryAction::Explain { id } => run_explain(&id, dirs).await,
         MemoryAction::Status => run_status(dirs).await,
         MemoryAction::Export => run_export(dirs).await,
         MemoryAction::Import { file } => run_import(&file, dirs).await,
@@ -754,18 +745,14 @@ async fn run_add(
     refs: Vec<String>,
     severity: Option<String>,
     scope: Option<String>,
-    sensitivity: Option<String>,
     rationale: Option<String>,
     alternatives: Option<String>,
-    fact_kind: Option<String>,
-    pref_scope: Option<String>,
-    artifact_kind: Option<String>,
     format: &str,
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     let kind = MemoryKind::parse(&kind_str).ok_or_else(|| {
         CliError::Usage(format!(
-            "invalid memory kind '{}'; valid: fact, decision, constraint, preference, artifact",
+            "invalid memory kind '{}'; valid: fact, decision, constraint",
             kind_str
         ))
     })?;
@@ -800,6 +787,16 @@ async fn run_add(
         content
     };
 
+    // Enforce content length limit
+    if content.len() > fluree_db_memory::MAX_CONTENT_LENGTH {
+        return Err(CliError::Usage(format!(
+            "memory content is {} characters (max {}). \
+             A good memory is 1-3 sentences capturing a single insight.",
+            content.len(),
+            fluree_db_memory::MAX_CONTENT_LENGTH,
+        )));
+    }
+
     let severity = severity
         .map(|s| {
             fluree_db_memory::Severity::parse_str(&s).ok_or_else(|| {
@@ -819,36 +816,20 @@ async fn run_add(
         .transpose()?
         .unwrap_or_default();
 
-    let sensitivity = sensitivity
-        .map(|s| {
-            Sensitivity::parse_str(&s).ok_or_else(|| {
-                CliError::Usage(format!(
-                    "invalid sensitivity '{}'; valid: public, internal, client, secret",
-                    s
-                ))
-            })
-        })
-        .transpose()?
-        .unwrap_or_default();
-
     let branch = fluree_db_memory::detect_git_branch();
+
+    let recall_query = content.clone();
 
     let input = MemoryInput {
         kind,
         content,
         tags,
         scope,
-        sensitivity,
         severity,
         artifact_refs: refs,
         branch,
-        valid_from: None,
-        valid_to: None,
         rationale,
         alternatives,
-        fact_kind,
-        pref_scope,
-        artifact_kind,
     };
 
     let store = build_store(dirs)?;
@@ -870,7 +851,33 @@ async fn run_add(
         }
     }
 
+    // Surface related memories for housekeeping
+    if let Some(related) = find_related_memories_cli(&store, &id, &recall_query).await {
+        print!("{}", related);
+    }
+
     Ok(())
+}
+
+/// Find existing memories related to a just-stored memory.
+async fn find_related_memories_cli(
+    store: &MemoryStore,
+    new_id: &str,
+    content: &str,
+) -> Option<String> {
+    let bm25_hits = store.recall_fulltext(content, 5).await.ok()?;
+    let filter = MemoryFilter::default();
+    let all = store.current_memories(&filter).await.ok()?;
+    let branch = fluree_db_memory::detect_git_branch();
+
+    let candidates =
+        RecallEngine::find_related(new_id, content, &bm25_hits, &all, branch.as_deref());
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    Some(fluree_db_memory::format_related_memories(&candidates))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -991,19 +998,17 @@ async fn run_update(
         tags,
         severity: None,
         artifact_refs: refs,
-        valid_from: None,
-        valid_to: None,
         rationale: None,
         alternatives: None,
     };
 
     let store = build_store(dirs)?;
     store.ensure_synced().await.map_err(memory_err)?;
-    let new_id = store.update(id, update).await.map_err(memory_err)?;
+    let updated_id = store.update(id, update).await.map_err(memory_err)?;
 
     match format {
         "json" => {
-            if let Some(mem) = store.get(&new_id).await.map_err(memory_err)? {
+            if let Some(mem) = store.get(&updated_id).await.map_err(memory_err)? {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&fluree_db_memory::format_json(&mem))
@@ -1012,7 +1017,7 @@ async fn run_update(
             }
         }
         _ => {
-            println!("Updated: {} → {}", id, new_id);
+            println!("Updated: {}", updated_id);
         }
     }
 
@@ -1024,14 +1029,6 @@ async fn run_forget(id: &str, dirs: &FlureeDir) -> CliResult<()> {
     store.ensure_synced().await.map_err(memory_err)?;
     store.forget(id).await.map_err(memory_err)?;
     println!("Forgotten: {}", id);
-    Ok(())
-}
-
-async fn run_explain(id: &str, dirs: &FlureeDir) -> CliResult<()> {
-    let store = build_store(dirs)?;
-    store.ensure_synced().await.map_err(memory_err)?;
-    let chain = store.supersession_chain(id).await.map_err(memory_err)?;
-    print!("{}", fluree_db_memory::format_explain(&chain));
     Ok(())
 }
 

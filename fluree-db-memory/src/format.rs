@@ -21,18 +21,6 @@ pub fn format_text(memory: &Memory) -> String {
     if let Some(alternatives) = &memory.alternatives {
         out.push_str(&format!("Alternatives: {}\n", alternatives));
     }
-    if let Some(fact_kind) = &memory.fact_kind {
-        out.push_str(&format!("Fact kind: {}\n", fact_kind));
-    }
-    if let Some(pref_scope) = &memory.pref_scope {
-        out.push_str(&format!("Pref scope: {}\n", pref_scope));
-    }
-    if let Some(artifact_kind) = &memory.artifact_kind {
-        out.push_str(&format!("Artifact kind: {}\n", artifact_kind));
-    }
-    if let Some(supersedes) = &memory.supersedes {
-        out.push_str(&format!("Supersedes: {}\n", supersedes));
-    }
     out.push_str(&format!("Created: {}\n", memory.created_at));
     out
 }
@@ -170,35 +158,6 @@ pub fn format_context_paged(
     out
 }
 
-/// Format the explain view for a supersession chain.
-pub fn format_explain(chain: &[Memory]) -> String {
-    if chain.is_empty() {
-        return "No memories in chain.".to_string();
-    }
-
-    let mut out = String::new();
-    out.push_str("Supersession chain (newest first):\n\n");
-
-    for (i, mem) in chain.iter().enumerate() {
-        let marker = if i == 0 { " (current)" } else { "" };
-        out.push_str(&format!(
-            "{}. {}{}\n   Kind: {}\n   Content: {}\n   Created: {}\n",
-            i + 1,
-            mem.id,
-            marker,
-            mem.kind,
-            mem.content,
-            mem.created_at,
-        ));
-        if let Some(sup) = &mem.supersedes {
-            out.push_str(&format!("   Supersedes: {}\n", sup));
-        }
-        out.push('\n');
-    }
-
-    out
-}
-
 /// Format memory status for human-readable output.
 ///
 /// Includes counts by kind and previews of recent memories so that
@@ -251,6 +210,72 @@ pub fn format_status_text(status: &MemoryStatus) -> String {
     out
 }
 
+/// Format related memories as an XML block for post-add housekeeping.
+///
+/// Shown after a successful `memory_add` to surface existing memories that
+/// may overlap with the one just stored. Gives the LLM concrete tool calls
+/// to clean up duplicates or stale entries.
+pub fn format_related_memories(related: &[ScoredMemory]) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "\n\nExisting memories listed below may overlap with what you just stored. \
+         Help clean up stale memories!\n\
+         - Superseded or redundant: memory_forget(id=\"<old-id>\")\n\
+         - Could be improved: memory_update(id=\"<old-id>\") with only the fields to change (content, tags, or refs)\n",
+    );
+    out.push_str("<related-memories>\n");
+
+    for scored in related {
+        let mem = &scored.memory;
+        let age = format_age(&mem.created_at);
+        out.push_str(&format!(
+            "  <memory id=\"{}\" kind=\"{}\" score=\"{:.1}\" age=\"{}\">\n",
+            mem.id, mem.kind, scored.score, age
+        ));
+        let preview: String = mem.content.chars().take(120).collect();
+        let ellipsis = if mem.content.len() > preview.len() {
+            "..."
+        } else {
+            ""
+        };
+        out.push_str(&format!(
+            "    <content>{}{}</content>\n",
+            xml_escape(&preview),
+            ellipsis
+        ));
+        if !mem.tags.is_empty() {
+            out.push_str(&format!("    <tags>{}</tags>\n", mem.tags.join(", ")));
+        }
+        out.push_str("  </memory>\n");
+    }
+
+    out.push_str("</related-memories>");
+
+    out
+}
+
+/// Format a created_at timestamp as a human-readable age string.
+fn format_age(created_at: &str) -> String {
+    use chrono::{DateTime, Utc};
+    let Ok(created) = DateTime::parse_from_rfc3339(created_at) else {
+        return "?".to_string();
+    };
+    let age = Utc::now() - created.to_utc();
+    let days = age.num_days();
+    if days == 0 {
+        let hours = age.num_hours();
+        if hours == 0 {
+            format!("{}m", age.num_minutes().max(1))
+        } else {
+            format!("{}h", hours)
+        }
+    } else if days < 30 {
+        format!("{}d", days)
+    } else {
+        format!("{}w", days / 7)
+    }
+}
+
 /// Minimal XML escaping for content text.
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -261,7 +286,7 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{MemoryKind, Scope, Sensitivity};
+    use crate::types::{MemoryKind, Scope};
 
     fn sample_memory() -> Memory {
         Memory {
@@ -270,19 +295,12 @@ mod tests {
             content: "Use nextest for running tests".to_string(),
             tags: vec!["testing".to_string(), "cargo".to_string()],
             scope: Scope::Repo,
-            sensitivity: Sensitivity::Public,
             severity: None,
             artifact_refs: vec!["Cargo.toml".to_string()],
             branch: Some("main".to_string()),
-            supersedes: None,
-            valid_from: None,
-            valid_to: None,
             created_at: "2026-02-21T12:00:00Z".to_string(),
             rationale: None,
             alternatives: None,
-            fact_kind: None,
-            pref_scope: None,
-            artifact_kind: None,
         }
     }
 
@@ -311,5 +329,108 @@ mod tests {
     #[test]
     fn xml_escape_works() {
         assert_eq!(xml_escape("a < b & c > d"), "a &lt; b &amp; c &gt; d");
+    }
+
+    #[test]
+    fn format_age_minutes() {
+        use chrono::Utc;
+        let ts = (Utc::now() - chrono::Duration::minutes(15)).to_rfc3339();
+        let age = format_age(&ts);
+        assert!(age.ends_with('m'), "expected minutes, got: {age}");
+    }
+
+    #[test]
+    fn format_age_hours() {
+        use chrono::Utc;
+        let ts = (Utc::now() - chrono::Duration::hours(5)).to_rfc3339();
+        let age = format_age(&ts);
+        assert_eq!(age, "5h");
+    }
+
+    #[test]
+    fn format_age_days() {
+        use chrono::Utc;
+        let ts = (Utc::now() - chrono::Duration::days(12)).to_rfc3339();
+        let age = format_age(&ts);
+        assert_eq!(age, "12d");
+    }
+
+    #[test]
+    fn format_age_weeks() {
+        use chrono::Utc;
+        let ts = (Utc::now() - chrono::Duration::days(45)).to_rfc3339();
+        let age = format_age(&ts);
+        assert_eq!(age, "6w");
+    }
+
+    #[test]
+    fn format_age_invalid_timestamp() {
+        assert_eq!(format_age("not-a-date"), "?");
+    }
+
+    #[test]
+    fn related_memories_format_structure() {
+        let scored = vec![ScoredMemory {
+            memory: Memory {
+                id: "mem:fact-old".to_string(),
+                kind: MemoryKind::Fact,
+                content: "PSOT queries return supersets".to_string(),
+                tags: vec!["query".to_string(), "index".to_string()],
+                scope: Scope::Repo,
+                severity: None,
+                artifact_refs: vec![],
+                branch: None,
+                created_at: "2026-03-01T10:00:00Z".to_string(),
+                rationale: None,
+                alternatives: None,
+            },
+            score: 18.2,
+        }];
+
+        let output = format_related_memories(&scored);
+
+        assert!(output.contains("<related-memories>"));
+        assert!(output.contains("</related-memories>"));
+        assert!(output.contains("mem:fact-old"));
+        assert!(output.contains("score=\"18.2\""));
+        assert!(output.contains("PSOT queries return supersets"));
+        assert!(output.contains("<tags>query, index</tags>"));
+        assert!(output.contains("memory_forget"));
+        assert!(output.contains("memory_update"));
+    }
+
+    #[test]
+    fn related_memories_truncates_long_content() {
+        let long_content = "x".repeat(200);
+        let scored = vec![ScoredMemory {
+            memory: Memory {
+                id: "mem:fact-long".to_string(),
+                kind: MemoryKind::Fact,
+                content: long_content,
+                tags: vec![],
+                scope: Scope::Repo,
+                severity: None,
+                artifact_refs: vec![],
+                branch: None,
+                created_at: "2026-03-01T10:00:00Z".to_string(),
+                rationale: None,
+                alternatives: None,
+            },
+            score: 12.0,
+        }];
+
+        let output = format_related_memories(&scored);
+        assert!(output.contains("..."));
+        // Content in the XML should be truncated to ~120 chars + "..."
+        assert!(!output.contains(&"x".repeat(200)));
+    }
+
+    #[test]
+    fn related_memories_empty_returns_empty() {
+        let output = format_related_memories(&[]);
+        // With no memories, the preamble text and XML are still produced
+        // but there are no <memory> elements inside
+        assert!(output.contains("<related-memories>"));
+        assert!(!output.contains("<memory "));
     }
 }

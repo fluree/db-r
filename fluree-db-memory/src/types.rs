@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+/// Maximum length of memory content in characters.
+pub const MAX_CONTENT_LENGTH: usize = 750;
+
 /// The kind of memory being stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -7,8 +10,6 @@ pub enum MemoryKind {
     Fact,
     Decision,
     Constraint,
-    Preference,
-    Artifact,
 }
 
 impl MemoryKind {
@@ -18,8 +19,6 @@ impl MemoryKind {
             MemoryKind::Fact => "fact",
             MemoryKind::Decision => "decision",
             MemoryKind::Constraint => "constraint",
-            MemoryKind::Preference => "preference",
-            MemoryKind::Artifact => "artifact",
         }
     }
 
@@ -29,8 +28,6 @@ impl MemoryKind {
             MemoryKind::Fact => "mem:Fact",
             MemoryKind::Decision => "mem:Decision",
             MemoryKind::Constraint => "mem:Constraint",
-            MemoryKind::Preference => "mem:Preference",
-            MemoryKind::Artifact => "mem:Artifact",
         }
     }
 
@@ -40,8 +37,9 @@ impl MemoryKind {
             "fact" => Some(MemoryKind::Fact),
             "decision" => Some(MemoryKind::Decision),
             "constraint" => Some(MemoryKind::Constraint),
-            "preference" => Some(MemoryKind::Preference),
-            "artifact" => Some(MemoryKind::Artifact),
+            // Backwards compat: map removed kinds to closest equivalent
+            "preference" => Some(MemoryKind::Fact),
+            "artifact" => Some(MemoryKind::Fact),
             _ => None,
         }
     }
@@ -105,55 +103,6 @@ impl std::fmt::Display for Scope {
     }
 }
 
-/// Sensitivity level for content.
-///
-/// Stored as string literals in the knowledge graph.
-/// - `public`: General knowledge, safe to share broadly.
-/// - `internal`: Team/org internal, not for external sharing.
-/// - `client`: Client-specific, restricted to project scope.
-/// - `secret`: Contains credentials or secrets — auto-redacted on ingest.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Sensitivity {
-    #[default]
-    Public,
-    Internal,
-    Client,
-    Secret,
-}
-
-impl Sensitivity {
-    /// Short lowercase string for use in queries and storage.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Sensitivity::Public => "public",
-            Sensitivity::Internal => "internal",
-            Sensitivity::Client => "client",
-            Sensitivity::Secret => "secret",
-        }
-    }
-
-    /// Parse from a string (case-insensitive, with backwards compat).
-    pub fn parse_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "public" => Some(Sensitivity::Public),
-            "internal" => Some(Sensitivity::Internal),
-            "client" => Some(Sensitivity::Client),
-            "secret" => Some(Sensitivity::Secret),
-            // Backwards compat with old values
-            "normal" => Some(Sensitivity::Public),
-            "sensitive" => Some(Sensitivity::Internal),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for Sensitivity {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
 /// Severity of a constraint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -187,12 +136,9 @@ pub struct Memory {
     /// Tags for categorization and recall.
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Scope (project or global).
+    /// Scope (repo or user).
     #[serde(default)]
     pub scope: Scope,
-    /// Sensitivity level.
-    #[serde(default)]
-    pub sensitivity: Sensitivity,
     /// Severity (for constraints).
     pub severity: Option<Severity>,
     /// File/artifact references.
@@ -200,31 +146,16 @@ pub struct Memory {
     pub artifact_refs: Vec<String>,
     /// Git branch when created.
     pub branch: Option<String>,
-    /// ID of the memory this supersedes.
-    pub supersedes: Option<String>,
-    /// Valid-from timestamp (bi-temporal).
-    pub valid_from: Option<String>,
-    /// Valid-to timestamp (bi-temporal).
-    pub valid_to: Option<String>,
     /// Creation timestamp.
     pub created_at: String,
 
-    // -- Type-specific predicates --
-    /// Why this decision was made (for `Decision` kind).
+    // -- Optional predicates (available on any kind) --
+    /// Why this decision/constraint/fact exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
-    /// What alternatives were considered (for `Decision` kind).
+    /// Alternatives considered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alternatives: Option<String>,
-    /// Sub-categorization for facts: `command`, `architecture`, `dependency`, `configuration`, `api`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fact_kind: Option<String>,
-    /// Whether this preference is a `user`, `team`, or `repo` convention.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pref_scope: Option<String>,
-    /// Artifact sub-type: `file`, `symbol`, `crate`, `module`, `config`, `endpoint`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_kind: Option<String>,
 }
 
 /// Input for creating a new memory.
@@ -234,30 +165,20 @@ pub struct MemoryInput {
     pub content: String,
     pub tags: Vec<String>,
     pub scope: Scope,
-    pub sensitivity: Sensitivity,
     pub severity: Option<Severity>,
     pub artifact_refs: Vec<String>,
     pub branch: Option<String>,
-    pub valid_from: Option<String>,
-    pub valid_to: Option<String>,
-    // Type-specific
     pub rationale: Option<String>,
     pub alternatives: Option<String>,
-    pub fact_kind: Option<String>,
-    pub pref_scope: Option<String>,
-    pub artifact_kind: Option<String>,
 }
 
-/// Input for updating (superseding) a memory.
+/// Input for updating a memory in place.
 #[derive(Debug, Clone)]
 pub struct MemoryUpdate {
     pub content: Option<String>,
     pub tags: Option<Vec<String>>,
     pub severity: Option<Severity>,
     pub artifact_refs: Option<Vec<String>>,
-    pub valid_from: Option<String>,
-    pub valid_to: Option<String>,
-    // Type-specific
     pub rationale: Option<String>,
     pub alternatives: Option<String>,
 }
@@ -307,4 +228,54 @@ pub struct MemoryPreview {
     /// Content truncated to ~100 chars.
     pub summary: String,
     pub tags: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn max_content_length_is_750() {
+        assert_eq!(MAX_CONTENT_LENGTH, 750);
+    }
+
+    #[test]
+    fn memory_kind_parse_current_kinds() {
+        assert_eq!(MemoryKind::parse("fact"), Some(MemoryKind::Fact));
+        assert_eq!(MemoryKind::parse("decision"), Some(MemoryKind::Decision));
+        assert_eq!(
+            MemoryKind::parse("constraint"),
+            Some(MemoryKind::Constraint)
+        );
+        assert_eq!(MemoryKind::parse("FACT"), Some(MemoryKind::Fact));
+    }
+
+    #[test]
+    fn memory_kind_parse_backwards_compat() {
+        assert_eq!(MemoryKind::parse("preference"), Some(MemoryKind::Fact));
+        assert_eq!(MemoryKind::parse("artifact"), Some(MemoryKind::Fact));
+    }
+
+    #[test]
+    fn memory_kind_parse_invalid() {
+        assert_eq!(MemoryKind::parse("unknown"), None);
+        assert_eq!(MemoryKind::parse(""), None);
+    }
+
+    #[test]
+    fn scope_parse_variants() {
+        assert_eq!(Scope::parse_str("repo"), Some(Scope::Repo));
+        assert_eq!(Scope::parse_str("user"), Some(Scope::User));
+        assert_eq!(Scope::parse_str("mem:repo"), Some(Scope::Repo));
+        assert_eq!(Scope::parse_str("project"), Some(Scope::Repo));
+        assert_eq!(Scope::parse_str("global"), Some(Scope::User));
+    }
+
+    #[test]
+    fn severity_parse() {
+        assert_eq!(Severity::parse_str("must"), Some(Severity::Must));
+        assert_eq!(Severity::parse_str("should"), Some(Severity::Should));
+        assert_eq!(Severity::parse_str("prefer"), Some(Severity::Prefer));
+        assert_eq!(Severity::parse_str("invalid"), None);
+    }
 }

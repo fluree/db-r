@@ -43,6 +43,8 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
         Commands::Create {
             ledger,
             from,
+            memory,
+            no_user,
             chunk_size_mb,
             memory_budget_mb,
             parallelism,
@@ -50,6 +52,24 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             leaflets_per_leaf,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
+
+            if from.is_some() && memory.is_some() {
+                return Err(error::CliError::Usage(
+                    "--from and --memory are mutually exclusive".into(),
+                ));
+            }
+
+            if let Some(memory_path) = memory {
+                return commands::create::run_memory_import(
+                    &ledger,
+                    &memory_path,
+                    no_user,
+                    &fluree_dir,
+                    cli.quiet,
+                )
+                .await;
+            }
+
             // Create-specific flags take precedence; fall back to global flags.
             let import_opts = commands::create::ImportOpts {
                 memory_budget_mb: if memory_budget_mb > 0 {

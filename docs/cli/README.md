@@ -108,6 +108,15 @@ If you're building a custom server that must support the CLI end-to-end (for exa
 | [`prefix`](prefix.md) | Manage IRI prefix mappings |
 | [`completions`](completions.md) | Generate shell completions |
 
+### Developer Memory
+
+| Command | Description |
+|---------|-------------|
+| [`memory`](memory.md) | Store and recall facts, decisions, constraints, preferences, and artifact references |
+| [`mcp`](mcp.md) | MCP server for IDE agent integration |
+
+For background, IDE setup, team workflows, and the `mem:` schema, see the [Memory section](../memory/README.md) of the docs.
+
 ## Project Structure
 
 When you run `fluree init`, a `.fluree/` directory is created with:

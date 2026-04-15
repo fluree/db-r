@@ -88,4 +88,7 @@ CLI tracing is disabled when running `fluree mcp serve` to avoid any log output 
 
 ## See Also
 
-- [memory](memory.md) - CLI commands for memory management
+- [memory](memory.md) — CLI commands for memory management
+- [Memory: MCP server](../memory/concepts/mcp.md) — what the MCP server exposes and how agents use it
+- [Memory getting started](../memory/getting-started/README.md) — per-IDE setup (Claude Code, Cursor, VS Code, Windsurf, Zed)
+- [Memory IDE support matrix](../memory/reference/ide-matrix.md) — config paths and supported features per IDE
