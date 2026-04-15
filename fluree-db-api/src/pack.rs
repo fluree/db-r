@@ -274,11 +274,50 @@ pub fn validate_pack_request(request: &PackRequest) -> std::result::Result<(), S
     Ok(())
 }
 
+/// Build a `PackRequest` that captures the entire current state of a ledger.
+///
+/// Reads the handle's current snapshot and sets `want` to the head commit
+/// (and, when `include_indexes` is true and the ledger has a populated
+/// index, `want_index_root_id` to the current index root). `have` is left
+/// empty so the full commit chain is packed.
+///
+/// Returns an error if the ledger has no head commit — there is nothing
+/// to pack, and we prefer an explicit failure over a silent empty archive.
+/// If `include_indexes` is requested but the ledger has no index root yet,
+/// the returned request falls back to commits-only rather than failing.
+pub async fn full_ledger_pack_request(
+    handle: &LedgerHandle,
+    include_indexes: bool,
+) -> Result<PackRequest> {
+    let snapshot = handle.snapshot().await;
+    let head_commit_id = snapshot.head_commit_id.clone().ok_or_else(|| {
+        ApiError::internal(format!(
+            "ledger {} has no head commit to pack",
+            handle.ledger_id()
+        ))
+    })?;
+
+    let request = match (include_indexes, snapshot.head_index_id.clone()) {
+        (true, Some(index_root)) => {
+            PackRequest::with_indexes(vec![head_commit_id], vec![], index_root, None)
+        }
+        _ => PackRequest::commits(vec![head_commit_id], vec![]),
+    };
+    Ok(request)
+}
+
 /// Generate a pack stream for the given request.
 ///
 /// Writes frame bytes into `frame_tx`. The caller should wrap the receiver
-/// as an HTTP streaming response body. On error, sends an error frame + end
-/// frame before returning.
+/// as an HTTP streaming response body. On error — including an invalid
+/// request (empty `want`, wrong `protocol`) — sends an error frame + end
+/// frame and returns zero-valued stats. Callers that need a Rust-side
+/// contract should inspect `PackStreamResult` or decode the frame stream
+/// for a `PackFrame::Error`.
+///
+/// For archiving a whole ledger, build the request with
+/// [`full_ledger_pack_request`] rather than hand-rolling one — empty
+/// `want` is always rejected.
 ///
 /// This function is meant to be `tokio::spawn`ed by the HTTP handler.
 pub async fn stream_pack<N>(
@@ -325,6 +364,10 @@ async fn stream_pack_inner<N>(
 where
     N: NameService + RefPublisher + Send + Sync,
 {
+    // Guard against silent empty packs and protocol mismatches from
+    // non-HTTP callers that bypass the route-layer check.
+    validate_pack_request(request)?;
+
     let ledger_id = handle.ledger_id();
     let content_store = fluree.content_store(ledger_id);
 

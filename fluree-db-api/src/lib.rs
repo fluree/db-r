@@ -129,8 +129,8 @@ pub use ledger_manager::{
 };
 pub use merge::MergeReport;
 pub use pack::{
-    compute_missing_index_artifacts, validate_pack_request, PackChunk, PackStreamError,
-    PackStreamResult,
+    compute_missing_index_artifacts, full_ledger_pack_request, validate_pack_request, PackChunk,
+    PackStreamError, PackStreamResult,
 };
 pub use policy_builder::identity_has_no_policies;
 pub use policy_view::{

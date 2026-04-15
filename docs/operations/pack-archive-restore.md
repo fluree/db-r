@@ -61,8 +61,7 @@ Use `stream_pack()` from `fluree-db-api` to generate pack frames, then write the
 
 ```rust
 use fluree_db_api::{Fluree, FlureeBuilder};
-use fluree_db_api::pack::{stream_pack, PackRequest};
-use fluree_db_core::pack::PACK_PROTOCOL;
+use fluree_db_api::pack::{full_ledger_pack_request, stream_pack};
 use tokio::sync::mpsc;
 use tokio::io::AsyncWriteExt;
 
@@ -72,18 +71,13 @@ async fn archive_ledger(
     output_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let handle = fluree.ledger(ledger_id).await?;
-    let snapshot = handle.snapshot().await;
 
-    // Request all commits (have = empty means "send everything")
-    // Optionally include indexes for instant queryability on restore.
-    let request = PackRequest {
-        protocol: PACK_PROTOCOL.to_string(),
-        want: vec![snapshot.commit_id.clone()],
-        have: vec![],
-        want_index_root_id: snapshot.index_id.clone(), // None to skip indexes
-        have_index_root_id: None,
-        include_indexes: true,
-    };
+    // Build a request that captures the current head commit (and index
+    // root, if present). `include_indexes = true` gives the restored
+    // ledger instant queryability; pass `false` for a smaller archive
+    // that reindexes on import. Empty `want` is always rejected by
+    // `stream_pack`, so always build via this helper.
+    let request = full_ledger_pack_request(&handle, /* include_indexes */ true).await?;
 
     let (tx, mut rx) = mpsc::channel(64);
 
