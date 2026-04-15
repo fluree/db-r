@@ -1514,12 +1514,24 @@ let result = fluree.graph("mydb:main")
     .insert(&data)
     .commit().await?;
 
-// Upsert with options
+// Upsert with options. f:identity is system-controlled (signed DID,
+// opts.identity, or CommitOpts::identity). f:message and f:author are
+// pure user claims — supply them in the transaction body just like any
+// other txn-meta property.
+let data = serde_json::json!({
+    "@context": {
+        "ex": "http://example.org/",
+        "f": "https://ns.flur.ee/db#"
+    },
+    "@graph": [{ "@id": "ex:alice", "ex:name": "Alice" }],
+    "f:message": "admin update",
+    "f:author": "did:admin"
+});
+
 let result = fluree.graph("mydb:main")
     .transact()
     .upsert(&data)
-    .txn_opts(TxnOpts { author: Some("did:admin".into()), ..Default::default() })
-    .commit_opts(CommitOpts { message: Some("admin update".into()), ..Default::default() })
+    .commit_opts(CommitOpts::default().identity("did:admin"))
     .commit().await?;
 
 // Stage without committing (preview changes)
@@ -1719,10 +1731,10 @@ Both `stage(&handle)` and `stage_owned(ledger)` return a builder with identical 
 ```rust
 let result = fluree.stage(&handle)  // or stage_owned(ledger)
     .insert(&data)                   // or .upsert(&data), .update(&data)
-    .txn_opts(TxnOpts::default().author("did:admin"))
-    .commit_opts(CommitOpts::with_message("admin update"))
+    .commit_opts(CommitOpts::default().identity("did:admin"))
     .execute()
     .await?;
+// (Include `f:message` / `f:author` directly in `data` for user-claim provenance.)
 ```
 
 | Method | Description |
@@ -1732,8 +1744,8 @@ let result = fluree.stage(&handle)  // or stage_owned(ledger)
 | `.update(&json)` | Update with WHERE/DELETE/INSERT |
 | `.insert_turtle(&ttl)` | Insert Turtle data |
 | `.upsert_turtle(&ttl)` | Upsert Turtle data |
-| `.txn_opts(opts)` | Set transaction options (author, context) |
-| `.commit_opts(opts)` | Set commit options (message) |
+| `.txn_opts(opts)` | Set transaction options (branch, context) |
+| `.commit_opts(opts)` | Set commit options (identity, raw_txn) |
 | `.policy(ctx)` | Set policy enforcement |
 | `.execute()` | Stage + commit |
 | `.stage()` | Stage without committing (returns `Staged`) |

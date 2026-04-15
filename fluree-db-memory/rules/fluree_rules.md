@@ -25,6 +25,8 @@ Use `rationale` on any kind to explain *why* something is true, was decided, or 
 
 ## Tag Conventions
 
+**Tags are required.** Every memory must include at least one tag. Tags are the primary recall signal — memories without tags are hard to surface later.
+
 Use consistent, lowercase tags. Common tags:
 - Module names: `indexer`, `query`, `transact`, `api`, `cli`, `memory`
 - Topics: `testing`, `errors`, `performance`, `storage`, `schema`

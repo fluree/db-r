@@ -35,7 +35,11 @@ Memories are serialized as subject blocks with one predicate per line, so most d
 
 ## Merge conflicts
 
-Conflicts on `repo.ttl` are usually clean — two people added different memories, different subject blocks. Occasionally you'll see a conflict inside a single memory's block (someone updated content, someone else retagged). Resolve by hand:
+Memories in `repo.ttl` are sorted by `(branch, id)` — memories from the same git branch cluster together, and different branches land in different regions of the file. This means two feature branches that each add memories will almost never conflict, because their blocks insert at different positions in the file.
+
+The branch name is captured automatically when a memory is created, so memories from `feature/auth` sort separately from memories created on `feature/indexer`. Within each branch group, memories are ordered chronologically (ULID encodes creation time).
+
+When conflicts do occur, they're usually because two branches modified the same existing memory (via `update`) or both worked on the same branch. These are typically clean to resolve:
 
 ```ttl
 <<<<<<< HEAD

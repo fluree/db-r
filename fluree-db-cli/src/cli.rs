@@ -321,10 +321,6 @@ pub enum Commands {
         #[arg(short = 'f', long = "file")]
         file: Option<PathBuf>,
 
-        /// Commit message
-        #[arg(short = 'm', long = "message")]
-        message: Option<String>,
-
         /// Data format (turtle or jsonld); auto-detected if omitted
         #[arg(long)]
         format: Option<String>,
@@ -363,10 +359,6 @@ pub enum Commands {
         #[arg(short = 'f', long = "file")]
         file: Option<PathBuf>,
 
-        /// Commit message
-        #[arg(short = 'm', long = "message")]
-        message: Option<String>,
-
         /// Data format (jsonld or sparql); auto-detected if omitted
         #[arg(long)]
         format: Option<String>,
@@ -403,10 +395,6 @@ pub enum Commands {
         /// Read data from a file
         #[arg(short = 'f', long = "file")]
         file: Option<PathBuf>,
-
-        /// Commit message
-        #[arg(short = 'm', long = "message")]
-        message: Option<String>,
 
         /// Data format (turtle or jsonld); auto-detected if omitted
         #[arg(long)]

@@ -12,7 +12,7 @@ fluree memory add [OPTIONS]
 |---|---|
 | `--kind <KIND>` | `fact` (default), `decision`, `constraint` |
 | `--text <TEXT>` | Content text (or provide via stdin) |
-| `--tags <T1,T2>` | Comma-separated tags |
+| `--tags <T1,T2>` | **Required.** Comma-separated tags — the primary recall signal |
 | `--refs <R1,R2>` | Comma-separated file/artifact references |
 | `--severity <SEV>` | For constraints: `must`, `should`, `prefer` |
 | `--scope <SCOPE>` | `repo` (default) or `user` |

@@ -1498,8 +1498,12 @@ pub mod db {
     /// db:message - commit message (optional)
     pub const MESSAGE: &str = "message";
 
-    /// db:author - commit author (optional)
+    /// db:author - commit author (optional, user claim)
     pub const AUTHOR: &str = "author";
+
+    /// db:identity - authenticated/impersonated identity acting on the transaction.
+    /// System-controlled: derived from signed credential DID or `opts.identity`.
+    pub const IDENTITY: &str = "identity";
 
     /// db:txn - transaction address (optional)
     pub const TXN: &str = "txn";

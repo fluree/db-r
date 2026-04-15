@@ -806,19 +806,25 @@ fn extract_context(json: &Value) -> Result<ParsedContext> {
     }
 }
 
-/// Strip the top-level `opts` key from a JSON-LD transaction document so it
-/// is not interpreted as data by the JSON-LD expander.
+/// Strip top-level keys that must not be interpreted as data by the JSON-LD
+/// expander.
 ///
-/// `opts` is reserved for parse-time options (e.g. `opts.strictCompactIri`).
+/// - `opts`: reserved for parse-time options (e.g. `opts.strictCompactIri`).
+/// - `txn-meta`: the txn-meta sidecar; entries are extracted separately by
+///   [`extract_txn_meta`] and must not appear as transaction data.
+///
 /// In envelope form (with `@graph`), the expander already ignores extra
-/// top-level keys — only the single-object form leaks `opts` as a property.
+/// top-level keys — only the single-object form leaks these as properties.
 ///
 /// Returns `Cow::Borrowed` when no stripping is needed, `Cow::Owned` otherwise.
 fn strip_opts_for_expansion(json: &Value) -> std::borrow::Cow<'_, Value> {
+    const STRIP_KEYS: &[&str] = &["opts", "txn-meta"];
     match json.as_object() {
-        Some(obj) if obj.contains_key("opts") => {
+        Some(obj) if STRIP_KEYS.iter().any(|k| obj.contains_key(*k)) => {
             let mut cloned = obj.clone();
-            cloned.remove("opts");
+            for k in STRIP_KEYS {
+                cloned.remove(*k);
+            }
             std::borrow::Cow::Owned(Value::Object(cloned))
         }
         _ => std::borrow::Cow::Borrowed(json),

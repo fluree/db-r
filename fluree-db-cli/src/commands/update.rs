@@ -79,7 +79,6 @@ pub async fn run(
     args: &[String],
     expr: Option<&str>,
     file_flag: Option<&Path>,
-    message: Option<&str>,
     format_flag: Option<&str>,
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
@@ -150,13 +149,9 @@ pub async fn run(
             }
             UpdateFormat::JsonLd => {
                 let json: serde_json::Value = serde_json::from_str(&content)?;
-                let commit_opts = CommitOpts {
-                    message: message.map(String::from),
-                    ..Default::default()
-                };
                 let policy_ctx = build_policy_ctx(&fluree, &alias, policy).await?;
                 let graph = fluree.graph(&alias);
-                let mut b = graph.transact().update(&json).commit_opts(commit_opts);
+                let mut b = graph.transact().update(&json).commit_opts(CommitOpts::default());
                 if let Some(ctx) = policy_ctx {
                     b = b.policy(ctx);
                 }

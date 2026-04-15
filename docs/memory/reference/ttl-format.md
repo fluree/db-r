@@ -36,8 +36,8 @@ Tags and artifact refs are sorted alphabetically within a memory for determinist
 
 Three reasons:
 
-- **Diff-friendly** — predicates are one per line within a subject block, so git diffs are readable and appended memories tend to merge cleanly.
-- **Streamable** — the writer doesn't need to serialize the whole file; appends are cheap.
+- **Diff-friendly** — predicates are one per line within a subject block, so git diffs are readable. Memories are sorted by `(branch, id)`, which groups memories from the same branch together and reduces merge conflicts across feature branches.
+- **Merge-friendly** — because the sort distributes memories by originating branch, two feature branches adding memories will insert into different regions of the file and won't conflict on merge.
 - **Semantically exact** — Turtle is RDF, so there's no impedance mismatch between what's in the file and what's in the `__memory` ledger.
 
 ## Sync direction
@@ -46,7 +46,7 @@ The TTL file is the **canonical** store for a given scope. The `__memory` ledger
 
 When you `memory add`, the CLI / MCP server:
 
-1. Appends the new memory block to the appropriate TTL file (authoritative).
+1. Rewrites the TTL file with the new memory inserted in sorted position (authoritative).
 2. Transacts the new triples into the `__memory` ledger (so recall is fast).
 3. Writes a content-hash watermark to `.fluree-memory/.local/build-hash`.
 

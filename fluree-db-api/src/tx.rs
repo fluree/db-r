@@ -1871,9 +1871,9 @@ where
             }
         }
 
-        // TxnOpts: author for policy checks, context for IRI expansion
+        // TxnOpts: context for IRI expansion. The verified DID flows into the
+        // commit as `f:identity` via CommitOpts.identity / txn_signature below.
         let txn_opts = TxnOpts {
-            author: Some(verified.did.clone()),
             context: verified.parent_context,
             ..Default::default()
         };
@@ -1886,9 +1886,10 @@ where
             format!("fluree:tx:sha256:{}", hash_hex)
         };
 
-        // CommitOpts: author for provenance, raw_txn for storage, txn_signature for audit
+        // CommitOpts: identity for provenance (emitted as f:identity), raw_txn
+        // for storage, txn_signature for audit.
         let commit_opts = CommitOpts::default()
-            .author(verified.did.clone())
+            .identity(verified.did.clone())
             .with_raw_txn(raw_credential)
             .with_txn_signature(fluree_db_novelty::TxnSignature {
                 signer: verified.did.clone(),

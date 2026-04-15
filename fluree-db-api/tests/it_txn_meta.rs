@@ -1606,11 +1606,15 @@ async fn test_txn_meta_full_iri_in_from() {
 }
 
 // =============================================================================
-// CommitOpts author and message tests
+// CommitOpts identity + user-supplied author/message tests
+//
+// Only `f:identity` is system-controlled (via `CommitOpts::identity`).
+// `f:message` and `f:author` are pure user txn-meta — supplied in the
+// transaction body, never via a CommitOpts shortcut.
 // =============================================================================
 
 #[tokio::test]
-async fn test_commit_opts_author_and_message_in_txn_meta() {
+async fn test_commit_opts_identity_and_user_claims_in_txn_meta() {
     use fluree_db_core::{range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeTest};
     use fluree_db_transact::CommitOpts;
     use fluree_db_transact::TxnOpts;
@@ -1619,12 +1623,19 @@ async fn test_commit_opts_author_and_message_in_txn_meta() {
     let ledger_id = "it/txn-meta-commit-opts:main";
     let ledger = genesis_ledger(&fluree, ledger_id);
 
+    // f:message and f:author flow through the transaction body as ordinary
+    // user txn-meta. Only identity is system-set.
     let data = json!({
-        "@context": {"ex": "http://example.org/"},
-        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+        "@context": {
+            "ex": "http://example.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}],
+        "f:message": "initial load",
+        "f:author": "alice"
     });
 
-    let commit_opts = CommitOpts::with_message("initial load").author("did:example:admin");
+    let commit_opts = CommitOpts::default().identity("did:example:admin");
 
     let result = fluree
         .insert_with_opts(
@@ -1635,10 +1646,33 @@ async fn test_commit_opts_author_and_message_in_txn_meta() {
             &fluree_db_api::IndexConfig::default(),
         )
         .await
-        .expect("insert with author+message");
+        .expect("insert with identity + body f:message + body f:author");
 
     let ledger = &result.ledger;
     let t = result.receipt.t;
+
+    let identity_pred = fluree_db_core::Sid::new(
+        fluree_vocab::namespaces::FLUREE_DB,
+        fluree_vocab::db::IDENTITY,
+    );
+    let identity_flakes = range_with_overlay(
+        &ledger.snapshot,
+        fluree_db_core::TXN_META_GRAPH_ID,
+        ledger.novelty.as_ref(),
+        IndexType::Post,
+        RangeTest::Eq,
+        RangeMatch::predicate_object(
+            identity_pred,
+            FlakeValue::String("did:example:admin".into()),
+        ),
+        fluree_db_core::RangeOptions::default().with_to_t(t),
+    )
+    .await
+    .expect("identity lookup");
+    assert!(
+        !identity_flakes.is_empty(),
+        "f:identity should be in txn-meta novelty"
+    );
 
     let author_pred = fluree_db_core::Sid::new(
         fluree_vocab::namespaces::FLUREE_DB,
@@ -1650,15 +1684,14 @@ async fn test_commit_opts_author_and_message_in_txn_meta() {
         ledger.novelty.as_ref(),
         IndexType::Post,
         RangeTest::Eq,
-        RangeMatch::predicate_object(author_pred, FlakeValue::String("did:example:admin".into())),
+        RangeMatch::predicate_object(author_pred, FlakeValue::String("alice".into())),
         fluree_db_core::RangeOptions::default().with_to_t(t),
     )
     .await
     .expect("author lookup");
-
     assert!(
         !author_flakes.is_empty(),
-        "f:author should be in txn-meta novelty, got no flakes"
+        "f:author user claim should be in txn-meta novelty"
     );
 
     let message_pred = fluree_db_core::Sid::new(
@@ -1676,64 +1709,61 @@ async fn test_commit_opts_author_and_message_in_txn_meta() {
     )
     .await
     .expect("message lookup");
-
     assert!(
         !message_flakes.is_empty(),
-        "f:message should be in txn-meta novelty, got no flakes"
+        "f:message user claim should be in txn-meta novelty"
     );
 }
 
+/// User-supplied `f:message` and `f:author` in the transaction body should
+/// flow through to txn-meta unchanged (parser allowlist).
 #[tokio::test]
-async fn test_commit_opts_message_only_no_author() {
+async fn test_user_supplied_f_message_and_f_author_accepted() {
     use fluree_db_core::{range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeTest, Sid};
-    use fluree_db_transact::CommitOpts;
-    use fluree_db_transact::TxnOpts;
 
     let fluree = FlureeBuilder::memory().build_memory();
-    let ledger_id = "it/txn-meta-message-only:main";
+    let ledger_id = "it/txn-meta-user-claims:main";
     let ledger = genesis_ledger(&fluree, ledger_id);
 
     let data = json!({
-        "@context": {"ex": "http://example.org/"},
-        "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+        "@context": {
+            "ex": "http://example.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "@graph": [{"@id": "ex:carol", "ex:name": "Carol"}],
+        "f:message": "user-supplied commit message",
+        "f:author": "carol"
     });
 
     let result = fluree
-        .insert_with_opts(
-            ledger,
-            &data,
-            TxnOpts::default(),
-            CommitOpts::with_message("schema migration v2"),
-            &fluree_db_api::IndexConfig::default(),
-        )
+        .insert(ledger, &data)
         .await
-        .expect("insert with message only");
+        .expect("insert with user-supplied f:message and f:author");
 
     let ledger = &result.ledger;
     let t = result.receipt.t;
 
-    let message_pred = Sid::new(
+    let msg_pred = Sid::new(
         fluree_vocab::namespaces::FLUREE_DB,
         fluree_vocab::db::MESSAGE,
     );
-    let message_flakes = range_with_overlay(
+    let msg_flakes = range_with_overlay(
         &ledger.snapshot,
         fluree_db_core::TXN_META_GRAPH_ID,
         ledger.novelty.as_ref(),
         IndexType::Post,
         RangeTest::Eq,
         RangeMatch::predicate_object(
-            message_pred,
-            FlakeValue::String("schema migration v2".into()),
+            msg_pred,
+            FlakeValue::String("user-supplied commit message".into()),
         ),
         fluree_db_core::RangeOptions::default().with_to_t(t),
     )
     .await
-    .expect("message lookup");
-
+    .expect("user f:message lookup");
     assert!(
-        !message_flakes.is_empty(),
-        "f:message should be in txn-meta novelty"
+        !msg_flakes.is_empty(),
+        "user-supplied f:message should land"
     );
 
     let author_pred = Sid::new(
@@ -1744,16 +1774,157 @@ async fn test_commit_opts_message_only_no_author() {
         &ledger.snapshot,
         fluree_db_core::TXN_META_GRAPH_ID,
         ledger.novelty.as_ref(),
-        IndexType::Spot,
+        IndexType::Post,
         RangeTest::Eq,
-        RangeMatch::predicate(author_pred),
+        RangeMatch::predicate_object(author_pred, FlakeValue::String("carol".into())),
         fluree_db_core::RangeOptions::default().with_to_t(t),
     )
     .await
-    .expect("author scan");
-
+    .expect("user f:author lookup");
     assert!(
-        author_flakes.is_empty(),
-        "f:author should NOT be in txn-meta when no author was set"
+        !author_flakes.is_empty(),
+        "user-supplied f:author should land"
     );
+}
+
+/// User-supplied `f:identity` should be rejected — it's system-controlled.
+#[tokio::test]
+async fn test_user_supplied_f_identity_rejected() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/txn-meta-reject-identity:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let data = json!({
+        "@context": {
+            "ex": "http://example.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "@graph": [{"@id": "ex:dan", "ex:name": "Dan"}],
+        "f:identity": "did:example:spoofed"
+    });
+
+    let err = fluree
+        .insert(ledger, &data)
+        .await
+        .expect_err("user-supplied f:identity must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Fluree-reserved namespace")
+            || msg.contains("only f:message and f:author are user-settable"),
+        "unexpected error: {msg}"
+    );
+}
+
+/// `txn-meta` sidecar attached to an update transaction lands as txn-meta
+/// novelty, even though the body has no `@graph`.
+#[tokio::test]
+async fn test_txn_meta_sidecar_on_update() {
+    use fluree_db_core::{range_with_overlay, FlakeValue, IndexType, RangeMatch, RangeTest, Sid};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/txn-meta-sidecar-update:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Seed a row to update.
+    let seed = json!({
+        "@context": {"ex": "http://example.org/"},
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+    });
+    let after_insert = fluree
+        .insert(ledger, &seed)
+        .await
+        .expect("seed insert")
+        .ledger;
+
+    let update = json!({
+        "@context": {
+            "ex": "http://example.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "where":  [{"@id": "ex:alice", "ex:name": "?n"}],
+        "delete": [{"@id": "ex:alice", "ex:name": "?n"}],
+        "insert": [{"@id": "ex:alice", "ex:name": "Alicia"}],
+        "txn-meta": {
+            "f:message": "rename Alice → Alicia",
+            "f:author": "did:example:bob",
+            "ex:batchId": 7
+        }
+    });
+
+    let result = fluree
+        .update(after_insert, &update)
+        .await
+        .expect("update with txn-meta sidecar");
+    let after = &result.ledger;
+    let t = result.receipt.t;
+
+    let msg_pred = Sid::new(
+        fluree_vocab::namespaces::FLUREE_DB,
+        fluree_vocab::db::MESSAGE,
+    );
+    let msg_flakes = range_with_overlay(
+        &after.snapshot,
+        fluree_db_core::TXN_META_GRAPH_ID,
+        after.novelty.as_ref(),
+        IndexType::Post,
+        RangeTest::Eq,
+        RangeMatch::predicate_object(
+            msg_pred,
+            FlakeValue::String("rename Alice → Alicia".into()),
+        ),
+        fluree_db_core::RangeOptions::default().with_to_t(t),
+    )
+    .await
+    .expect("sidecar f:message lookup");
+    assert!(
+        !msg_flakes.is_empty(),
+        "f:message from sidecar should land in txn-meta"
+    );
+
+    let author_pred = Sid::new(
+        fluree_vocab::namespaces::FLUREE_DB,
+        fluree_vocab::db::AUTHOR,
+    );
+    let author_flakes = range_with_overlay(
+        &after.snapshot,
+        fluree_db_core::TXN_META_GRAPH_ID,
+        after.novelty.as_ref(),
+        IndexType::Post,
+        RangeTest::Eq,
+        RangeMatch::predicate_object(author_pred, FlakeValue::String("did:example:bob".into())),
+        fluree_db_core::RangeOptions::default().with_to_t(t),
+    )
+    .await
+    .expect("sidecar f:author lookup");
+    assert!(
+        !author_flakes.is_empty(),
+        "f:author from sidecar should land in txn-meta"
+    );
+}
+
+/// User-supplied `f:identity` inside the sidecar is also rejected.
+#[tokio::test]
+async fn test_txn_meta_sidecar_rejects_f_identity() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/txn-meta-sidecar-reject-id:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let data = json!({
+        "@context": {
+            "ex": "http://example.org/",
+            "f": "https://ns.flur.ee/db#"
+        },
+        "@graph": [{"@id": "ex:eve", "ex:name": "Eve"}],
+        "txn-meta": {
+            "f:identity": "did:example:spoofed"
+        }
+    });
+
+    let err = fluree
+        .insert(ledger, &data)
+        .await
+        .expect_err("sidecar-supplied f:identity must be rejected");
+    assert!(err
+        .to_string()
+        .contains("only f:message and f:author are user-settable"));
 }

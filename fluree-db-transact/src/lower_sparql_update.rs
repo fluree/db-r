@@ -179,7 +179,7 @@ struct LiteralResult {
 ///
 /// * `ast` - The parsed SPARQL AST (must contain an UPDATE operation)
 /// * `ns` - The namespace registry for IRI-to-Sid encoding
-/// * `opts` - Transaction options (message, author, branch, etc.)
+/// * `opts` - Transaction options (branch, context, etc.)
 ///
 /// # Returns
 ///
@@ -213,7 +213,7 @@ pub fn lower_sparql_update_ast(
 /// * `op` - The parsed SPARQL UPDATE operation
 /// * `prologue` - The prologue containing PREFIX declarations
 /// * `ns` - The namespace registry for IRI-to-Sid encoding
-/// * `opts` - Transaction options (message, author, branch, etc.)
+/// * `opts` - Transaction options (branch, context, etc.)
 ///
 /// # Returns
 ///

@@ -288,10 +288,11 @@ Each commit includes rich metadata:
 - `flakes_added`: Number of assertions
 - `flakes_retracted`: Number of retractions
 
-**Provenance:**
-- `author`: Transaction author (from signed credential DID, or explicit `CommitOpts.author`)
-- `message`: Optional commit message (from `CommitOpts.message`)
-- `previous_commit_id`: ContentId of previous commit
+**Provenance (in `txn-meta` graph, under the commit subject):**
+- `f:identity`: Authenticated identity acting on the transaction. System-controlled — verified DID for signed requests, otherwise from `opts.identity` / `CommitOpts::identity`. Any user-supplied `f:identity` in the body is overridden.
+- `f:author`: Optional author claim. Pure user txn-meta — supply `f:author` as a top-level property in the envelope-form transaction body.
+- `f:message`: Optional commit message. Pure user txn-meta — supply `f:message` as a top-level property in the envelope-form transaction body.
+- `previous_commit_id`: ContentId of previous commit (in the commit envelope).
 
 See [Commit Receipts](commit-receipts.md) for details.
 

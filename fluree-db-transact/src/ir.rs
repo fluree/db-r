@@ -408,14 +408,6 @@ impl InlineValues {
 /// Transaction options
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TxnOpts {
-    /// Optional commit message
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-
-    /// Optional author identity (DID or IRI)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub author: Option<String>,
-
     /// Branch to commit to (defaults to main branch)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
@@ -454,20 +446,6 @@ pub struct TxnOpts {
 }
 
 impl TxnOpts {
-    /// Create new options with a message
-    pub fn with_message(message: impl Into<String>) -> Self {
-        Self {
-            message: Some(message.into()),
-            ..Default::default()
-        }
-    }
-
-    /// Set the author
-    pub fn author(mut self, author: impl Into<String>) -> Self {
-        self.author = Some(author.into());
-        self
-    }
-
     /// Set the branch
     pub fn branch(mut self, branch: impl Into<String>) -> Self {
         self.branch = Some(branch.into());
@@ -511,13 +489,13 @@ mod tests {
                 TemplateTerm::Value(FlakeValue::String("New Name".to_string())),
             ))
             .with_vars(vars)
-            .with_opts(TxnOpts::with_message("Update name"));
+            .with_opts(TxnOpts::default().branch("main"));
 
         assert_eq!(txn.txn_type, TxnType::Update);
         assert!(txn.where_patterns.is_empty()); // No WHERE patterns added in this test
         assert_eq!(txn.delete_templates.len(), 1);
         assert_eq!(txn.insert_templates.len(), 1);
-        assert_eq!(txn.opts.message, Some("Update name".to_string()));
+        assert_eq!(txn.opts.branch, Some("main".to_string()));
     }
 
     #[test]

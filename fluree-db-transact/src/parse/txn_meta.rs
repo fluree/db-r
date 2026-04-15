@@ -1,12 +1,12 @@
 //! Transaction metadata extraction from JSON-LD
 //!
-//! This module extracts user-provided transaction metadata from JSON-LD
-//! transaction documents. Metadata appears as top-level non-`@*` keys in
-//! "envelope form" documents (those containing `@graph`).
+//! User-provided transaction metadata reaches the commit via two channels.
+//! Both produce the same `Vec<TxnMetaEntry>` and are merged by
+//! [`extract_txn_meta`].
 //!
-//! # Envelope Form Requirement
+//! # 1. Envelope form (`@graph` present)
 //!
-//! Txn-meta is **only** extracted from transactions with an explicit `@graph`:
+//! Top-level non-reserved keys are metadata; `@graph` contents are data.
 //!
 //! ```json
 //! {
@@ -17,19 +17,27 @@
 //! }
 //! ```
 //!
-//! In this example, `ex:machine` and `ex:batchId` become txn-meta entries.
-//! The `@graph` contents become normal data.
+//! # 2. Sidecar form (top-level `"txn-meta"` object)
 //!
-//! Single-object transactions (no `@graph`) have **no metadata** — all
-//! properties are data:
+//! Works for any transaction shape — including `update`, which has no
+//! envelope. The block may carry its own `@context` or inherit the outer
+//! one.
 //!
 //! ```json
 //! {
-//!   "@context": {"ex": "http://example.org/"},
-//!   "@id": "ex:alice",
-//!   "ex:name": "Alice"
+//!   "@context": {"f": "https://ns.flur.ee/db#", "ex": "http://example.org/"},
+//!   "where":  [{ "@id": "?s", "ex:name": "Alice" }],
+//!   "delete": [{ "@id": "?s", "ex:name": "Alice" }],
+//!   "insert": [{ "@id": "?s", "ex:name": "Alicia" }],
+//!   "txn-meta": {
+//!     "f:message": "rename Alice → Alicia",
+//!     "ex:batchId": 42
+//!   }
 //! }
 //! ```
+//!
+//! Single-object insert transactions (no `@graph`, no sidecar) have **no
+//! metadata** — all properties are data.
 
 use crate::error::{Result, TransactError};
 use crate::namespace::NamespaceRegistry;
@@ -41,32 +49,70 @@ use serde_json::Value;
 
 /// Namespace codes that are reserved for Fluree-generated provenance and must
 /// never appear as a user-supplied txn-meta predicate. System provenance
-/// (commit address, t, time, author, etc.) is emitted on the same commit
+/// (commit address, t, time, identity, etc.) is emitted on the same commit
 /// subject as user metadata — allowing these namespaces would let a user
 /// clobber or shadow real provenance properties.
+///
+/// FLUREE_DB is handled separately via `FLUREE_DB_USER_ALLOWED` below:
+/// `f:message` and `f:author` are explicitly permitted as user claims.
 ///
 /// Why check by namespace code (not IRI string): the code is already resolved
 /// at the call site, comparison is O(1), and it's immune to IRI encoding
 /// tricks (percent-encoding, alternate prefixes, etc.).
-const RESERVED_PREDICATE_NAMESPACES: &[u16] = &[FLUREE_DB, FLUREE_COMMIT, FLUREE_URN];
+const RESERVED_PREDICATE_NAMESPACES: &[u16] = &[FLUREE_COMMIT, FLUREE_URN];
+
+/// Local names in the `FLUREE_DB` namespace that users *may* set as txn-meta.
+///
+/// `f:message` — commit message (free-form user claim).
+/// `f:author` — commit author (user claim; distinct from `f:identity` which is
+/// the authenticated subject and is system-controlled).
+const FLUREE_DB_USER_ALLOWED: &[&str] = &[fluree_vocab::db::MESSAGE, fluree_vocab::db::AUTHOR];
+
+/// The top-level body key for the txn-meta sidecar.
+///
+/// Aligns with the named graph (`txn-meta`) where these entries are
+/// ultimately stored on commit. Works for any transaction shape — useful
+/// especially for `update` transactions, which have no envelope-form
+/// channel.
+const TXN_META_SIDECAR_KEY: &str = "txn-meta";
 
 /// Reserved keys that are never transaction metadata.
 ///
 /// `opts` is a Fluree-specific reserved key for parse-time options
 /// (e.g., `opts.strictCompactIri`). It must never be confused with metadata.
+/// `txn-meta` is the dedicated sidecar key — its contents are extracted
+/// separately, so it must not also be picked up as an envelope-form entry.
 const RESERVED_KEYS: &[&str] = &[
-    "@context", "@graph", "@id", "@type", "@base", "@vocab", "opts",
+    "@context",
+    "@graph",
+    "@id",
+    "@type",
+    "@base",
+    "@vocab",
+    "opts",
+    TXN_META_SIDECAR_KEY,
 ];
 
 /// Extract transaction metadata from a JSON-LD document.
 ///
-/// Returns an empty `Vec` if:
-/// - The document is not in envelope form (no `@graph`)
-/// - There are no non-reserved top-level keys
+/// Two channels are supported and merged:
+///
+/// 1. **Sidecar form**: a top-level `"txn-meta"` object whose properties are
+///    metadata. Works for any transaction shape (insert/upsert/update). The
+///    block may carry its own `@context`; otherwise it inherits the outer
+///    context.
+/// 2. **Envelope form**: when `@graph` is present, top-level non-reserved
+///    keys are also treated as metadata.
+///
+/// Both forms run through the same predicate validation (Fluree-namespace
+/// allowlist — only `f:message` and `f:author` permitted in `f:`).
+///
+/// Returns an empty `Vec` if neither channel produces entries.
 ///
 /// # Errors
 ///
 /// Returns an error if:
+/// - The `txn-meta` sidecar is present but not an object
 /// - A metadata value cannot be converted (e.g., nested object without @value/@id)
 /// - A double value is non-finite (NaN, +Inf, -Inf)
 /// - Entry count exceeds `MAX_TXN_META_ENTRIES`
@@ -77,46 +123,95 @@ pub fn extract_txn_meta(
     ns_registry: &mut NamespaceRegistry,
     strict: bool,
 ) -> Result<Vec<TxnMetaEntry>> {
-    // 1. Check for envelope form (must have @graph)
-    let obj = match json.as_object() {
-        Some(o) if o.contains_key("@graph") => o,
-        _ => return Ok(Vec::new()), // Single object = no txn-meta
+    let Some(obj) = json.as_object() else {
+        return Ok(Vec::new());
     };
 
     let mut entries = Vec::new();
 
-    for (key, value) in obj {
-        // Skip @ keys and reserved keys
-        if key.starts_with('@') || RESERVED_KEYS.contains(&key.as_str()) {
-            continue;
+    // Sidecar form: top-level "txn-meta" object.
+    if let Some(meta_block) = obj.get(TXN_META_SIDECAR_KEY) {
+        let block_obj = meta_block.as_object().ok_or_else(|| {
+            TransactError::Parse(format!(
+                "'{TXN_META_SIDECAR_KEY}' must be an object containing metadata properties"
+            ))
+        })?;
+
+        // The block may override @context; otherwise inherit the outer context.
+        let block_context_owned = if let Some(ctx_val) = block_obj.get("@context") {
+            Some(fluree_graph_json_ld::parse_context(ctx_val).map_err(|e| {
+                TransactError::Parse(format!(
+                    "invalid @context inside '{TXN_META_SIDECAR_KEY}': {e}"
+                ))
+            })?)
+        } else {
+            None
+        };
+        let block_context = block_context_owned.as_ref().unwrap_or(context);
+
+        for (key, value) in block_obj {
+            if key.starts_with('@') {
+                continue;
+            }
+            extract_one_entry(
+                key,
+                value,
+                block_context,
+                ns_registry,
+                strict,
+                &mut entries,
+            )?;
         }
+    }
 
-        // Expand key to full IRI using context
-        let (expanded_iri, _) = details_with_policy(key, context, strict)?;
-
-        // Split to ns_code + local name via registry
-        let sid = ns_registry.sid_for_iri(&expanded_iri);
-        let predicate_ns = sid.namespace_code;
-        let predicate_name = sid.name.to_string();
-
-        // Reject predicates in Fluree-reserved namespaces (see RESERVED_PREDICATE_NAMESPACES).
-        if RESERVED_PREDICATE_NAMESPACES.contains(&predicate_ns) {
-            return Err(TransactError::Parse(format!(
-                "txn-meta predicate '{}' (expanded: '{}') uses Fluree-reserved namespace and would collide with system provenance; use a different namespace",
-                key, expanded_iri
-            )));
-        }
-
-        // Convert value(s) to TxnMetaValue(s)
-        let meta_values = json_to_txn_meta_values(value, context, ns_registry, strict)?;
-
-        for mv in meta_values {
-            entries.push(TxnMetaEntry::new(predicate_ns, predicate_name.clone(), mv));
+    // Envelope form: top-level non-reserved keys when @graph is present.
+    if obj.contains_key("@graph") {
+        for (key, value) in obj {
+            if key.starts_with('@') || RESERVED_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            extract_one_entry(key, value, context, ns_registry, strict, &mut entries)?;
         }
     }
 
     validate_limits(&entries)?;
     Ok(entries)
+}
+
+/// Extract one (predicate, value(s)) pair into `entries`.
+///
+/// Applies IRI expansion, the Fluree-namespace allowlist, and value parsing.
+fn extract_one_entry(
+    key: &str,
+    value: &Value,
+    context: &ParsedContext,
+    ns_registry: &mut NamespaceRegistry,
+    strict: bool,
+    entries: &mut Vec<TxnMetaEntry>,
+) -> Result<()> {
+    let (expanded_iri, _) = details_with_policy(key, context, strict)?;
+
+    let sid = ns_registry.sid_for_iri(&expanded_iri);
+    let predicate_ns = sid.namespace_code;
+    let predicate_name = sid.name.to_string();
+
+    if RESERVED_PREDICATE_NAMESPACES.contains(&predicate_ns) {
+        return Err(TransactError::Parse(format!(
+            "txn-meta predicate '{key}' (expanded: '{expanded_iri}') uses Fluree-reserved namespace and would collide with system provenance; use a different namespace"
+        )));
+    }
+
+    if predicate_ns == FLUREE_DB && !FLUREE_DB_USER_ALLOWED.contains(&predicate_name.as_str()) {
+        return Err(TransactError::Parse(format!(
+            "txn-meta predicate '{key}' (expanded: '{expanded_iri}') uses Fluree-reserved namespace and would collide with system provenance; only f:message and f:author are user-settable"
+        )));
+    }
+
+    let meta_values = json_to_txn_meta_values(value, context, ns_registry, strict)?;
+    for mv in meta_values {
+        entries.push(TxnMetaEntry::new(predicate_ns, predicate_name.clone(), mv));
+    }
+    Ok(())
 }
 
 /// Convert a JSON value to txn-meta values.
@@ -661,6 +756,49 @@ mod tests {
     }
 
     #[test]
+    fn test_reject_fluree_db_identity_user_supplied() {
+        // `f:identity` is system-controlled (derived from opts.identity /
+        // signed DID). Users must not supply it directly.
+        let mut ns = test_registry();
+        let ctx_json = json!({ "f": "https://ns.flur.ee/db#" });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "@graph": [],
+            "f:identity": "did:example:spoofed"
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("only f:message and f:author are user-settable"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_allow_fluree_db_message_and_author() {
+        // `f:message` and `f:author` are permitted user claims.
+        let mut ns = test_registry();
+        let ctx_json = json!({ "f": "https://ns.flur.ee/db#" });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "@graph": [],
+            "f:message": "initial load",
+            "f:author": "alice"
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|e| e.predicate_name == "message"
+            && matches!(&e.value, TxnMetaValue::String(s) if s == "initial load")));
+        assert!(result.iter().any(|e| e.predicate_name == "author"
+            && matches!(&e.value, TxnMetaValue::String(s) if s == "alice")));
+    }
+
+    #[test]
     fn test_reject_fluree_commit_namespace_predicate() {
         // Defense-in-depth: FLUREE_COMMIT namespace is also blocked as a predicate.
         let mut ns = test_registry();
@@ -723,5 +861,133 @@ mod tests {
         assert_eq!(result[0].predicate_name, "machine");
         // The ns code should be for http://example.org/
         assert!(ns.has_prefix("http://example.org/"));
+    }
+
+    // ---------- Sidecar form (`txn-meta` top-level key) ----------
+
+    #[test]
+    fn test_sidecar_works_without_graph() {
+        // Update-shaped transaction — no @graph, no envelope. Sidecar still
+        // delivers metadata.
+        let mut ns = test_registry();
+        let ctx_json = json!({ "f": "https://ns.flur.ee/db#" });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "where": [{"@id": "?s", "@type": "ex:Thing"}],
+            "delete": [],
+            "insert": [],
+            "txn-meta": {
+                "f:message": "rename Alice → Alicia"
+            }
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].predicate_name, "message");
+        assert!(matches!(
+            &result[0].value,
+            TxnMetaValue::String(s) if s == "rename Alice → Alicia"
+        ));
+    }
+
+    #[test]
+    fn test_sidecar_inherits_outer_context() {
+        let mut ns = test_registry();
+        let ctx_json = json!({
+            "f": "https://ns.flur.ee/db#",
+            "ex": "http://example.org/"
+        });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "txn-meta": {
+                "f:message": "hello",
+                "ex:batchId": 7
+            }
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|e| e.predicate_name == "message"));
+        assert!(result
+            .iter()
+            .any(|e| e.predicate_name == "batchId"
+                && matches!(&e.value, TxnMetaValue::Long(7))));
+    }
+
+    #[test]
+    fn test_sidecar_overrides_with_own_context() {
+        // Outer context has no `m:` prefix; the sidecar declares its own.
+        let mut ns = test_registry();
+        let ctx = empty_context();
+
+        let json = json!({
+            "txn-meta": {
+                "@context": {"m": "http://example.org/meta/"},
+                "m:tag": "release"
+            }
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].predicate_name, "tag");
+    }
+
+    #[test]
+    fn test_sidecar_merges_with_envelope_form() {
+        let mut ns = test_registry();
+        let ctx_json = json!({
+            "f": "https://ns.flur.ee/db#",
+            "ex": "http://example.org/"
+        });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "@graph": [{"@id": "ex:alice"}],
+            "ex:envelopeKey": "from-envelope",
+            "txn-meta": {
+                "f:message": "from-sidecar"
+            }
+        });
+
+        let result = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|e| e.predicate_name == "envelopeKey"));
+        assert!(result.iter().any(|e| e.predicate_name == "message"));
+    }
+
+    #[test]
+    fn test_sidecar_must_be_object() {
+        let mut ns = test_registry();
+        let ctx = empty_context();
+
+        let json = json!({
+            "txn-meta": "not an object"
+        });
+
+        let err = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap_err();
+        assert!(err.to_string().contains("must be an object"));
+    }
+
+    #[test]
+    fn test_sidecar_enforces_fluree_namespace_allowlist() {
+        // f:identity is rejected from the sidecar same as from envelope form.
+        let mut ns = test_registry();
+        let ctx_json = json!({ "f": "https://ns.flur.ee/db#" });
+        let ctx = fluree_graph_json_ld::parse_context(&ctx_json).unwrap();
+
+        let json = json!({
+            "txn-meta": {
+                "f:identity": "did:example:spoofed"
+            }
+        });
+
+        let err = extract_txn_meta(&json, &ctx, &mut ns, true).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only f:message and f:author are user-settable"),
+            "unexpected error: {err}"
+        );
     }
 }

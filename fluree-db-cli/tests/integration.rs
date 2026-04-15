@@ -212,7 +212,10 @@ fn use_command_switches_active_ledger() {
 }
 
 #[test]
-fn insert_with_commit_message() {
+fn insert_with_txn_meta_sidecar() {
+    // Commit messages are user txn-meta supplied in the body — there's no
+    // dedicated CLI flag. Use the `txn-meta` sidecar (works for any
+    // transaction shape, including update).
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -224,9 +227,14 @@ fn insert_with_commit_message() {
         .args([
             "insert",
             "-e",
-            r#"{"@context": {"ex": "http://example.org/"}, "@id": "ex:x", "ex:val": "test"}"#,
-            "-m",
-            "initial data load",
+            r#"{
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "@graph": [{"@id": "ex:x", "ex:val": "test"}],
+                "txn-meta": {"f:message": "initial data load"}
+            }"#,
         ])
         .assert()
         .success()
@@ -1725,7 +1733,9 @@ fn update_insert_only_via_update() {
 }
 
 #[test]
-fn update_with_commit_message() {
+fn update_with_txn_meta_sidecar() {
+    // Update transactions have no @graph envelope — use the `txn-meta`
+    // sidecar to attach a commit message.
     let tmp = TempDir::new().unwrap();
     fluree_cmd(&tmp).arg("init").assert().success();
     fluree_cmd(&tmp)
@@ -1737,9 +1747,14 @@ fn update_with_commit_message() {
         .args([
             "update",
             "-e",
-            r#"{"@context": {"ex": "http://example.org/"}, "insert": [{"@id": "ex:x", "ex:val": "test"}]}"#,
-            "-m",
-            "initial update",
+            r#"{
+                "@context": {
+                    "ex": "http://example.org/",
+                    "f": "https://ns.flur.ee/db#"
+                },
+                "insert": [{"@id": "ex:x", "ex:val": "test"}],
+                "txn-meta": {"f:message": "initial update"}
+            }"#,
         ])
         .assert()
         .success()

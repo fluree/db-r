@@ -15,7 +15,6 @@ pub async fn run(
     args: &[String],
     expr: Option<&str>,
     file_flag: Option<&Path>,
-    message: Option<&str>,
     format_flag: Option<&str>,
     dirs: &FlureeDir,
     remote_flag: Option<&str>,
@@ -71,10 +70,7 @@ pub async fn run(
             print_txn_result(&result);
         }
         LedgerMode::Local { fluree, alias } => {
-            let commit_opts = CommitOpts {
-                message: message.map(String::from),
-                ..Default::default()
-            };
+            let commit_opts = CommitOpts::default();
 
             let policy_ctx = build_policy_ctx(&fluree, &alias, policy).await?;
             let graph = fluree.graph(&alias);

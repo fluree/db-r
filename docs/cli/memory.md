@@ -90,7 +90,7 @@ fluree memory add [OPTIONS]
 |--------|-------------|
 | `--kind <KIND>` | Memory kind: `fact`, `decision`, `constraint` (default: `fact`) |
 | `--text <TEXT>` | Content text (or provide via stdin) |
-| `--tags <T1,T2>` | Comma-separated tags for categorization |
+| `--tags <T1,T2>` | **Required.** Comma-separated tags for categorization — the primary recall signal |
 | `--refs <R1,R2>` | Comma-separated file/artifact references |
 | `--severity <SEV>` | For constraints: `must`, `should`, `prefer` |
 | `--scope <SCOPE>` | Scope: `repo` (default) or `user` |

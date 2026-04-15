@@ -1271,16 +1271,13 @@ async fn execute_transaction(
             .clone()
             .or_else(|| author.map(String::from));
 
-        // Build transaction options with DID as author if credential was signed
-        let txn_opts = match &did {
-            Some(d) => TxnOpts::default().author(d.clone()),
-            None => TxnOpts::default(),
-        };
+        // TxnOpts: unchanged by identity; commit provenance flows through CommitOpts.
+        let txn_opts = TxnOpts::default();
 
         // If the request was signed, ALWAYS store the original signed envelope for provenance.
         // (No opt-in needed; this is the primary reason to store txn payloads.)
         let mut commit_opts = match &did {
-            Some(d) => CommitOpts::default().author(d.clone()),
+            Some(d) => CommitOpts::default().identity(d.clone()),
             None => CommitOpts::default(),
         };
         if let Some(raw_txn) = raw_txn_from_credential(credential) {
@@ -1430,15 +1427,11 @@ async fn execute_turtle_transaction(
 
         let did = author.map(String::from);
 
-        // Build transaction options with DID as author if credential was signed
-        let txn_opts = match &did {
-            Some(d) => TxnOpts::default().author(d.clone()),
-            None => TxnOpts::default(),
-        };
+        let txn_opts = TxnOpts::default();
 
         // If the request was signed, ALWAYS store the original signed envelope for provenance.
         let mut commit_opts = match &did {
-            Some(d) => CommitOpts::default().author(d.clone()),
+            Some(d) => CommitOpts::default().identity(d.clone()),
             None => CommitOpts::default(),
         };
         if let Some(raw_txn) = raw_txn_from_credential(credential) {
@@ -1628,12 +1621,8 @@ async fn execute_sparql_update_request(
     )
     .await;
 
-    // Build transaction options (author tracks the effective identity so the
-    // commit records who the transaction was executed as).
-    let txn_opts = match &effective_identity {
-        Some(d) => TxnOpts::default().author(d.clone()),
-        None => TxnOpts::default(),
-    };
+    // TxnOpts no longer carries identity — provenance flows via CommitOpts.
+    let txn_opts = TxnOpts::default();
 
     // Build PolicyContext from the resolved identity plus all header-supplied
     // policy fields. SPARQL UPDATE has no body opts block, so headers are the
@@ -1704,14 +1693,15 @@ async fn execute_sparql_update_request(
     // Execute the transaction using the Txn IR directly
     let fluree = state.fluree.as_direct();
     let mut builder = fluree.stage(&handle).txn(txn);
+    let mut commit_opts = CommitOpts::default();
+    if let Some(d) = &effective_identity {
+        commit_opts = commit_opts.identity(d.clone());
+    }
     // If the request was signed, ALWAYS store the original signed envelope for provenance.
     if let Some(raw_txn) = raw_txn_from_credential(credential) {
-        let mut commit_opts = CommitOpts::default();
-        if let Some(d) = &effective_identity {
-            commit_opts = commit_opts.author(d.clone());
-        }
-        builder = builder.commit_opts(commit_opts.with_raw_txn(raw_txn));
+        commit_opts = commit_opts.with_raw_txn(raw_txn);
     }
+    builder = builder.commit_opts(commit_opts);
     if let Some(config) = &state.index_config {
         builder = builder.index_config(config.clone());
     }

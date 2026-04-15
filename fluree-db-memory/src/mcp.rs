@@ -21,111 +21,106 @@ use tracing::{debug, error, info};
 /// Request parameters for the `memory_add` tool.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MemoryAddRequest {
-    /// The kind of memory: fact, decision, constraint
-    #[schemars(
-        description = "Memory kind: 'fact' (things that are true), 'decision' (choices made and why), or 'constraint' (rules that must be followed)"
-    )]
+    /// fact | decision | constraint
+    #[schemars(description = "fact (true thing), decision (choice + why), or constraint (rule)")]
     pub kind: String,
 
-    /// The content text to store
-    #[schemars(description = "The content text of the memory")]
+    /// Content text (≤750 chars)
+    #[schemars(description = "1-3 sentences capturing one insight; max 750 chars")]
     pub content: String,
 
-    /// Tags for categorization and recall
-    #[schemars(description = "Tags for categorization (e.g., ['testing', 'rust'])")]
-    #[serde(default)]
+    /// Tags (required; at least one)
+    #[schemars(
+        description = "REQUIRED. Lowercase topic tags, e.g. ['indexer', 'performance']. At least one tag is required — tags are the primary recall signal."
+    )]
     pub tags: Vec<String>,
 
-    /// File or artifact references
-    #[schemars(description = "File paths or artifact references related to this memory")]
+    /// File paths
+    #[schemars(description = "File paths this memory relates to")]
     #[serde(default)]
     pub refs: Vec<String>,
 
-    /// Scope: repo (default) or user
-    #[schemars(
-        description = "Memory scope: 'repo' (project-wide, default) or 'user' (follows developer across repos)"
-    )]
+    /// repo | user (default: repo)
+    #[schemars(description = "repo (shared, default) or user (personal, gitignored)")]
     #[serde(default)]
     pub scope: Option<String>,
 
-    /// Severity for constraints: must, should, prefer
-    #[schemars(description = "Severity level for constraints: 'must', 'should', or 'prefer'")]
+    /// Constraint severity
+    #[schemars(description = "For kind=constraint: must, should, or prefer")]
     pub severity: Option<String>,
 
-    /// Why this fact/decision/constraint exists
-    #[schemars(description = "Why this memory exists — rationale, motivation, or context")]
+    /// Why this exists
+    #[schemars(description = "Why this exists — works on any kind")]
     pub rationale: Option<String>,
 
     /// Alternatives considered
-    #[schemars(description = "What alternatives were considered (comma-separated)")]
+    #[schemars(description = "Alternatives considered (comma-separated)")]
     pub alternatives: Option<String>,
 }
 
 /// Request parameters for the `memory_recall` tool.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MemoryRecallRequest {
-    /// The search query
-    #[schemars(description = "Natural language search query to find relevant memories")]
+    /// Search query
+    #[schemars(description = "Specific topic words from your task; not generic")]
     pub query: String,
 
-    /// Maximum number of results
-    #[schemars(description = "Maximum number of memories to return (default: 3)")]
+    /// Result limit (default: 3)
+    #[schemars(description = "Max results (default: 3)")]
     pub limit: Option<usize>,
 
-    /// Skip the first N results (for pagination)
-    #[schemars(
-        description = "Skip the first N results. Use with limit for pagination (e.g., offset=3 to get the next page after the first 3 results)."
-    )]
+    /// Pagination offset
+    #[schemars(description = "Skip first N results for pagination")]
     #[serde(default)]
     pub offset: Option<usize>,
 
-    /// Filter by kind
-    #[schemars(description = "Filter to a specific memory kind")]
+    /// Kind filter
+    #[schemars(description = "Filter: fact, decision, or constraint")]
     pub kind: Option<String>,
 
-    /// Filter by tags
-    #[schemars(description = "Filter to memories with these tags")]
+    /// Tag filter
+    #[schemars(description = "Only memories with these tags")]
     #[serde(default)]
     pub tags: Vec<String>,
 
-    /// Filter by scope
-    #[schemars(description = "Filter to a specific scope: 'repo' or 'user'")]
+    /// Scope filter
+    #[schemars(description = "Filter: repo or user")]
     pub scope: Option<String>,
 }
 
 /// Request parameters for the `memory_update` tool.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MemoryUpdateRequest {
-    /// ID of the memory to update
-    #[schemars(description = "The ID of the memory to update (e.g., 'mem:fact-01JDXYZ...')")]
+    /// Memory ID
+    #[schemars(description = "ID of the memory to patch (e.g. 'mem:fact-01JDXYZ...')")]
     pub id: String,
 
-    /// New content text (if changing)
-    #[schemars(description = "New content text (replaces existing if provided)")]
+    /// New content (omit to keep existing)
+    #[schemars(description = "New content; omit to keep existing")]
     pub content: Option<String>,
 
-    /// New tags (replaces all existing tags if provided)
-    #[schemars(description = "New tags (replaces all existing tags if provided)")]
+    /// New tags (omit to keep, [] to clear)
+    #[schemars(description = "Replace tags; omit to keep, [] to clear")]
     pub tags: Option<Vec<String>>,
 
-    /// New artifact refs (replaces all existing if provided)
-    #[schemars(description = "New artifact references (replaces all existing if provided)")]
+    /// New refs (omit to keep, [] to clear)
+    #[schemars(description = "Replace refs; omit to keep, [] to clear")]
     pub refs: Option<Vec<String>>,
 
-    /// New rationale (for decisions)
-    #[schemars(description = "Updated rationale for a decision")]
+    /// New rationale
+    #[schemars(description = "Replace rationale; omit to keep existing")]
     pub rationale: Option<String>,
 
-    /// New alternatives (for decisions)
-    #[schemars(description = "Updated alternatives considered for a decision")]
+    /// New alternatives
+    #[schemars(description = "Replace alternatives; omit to keep existing")]
     pub alternatives: Option<String>,
 }
 
 /// Request parameters for the `memory_forget` tool.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct MemoryForgetRequest {
-    /// ID of the memory to delete
-    #[schemars(description = "The ID of the memory to delete (e.g., 'mem:fact-01JDXYZ...')")]
+    /// Memory ID
+    #[schemars(description = "ID of the memory to delete (e.g. 'mem:fact-01JDXYZ...')")]
     pub id: String,
 }
 
@@ -140,9 +135,9 @@ pub struct MemoryStatusRequest {}
 /// Request parameters for the `kg_query` tool.
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct KgQueryRequest {
-    /// SPARQL query to execute against the memory graph
+    /// SPARQL query
     #[schemars(
-        description = "A SPARQL SELECT query to execute against the memory knowledge graph. The memory namespace is 'https://ns.flur.ee/memory#' (prefix 'mem:')."
+        description = "SPARQL SELECT against the memory graph; prefix mem: → https://ns.flur.ee/memory#"
     )]
     pub query: String,
 }
@@ -150,9 +145,9 @@ pub struct KgQueryRequest {
 /// MCP tool service for Fluree developer memory.
 ///
 /// Provides tools for:
-/// - `memory_add`: Store a new memory (fact, decision, constraint, preference, artifact)
+/// - `memory_add`: Store a new memory (fact, decision, constraint)
 /// - `memory_recall`: Search and retrieve relevant memories
-/// - `memory_update`: Update (supersede) an existing memory
+/// - `memory_update`: Patch an existing memory in place
 /// - `memory_forget`: Delete a memory
 /// - `memory_status`: Show memory store status
 /// - `kg_query`: Execute raw SPARQL queries against the memory graph
@@ -177,7 +172,7 @@ impl MemoryToolService {
     /// Memories persist across sessions and are used to maintain project context.
     /// Secrets (API keys, passwords, tokens) are automatically detected and redacted.
     #[tool(
-        description = "Store a new memory that persists across sessions. Each memory should capture ONE insight — store multiple memories for multiple insights. Choose a kind: 'fact' (things that are true — commands, architecture, config), 'decision' (choices made and why — include rationale and alternatives), 'constraint' (rules that must be followed — include severity). Use 'rationale' on any kind to explain why, and 'refs' for file paths instead of embedding them in content. DO store: invariants, gotchas, decisions with rationale, rules. DO NOT store: implementation walkthroughs, code architecture summaries, session progress, plans, or anything grep/git-log could answer. Always include descriptive tags. Secrets are auto-redacted."
+        description = "Store ONE insight that persists across sessions. REQUIRED fields: kind, content, tags (at least one). Content is capped at 750 chars — aim for 1-3 sentences. One insight per memory; use multiple memory_add calls for multiple insights. Put file paths in `refs`, not embedded in content. Use `rationale` to explain why. DO store: invariants, gotchas, design decisions, rules. DO NOT store: implementation walkthroughs, architecture summaries, session progress, plans, or anything grep/git-log could answer. Secrets are auto-redacted."
     )]
     async fn memory_add(
         &self,
@@ -201,6 +196,17 @@ impl MemoryToolService {
                 None,
             )
         })?;
+
+        // Tags are required — they are the primary recall signal.
+        if req.tags.is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "At least one tag is required. Tags are the primary recall signal \
+                 — memories without tags are much harder to surface later. \
+                 Add descriptive lowercase topic tags like 'indexer', 'query', \
+                 'error-handling', or module/feature names."
+                    .to_string(),
+            )]));
+        }
 
         let severity = req
             .severity
@@ -310,7 +316,7 @@ impl MemoryToolService {
     /// Returns memories ranked by relevance, formatted as XML context blocks
     /// suitable for LLM consumption.
     #[tool(
-        description = "Search memories using BM25 keyword search. Returns ranked results as structured context. IMPORTANT: Use specific topic keywords (e.g., 'error handling', 'test commands', 'database schema'). Generic queries like 'all' or 'everything' will return no results. Use memory_status first to see what topics are stored."
+        description = "BM25 keyword search over stored memories. Call at the start of non-trivial tasks. Use specific topic words from the task ('error handling', 'index pipeline', 'sparql federation') — generic queries return nothing. If unsure what's stored, call memory_status first."
     )]
     async fn memory_recall(
         &self,
@@ -469,7 +475,7 @@ impl MemoryToolService {
     /// Modifies the memory with the given ID, changing only the fields you provide.
     /// The ID stays the same. History is tracked via git.
     #[tool(
-        description = "Update an existing memory in place. Only provide the fields you want to change — content, tags, refs, rationale, or alternatives. The memory keeps its ID. History is preserved in git."
+        description = "Patch an existing memory in place. Pass only the fields you want to change (content, tags, refs, rationale, alternatives) — omitted fields stay as-is. The memory keeps its ID. Git tracks history."
     )]
     async fn memory_update(
         &self,
@@ -518,7 +524,7 @@ impl MemoryToolService {
 
     /// Delete a memory permanently.
     #[tool(
-        description = "Delete a memory permanently by its ID. Use this to remove incorrect or outdated memories that should not be recalled."
+        description = "Permanently delete a memory by ID. Use for incorrect or obsolete entries. Prefer memory_update for evolving information."
     )]
     async fn memory_forget(
         &self,
@@ -546,7 +552,7 @@ impl MemoryToolService {
 
     /// Show the memory store status summary.
     #[tool(
-        description = "Show memory store status including total memories, counts by kind, and a preview of recent memories. Call this first to understand what knowledge is stored and what keywords to use with memory_recall."
+        description = "Total counts and previews of the most recent memories. Call before memory_recall if you don't yet know what topics/keywords the store contains."
     )]
     async fn memory_status(
         &self,
@@ -578,7 +584,7 @@ impl MemoryToolService {
 
     /// Execute a raw SPARQL query against the memory knowledge graph.
     #[tool(
-        description = "Advanced: Execute a raw SPARQL SELECT query against the memory knowledge graph. Prefer memory_recall for searching. Namespace: 'https://ns.flur.ee/memory#' (prefix 'mem:'). Classes: mem:Fact, mem:Decision, mem:Constraint. Key properties: mem:content, mem:tag, mem:scope, mem:severity, mem:rationale, mem:createdAt. Example: SELECT ?id ?content WHERE { ?id a mem:Fact ; mem:content ?content } LIMIT 20"
+        description = "Escape hatch: raw SPARQL against the memory graph (prefix `mem:` → https://ns.flur.ee/memory#). Prefer memory_recall for normal use. Classes: mem:Fact, mem:Decision, mem:Constraint."
     )]
     async fn kg_query(
         &self,
@@ -666,28 +672,15 @@ impl ServerHandler for MemoryToolService {
                 website_url: Some("https://flur.ee".to_string()),
             },
             instructions: Some(
-                "Fluree Developer Memory MCP server. Stores and retrieves project knowledge \
-                 (facts, decisions, constraints) as an RDF knowledge graph.\n\n\
-                 Available tools:\n\
-                 - memory_recall: Search for relevant memories. Use at the start of tasks.\n\
-                 - memory_add: Store new project knowledge.\n\
-                 - memory_update: Update existing memories in place.\n\
-                 - memory_forget: Delete incorrect or outdated memories.\n\
-                 - memory_status: Check what knowledge is stored.\n\
-                 - kg_query: Run raw SPARQL queries against the memory graph.\n\n\
-                 IMPORTANT USAGE GUIDELINES:\n\
-                 1. memory_recall uses BM25 keyword search. Use specific topic words \
-                    (e.g., 'error handling rust', 'test commands', 'database schema'). \
-                    Vague queries like 'all' or 'everything' will return nothing.\n\
-                 2. Use memory_status FIRST to see what's stored — it shows counts by kind \
-                    and previews of recent memories.\n\
-                 3. When storing memories, choose the right kind:\n\
-                    - fact: things that are true (commands, architecture, config)\n\
-                    - decision: choices made and why (with rationale and alternatives)\n\
-                    - constraint: rules that must be followed (with severity)\n\
-                    Use 'rationale' on any kind to explain why.\n\
-                 4. Always add descriptive tags for better recall.\n\
-                 5. kg_query is for advanced use only — prefer memory_recall for searching."
+                "Fluree Developer Memory — persistent project knowledge across sessions.\n\n\
+                 WHEN TO USE:\n\
+                 - Start of a non-trivial task: call memory_recall with specific keywords \
+                   from the task (e.g. 'indexer leaflet cache', 'sparql federation'). \
+                   Use memory_status first if you don't know what topics are stored.\n\
+                 - End of a task, when you learned something non-obvious: call memory_add. \
+                   See that tool's description for what qualifies.\n\n\
+                 RECALL QUERIES must use specific topic words. Generic queries \
+                 ('all', 'everything', 'memory') return nothing — BM25 needs content terms."
                     .to_string(),
             ),
         }

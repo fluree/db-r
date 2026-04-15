@@ -30,10 +30,16 @@ pub struct CommitReceipt {
 /// Options for commit operation
 #[derive(Clone, Default)]
 pub struct CommitOpts {
-    /// Optional commit message
-    pub message: Option<String>,
-    /// Optional author identity
-    pub author: Option<String>,
+    /// Authenticated/impersonated identity acting on the transaction.
+    ///
+    /// System-controlled: typically the verified DID from a signed credential
+    /// or the resolved `opts.identity`. Emitted as `f:identity` on the commit
+    /// subject in the txn-meta graph. Overrides any user-supplied `f:identity`
+    /// triple in the transaction body.
+    ///
+    /// `f:message` and `f:author` are **not** fields here — they are user
+    /// claims and flow through the transaction body as regular txn-meta.
+    pub identity: Option<String>,
     /// Original transaction JSON for storage
     /// When present, the raw transaction JSON is stored separately and
     /// can be retrieved via history queries with `txn: true`.
@@ -85,8 +91,7 @@ pub struct CommitOpts {
 impl std::fmt::Debug for CommitOpts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CommitOpts")
-            .field("message", &self.message)
-            .field("author", &self.author)
+            .field("identity", &self.identity)
             .field("raw_txn", &self.raw_txn.is_some())
             .field("signing_key", &self.signing_key.is_some())
             .field(
@@ -107,17 +112,12 @@ impl std::fmt::Debug for CommitOpts {
 }
 
 impl CommitOpts {
-    /// Create new commit options with a message
-    pub fn with_message(message: impl Into<String>) -> Self {
-        Self {
-            message: Some(message.into()),
-            ..Default::default()
-        }
-    }
-
-    /// Set the author
-    pub fn author(mut self, author: impl Into<String>) -> Self {
-        self.author = Some(author.into());
+    /// Set the authenticated identity for this commit.
+    ///
+    /// Recorded as `f:identity` in the txn-meta graph. For signed transactions,
+    /// this should be the verified DID.
+    pub fn identity(mut self, identity: impl Into<String>) -> Self {
+        self.identity = Some(identity.into());
         self
     }
 
@@ -139,9 +139,18 @@ impl CommitOpts {
         self
     }
 
-    /// Set the user-provided transaction metadata
-    pub fn with_txn_meta(mut self, txn_meta: Vec<TxnMetaEntry>) -> Self {
-        self.txn_meta = txn_meta;
+    /// Append entries to the user-provided transaction metadata.
+    ///
+    /// Appends rather than replaces so any pre-loaded entries (e.g., from a
+    /// programmatic embedder constructing `TxnMetaEntry` directly) compose
+    /// with body-extracted entries.
+    ///
+    /// To set `f:message` or `f:author`, include them in the transaction body
+    /// (envelope form with `@graph`); they flow through as ordinary user
+    /// txn-meta. There is no CommitOpts shortcut by design — they are not
+    /// system provenance.
+    pub fn with_txn_meta(mut self, mut txn_meta: Vec<TxnMetaEntry>) -> Self {
+        self.txn_meta.append(&mut txn_meta);
         self
     }
 
@@ -203,7 +212,7 @@ impl CommitOpts {
 /// * `content_store` - Content-addressed store for writing commit and txn blobs
 /// * `nameservice` - Nameservice for lookup and publishing
 /// * `index_config` - Configuration for backpressure limits
-/// * `opts` - Commit options (message, author, raw_txn, etc.)
+/// * `opts` - Commit options (identity, raw_txn, txn_meta, etc.)
 ///
 /// # Returns
 ///
@@ -226,8 +235,7 @@ where
     // Move commit options into locals so we can pass ownership where useful
     // (e.g., txn_meta) without forcing clones, while still using other fields later.
     let CommitOpts {
-        message,
-        author,
+        identity,
         raw_txn,
         signing_key,
         txn_signature,
@@ -241,24 +249,24 @@ where
     } = opts;
 
     // For signed transactions the txn_signature.signer is the cryptographically
-    // verified author — it overrides any user-supplied CommitOpts.author value.
-    let effective_author = txn_signature
+    // verified identity — it overrides any caller-supplied CommitOpts.identity
+    // or user-supplied f:identity triple in the transaction body.
+    let effective_identity = txn_signature
         .as_ref()
         .map(|sig| sig.signer.clone())
-        .or(author);
+        .or(identity);
 
-    if let Some(ref author_val) = effective_author {
+    if let Some(ref identity_val) = effective_identity {
+        // Strip any user-supplied f:identity claim so the system-controlled
+        // value is the only one recorded.
+        txn_meta.retain(|entry| {
+            !(entry.predicate_ns == fluree_vocab::namespaces::FLUREE_DB
+                && entry.predicate_name == fluree_vocab::db::IDENTITY)
+        });
         txn_meta.push(TxnMetaEntry::new(
             fluree_vocab::namespaces::FLUREE_DB,
-            fluree_vocab::db::AUTHOR,
-            TxnMetaValue::String(author_val.clone()),
-        ));
-    }
-    if let Some(ref msg) = message {
-        txn_meta.push(TxnMetaEntry::new(
-            fluree_vocab::namespaces::FLUREE_DB,
-            fluree_vocab::db::MESSAGE,
-            TxnMetaValue::String(msg.clone()),
+            fluree_vocab::db::IDENTITY,
+            TxnMetaValue::String(identity_val.clone()),
         ));
     }
 

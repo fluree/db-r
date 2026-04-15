@@ -946,24 +946,28 @@ pub async fn run_memory_import(
         // Merge the @graph arrays from both files into one insert payload
         let insert_nodes = merge_jsonld_graphs(repo_data, user_data);
 
-        // Build commit metadata from the git commit
-        let commit_opts = fluree_db_api::CommitOpts::with_message(format!(
-            "git:{} {}",
-            &commit.sha[..8],
-            commit.message
-        ))
-        .with_timestamp(commit.timestamp.clone());
+        // Build commit metadata from the git commit. f:message is a user
+        // claim — supply it via the txn-meta sidecar (works for update-shape
+        // transactions which have no @graph envelope).
+        let commit_opts = fluree_db_api::CommitOpts::default()
+            .with_timestamp(commit.timestamp.clone());
 
         // Single transaction: retract all existing memory triples + insert new state.
         // The WHERE pivots on mem:content to target only memory instances (not schema).
         // On the first commit the WHERE matches nothing, so DELETE is a no-op.
         let mut txn = serde_json::json!({
-            "@context": { "mem": "https://ns.flur.ee/memory#" },
+            "@context": {
+                "mem": "https://ns.flur.ee/memory#",
+                "f": "https://ns.flur.ee/db#"
+            },
             "where": [
                 { "@id": "?s", "mem:content": "?c" },
                 { "@id": "?s", "?p": "?o" }
             ],
-            "delete": { "@id": "?s", "?p": "?o" }
+            "delete": { "@id": "?s", "?p": "?o" },
+            "txn-meta": {
+                "f:message": format!("git:{} {}", &commit.sha[..8], commit.message)
+            }
         });
 
         if let Some(nodes) = &insert_nodes {

@@ -1187,7 +1187,7 @@ mod tests {
         let result = fluree
             .stage_owned(ledger)
             .insert(&data)
-            .commit_opts(CommitOpts::with_message("test commit"))
+            .commit_opts(CommitOpts::default())
             .execute()
             .await;
         assert!(result.is_ok());

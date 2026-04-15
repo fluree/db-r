@@ -776,6 +776,14 @@ async fn run_add(
         ));
     }
 
+    if tags.is_empty() {
+        return Err(CliError::Usage(
+            "at least one tag is required (use --tags t1,t2,...); \
+             tags are the primary recall signal"
+                .to_string(),
+        ));
+    }
+
     // Check for secrets
     let content = if SecretDetector::has_secrets(&content) {
         eprintln!(

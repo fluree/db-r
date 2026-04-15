@@ -34,9 +34,10 @@ These predicates appear on commit subjects in the txn-meta graph. Each commit pr
 | `f:size` | `https://ns.flur.ee/db#size` | `xsd:long` | Cumulative data size in bytes |
 | `f:flakes` | `https://ns.flur.ee/db#flakes` | `xsd:long` | Cumulative flake count |
 | `f:previous` | `https://ns.flur.ee/db#previous` | `@id` (ref) | Reference to previous commit (optional) |
-| `f:author` | `https://ns.flur.ee/db#author` | `xsd:string` | Transaction author — verified DID for signed transactions, or explicit `CommitOpts.author` (optional) |
+| `f:identity` | `https://ns.flur.ee/db#identity` | `xsd:string` | Authenticated identity acting on the transaction (system-controlled — verified DID for signed requests, otherwise `opts.identity` / `CommitOpts.identity`). |
+| `f:author` | `https://ns.flur.ee/db#author` | `xsd:string` | Author claim — user-supplied via `f:author` in the transaction body (optional). Distinct from `f:identity`. |
 | `f:txn` | `https://ns.flur.ee/db#txn` | `xsd:string` | Transaction ContentId (CID string, optional) |
-| `f:message` | `https://ns.flur.ee/db#message` | `xsd:string` | Commit message (optional) |
+| `f:message` | `https://ns.flur.ee/db#message` | `xsd:string` | Commit message — user-supplied via `f:message` in the transaction body (optional). |
 | `f:asserts` | `https://ns.flur.ee/db#asserts` | `xsd:long` | Assertion count in this commit |
 | `f:retracts` | `https://ns.flur.ee/db#retracts` | `xsd:long` | Retraction count in this commit |
 
