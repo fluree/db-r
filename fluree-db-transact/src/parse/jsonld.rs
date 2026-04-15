@@ -1456,31 +1456,14 @@ fn parse_expanded_value_with_ctx(
             templates.extend(nested_templates);
             Ok(ParsedValue::new(subject))
         }
-        // Direct values (shouldn't happen in properly expanded JSON-LD, but handle for robustness)
+        // Direct values (shouldn't happen in properly expanded JSON-LD, but handle for robustness).
+        // String values are literals — only `{"@id": "..."}` or a context-declared
+        // `@type: "@id"` (which expansion rewrites to `{"@id": ...}`) produces an IRI reference.
         Value::String(s) => {
             if s.starts_with('?') && ctx.object_var_parsing {
                 let var_id = ctx.vars.get_or_insert(s);
                 Ok(ParsedValue::new(TemplateTerm::Var(var_id)))
             } else {
-                // Fluree extension: treat compact IRIs and absolute IRIs
-                // as references in templates, even when JSON-LD expansion didn't coerce
-                // the value to an `{"@id": ...}` object (i.e., property isn't typed @id).
-                // Uses unchecked expansion since this is a heuristic — values that don't
-                // resolve to known IRI schemes fall through to the literal string path.
-                let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
-                if looks_like_iri {
-                    let (expanded, _) = fluree_graph_json_ld::details(s, ctx.context);
-                    if expanded.starts_with("http://")
-                        || expanded.starts_with("https://")
-                        || expanded.starts_with("did:")
-                        || expanded.starts_with("fluree:")
-                        || expanded.starts_with("urn:")
-                    {
-                        return Ok(ParsedValue::new(TemplateTerm::Sid(
-                            ctx.ns_registry.sid_for_iri(expanded.as_ref()),
-                        )));
-                    }
-                }
                 Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
                     s.clone(),
                 ))))
@@ -1606,27 +1589,9 @@ fn parse_literal_value_with_meta(
                 }
             }
 
-            // Fluree extension: treat compact IRIs and absolute IRIs
-            // as references in templates, even when JSON-LD expansion didn't coerce
-            // the value to an `{"@id": ...}` object (i.e., property isn't typed @id).
-            // Uses unchecked expansion since this is a heuristic — values that don't
-            // resolve to known IRI schemes fall through to the literal string path.
-            let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
-            if looks_like_iri {
-                let (expanded, _) = fluree_graph_json_ld::details(s, context);
-                if expanded.starts_with("http://")
-                    || expanded.starts_with("https://")
-                    || expanded.starts_with("did:")
-                    || expanded.starts_with("fluree:")
-                    || expanded.starts_with("urn:")
-                {
-                    return Ok(ParsedValue::new(TemplateTerm::Sid(
-                        ns_registry.sid_for_iri(expanded.as_ref()),
-                    )));
-                }
-            }
-
-            // Plain string literal
+            // `@value` with no `@type` is always a literal — never coerce to an IRI.
+            // To produce an IRI reference, callers must use `{"@id": "..."}` or declare
+            // `@type: "@id"` on the property in `@context`.
             Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
                 s.clone(),
             ))))
@@ -1841,28 +1806,13 @@ fn parse_single_list_item_with_ctx(
             }
             parse_expanded_value_with_ctx(item, ctx, templates)
         }
-        // Direct values
+        // Direct values — string list items are literals, not IRI references.
+        // Wrap in `{"@id": "..."}` to produce an IRI.
         Value::String(s) => {
             if s.starts_with('?') {
                 let var_id = ctx.vars.get_or_insert(s);
                 Ok(ParsedValue::new(TemplateTerm::Var(var_id)))
             } else {
-                // Same IRI heuristic as `parse_expanded_value` for list items.
-                // Uses unchecked expansion — heuristic, falls through to literal.
-                let looks_like_iri = s.contains(':') && !s.contains(char::is_whitespace);
-                if looks_like_iri {
-                    let (expanded, _) = fluree_graph_json_ld::details(s, ctx.context);
-                    if expanded.starts_with("http://")
-                        || expanded.starts_with("https://")
-                        || expanded.starts_with("did:")
-                        || expanded.starts_with("fluree:")
-                        || expanded.starts_with("urn:")
-                    {
-                        return Ok(ParsedValue::new(TemplateTerm::Sid(
-                            ctx.ns_registry.sid_for_iri(expanded.as_ref()),
-                        )));
-                    }
-                }
                 Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::String(
                     s.clone(),
                 ))))

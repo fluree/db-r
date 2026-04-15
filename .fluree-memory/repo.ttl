@@ -374,10 +374,10 @@ mem:fact-01kkq2x3m0g7xk0w4bsdzj2p3p a mem:Fact ;
     mem:content "SPARQL solution modifier parsing bug fixed: `OFFSET` and `LIMIT` were only parsed in the order `LIMIT` then `OFFSET`. Queries written as `... ORDER BY ... OFFSET n LIMIT m` (BSBM Explore Q4 uses this form) would silently drop the LIMIT, causing the engine to execute and return the full ordered result set instead of slicing. Fix in `fluree-db-sparql/src/parse/query/modifier.rs`: parse LIMIT/OFFSET in a loop so either order is accepted; later clauses override earlier ones. After fix, `ORDER BY ... OFFSET 5 LIMIT 10` returns 10 rows as expected." ;
     mem:tag "bsbm" ;
     mem:tag "correctness" ;
-    mem:tag "offset" ;
     mem:tag "limit" ;
-    mem:tag "sparql" ;
+    mem:tag "offset" ;
     mem:tag "parser" ;
+    mem:tag "sparql" ;
     mem:scope mem:repo ;
     mem:artifactRef "fluree-db-sparql/src/parse/query/modifier.rs" ;
     mem:createdAt "2026-03-14T19:45:00.000000+00:00"^^xsd:dateTime .
@@ -387,8 +387,8 @@ mem:fact-01kkq2y4nqj3b6b7v1k3m2q5y6 a mem:Fact ;
     mem:tag "distinct" ;
     mem:tag "perf" ;
     mem:tag "planner" ;
-    mem:tag "sparql" ;
     mem:tag "query-perf" ;
+    mem:tag "sparql" ;
     mem:scope mem:repo ;
     mem:artifactRef "fluree-db-query/src/distinct.rs" ;
     mem:artifactRef "fluree-db-query/src/execute/runner.rs" ;
@@ -1321,6 +1321,22 @@ mem:fact-01kjte1yw4jyrqvnpq27mr2m9v a mem:Fact ;
     mem:branch "main" ;
     mem:createdAt "2026-03-03T18:06:09.284115+00:00"^^xsd:dateTime .
 
+mem:constraint-01kp8yczz09ndt54ztchbheeyb a mem:Constraint ;
+    mem:content "JSON-LD transaction parsing does NOT auto-promote bare string values to IRI references. User data becomes an IRI only when wrapped in `{\"@id\": \"...\"}` or when the property has `@type: \"@id\"` in `@context`. The former `looks_like_iri` heuristic (three sites in parse/jsonld.rs) was removed — it silently promoted strings starting with `http://`/`https://`/`did:`/`fluree:`/`urn:` to IRIs, which violated the JSON-LD spec (especially for `{\"@value\": \"...\"}`, explicitly a literal)." ;
+    mem:tag "iri" ;
+    mem:tag "jsonld" ;
+    mem:tag "parsing" ;
+    mem:tag "spec-compliance" ;
+    mem:tag "transactions" ;
+    mem:scope mem:repo ;
+    mem:severity "must" ;
+    mem:artifactRef "docs/concepts/iri-and-context.md" ;
+    mem:artifactRef "fluree-db-transact/src/parse/jsonld.rs" ;
+    mem:artifactRef "fluree-graph-json-ld/src/iri.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-15T16:08:15.584179+00:00"^^xsd:dateTime ;
+    mem:rationale "Prevents silent data corruption: a literal like `{\"@value\": \"urn:isbn:123\"}` must round-trip as a string. Distinct from the strict compact-IRI GUARD (check_unresolved_iri) which stays — that runs only in IRI positions (@id, @type, predicate, datatype) and errors on unresolved prefixes rather than guessing." .
+
 mem:fact-01kp4rwg9hcyj1ypqmfmygdxym a mem:Fact ;
     mem:content "Strict compact-IRI policy: as of commit 170bccc9, JSON-LD transactions default `strict_compact_iri=true`. Any compact IRI (e.g. `rdf:JSON`, `xsd:string`, `ex:name`) used in data/query/update must have its prefix declared in `@context`, otherwise parsing returns `UnresolvedCompactIri`. The former PR #148 \"Layer 2 fallback\" for well-known prefixes (rdf:, xsd:) is gone. When tests fail with `UnresolvedCompactIri`, fix is to add the prefix to the test's explicit `@context` (per user preference: never rely on default/implicit context in tests). Override via `opts.strict_compact_iri = false` or JSON `opts: {strictCompactIri: false}` if legacy behavior required." ;
     mem:tag "json-ld" ;
@@ -1361,3 +1377,38 @@ mem:fact-01kp4rwyr6eas353wf1fwn2431 a mem:Fact ;
     mem:branch "misc/fixes" ;
     mem:createdAt "2026-04-14T01:15:09.446809+00:00"^^xsd:dateTime .
 
+mem:fact-01kp8psqsjk2g8zke4trn7ryck a mem:Fact ;
+    mem:content "A duplicate-subject symptom after reindexing old commits (for example `?s rdf:type Class` returning the same subject twice after delete-then-reinsert) most plausibly comes from legacy transaction commits, not PSOT scanning itself: old wildcard-delete / upsert paths could persist ineffective retracts for indexed facts, and rebuild only dedups exact V2 identity `(s,p,o_type,o_key,o_i)`, so mismatched legacy retracts leave the original assert alive and a later reinsert adds a second live row." ;
+    mem:tag "datatype" ;
+    mem:tag "duplicates" ;
+    mem:tag "legacy-commits" ;
+    mem:tag "psot" ;
+    mem:tag "reindex" ;
+    mem:tag "upsert" ;
+    mem:tag "wildcard-delete" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-api/tests/it_transact_update.rs" ;
+    mem:artifactRef "fluree-db-api/tests/it_update_wildcard_delete_indexed.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/run_index/build/merge.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-transact/src/stage.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-15T13:55:24.594356+00:00"^^xsd:dateTime ;
+    mem:rationale "This links a user-visible duplicate-query symptom to the historical write-path bugs and the rebuild identity rules, which is useful context for future investigations." .
+
+mem:fact-01kp8y8sj2452zvzzpexfrnvep a mem:Fact ;
+    mem:content "Transaction staging currently buffers WHERE results multiple times: query execution returns `Vec<Batch>`, `stage.rs` merges them into one `Batch`, then `materialize_encoded_bindings_for_txn` clones again into a fully materialized `Batch` before flake generation. Large DELETE/UPDATE WHERE operations can therefore pay ~2-3 full copies of binding memory before any cancellation/dedup happens." ;
+    mem:tag "batch" ;
+    mem:tag "memory" ;
+    mem:tag "performance" ;
+    mem:tag "sparql" ;
+    mem:tag "stage" ;
+    mem:tag "transact" ;
+    mem:tag "update" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/binding.rs" ;
+    mem:artifactRef "fluree-db-query/src/lib.rs" ;
+    mem:artifactRef "fluree-db-transact/src/stage.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-15T16:05:57.954523+00:00"^^xsd:dateTime ;
+    mem:rationale "This is a recurring memory hotspot for large update/delete transactions and should be recalled before doing staging performance work." .

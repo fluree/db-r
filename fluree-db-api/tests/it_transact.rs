@@ -88,12 +88,13 @@ async fn staging_data_mixed_data_types() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = fluree.create_ledger("tx/mixed-dts:main").await.unwrap();
 
-    // Test mixed data types: ref & string
+    // Test mixed data types: ref & string. IRI references must be explicit
+    // via `{"@id": ...}` — bare strings are always literals.
     let txn = json!({
         "@context": [default_context(), {"ex": "http://example.org/ns/"}],
         "insert": {
             "@id": "ex:brian",
-            "ex:favCoffeeShop": ["wiki:Q37158", "Clemmons Coffee"]
+            "ex:favCoffeeShop": [{"@id": "wiki:Q37158"}, "Clemmons Coffee"]
         }
     });
 
