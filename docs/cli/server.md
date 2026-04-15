@@ -195,7 +195,7 @@ listen_addr = "0.0.0.0:8090"
 storage_path = "/var/lib/fluree"
 log_level = "info"
 cors_enabled = true
-# cache_max_mb = 4096  # global cache budget (MB); default: 50% of RAM
+# cache_max_mb = 4096  # global cache budget (MB); default: tiered fraction of RAM (30% <4GB, 40% 4-8GB, 50% ≥8GB)
 
 [server.indexing]
 enabled = true

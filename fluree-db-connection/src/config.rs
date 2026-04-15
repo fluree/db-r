@@ -162,7 +162,7 @@ impl CacheConfig {
 
 impl Default for CacheConfig {
     fn default() -> Self {
-        // Use memory-based default: 50% of system memory
+        // Use memory-based default: tiered fraction of system RAM (see cache::default_cache_max_mb).
         let max_mb = crate::cache::default_cache_max_mb();
         CacheConfig { max_mb }
     }

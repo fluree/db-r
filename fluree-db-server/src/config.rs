@@ -418,7 +418,7 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_REINDEX_MAX_BYTES", default_value_t = server_defaults::DEFAULT_REINDEX_MAX_BYTES)]
     pub reindex_max_bytes: usize,
 
-    /// Global cache budget in MB (default: 50% of system RAM)
+    /// Global cache budget in MB (default: tiered fraction of system RAM — 30% if <4GB, 40% if 4-8GB, 50% if ≥8GB)
     ///
     /// This controls the shared API-level cache budget used for decoded index artifacts.
     #[arg(long, env = "FLUREE_CACHE_MAX_MB")]
