@@ -10,9 +10,9 @@
 //! data conforms to the defined shape constraints.
 
 use crate::error::{Result, TransactError};
-use crate::generate::{apply_cancellation, infer_datatype, FlakeGenerator};
+use crate::generate::{apply_cancellation, dedup_retractions, infer_datatype, FlakeGenerator};
 use crate::ir::InlineValues;
-use crate::ir::{TemplateTerm, Txn, TxnType};
+use crate::ir::{TemplateTerm, TripleTemplate, Txn, TxnType};
 use crate::namespace::NamespaceRegistry;
 use fluree_db_core::OverlayProvider;
 use fluree_db_core::Tracker;
@@ -204,6 +204,23 @@ pub async fn stage(
         let has_where_clause =
             !txn.where_patterns.is_empty() || txn.values.is_some() || txn.sparql_where.is_some();
 
+        // Pure-DELETE fast path: no INSERT templates and not an Upsert. Skips
+        // assertion generation and the assertion/retraction cancellation hashmap;
+        // a sort-and-dedup pass over retractions is sufficient since all
+        // retractions share `t` and `op=false`.
+        let pure_delete = txn.insert_templates.is_empty() && txn.txn_type != TxnType::Upsert;
+
+        // Project WHERE results down to only template-used vars before materialization.
+        // For pure delete, only delete-template vars matter; otherwise both groups.
+        let template_vars: Vec<VarId> = if pure_delete {
+            collect_template_vars(&[txn.delete_templates.as_slice()])
+        } else {
+            collect_template_vars(&[
+                txn.delete_templates.as_slice(),
+                txn.insert_templates.as_slice(),
+            ])
+        };
+
         // Execute WHERE patterns to get bindings
         // This lowers UnresolvedPattern to Pattern, assigning VarIds to variables
         let where_span = tracing::debug_span!(
@@ -212,7 +229,7 @@ pub async fn stage(
             binding_rows = tracing::field::Empty,
         );
         let bindings = async {
-            let bindings = execute_where(&ledger, &mut txn).await?;
+            let bindings = execute_where(&ledger, &mut txn, &template_vars).await?;
             tracing::Span::current().record("binding_rows", bindings.len() as u64);
             Ok::<_, TransactError>(bindings)
         }
@@ -300,36 +317,61 @@ pub async fn stage(
         .instrument(delete_span)
         .await?;
 
-        // Generate assertions from INSERT templates.
-        //
-        // Unlike DELETE (which is skipped on empty WHERE), INSERT templates
-        // are always evaluated. When WHERE returns no solutions, templates
-        // with variables produce 0 flakes (variables are unbound), but
-        // all-literal templates still fire once. This supports the common
-        // "delete-if-exists, always insert" pattern:
-        //   WHERE { ?s :prop ?old } DELETE { ?s :prop ?old } INSERT { :s :prop "new" }
-        let insert_span = tracing::debug_span!(
-            "insert_gen",
-            template_count = txn.insert_templates.len(),
-            assertion_count = tracing::field::Empty,
-        );
-        let assertions = {
-            let _guard = insert_span.enter();
-            let assertions = if where_returned_no_rows {
-                // WHERE returned 0 rows. Use a single empty solution so that
-                // all-literal INSERT templates fire once (templates with variables
-                // will naturally produce 0 flakes since the variables are unbound).
-                let empty_solution = Batch::single_empty();
-                generator.generate_assertions(&txn.insert_templates, &empty_solution)?
-            } else {
-                generator.generate_assertions(&txn.insert_templates, &bindings)?
+        let flakes = if pure_delete {
+            // Pure DELETE: no assertions to generate, no cross-op cancellation
+            // possible. Just dedup retractions and free the WHERE Batch immediately.
+            drop(bindings);
+            let _dedup_span = tracing::debug_span!(
+                "dedup_retractions",
+                retraction_count = retractions.len()
+            )
+            .entered();
+            let before = retractions.len();
+            let flakes = dedup_retractions(retractions);
+            if flakes.len() != before {
+                tracing::debug!(
+                    before,
+                    after = flakes.len(),
+                    cancelled = before - flakes.len(),
+                    "duplicate retractions collapsed"
+                );
+            }
+            flakes
+        } else {
+            // Generate assertions from INSERT templates.
+            //
+            // Unlike DELETE (which is skipped on empty WHERE), INSERT templates
+            // are always evaluated. When WHERE returns no solutions, templates
+            // with variables produce 0 flakes (variables are unbound), but
+            // all-literal templates still fire once. This supports the common
+            // "delete-if-exists, always insert" pattern:
+            //   WHERE { ?s :prop ?old } DELETE { ?s :prop ?old } INSERT { :s :prop "new" }
+            let insert_span = tracing::debug_span!(
+                "insert_gen",
+                template_count = txn.insert_templates.len(),
+                assertion_count = tracing::field::Empty,
+            );
+            let assertions = {
+                let _guard = insert_span.enter();
+                let assertions = if where_returned_no_rows {
+                    // WHERE returned 0 rows. Use a single empty solution so that
+                    // all-literal INSERT templates fire once (templates with variables
+                    // will naturally produce 0 flakes since the variables are unbound).
+                    let empty_solution = Batch::single_empty();
+                    generator.generate_assertions(&txn.insert_templates, &empty_solution)?
+                } else {
+                    generator.generate_assertions(&txn.insert_templates, &bindings)?
+                };
+                insert_span.record("assertion_count", assertions.len() as u64);
+                assertions
             };
-            insert_span.record("assertion_count", assertions.len() as u64);
-            assertions
-        };
 
-        // Apply cancellation (retraction cancels assertion and vice versa)
-        let flakes = {
+            // The WHERE batch is no longer needed once both retraction and assertion
+            // generation have completed. Drop it before cancellation so its memory is
+            // reclaimed during the per-fact bucket pass.
+            drop(bindings);
+
+            // Apply cancellation (retraction cancels assertion and vice versa)
             let _cancel_span = tracing::debug_span!("cancellation").entered();
             let mut all_flakes = retractions;
             all_flakes.extend(assertions);
@@ -629,11 +671,39 @@ async fn enforce_modify_policy_per_flake(
     Ok(())
 }
 
-/// Execute WHERE patterns and return bindings
+/// Collect the set of variables referenced by INSERT/DELETE templates.
 ///
-/// This function lowers the `UnresolvedPattern` patterns (which use string IRIs)
-/// to `Pattern` (with encoded Sids), then executes them against the ledger.
-async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
+/// Used to project the WHERE-result Batch down to only the columns flake
+/// generation actually reads, before materialization or any further copies.
+fn collect_template_vars(template_groups: &[&[TripleTemplate]]) -> Vec<VarId> {
+    let mut seen: HashSet<VarId> = HashSet::new();
+    let mut out: Vec<VarId> = Vec::new();
+    for group in template_groups {
+        for tmpl in *group {
+            for term in [&tmpl.subject, &tmpl.predicate, &tmpl.object] {
+                if let TemplateTerm::Var(v) = term {
+                    if seen.insert(*v) {
+                        out.push(*v);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Execute WHERE patterns and return bindings, projected to template-used vars.
+///
+/// `template_vars` is the union of variables actually referenced by the
+/// transaction's INSERT/DELETE templates. Columns outside that set are dropped
+/// before encoded-binding materialization, since flake generation never reads
+/// them. This avoids cloning WHERE-only helper bindings during materialization
+/// and keeps peak staging memory tied to *template* width, not *WHERE* width.
+async fn execute_where(
+    ledger: &LedgerState,
+    txn: &mut Txn,
+    template_vars: &[VarId],
+) -> Result<Batch> {
     // Lower transaction WHERE clause to query patterns.
     //
     // - JSON-LD updates: `txn.where_patterns` is an UnresolvedPattern list, lowered here using the
@@ -850,10 +920,17 @@ async fn execute_where(ledger: &LedgerState, txn: &mut Txn) -> Result<Batch> {
     // Merge batches into one
     let merged = merge_batches(batches, &txn.vars)?;
 
+    // Drop columns not referenced by INSERT/DELETE templates *before* materializing
+    // encoded bindings. Materialization rebuilds every column it sees, so projecting
+    // first cuts both peak memory and per-row work proportionally to how many WHERE
+    // helper vars are unused downstream. Row count is preserved (via empty-schema-with-len)
+    // so all-literal templates still fire once per solution.
+    let projected = merged.project_owned(template_vars);
+
     // Transaction flake generation requires concrete (materialized) bindings.
     // Query execution may return late-materialized `Binding::Encoded*` values
     // when the binary index store is available.
-    materialize_encoded_bindings_for_txn(ledger, merged)
+    materialize_encoded_bindings_for_txn(ledger, projected)
 }
 
 /// Lower a stored SPARQL WHERE clause (from SPARQL UPDATE) into query patterns.

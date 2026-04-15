@@ -1032,6 +1032,51 @@ impl Batch {
         Some(view.to_batch())
     }
 
+    /// Owning projection: drop columns not in `vars` without cloning the kept ones.
+    ///
+    /// Vars in `vars` that aren't present in the schema are silently ignored.
+    /// Duplicate entries in `vars` are also ignored — each schema column is
+    /// kept at most once (otherwise `mem::take` would empty the source column
+    /// on the second hit and break the per-column row-count invariant).
+    /// If no requested var matches, returns a batch with empty schema and the
+    /// original row count preserved (so all-literal templates iterate correctly).
+    pub fn project_owned(mut self, vars: &[VarId]) -> Self {
+        let mut col_indices: Vec<usize> = Vec::with_capacity(vars.len());
+        let mut new_schema: Vec<VarId> = Vec::with_capacity(vars.len());
+        for &v in vars {
+            // Skip duplicates — schemas are typically tiny so linear search is fine.
+            if new_schema.contains(&v) {
+                continue;
+            }
+            if let Some(idx) = self.schema.iter().position(|&sv| sv == v) {
+                col_indices.push(idx);
+                new_schema.push(v);
+            }
+        }
+
+        // Already a no-op (kept everything in original order)
+        if col_indices.len() == self.schema.len()
+            && col_indices.iter().enumerate().all(|(i, &idx)| i == idx)
+        {
+            return self;
+        }
+
+        if new_schema.is_empty() {
+            return Self::empty_schema_with_len(self.len);
+        }
+
+        let mut moved: Vec<Vec<Binding>> = Vec::with_capacity(new_schema.len());
+        for &idx in &col_indices {
+            moved.push(std::mem::take(&mut self.columns[idx]));
+        }
+
+        Self {
+            len: self.len,
+            schema: Arc::from(new_schema.into_boxed_slice()),
+            columns: moved,
+        }
+    }
+
     /// View a single row without allocation
     pub fn row_view(&self, row: usize) -> Option<RowView<'_>> {
         if row < self.len {
@@ -1337,6 +1382,83 @@ mod tests {
 
         // Out of bounds row
         assert!(batch.get(99, VarId(0)).is_none());
+    }
+
+    #[test]
+    fn test_batch_project_owned_dedups_duplicate_input_vars() {
+        // Regression: project_owned must tolerate duplicate VarIds in `vars`
+        // without producing an invalid batch. Earlier behavior `mem::take`d
+        // the same source column twice — the second take produced an empty
+        // Vec while `len` was still the original row count, violating the
+        // batch invariant that all columns match `len`. The result schema
+        // also contained a duplicate VarId, which `Batch::new` rejects.
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let columns = vec![
+            vec![
+                Binding::lit(FlakeValue::Long(10), xsd_long()),
+                Binding::lit(FlakeValue::Long(20), xsd_long()),
+            ],
+            vec![
+                Binding::lit(FlakeValue::Long(100), xsd_long()),
+                Binding::lit(FlakeValue::Long(200), xsd_long()),
+            ],
+        ];
+        let batch = Batch::new(schema, columns).unwrap();
+
+        // Duplicate VarId(0) in the request must be deduplicated.
+        let projected = batch.project_owned(&[VarId(0), VarId(0), VarId(1)]);
+
+        assert_eq!(projected.schema(), &[VarId(0), VarId(1)]);
+        assert_eq!(projected.len(), 2);
+        // All retained columns must match the row count — no empty placeholder
+        // produced by a second mem::take of the same source column.
+        for (i, col) in projected.columns.iter().enumerate() {
+            assert_eq!(
+                col.len(),
+                projected.len(),
+                "column {i} length must match batch len after dedup"
+            );
+        }
+
+        // The kept columns must carry the original data, not a swapped-in
+        // empty Vec.
+        let (v, _) = projected.get(0, VarId(0)).unwrap().as_lit().unwrap();
+        assert_eq!(*v, FlakeValue::Long(10));
+        let (v, _) = projected.get(1, VarId(1)).unwrap().as_lit().unwrap();
+        assert_eq!(*v, FlakeValue::Long(200));
+    }
+
+    #[test]
+    fn test_batch_project_owned_unknown_vars_ignored() {
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0), VarId(1)].into_boxed_slice());
+        let columns = vec![
+            vec![Binding::lit(FlakeValue::Long(1), xsd_long())],
+            vec![Binding::lit(FlakeValue::Long(2), xsd_long())],
+        ];
+        let batch = Batch::new(schema, columns).unwrap();
+
+        // VarId(99) is absent — silently skipped, leaving only VarId(0).
+        let projected = batch.project_owned(&[VarId(99), VarId(0)]);
+        assert_eq!(projected.schema(), &[VarId(0)]);
+        assert_eq!(projected.len(), 1);
+    }
+
+    #[test]
+    fn test_batch_project_owned_empty_vars_preserves_row_count() {
+        let schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let columns = vec![vec![
+            Binding::lit(FlakeValue::Long(1), xsd_long()),
+            Binding::lit(FlakeValue::Long(2), xsd_long()),
+            Binding::lit(FlakeValue::Long(3), xsd_long()),
+        ]];
+        let batch = Batch::new(schema, columns).unwrap();
+
+        // No vars retained — row count must be preserved so all-literal
+        // templates still iterate once per WHERE solution.
+        let projected = batch.project_owned(&[]);
+        assert_eq!(projected.schema(), &[] as &[VarId]);
+        assert_eq!(projected.len(), 3);
+        assert!(!projected.is_empty());
     }
 
     #[test]

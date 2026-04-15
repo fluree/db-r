@@ -7,7 +7,7 @@
 pub mod cancellation;
 pub mod flakes;
 
-pub use cancellation::apply_cancellation;
+pub use cancellation::{apply_cancellation, dedup_retractions};
 pub use flakes::{infer_datatype, FlakeGenerator};
 pub(crate) use flakes::{
     DT_BOOLEAN, DT_DATE, DT_DATE_TIME, DT_DAY_TIME_DURATION, DT_DECIMAL, DT_DOUBLE, DT_DURATION,

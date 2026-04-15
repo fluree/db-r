@@ -24,51 +24,72 @@ use rustc_hash::FxHashMap;
 /// Returns flakes in deterministic sorted order (by SPOT index) for
 /// reproducible hashing and tests.
 pub fn apply_cancellation(flakes: Vec<Flake>) -> Vec<Flake> {
-    let cap = flakes.len();
+    if flakes.is_empty() {
+        return flakes;
+    }
 
-    // Track counts per fact key. Flake's Eq/Hash ignores `t` and `op`,
-    // so all copies of the same fact hash to the same bucket.
-    // We store (Vec<assertion_flakes>, Vec<retraction_flakes>) per key.
-    let mut buckets: FxHashMap<Flake, (Vec<Flake>, Vec<Flake>)> =
-        FxHashMap::with_capacity_and_hasher(cap, Default::default());
+    // Per-fact stats keyed by reference into `flakes` (no Flake clones).
+    // Flake's Eq/Hash ignores `t` and `op`, so duplicate facts share a bucket.
+    struct FactStats {
+        assert_count: u32,
+        retract_count: u32,
+        last_assert_idx: u32,
+        last_retract_idx: u32,
+    }
 
-    for flake in flakes {
-        let entry = buckets.entry(flake.clone()).or_default();
+    let mut stats: FxHashMap<&Flake, FactStats> =
+        FxHashMap::with_capacity_and_hasher(flakes.len(), Default::default());
+
+    for (idx, flake) in flakes.iter().enumerate() {
+        let entry = stats.entry(flake).or_insert(FactStats {
+            assert_count: 0,
+            retract_count: 0,
+            last_assert_idx: 0,
+            last_retract_idx: 0,
+        });
         if flake.op {
-            entry.0.push(flake);
+            entry.assert_count += 1;
+            entry.last_assert_idx = idx as u32;
         } else {
-            entry.1.push(flake);
+            entry.retract_count += 1;
+            entry.last_retract_idx = idx as u32;
         }
     }
 
-    // Cancel pairs 1:1 and collect survivors.
-    //
-    // RDF set semantics: within a single transaction, asserting the same
-    // triple N times is identical to asserting it once, and retracting it
-    // N times is identical to retracting it once. After cancellation we
-    // therefore collapse duplicate assertions (or retractions) to a single
-    // flake per fact identity.
-    let mut result: Vec<Flake> = Vec::with_capacity(cap);
-    for (_key, (mut assertions, mut retractions)) in buckets {
-        let cancel_count = assertions.len().min(retractions.len());
-        let surviving_assertions = assertions.len() - cancel_count;
-        let surviving_retractions = retractions.len() - cancel_count;
-
-        // Keep at most one assertion per fact
-        if surviving_assertions > 0 {
-            // Take the last one (highest t) — arbitrary but deterministic
-            result.push(assertions.pop().unwrap());
+    // Mark which input indices survive. RDF set semantics: at most one
+    // assertion + one retraction per unique fact (duplicates collapse).
+    let mut keep = vec![false; flakes.len()];
+    for fs in stats.values() {
+        let cancel = fs.assert_count.min(fs.retract_count);
+        if fs.assert_count > cancel {
+            keep[fs.last_assert_idx as usize] = true;
         }
-        // Keep at most one retraction per fact
-        if surviving_retractions > 0 {
-            result.push(retractions.pop().unwrap());
+        if fs.retract_count > cancel {
+            keep[fs.last_retract_idx as usize] = true;
         }
     }
+    drop(stats); // release borrow of `flakes` so we can move it
 
-    // Sort for deterministic output
+    let mut result: Vec<Flake> = flakes
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(f, k)| if k { Some(f) } else { None })
+        .collect();
+
     result.sort_by(|a, b| IndexType::Spot.compare(a, b));
-
     result
+}
+
+/// Dedup a Vec of retractions in place (cheap path for pure-DELETE transactions).
+///
+/// All retractions in a single transaction share `t` and `op=false`, so SPOT
+/// sort places equal-by-Eq flakes adjacent and `Vec::dedup` collapses them.
+/// Avoids the per-fact hashmap that `apply_cancellation` builds for the
+/// general assertion/retraction case.
+pub fn dedup_retractions(mut retractions: Vec<Flake>) -> Vec<Flake> {
+    retractions.sort_by(|a, b| IndexType::Spot.compare(a, b));
+    retractions.dedup();
+    retractions
 }
 
 #[cfg(test)]
