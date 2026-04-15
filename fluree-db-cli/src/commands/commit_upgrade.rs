@@ -73,41 +73,110 @@ pub async fn run(
 }
 
 fn print_audit_summary(audit: &CommitUpgradeAudit) {
-    let (both, spot_only, psot_only) = audit.counts_by_kind();
+    let counts = audit.counts_by_kind();
     println!();
-    println!("Ledger:            {}", audit.ledger_id);
-    println!("Commits walked:    {}", audit.commits_walked);
+    println!("Ledger:                   {}", audit.ledger_id);
+    println!("Commits walked:           {}", audit.commits_walked);
     println!("Canonical (should exist): {}", audit.canonical_count);
-    println!("SPOT scan flakes:  {}", audit.spot_scan_count);
-    println!("PSOT scan flakes:  {}", audit.psot_scan_count);
+    println!("SPOT scan flakes:         {}", audit.spot_scan_count);
+    println!("PSOT scan flakes:         {}", audit.psot_scan_count);
+    println!();
+    println!("Missing total:            {}", audit.missing_len());
     println!(
-        "Missing total:     {} ({} missing from both, {} SPOT-only, {} PSOT-only)",
-        audit.missing_len(),
-        both,
-        spot_only,
-        psot_only
+        "  {}: {}",
+        "auto-repairable via commit migration".green().bold(),
+        counts.auto_repairable_total()
+    );
+    println!(
+        "    {:<20} {}  {}",
+        "cancellation-bug",
+        counts.cancellation_bug,
+        "— #152 same-commit retract+assert pair".dimmed()
+    );
+    println!(
+        "    {:<20} {}  {}",
+        "spot-dropout",
+        counts.spot_dropout,
+        "— pre-148 pure insert, missing from SPOT".dimmed()
+    );
+    println!(
+        "    {:<20} {}  {}",
+        "psot-dropout",
+        counts.psot_dropout,
+        "— symmetric, missing from PSOT".dimmed()
+    );
+    println!(
+        "  {}: {}",
+        "operator review required".yellow().bold(),
+        counts.review_required_total()
+    );
+    println!(
+        "    {:<20} {}  {}",
+        "ambiguous-intent",
+        counts.ambiguous_intent,
+        "— multi-value at head, intent unknown".dimmed()
+    );
+    println!(
+        "    {:<20} {}  {}",
+        "unknown-both",
+        counts.unknown_both,
+        "— missing both, no known fingerprint".dimmed()
     );
 }
 
 fn print_missing_detail(audit: &CommitUpgradeAudit) {
     println!();
-    println!("{}", "Missing flakes:".yellow().bold());
-    for (i, m) in audit.missing.iter().enumerate() {
-        let kind_label = match m.kind {
-            MissingKind::Both => "both".red().bold(),
-            MissingKind::SpotOnly => "spot-only".yellow().bold(),
-            MissingKind::PsotOnly => "psot-only".yellow().bold(),
-        };
-        println!(
-            "  {:>3}. [{}] {} {} {} ({})",
-            i + 1,
-            kind_label,
-            m.subject.bright_white(),
-            m.predicate.bright_blue(),
-            format_value_abbrev(&m.value),
-            m.datatype.dimmed()
-        );
+    let auto_count = audit.auto_repairable().count();
+    let review_count = audit.review_required().count();
+
+    if auto_count > 0 {
+        println!("{} ({})", "Auto-repairable:".green().bold(), auto_count);
+        for (i, m) in audit.auto_repairable().enumerate() {
+            print_flake_row(i + 1, m);
+        }
     }
+
+    if review_count > 0 {
+        println!();
+        println!(
+            "{} ({})",
+            "Review required (not auto-repaired):".yellow().bold(),
+            review_count
+        );
+        for (i, m) in audit.review_required().enumerate() {
+            print_flake_row(i + 1, m);
+        }
+    }
+}
+
+fn print_flake_row(n: usize, m: &fluree_db_api::MissingFlake) {
+    let label = m.kind.label();
+    let colored_label = if m.kind.auto_repairable() {
+        label.green().bold()
+    } else {
+        label.yellow().bold()
+    };
+    let detail = match &m.kind {
+        MissingKind::CancellationBug { same_commit_t } => {
+            format!(" t={:?}", same_commit_t).dimmed().to_string()
+        }
+        MissingKind::AmbiguousIntent {
+            canonical_multiplicity,
+        } => format!(" (×{} coexisting values)", canonical_multiplicity)
+            .dimmed()
+            .to_string(),
+        _ => String::new(),
+    };
+    println!(
+        "  {:>3}. [{}] {} {} {} ({}){}",
+        n,
+        colored_label,
+        m.subject.bright_white(),
+        m.predicate.bright_blue(),
+        format_value_abbrev(&m.value),
+        m.datatype.dimmed(),
+        detail
+    );
 }
 
 fn format_value_abbrev(v: &fluree_db_core::FlakeValue) -> String {
