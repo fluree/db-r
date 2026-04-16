@@ -7,7 +7,7 @@ use crate::context::{self, build_fluree};
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_api::{CommitUpgradeAudit, MissingKind};
+use fluree_db_api::{CommitUpgradeAudit, CommitUpgradeReport, MissingKind};
 
 pub async fn run(
     ledger: &str,
@@ -64,12 +64,92 @@ pub async fn run(
         return Ok(());
     }
 
-    // --force path — phase 2; not yet implemented.
-    Err(CliError::Usage(
-        "--force (repair commit emission) is not yet implemented; \
-         use --dry-run to audit for now"
-            .to_string(),
-    ))
+    // --force path — migrate the chain via decode-reauthor, then re-run
+    // the audit so the operator sees the post-migration state.
+    let auto_before = audit.auto_repairable().count();
+    if auto_before == 0 {
+        println!(
+            "\n{} nothing auto-repairable; skipping migration. \
+             Review the items above if any remain.",
+            "note:".yellow().bold()
+        );
+        return Ok(());
+    }
+
+    println!(
+        "\n  {} running commit-chain upgrade for {}...",
+        "migrating:".cyan().bold(),
+        alias
+    );
+
+    let report = fluree
+        .upgrade_commit_chain(&ledger_id)
+        .await
+        .map_err(CliError::Api)?;
+
+    print_upgrade_report(&report);
+
+    println!(
+        "\n  {} re-auditing migrated chain...",
+        "verifying:".cyan().bold()
+    );
+
+    let post = fluree
+        .audit_commit_upgrade(&ledger_id)
+        .await
+        .map_err(CliError::Api)?;
+
+    print_audit_summary(&post);
+
+    let auto_after = post.auto_repairable().count();
+    if auto_after > 0 {
+        println!(
+            "\n{} {} auto-repairable entries remain after migration. \
+             This is unexpected on a clean branch — see issue #152.",
+            "warning:".red().bold(),
+            auto_after
+        );
+    } else {
+        println!(
+            "\n{}",
+            "Migration complete — chain is clean.".green().bold()
+        );
+    }
+
+    if post.review_required().count() > 0 {
+        println!(
+            "{} {} entries still require operator review (see Review Required section above).",
+            "note:".yellow().bold(),
+            post.review_required().count()
+        );
+    }
+
+    Ok(())
+}
+
+fn print_upgrade_report(report: &CommitUpgradeReport) {
+    println!();
+    println!("Ledger:              {}", report.ledger_id);
+    println!(
+        "Source commits:      {} walked, {} migrated ({} skipped as empty)",
+        report.source_commit_count, report.migrated_commits, report.empty_commits_skipped
+    );
+    println!("Flakes written:      {}", report.total_flakes);
+    println!(
+        "Old commit head:     {} {}",
+        report.old_commit_head_id,
+        format!("@ t={}", report.old_commit_t).dimmed()
+    );
+    println!(
+        "New commit head:     {} {}",
+        report.new_commit_head_id.to_string().green(),
+        format!("@ t={}", report.new_commit_t).dimmed()
+    );
+    println!(
+        "New index head:      {} {}",
+        report.new_index_head_id.to_string().green(),
+        format!("@ t={}", report.new_index_t).dimmed()
+    );
 }
 
 fn print_audit_summary(audit: &CommitUpgradeAudit) {

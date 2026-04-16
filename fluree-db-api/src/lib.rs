@@ -101,7 +101,7 @@ pub use commit_transfer::{
     Base64Bytes, BulkImportResult, CommitImportResult, ExportCommitsRequest, ExportCommitsResponse,
     PushCommitsRequest, PushCommitsResponse,
 };
-pub use commit_upgrade::{CommitUpgradeAudit, MissingFlake, MissingKind};
+pub use commit_upgrade::{CommitUpgradeAudit, CommitUpgradeReport, MissingFlake, MissingKind};
 pub use dataset::{
     sparql_dataset_ledger_ids, DatasetParseError, DatasetSpec, GraphSource, QueryConnectionOptions,
     TimeSpec,
