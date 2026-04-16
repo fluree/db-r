@@ -32,13 +32,6 @@
 //! insertion. So a re-authored chain has consistent Sid encoding across
 //! commits for the same logical subject, which is the whole point.
 
-// This module's public surface (`build_canonical_flakes`) is consumed by
-// the migration loop in a follow-on commit on the branch. Until that
-// commit lands the function is transitively unreachable from non-test lib
-// builds; the unit suite below exercises it in isolation. The allow
-// comes off when the migration loop ties decode+reauthor together.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use fluree_db_core::{Flake, FlakeValue};
 use fluree_db_transact::NamespaceRegistry;
 

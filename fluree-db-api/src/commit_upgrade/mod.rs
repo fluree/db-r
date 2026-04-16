@@ -28,7 +28,10 @@
 //!    SPOT/PSOT-divergence cases with one code path).
 
 mod decode;
+mod pipeline;
 mod reauthor;
+
+pub use pipeline::CommitUpgradeReport;
 
 use fluree_db_core::{
     collect_dag_cids, load_commit_by_id, range, Flake, FlakeValue, IndexType, LedgerSnapshot,
@@ -564,5 +567,32 @@ where
             psot_scan_count: psot_set.len(),
             missing,
         })
+    }
+}
+
+impl<N> Fluree<N>
+where
+    N: NameService
+        + fluree_db_nameservice::Publisher
+        + fluree_db_nameservice::AdminPublisher
+        + Send
+        + Sync
+        + 'static,
+{
+    /// Upgrade a legacy commit chain in place: decode every source
+    /// commit's flakes to logical IRI form via the source snapshot's
+    /// namespace table, re-author through the current canonical write
+    /// path into a new commit chain in the same content store, rebuild
+    /// the binary index over the new chain, and atomically swap both
+    /// `commit_head_id` + `index_head_id` on the real nameservice via
+    /// `AdminPublisher::reset_head`.
+    ///
+    /// See `pipeline` module docs for the full isolation, seeding, and
+    /// failure-recovery semantics.
+    ///
+    /// Requires the nameservice to implement `AdminPublisher` so we can
+    /// perform the atomic head swap. Rejects branched ledgers.
+    pub async fn upgrade_commit_chain(&self, ledger_id: &str) -> Result<CommitUpgradeReport> {
+        pipeline::upgrade_commit_chain_impl(self, ledger_id).await
     }
 }

@@ -29,16 +29,6 @@
 //! cites a prefix that was never registered via `namespace_delta`) and the
 //! migration must refuse to proceed rather than invent semantics.
 
-// `DecodedOp`, `LogicalObject`, and `decode_commit` are consumed by the
-// re-author step (commit_upgrade/reauthor.rs, landing as the next commit on
-// this branch). Until that commit lands they are transitively unreachable
-// from non-test lib builds, but the `#[cfg(test)]` unit tests below
-// exercise every item so the decode step is fully under test in isolation.
-// Once reauthor.rs starts calling decode_commit, the module-level allow
-// can be removed — the whole module will be transitively live in both
-// builds.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use fluree_db_core::{Commit, Flake, FlakeMeta, FlakeValue, LedgerSnapshot, Sid};
 
 use crate::{ApiError, Result};
