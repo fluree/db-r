@@ -28,6 +28,7 @@
 //!    SPOT/PSOT-divergence cases with one code path).
 
 mod decode;
+mod reauthor;
 
 use fluree_db_core::{
     collect_dag_cids, load_commit_by_id, range, Flake, FlakeValue, IndexType, LedgerSnapshot,
