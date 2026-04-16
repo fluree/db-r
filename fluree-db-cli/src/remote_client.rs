@@ -737,6 +737,51 @@ impl RemoteLedgerClient {
     }
 
     // =========================================================================
+    // Admin — commit upgrade
+    // =========================================================================
+
+    /// Trigger an admin commit-chain upgrade on the remote server.
+    ///
+    /// Calls `POST {admin_base}/admin/commit-upgrade/{ledger}` with body
+    /// `{"dryRun": <flag>}`. The server returns a JSON document with
+    /// `preAudit`, `migrated`, and (when `migrated: true`) `report` +
+    /// `postAudit` keys — see solo's `handle_commit_upgrade` for the
+    /// exact shape.
+    ///
+    /// `admin_base` is derived from `self.base_url` by trimming a
+    /// trailing `/fluree` segment if present — so a configured remote
+    /// of the form `https://example.com/v1/fluree` yields an admin URL
+    /// at `https://example.com/v1/admin/commit-upgrade/{ledger}`. Base
+    /// URLs that don't end in `/fluree` are used verbatim (dev /
+    /// custom deployments).
+    pub async fn commit_upgrade(
+        &self,
+        ledger: &str,
+        dry_run: bool,
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let url = self.admin_url("commit-upgrade", ledger);
+        let body = serde_json::json!({ "dryRun": dry_run });
+        self.send_json(
+            reqwest::Method::POST,
+            &url,
+            "application/json",
+            Some(RequestBody::Json(&body)),
+        )
+        .await
+    }
+
+    fn admin_url(&self, op: &str, ledger: &str) -> String {
+        let trimmed = self.base_url.trim_end_matches('/');
+        let admin_base = trimmed.strip_suffix("/fluree").unwrap_or(trimmed);
+        format!(
+            "{}/admin/{}/{}",
+            admin_base,
+            op,
+            urlencoding::encode(Self::ledger_tail(ledger)),
+        )
+    }
+
+    // =========================================================================
     // Ledger Info / Exists
     // =========================================================================
 

@@ -16,16 +16,12 @@ pub async fn run(
     remote_flag: Option<&str>,
     dirs: &FlureeDir,
 ) -> CliResult<()> {
-    if remote_flag.is_some() {
-        return Err(CliError::Usage(
-            "--remote is not yet implemented for `fluree commit upgrade`; \
-             run locally against the ledger's .fluree/ directory for now"
-                .to_string(),
-        ));
-    }
-
     // --dry-run is the default when neither flag is given.
     let effective_dry_run = dry_run || !force;
+
+    if let Some(remote_name) = remote_flag {
+        return run_remote(ledger, effective_dry_run, remote_name, dirs).await;
+    }
 
     let alias = context::resolve_ledger(Some(ledger), dirs)?;
     let fluree = build_fluree(dirs)?;
@@ -125,6 +121,185 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+/// `--remote <name>` path. Calls `POST /v1/admin/commit-upgrade/{ledgerId}`
+/// on the configured remote and renders the server's JSON response.
+///
+/// Output mirrors the local path's formatting (audit summary, migration
+/// report, post-audit) but driven from the JSON response body instead of
+/// direct access to `CommitUpgradeAudit` / `CommitUpgradeReport` structs.
+async fn run_remote(
+    ledger: &str,
+    dry_run: bool,
+    remote_name: &str,
+    dirs: &FlureeDir,
+) -> CliResult<()> {
+    let client = context::build_remote_client(remote_name, dirs).await?;
+
+    eprintln!(
+        "  {} {} {} on remote {}...",
+        "commit upgrade:".cyan().bold(),
+        if dry_run {
+            "auditing"
+        } else {
+            "auditing + migrating"
+        },
+        ledger,
+        remote_name.cyan()
+    );
+
+    let response = client
+        .commit_upgrade(ledger, dry_run)
+        .await
+        .map_err(|e| CliError::Usage(format!("remote commit-upgrade failed: {e}")))?;
+
+    let pre_audit = response
+        .get("preAudit")
+        .ok_or_else(|| CliError::Usage("remote response missing `preAudit` field".to_string()))?;
+    print_remote_audit_summary("pre-migration", pre_audit);
+
+    let migrated = response
+        .get("migrated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !migrated {
+        if let Some(note) = response.get("note").and_then(|v| v.as_str()) {
+            println!("\n{} {}", "note:".yellow().bold(), note);
+        }
+        return Ok(());
+    }
+
+    if let Some(report) = response.get("report") {
+        print_remote_upgrade_report(report);
+    }
+
+    if let Some(post_audit) = response.get("postAudit") {
+        println!(
+            "\n  {} post-migration state ({}):",
+            "verifying:".cyan().bold(),
+            remote_name.cyan()
+        );
+        print_remote_audit_summary("post-migration", post_audit);
+
+        let post_auto = post_audit
+            .get("autoRepairableTotal")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if post_auto > 0 {
+            println!(
+                "\n{} {} auto-repairable entries remain after migration (remote).",
+                "warning:".red().bold(),
+                post_auto
+            );
+        } else {
+            println!(
+                "\n{}",
+                "Migration complete — remote chain is clean.".green().bold()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn print_remote_audit_summary(label: &str, audit: &serde_json::Value) {
+    let ledger_id = audit
+        .get("ledgerId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<unknown>");
+    let commits_walked = audit
+        .get("commitsWalked")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let canonical = audit
+        .get("canonicalCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let spot = audit
+        .get("spotScanCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let psot = audit
+        .get("psotScanCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let total = audit
+        .get("totalMissing")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let counts = audit
+        .get("countsByKind")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let n = |key: &str| -> u64 { counts.get(key).and_then(|v| v.as_u64()).unwrap_or(0) };
+
+    println!();
+    println!("Ledger ({label}):          {ledger_id}");
+    println!("Commits walked:           {commits_walked}");
+    println!("Canonical (should exist): {canonical}");
+    println!("SPOT scan flakes:         {spot}");
+    println!("PSOT scan flakes:         {psot}");
+    println!();
+    println!("Missing total:            {total}");
+    println!(
+        "  {}: {}",
+        "auto-repairable via commit migration".green().bold(),
+        audit
+            .get("autoRepairableTotal")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    );
+    println!("    {:<20} {}", "cancellation-bug", n("cancellationBug"));
+    println!("    {:<20} {}", "spot-dropout", n("spotDropout"));
+    println!("    {:<20} {}", "psot-dropout", n("psotDropout"));
+    println!(
+        "  {}: {}",
+        "operator review required".yellow().bold(),
+        audit
+            .get("reviewRequiredTotal")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    );
+    println!("    {:<20} {}", "ambiguous-intent", n("ambiguousIntent"));
+    println!("    {:<20} {}", "unknown-both", n("unknownBoth"));
+}
+
+fn print_remote_upgrade_report(report: &serde_json::Value) {
+    let get_str = |k: &str| -> &str {
+        report
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("<unknown>")
+    };
+    let get_u64 = |k: &str| -> u64 { report.get(k).and_then(|v| v.as_u64()).unwrap_or(0) };
+    let get_i64 = |k: &str| -> i64 { report.get(k).and_then(|v| v.as_i64()).unwrap_or(0) };
+
+    println!();
+    println!("Ledger:              {}", get_str("ledgerId"));
+    println!(
+        "Source commits:      {} walked, {} migrated ({} skipped as empty)",
+        get_u64("sourceCommitCount"),
+        get_u64("migratedCommits"),
+        get_u64("emptyCommitsSkipped")
+    );
+    println!("Flakes written:      {}", get_u64("totalFlakes"));
+    println!(
+        "Old commit head:     {} {}",
+        get_str("oldCommitHeadId"),
+        format!("@ t={}", get_i64("oldCommitT")).dimmed()
+    );
+    println!(
+        "New commit head:     {} {}",
+        get_str("newCommitHeadId").green(),
+        format!("@ t={}", get_i64("newCommitT")).dimmed()
+    );
+    println!(
+        "New index head:      {} {}",
+        get_str("newIndexHeadId").green(),
+        format!("@ t={}", get_i64("newIndexT")).dimmed()
+    );
 }
 
 fn print_upgrade_report(report: &CommitUpgradeReport) {
