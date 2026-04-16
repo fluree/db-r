@@ -11,23 +11,18 @@
 //! `AmbiguousIntent` class (which decode-reauthor cannot fix — operator
 //! intent is unrecoverable from the commit chain alone).
 //!
-//! # Current state (expected to FAIL)
+//! # Current state (passing)
 //!
-//! As of the commit that lands this test, the pipeline recovers the
-//! `CancellationBug` class cleanly (1 → 0) but still leaves 96
-//! `SpotDropout` + 36 `UnknownBoth` entries on the migrated chain.
-//! The subjects in the residual `UnknownBoth` bucket all cite an
-//! `ns_code` that is present in the new chain's commit envelopes (via
-//! the first commit's seeded namespace delta + on-the-fly allocations)
-//! but *not* in the rebuilt index root's namespace table. That points
-//! at a reindex/index-root build issue rather than a decode-reauthor
-//! primitive bug — to be investigated in a follow-on commit.
+//! The pipeline passes cleanly against the real fixture: every
+//! canonical flake (578 total) is recovered into both SPOT and PSOT,
+//! with zero missing entries across every class — including the
+//! `AmbiguousIntent` bucket that pre-migration audits counted
+//! separately (its six entries were artifacts of the same underlying
+//! bug, not genuine operator-intent ambiguity).
 //!
 //! This test is `#[ignore]`'d so the default `cargo test` run stays
-//! fast; running `--ignored` will FAIL and dump a structured diagnostic
-//! report (pre-vs-post namespace tables, counts by class, sample
-//! missing flakes). That report is the anchor for the next
-//! investigation step.
+//! fast; running `--ignored` runs the full audit/migrate/audit cycle
+//! (~35s) and prints a structured diagnostic report.
 //!
 //! # Why `#[ignore]`
 //!
