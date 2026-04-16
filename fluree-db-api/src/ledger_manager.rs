@@ -959,20 +959,33 @@ impl LedgerManager {
             }
 
             ReloadAction::BecomeLeader(handle) => {
-                // We're the reload leader - do I/O without manager lock
-                let mut write_guard = handle.lock_for_write().await;
+                // We're the reload leader. `LoadState::Reloading` (set before we
+                // dropped the manager lock) gives us single-flight coordination;
+                // we do NOT need to hold the per-ledger state lock during I/O.
+                //
+                // Running LedgerState::load + load_and_attach_binary_store without
+                // the state lock means concurrent queries continue to serve from
+                // the prior snapshot via `handle.snapshot()` instead of blocking
+                // on the full reload. See fluree/db-r#155.
 
-                let result = LedgerState::load(&self.nameservice_mode, ledger_id, &self.backend)
-                    .await
-                    .map_err(ApiError::from); // Convert LedgerError to ApiError
+                // Snapshot the pre-reload `t` so we can detect a concurrent
+                // transaction that landed while our I/O was in flight. In peer
+                // mode writes are forwarded to the tx server so this branch
+                // never fires; in tx mode it guards against overwriting a
+                // just-committed snapshot with one we loaded before the commit.
+                let pre_t = {
+                    let state = handle.inner.state.lock().await;
+                    state.t()
+                }; // lock released
 
-                // Publish result under lock
-                let mut entries = self.entries.write().await;
-                let shutting_down = self.is_shutdown();
+                // ── All I/O happens OUTSIDE any per-ledger lock ──────────────
+                let load_result =
+                    LedgerState::load(&self.nameservice_mode, ledger_id, &self.backend)
+                        .await
+                        .map_err(ApiError::from);
 
-                match result {
+                let prepared = match load_result {
                     Ok(mut new_state) => {
-                        // Attempt to load binary index store (v2 only)
                         let new_binary_store = match load_and_attach_binary_store(
                             &self.backend,
                             &mut new_state,
@@ -991,12 +1004,47 @@ impl LedgerManager {
                                 None
                             }
                         };
+                        Ok((new_state, new_binary_store))
+                    }
+                    Err(e) => Err(e),
+                };
 
-                        write_guard.replace(new_state);
-                        // Update binary_store coherently with the new state
-                        *handle.inner.binary_store.lock().await = new_binary_store;
+                // ── Atomic swap under brief state lock (I/O already complete) ─
+                let apply_result = match prepared {
+                    Ok((new_state, new_binary_store)) => {
+                        // Lock ordering (ledger_manager.rs:215): state → binary_store.
+                        // Swap both inside the state lock to preserve the
+                        // `snapshot.range_provider.is_some() == binary_store.is_some()`
+                        // invariant that `snapshot()` debug-asserts.
+                        let mut write_guard = handle.lock_for_write().await;
+                        let current_t = write_guard.state().t();
+                        if current_t > pre_t {
+                            // A concurrent transaction advanced the state while
+                            // we were doing I/O. The in-memory state is already
+                            // at least as fresh as what we just loaded, so we
+                            // discard our reloaded snapshot rather than regress.
+                            tracing::warn!(
+                                ledger_id = %ledger_id,
+                                pre_t,
+                                current_t,
+                                "reload: state advanced during lock-free I/O; discarding reloaded snapshot"
+                            );
+                        } else {
+                            write_guard.replace(new_state);
+                            *handle.inner.binary_store.lock().await = new_binary_store;
+                        }
+                        drop(write_guard);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                };
 
-                        // Notify waiters and restore Ready state (unless shutting down)
+                // ── Publish result to waiters (brief manager lock) ───────────
+                let mut entries = self.entries.write().await;
+                let shutting_down = self.is_shutdown();
+
+                match apply_result {
+                    Ok(()) => {
                         if let Some(LoadState::Reloading { handle, waiters }) =
                             entries.remove(&canonical_alias)
                         {

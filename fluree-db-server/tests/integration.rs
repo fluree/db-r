@@ -2683,7 +2683,7 @@ async fn commits_endpoint_without_token_returns_401() {
 
 #[tokio::test]
 async fn maintenance_mode_blocks_writes_allows_reads() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
 
     // Create a ledger first
     let app = build_router(state.clone());
@@ -2779,7 +2779,7 @@ async fn maintenance_mode_blocks_writes_allows_reads() {
 
 #[tokio::test]
 async fn readiness_probe_returns_ok() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
     let app = build_router(state);
 
     let resp = app
@@ -2805,7 +2805,7 @@ async fn readiness_probe_returns_ok() {
 
 #[tokio::test]
 async fn transaction_response_includes_x_fluree_t_header() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
 
     // Create ledger
     let app = build_router(state.clone());
@@ -2857,7 +2857,7 @@ async fn transaction_response_includes_x_fluree_t_header() {
 
 #[tokio::test]
 async fn min_t_header_enforces_read_after_write() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
 
     // Create ledger and insert data
     let app = build_router(state.clone());
@@ -2950,7 +2950,7 @@ async fn min_t_header_enforces_read_after_write() {
 
 #[tokio::test]
 async fn bm25_query_endpoint_requires_from_field() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
     let app = build_router(state);
 
     // Query without `from` should return an error (400 or 500)
@@ -2975,7 +2975,7 @@ async fn bm25_query_endpoint_requires_from_field() {
 
 #[tokio::test]
 async fn bm25_query_endpoint_accepts_valid_query() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
 
     // Create a ledger so the `from` resolves
     let app = build_router(state.clone());
@@ -3016,7 +3016,7 @@ async fn bm25_query_endpoint_accepts_valid_query() {
 // Mirrors exactly what the Adaptive app does.
 #[tokio::test]
 async fn bm25_query_endpoint_end_to_end_with_unqualified_names() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
     let app = build_router(state.clone());
 
     // Create ledger
@@ -3203,7 +3203,7 @@ async fn bm25_query_endpoint_end_to_end_with_unqualified_names() {
 
 #[tokio::test]
 async fn export_returns_404_for_unknown_ledger() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
     let app = build_router(state.clone());
 
     let resp = app
@@ -3226,7 +3226,7 @@ async fn export_returns_404_for_unknown_ledger() {
 
 #[tokio::test]
 async fn export_rejects_invalid_format() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
 
     // Create a ledger
     let app = build_router(state.clone());
@@ -3267,7 +3267,7 @@ async fn export_rejects_invalid_format() {
 
 #[tokio::test]
 async fn context_set_blocked_in_maintenance_mode() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
 
     // Create a ledger
     let app = build_router(state.clone());
@@ -3334,7 +3334,7 @@ async fn context_set_blocked_in_maintenance_mode() {
 
 #[tokio::test]
 async fn context_get_returns_null_for_no_default() {
-    let (_tmp, state) = test_state().await;
+    let (_tmp, state) = test_state();
 
     // Create a ledger
     let app = build_router(state.clone());
