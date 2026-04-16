@@ -378,7 +378,27 @@ impl CommitEnvelope {
     }
 }
 
+/// Range-fetch probe size for [`load_commit_envelope_by_id`].
+///
+/// Sized to comfortably hold a commit envelope including the maximum
+/// [`MAX_TXN_META_BYTES`] (64 KiB) plus framing, so envelope decode almost
+/// always completes in a single byte-range request. On backends without a
+/// native `get_range` implementation, the probe fetches the full blob via the
+/// trait-default fallback — still a single round trip.
+const ENVELOPE_PROBE_LEN: u64 = 128 * 1024;
+
 /// Load a commit envelope (metadata only, no flakes) from a content store by CID.
+///
+/// Uses [`ContentStore::get_range`] to fetch an envelope-sized window instead
+/// of the full commit blob. On remote storage (S3) this drops per-envelope
+/// bytes from multi-MB (whole blob: header + envelope + ops + dicts + footer)
+/// to ~128 KiB, which is typically one TCP RTT on range-capable backends.
+///
+/// On backends without native range support, the trait-default falls back to
+/// `get` + slice — correct but no bandwidth win.
+///
+/// Falls back to a full `get` in the rare case that the envelope length
+/// declared in the header exceeds [`ENVELOPE_PROBE_LEN`].
 ///
 /// More memory-efficient than [`load_commit_by_id`] when you only need
 /// metadata for scanning.
@@ -386,17 +406,44 @@ pub async fn load_commit_envelope_by_id<C: ContentStore + ?Sized>(
     store: &C,
     id: &ContentId,
 ) -> Result<CommitEnvelope> {
-    let data = store
-        .get(id)
+    use codec::format::{CommitHeader, HEADER_LEN};
+
+    let probe = store
+        .get_range(id, 0..ENVELOPE_PROBE_LEN)
         .await
         .map_err(|e| Error::storage(format!("Failed to read commit envelope {}: {}", id, e)))?;
 
+    if probe.len() < HEADER_LEN {
+        return Err(Error::invalid_commit(format!(
+            "commit envelope {}: truncated header ({} bytes)",
+            id,
+            probe.len()
+        )));
+    }
+
+    let header =
+        CommitHeader::read_from(&probe).map_err(|e| Error::invalid_commit(e.to_string()))?;
+    let needed = HEADER_LEN + header.envelope_len as usize;
+
+    let data = if needed <= probe.len() {
+        probe
+    } else {
+        // Oversized envelope — rare path. Fetch the full blob.
+        store.get(id).await.map_err(|e| {
+            Error::storage(format!(
+                "Failed to read oversized commit envelope {}: {}",
+                id, e
+            ))
+        })?
+    };
+
+    // Sync decode — span guard lives only for the non-await block so callers
+    // remain Send-clean (EnteredSpan is !Send).
     let envelope = {
         let _span =
             tracing::debug_span!("load_commit_envelope_by_id", blob_bytes = data.len()).entered();
         codec::read_commit_envelope(&data).map_err(|e| Error::invalid_commit(e.to_string()))?
     };
-
     Ok(envelope)
 }
 
@@ -410,9 +457,43 @@ pub async fn collect_dag_cids<C: ContentStore + ?Sized>(
     head_id: &ContentId,
     stop_at_t: i64,
 ) -> Result<Vec<(i64, ContentId)>> {
+    let (cids, _split_mode) = walk_dag(store, head_id, stop_at_t, false).await?;
+    Ok(cids)
+}
+
+/// Walk a commit DAG like [`collect_dag_cids`], and also return the
+/// authoritative `NsSplitMode` for the chain.
+///
+/// `NsSplitMode` is encoded only on the genesis commit; the returned value
+/// is taken from the genesis-most envelope observed during the walk. This
+/// lets the rebuild pipeline capture split-mode in the same pass that
+/// discovers parents, avoiding a second fetch-per-commit over the chain.
+///
+/// Callers that don't need `NsSplitMode` should use [`collect_dag_cids`].
+pub async fn collect_dag_cids_with_split_mode<C: ContentStore + ?Sized>(
+    store: &C,
+    head_id: &ContentId,
+    stop_at_t: i64,
+) -> Result<(Vec<(i64, ContentId)>, crate::ns_encoding::NsSplitMode)> {
+    walk_dag(store, head_id, stop_at_t, true).await
+}
+
+/// Shared DAG walk implementation backing [`collect_dag_cids`] and
+/// [`collect_dag_cids_with_split_mode`]. Envelope fetches use
+/// [`load_commit_envelope_by_id`] which issues byte-range requests.
+///
+/// `capture_split_mode=false` skips the NsSplitMode accumulator — the caller
+/// only wants the CID list.
+async fn walk_dag<C: ContentStore + ?Sized>(
+    store: &C,
+    head_id: &ContentId,
+    stop_at_t: i64,
+    capture_split_mode: bool,
+) -> Result<(Vec<(i64, ContentId)>, crate::ns_encoding::NsSplitMode)> {
     let mut result = Vec::new();
     let mut frontier = vec![head_id.clone()];
     let mut visited = std::collections::HashSet::new();
+    let mut split_mode = crate::ns_encoding::NsSplitMode::default();
 
     while let Some(cid) = frontier.pop() {
         if !visited.insert(cid.clone()) {
@@ -422,6 +503,11 @@ pub async fn collect_dag_cids<C: ContentStore + ?Sized>(
         if envelope.t <= stop_at_t {
             continue;
         }
+        if capture_split_mode {
+            if let Some(mode) = envelope.ns_split_mode {
+                split_mode = mode;
+            }
+        }
         for parent_id in envelope.parent_ids() {
             frontier.push(parent_id.clone());
         }
@@ -430,7 +516,7 @@ pub async fn collect_dag_cids<C: ContentStore + ?Sized>(
 
     // Sort by t descending (highest first = reverse-topological order).
     result.sort_by(|a, b| b.0.cmp(&a.0));
-    Ok(result)
+    Ok((result, split_mode))
 }
 
 /// Stream commit envelopes from head backwards in reverse-topological order.
@@ -440,9 +526,12 @@ pub async fn collect_dag_cids<C: ContentStore + ?Sized>(
 /// commits with multiple parents.
 ///
 /// Note: each envelope is loaded twice — once during `collect_dag_cids` to
-/// discover parents and `t` for ordering, and once when yielded. This is a
-/// tradeoff of the collect-then-stream approach over a more complex
-/// incremental BFS stream.
+/// discover parents and `t` for ordering, and once when yielded. Both loads
+/// go through [`load_commit_envelope_by_id`] which issues byte-range requests
+/// (typically ~128 KiB per envelope on range-capable backends), so the
+/// bandwidth cost is small relative to a full-blob fetch, but two round trips
+/// per commit remain. Acceptable for trace/debug callers; hot paths should
+/// prefer a single-pass design.
 pub fn trace_commit_envelopes_by_id<C: ContentStore + Clone + 'static>(
     store: C,
     head_id: ContentId,
