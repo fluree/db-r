@@ -165,15 +165,35 @@ where
     let mut migration_state =
         LedgerState::new(LedgerSnapshot::genesis(&normalized_id), Novelty::new(0));
 
-    // -- 4. Seed the migration registry with every source prefix. These
-    //    become the first migrated commit's `namespace_delta` (via
-    //    `take_delta()` on the first `commit()` call), so the entire
-    //    prefix table is present in the migrated chain from t=1.
+    // -- 4. Seed the migration registry with every source prefix, AND
+    //    stash a copy of the full source namespace table to override the
+    //    first commit's `namespace_delta`.
+    //
+    //    Subtle wiring: `NamespaceRegistry::ensure_code` calls
+    //    `NamespaceCodes::merge_delta`, which updates the prefix↔code
+    //    bimap but does NOT populate the delta tracker. That means
+    //    `take_delta()` on the first commit would return an empty map,
+    //    and the first migrated commit's envelope would have an empty
+    //    `namespace_delta` — stranding the seeded prefixes only in the
+    //    (in-memory) registry. The reindex rebuilds `namespace_codes`
+    //    from the envelope deltas, so an empty envelope delta means the
+    //    rebuilt index has no user prefixes, which means every post-
+    //    migration query that tries to resolve a user IRI falls through
+    //    to OVERFLOW and misses every flake stored under a real prefix.
+    //
+    //    The fix: override the first commit's `namespace_delta` via
+    //    `CommitOpts::with_namespace_delta` with the full source
+    //    prefix table. That forces those codes into the first commit's
+    //    envelope bytes, so the reindex picks them up and subsequent
+    //    queries' `sid_for_iri` resolves them against the same table
+    //    the commit-time re-authoring used.
     let mut ns_registry = NamespaceRegistry::new();
+    let mut seed_delta: std::collections::HashMap<u16, String> = std::collections::HashMap::new();
     for (&code, prefix) in source_snapshot.namespaces().iter() {
         ns_registry
             .ensure_code(code, prefix)
             .map_err(|e| ApiError::internal(format!("ns seed failed for {code}={prefix}: {e}")))?;
+        seed_delta.insert(code, prefix.clone());
     }
 
     // -- 5. Migration loop. Each iteration: decode → reauthor →
@@ -184,6 +204,9 @@ where
     let mut migrated_commits: usize = 0;
     let mut empty_commits_skipped: usize = 0;
     let mut total_flakes: usize = 0;
+    // Track whether the first successful commit has been written yet —
+    // that commit carries the seeded namespace delta (see step 4).
+    let mut seed_delta_pending = Some(seed_delta);
 
     for (_t, cid) in cids.iter() {
         let source_commit = load_commit_by_id(content_store.as_ref(), cid).await?;
@@ -209,6 +232,38 @@ where
             .with_skip_backpressure();
         if let Some(ts) = &source_commit.time {
             opts = opts.with_timestamp(ts.clone());
+        }
+        // Attach the seeded namespace delta to the FIRST non-empty
+        // migrated commit. CRITICAL: we merge the seed with the
+        // registry's own `take_delta()` here. Without the merge:
+        //
+        //   - The seed carries every prefix already registered in the
+        //     source snapshot (populated via `ensure_code` →
+        //     `merge_delta`, which updates the code↔prefix bimap but
+        //     does NOT populate the registry's delta tracker).
+        //   - During this iteration's `build_canonical_flakes`,
+        //     `sid_for_iri` can allocate FRESH codes for prefixes the
+        //     source never registered explicitly — e.g., a subject
+        //     stored unsplit in the source chain (`Sid{EMPTY,
+        //     "urn:fsys:idp:saml-OktaProduction"}`), whose
+        //     `canonical_split` prefix (`urn:fsys:idp:`) isn't in
+        //     the source's namespace table.
+        //   - Those fresh allocations DO populate the registry's
+        //     delta, but if we override with the seed-only map we
+        //     lose them — the flakes carry the new ns_code but the
+        //     envelope doesn't register it, so the reindex builds a
+        //     namespace table without that code, and post-migration
+        //     queries can't resolve the IRI.
+        //
+        // Merging seed + `take_delta()` gives the first commit an
+        // envelope delta that covers every code any flake in the
+        // migrated chain uses.
+        if let Some(mut combined) = seed_delta_pending.take() {
+            let reauthor_delta = ns_registry.take_delta();
+            for (code, prefix) in reauthor_delta {
+                combined.entry(code).or_insert(prefix);
+            }
+            opts = opts.with_namespace_delta(combined);
         }
 
         // NB: passing `&content_store` (i.e. `&Arc<dyn ContentStore>`)
