@@ -99,6 +99,10 @@ dirs = "5"
 sysinfo = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Enables `fluree_db_core::commit::codec::legacy_v3::test_support` — used by
+# integration tests that synthesize legacy-v3 blobs (e.g. the spot-dropout
+# reproducer in `it_legacy_v3_spot_dropout_repro.rs`).
+fluree-db-core = { path = "../fluree-db-core", features = ["test-util"] }
 tracing-subscriber.workspace = true
 tempfile = "3.19"
 mimalloc.workspace = true

@@ -12,6 +12,9 @@ description = "Runtime-agnostic core library for Fluree DB queries"
 default = []
 native = ["tokio", "moka", "dashmap", "fs2"]
 credential = ["dep:fluree-db-credential"]
+# Exposes test-only helpers (e.g. legacy V3 blob construction) to integration
+# tests in other crates. Never enable in production builds.
+test-util = []
 
 [dependencies]
 fluree-vocab = { path = "../fluree-vocab" }
