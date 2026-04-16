@@ -742,25 +742,24 @@ impl RemoteLedgerClient {
 
     /// Dispatch an async commit-chain upgrade on the remote server.
     ///
-    /// POSTs to `{admin_base}/admin/commit-upgrade/{ledger}` with body
+    /// POSTs to `{base_url}/commit-upgrade/{ledger}` with body
     /// `{"dryRun": <flag>}`. The server returns **202 ACCEPTED** with
     /// `{status, ledgerId, correlationId, statusUrl}` — the actual
     /// migration runs asynchronously in IndexingLambda. The caller
     /// polls `fetch_status(correlation_id)` (or the convenience
     /// wrapper `poll_until_complete`) for the terminal result.
     ///
-    /// `admin_base` is derived from `self.base_url` by trimming a
-    /// trailing `/fluree` segment if present — so a configured remote
-    /// of the form `https://example.com/v1/fluree` yields an admin URL
-    /// at `https://example.com/v1/admin/commit-upgrade/{ledger}`. Base
-    /// URLs that don't end in `/fluree` are used verbatim (dev /
-    /// custom deployments).
+    /// Uses the shared `/v1/fluree/*` URL namespace (same as the
+    /// status-polling endpoint `/v1/fluree/status/{correlationId}` and
+    /// every other CLI remote operation). The server-side route is
+    /// `MiddlewareFlags::ADMIN`-gated — unauthorized requests get 403
+    /// at the router, not here.
     pub async fn commit_upgrade_dispatch(
         &self,
         ledger: &str,
         dry_run: bool,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
-        let url = self.admin_url("commit-upgrade", ledger);
+        let url = self.op_url("commit-upgrade", ledger);
         let body = serde_json::json!({ "dryRun": dry_run });
         self.send_json(
             reqwest::Method::POST,
@@ -896,16 +895,6 @@ impl RemoteLedgerClient {
         }
     }
 
-    fn admin_url(&self, op: &str, ledger: &str) -> String {
-        let trimmed = self.base_url.trim_end_matches('/');
-        let admin_base = trimmed.strip_suffix("/fluree").unwrap_or(trimmed);
-        format!(
-            "{}/admin/{}/{}",
-            admin_base,
-            op,
-            urlencoding::encode(Self::ledger_tail(ledger)),
-        )
-    }
 
     // =========================================================================
     // Ledger Info / Exists
