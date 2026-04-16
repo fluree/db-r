@@ -59,9 +59,7 @@ use std::sync::Arc;
 use fluree_db_core::{collect_dag_cids, load_commit_by_id, ContentId, LedgerSnapshot};
 use fluree_db_indexer::{rebuild_index_from_commits, IndexerConfig};
 use fluree_db_ledger::{IndexConfig, LedgerState};
-use fluree_db_nameservice::{
-    memory::MemoryNameService, AdminPublisher, NameService, NsRecordSnapshot, Publisher,
-};
+use fluree_db_nameservice::{memory::MemoryNameService, NameService, NsRecordSnapshot, Publisher};
 use fluree_db_novelty::Novelty;
 use fluree_db_transact::{
     apply_cancellation, commit as transact_commit, stage_flakes, CommitOpts, NamespaceRegistry,
@@ -110,7 +108,7 @@ pub(crate) async fn upgrade_commit_chain_impl<N>(
     ledger_id: &str,
 ) -> Result<CommitUpgradeReport>
 where
-    N: NameService + Publisher + AdminPublisher + Send + Sync + 'static,
+    N: NameService + Publisher + Send + Sync + 'static,
 {
     info!(ledger_id = %ledger_id, "Starting commit-chain upgrade");
 

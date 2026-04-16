@@ -572,12 +572,7 @@ where
 
 impl<N> Fluree<N>
 where
-    N: NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::AdminPublisher
-        + Send
-        + Sync
-        + 'static,
+    N: NameService + fluree_db_nameservice::Publisher + Send + Sync + 'static,
 {
     /// Upgrade a legacy commit chain in place: decode every source
     /// commit's flakes to logical IRI form via the source snapshot's
@@ -585,13 +580,15 @@ where
     /// path into a new commit chain in the same content store, rebuild
     /// the binary index over the new chain, and atomically swap both
     /// `commit_head_id` + `index_head_id` on the real nameservice via
-    /// `AdminPublisher::reset_head`.
+    /// `NameService::reset_head`.
     ///
     /// See `pipeline` module docs for the full isolation, seeding, and
-    /// failure-recovery semantics.
+    /// failure-recovery semantics. Rejects branched ledgers.
     ///
-    /// Requires the nameservice to implement `AdminPublisher` so we can
-    /// perform the atomic head swap. Rejects branched ledgers.
+    /// The trait bounds require the nameservice to support monotonic
+    /// publishes (`Publisher`) for the per-commit advance on the stub
+    /// nameservice, and `reset_head` (part of `NameService`) for the
+    /// atomic swap on the real nameservice at end-of-migration.
     pub async fn upgrade_commit_chain(&self, ledger_id: &str) -> Result<CommitUpgradeReport> {
         pipeline::upgrade_commit_chain_impl(self, ledger_id).await
     }
