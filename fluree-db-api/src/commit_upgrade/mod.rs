@@ -27,6 +27,8 @@
 //!    target if it is missing from **either** scan (catches total-loss and
 //!    SPOT/PSOT-divergence cases with one code path).
 
+mod decode;
+
 use fluree_db_core::{
     collect_dag_cids, load_commit_by_id, range, Flake, FlakeValue, IndexType, LedgerSnapshot,
     RangeMatch, RangeOptions, RangeTest, Sid, DEFAULT_GRAPH_ID,
