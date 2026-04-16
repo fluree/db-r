@@ -3,6 +3,8 @@
 //! See fluree-db-api::commit_upgrade for the audit algorithm and fluree/db-r#152
 //! for the bug being repaired.
 
+use std::time::Duration;
+
 use crate::context::{self, build_fluree};
 use crate::error::{CliError, CliResult};
 use colored::Colorize;
@@ -14,13 +16,25 @@ pub async fn run(
     dry_run: bool,
     force: bool,
     remote_flag: Option<&str>,
+    status_correlation_id: Option<&str>,
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     // --dry-run is the default when neither flag is given.
     let effective_dry_run = dry_run || !force;
 
     if let Some(remote_name) = remote_flag {
-        return run_remote(ledger, effective_dry_run, remote_name, dirs).await;
+        return run_remote(
+            ledger,
+            effective_dry_run,
+            remote_name,
+            status_correlation_id,
+            dirs,
+        )
+        .await;
+    }
+
+    if status_correlation_id.is_some() {
+        return Err(CliError::Usage("--status requires --remote".to_string()));
     }
 
     let alias = context::resolve_ledger(Some(ledger), dirs)?;
@@ -123,40 +137,135 @@ pub async fn run(
     Ok(())
 }
 
-/// `--remote <name>` path. Calls `POST /v1/admin/commit-upgrade/{ledgerId}`
-/// on the configured remote and renders the server's JSON response.
+/// `--remote <name>` path.
+///
+/// Two modes:
+/// - **Dispatch + poll** (default): POST to
+///   `/v1/admin/commit-upgrade/{ledgerId}`, receive 202 ACCEPTED with a
+///   correlation ID, then poll `/v1/fluree/status/{correlationId}` until
+///   the row reports a terminal state.
+/// - **Resume** (`--status <correlationId>`): skip dispatch and poll an
+///   existing correlation ID. Useful when an earlier invocation was
+///   Ctrl-C'd while polling — the migration continues on the server
+///   regardless, so resuming picks up the result once it lands.
 ///
 /// Output mirrors the local path's formatting (audit summary, migration
-/// report, post-audit) but driven from the JSON response body instead of
-/// direct access to `CommitUpgradeAudit` / `CommitUpgradeReport` structs.
+/// report, post-audit), driven from the JSON in the status row's
+/// `result` field.
 async fn run_remote(
     ledger: &str,
     dry_run: bool,
     remote_name: &str,
+    status_correlation_id: Option<&str>,
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     let client = context::build_remote_client(remote_name, dirs).await?;
 
-    eprintln!(
-        "  {} {} {} on remote {}...",
-        "commit upgrade:".cyan().bold(),
-        if dry_run {
-            "auditing"
-        } else {
-            "auditing + migrating"
-        },
-        ledger,
-        remote_name.cyan()
-    );
+    let correlation_id = match status_correlation_id {
+        Some(id) => {
+            eprintln!(
+                "  {} resuming poll for {} on remote {}...",
+                "commit upgrade:".cyan().bold(),
+                id.dimmed(),
+                remote_name.cyan()
+            );
+            id.to_string()
+        }
+        None => {
+            eprintln!(
+                "  {} dispatching {} of {} on remote {}...",
+                "commit upgrade:".cyan().bold(),
+                if dry_run {
+                    "audit"
+                } else {
+                    "audit + migration"
+                },
+                ledger,
+                remote_name.cyan()
+            );
+            let dispatch = client
+                .commit_upgrade_dispatch(ledger, dry_run)
+                .await
+                .map_err(|e| {
+                    CliError::Usage(format!("remote commit-upgrade dispatch failed: {e}"))
+                })?;
+            let id = dispatch
+                .get("correlationId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    CliError::Usage(
+                        "dispatch response missing `correlationId` — is the remote on an \
+                         old build?"
+                            .to_string(),
+                    )
+                })?
+                .to_string();
+            eprintln!(
+                "  {} dispatched (correlation: {})",
+                "accepted:".green().bold(),
+                id.dimmed()
+            );
+            eprintln!(
+                "  {} Ctrl-C cancels polling only; the migration continues on the server.",
+                "note:".yellow().bold()
+            );
+            eprintln!(
+                "         Resume polling with: fluree commit upgrade --remote {} {} --status {}",
+                remote_name, ledger, id
+            );
+            id
+        }
+    };
 
-    let response = client
-        .commit_upgrade(ledger, dry_run)
+    eprint!("  {} polling", "waiting:".cyan().bold());
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+    let row = client
+        .poll_until_complete(
+            &correlation_id,
+            Duration::from_secs(2),
+            Duration::from_secs(15 * 60),
+            || {
+                eprint!(".");
+                let _ = std::io::Write::flush(&mut std::io::stderr());
+            },
+        )
         .await
-        .map_err(|e| CliError::Usage(format!("remote commit-upgrade failed: {e}")))?;
+        .map_err(|e| CliError::Usage(format!("remote commit-upgrade polling failed: {e}")))?;
+    eprintln!();
 
-    let pre_audit = response
-        .get("preAudit")
-        .ok_or_else(|| CliError::Usage("remote response missing `preAudit` field".to_string()))?;
+    // Row shape: { correlationId, status, result, error, ... }
+    // `result` is the JSON document IndexingLambda wrote — the same
+    // shape the former sync endpoint returned (preAudit, migrated,
+    // report, postAudit). `result` may be a JSON string or an object
+    // depending on how the server serialized it; handle both.
+    let raw_result = row
+        .get("result")
+        .cloned()
+        .ok_or_else(|| CliError::Usage("status row missing `result` field".to_string()))?;
+    let response = match raw_result {
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(&s)
+            .map_err(|e| CliError::Usage(format!("status `result` not valid JSON: {e}")))?,
+        other => other,
+    };
+
+    render_remote_result(&response, remote_name);
+    Ok(())
+}
+
+/// Render the `result` JSON from a terminal status row. Extracted so
+/// dispatch-then-poll and resume-poll paths share the same UX.
+fn render_remote_result(response: &serde_json::Value, remote_name: &str) {
+    let pre_audit = match response.get("preAudit") {
+        Some(a) => a,
+        None => {
+            eprintln!(
+                "{} status row's `result` missing `preAudit` — raw result: {}",
+                "warning:".yellow().bold(),
+                response
+            );
+            return;
+        }
+    };
     print_remote_audit_summary("pre-migration", pre_audit);
 
     let migrated = response
@@ -168,7 +277,7 @@ async fn run_remote(
         if let Some(note) = response.get("note").and_then(|v| v.as_str()) {
             println!("\n{} {}", "note:".yellow().bold(), note);
         }
-        return Ok(());
+        return;
     }
 
     if let Some(report) = response.get("report") {
@@ -200,8 +309,6 @@ async fn run_remote(
             );
         }
     }
-
-    Ok(())
 }
 
 fn print_remote_audit_summary(label: &str, audit: &serde_json::Value) {

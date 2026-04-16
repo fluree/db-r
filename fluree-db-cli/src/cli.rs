@@ -1000,6 +1000,16 @@ pub enum CommitAction {
         /// Execute against a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,
+
+        /// Resume polling for a previously-dispatched remote commit-upgrade
+        /// instead of issuing a new one. Accepts the correlation ID printed
+        /// by the original dispatch. Only valid together with `--remote`.
+        ///
+        /// Useful when Ctrl-C interrupted an earlier poll — the migration
+        /// continues on the server regardless, so resuming polling picks up
+        /// the terminal status once it's written.
+        #[arg(long, requires = "remote")]
+        status: Option<String>,
     },
 }
 

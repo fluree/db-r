@@ -737,16 +737,17 @@ impl RemoteLedgerClient {
     }
 
     // =========================================================================
-    // Admin — commit upgrade
+    // Admin — commit upgrade (async dispatch + polling)
     // =========================================================================
 
-    /// Trigger an admin commit-chain upgrade on the remote server.
+    /// Dispatch an async commit-chain upgrade on the remote server.
     ///
-    /// Calls `POST {admin_base}/admin/commit-upgrade/{ledger}` with body
-    /// `{"dryRun": <flag>}`. The server returns a JSON document with
-    /// `preAudit`, `migrated`, and (when `migrated: true`) `report` +
-    /// `postAudit` keys — see solo's `handle_commit_upgrade` for the
-    /// exact shape.
+    /// POSTs to `{admin_base}/admin/commit-upgrade/{ledger}` with body
+    /// `{"dryRun": <flag>}`. The server returns **202 ACCEPTED** with
+    /// `{status, ledgerId, correlationId, statusUrl}` — the actual
+    /// migration runs asynchronously in IndexingLambda. The caller
+    /// polls `fetch_status(correlation_id)` (or the convenience
+    /// wrapper `poll_until_complete`) for the terminal result.
     ///
     /// `admin_base` is derived from `self.base_url` by trimming a
     /// trailing `/fluree` segment if present — so a configured remote
@@ -754,7 +755,7 @@ impl RemoteLedgerClient {
     /// at `https://example.com/v1/admin/commit-upgrade/{ledger}`. Base
     /// URLs that don't end in `/fluree` are used verbatim (dev /
     /// custom deployments).
-    pub async fn commit_upgrade(
+    pub async fn commit_upgrade_dispatch(
         &self,
         ledger: &str,
         dry_run: bool,
@@ -768,6 +769,131 @@ impl RemoteLedgerClient {
             Some(RequestBody::Json(&body)),
         )
         .await
+    }
+
+    /// Fetch a status row keyed by correlation id. Reuses the existing
+    /// `GET {base_url}/status/{correlationId}` endpoint.
+    ///
+    /// Returns:
+    /// - `Ok(Some(row))` when the status row exists (row shape:
+    ///   `{correlationId, status, result, error, ...}` — server-defined).
+    /// - `Ok(None)` on 404, i.e. the row has not yet been written (the
+    ///   dispatched work may still be starting up) or has expired past
+    ///   its 24h TTL. The caller interprets `None` as "keep polling"
+    ///   rather than a terminal failure.
+    pub async fn fetch_status(
+        &self,
+        correlation_id: &str,
+    ) -> Result<Option<serde_json::Value>, RemoteLedgerError> {
+        let url = self.op_url("status", correlation_id);
+        let resp = self
+            .build_request(
+                reqwest::Method::GET,
+                &url,
+                "application/json",
+                &None::<RequestBody<'_>>,
+            )
+            .send()
+            .await
+            .map_err(Self::map_network_error)?;
+
+        if resp.status().is_success() {
+            return resp
+                .json()
+                .await
+                .map(Some)
+                .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()));
+        }
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if resp.status() == StatusCode::UNAUTHORIZED && self.try_refresh().await {
+            let resp2 = self
+                .build_request(
+                    reqwest::Method::GET,
+                    &url,
+                    "application/json",
+                    &None::<RequestBody<'_>>,
+                )
+                .send()
+                .await
+                .map_err(Self::map_network_error)?;
+            if resp2.status().is_success() {
+                return resp2
+                    .json()
+                    .await
+                    .map(Some)
+                    .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()));
+            }
+            if resp2.status() == StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(Self::map_error(resp2).await);
+        }
+        Err(Self::map_error(resp).await)
+    }
+
+    /// Poll `fetch_status` until the row reports a terminal state
+    /// (`completed` / `success` / `error` / `failed`) or `max_wait`
+    /// elapses.
+    ///
+    /// `interval` is clamped to a 1-second minimum (matches the
+    /// OAuth device-flow poll cadence). `on_tick` is called once per
+    /// poll iteration for UX (e.g. print a dot).
+    ///
+    /// Returns:
+    /// - `Ok(row)` when the row reports a terminal success status. The
+    ///   full row is returned so the caller can render `result` +
+    ///   any server-side metadata.
+    /// - `Err(ServerError(msg))` when the row reports `error` /
+    ///   `failed`. `msg` is the row's `error` field when present,
+    ///   otherwise the serialized `result`.
+    /// - `Err(Network(...))` on timeout (`max_wait` elapsed with no
+    ///   terminal state).
+    pub async fn poll_until_complete(
+        &self,
+        correlation_id: &str,
+        interval: Duration,
+        max_wait: Duration,
+        mut on_tick: impl FnMut(),
+    ) -> Result<serde_json::Value, RemoteLedgerError> {
+        let start = std::time::Instant::now();
+        let interval = interval.max(Duration::from_secs(1));
+        loop {
+            if let Some(row) = self.fetch_status(correlation_id).await? {
+                let status = row
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                match status.as_str() {
+                    "completed" | "success" => return Ok(row),
+                    "error" | "failed" => {
+                        let msg = row
+                            .get("error")
+                            .and_then(|v| v.as_str())
+                            .map(String::from)
+                            .unwrap_or_else(|| {
+                                row.get("result")
+                                    .map(|r| r.to_string())
+                                    .unwrap_or_else(|| row.to_string())
+                            });
+                        return Err(RemoteLedgerError::ServerError(msg));
+                    }
+                    // "pending" or any other intermediate — keep polling.
+                    _ => {}
+                }
+            }
+            if start.elapsed() >= max_wait {
+                return Err(RemoteLedgerError::Network(format!(
+                    "commit-upgrade did not complete within {}s; correlation={}",
+                    max_wait.as_secs(),
+                    correlation_id,
+                )));
+            }
+            on_tick();
+            tokio::time::sleep(interval).await;
+        }
     }
 
     fn admin_url(&self, op: &str, ledger: &str) -> String {

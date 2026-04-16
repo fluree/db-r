@@ -295,12 +295,14 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                     dry_run,
                     force,
                     remote,
+                    status,
                 } => {
                     commands::commit_upgrade::run(
                         &ledger,
                         dry_run,
                         force,
                         remote.as_deref(),
+                        status.as_deref(),
                         &fluree_dir,
                     )
                     .await
