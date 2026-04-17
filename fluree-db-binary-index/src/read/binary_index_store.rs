@@ -28,7 +28,7 @@ use crate::dict::global_dict::{LanguageTagDict, PredicateDict};
 use crate::dict::pack_reader::ForwardPackReader;
 use crate::dict::DictTreeReader;
 use crate::format::branch::{read_branch_from_bytes, BranchManifest};
-use crate::format::index_root::{IndexRoot, OTypeTableEntry};
+use crate::format::index_root::{IndexRoot, NamedGraphRouting, OTypeTableEntry};
 use crate::format::leaf::DecodedLeafDirV3;
 use crate::format::run_record::RunSortOrder;
 
@@ -243,20 +243,21 @@ impl BinaryIndexStore {
         }
 
         // Named graphs: fetch FBR3 branch manifests from CAS.
-        for ng in &root.named_graphs {
-            for (order, branch_cid) in &ng.orders {
-                let branch_bytes =
-                    fetch_cached_bytes_cid(cs.as_ref(), branch_cid, cache_dir).await?;
-                let branch = read_branch_from_bytes(&branch_bytes)?;
-                let gi = graph_indexes.entry(ng.g_id).or_insert_with(|| GraphIndex {
-                    orders: HashMap::new(),
-                    numbig: HashMap::new(),
-                    vectors: HashMap::new(),
-                    spatial: HashMap::new(),
-                    fulltext: HashMap::new(),
-                });
-                gi.orders.insert(*order, Arc::new(branch));
-            }
+        //
+        // Each (g_id, order) CAS GET is independent; running them in parallel
+        // cuts wall-clock load time roughly by the branch-manifest fan-out
+        // factor (fluree/db-r#155). See `fetch_named_graph_branches` below.
+        let named_branches =
+            fetch_named_graph_branches(Arc::clone(&cs), &root.named_graphs, cache_dir).await?;
+        for (g_id, order, branch) in named_branches {
+            let gi = graph_indexes.entry(g_id).or_insert_with(|| GraphIndex {
+                orders: HashMap::new(),
+                numbig: HashMap::new(),
+                vectors: HashMap::new(),
+                spatial: HashMap::new(),
+                fulltext: HashMap::new(),
+            });
+            gi.orders.insert(order, Arc::new(branch));
         }
 
         // Inject per-graph arenas into graph indexes.
@@ -1831,6 +1832,48 @@ impl BinaryGraphView {
         }
         dn.strings.resolve_string(str_id).map(|s| s.to_string())
     }
+}
+
+// ============================================================================
+// Named-graph branch fetching (parallel)
+// ============================================================================
+
+/// Fetch and decode every named-graph FBR3 branch manifest concurrently.
+///
+/// Each `(g_id, order, branch_cid)` triple owns one CAS GET followed by an
+/// in-memory decode; none of them depend on each other. `try_join_all`
+/// drives them all concurrently, so wall-clock latency drops from
+/// `sum(GETs)` to roughly `max(GETs)`.
+///
+/// This replaces the serial double-nested loop that previously lived inline
+/// in `load_from_root_v6` and contributed to the load-time regression
+/// tracked in fluree/db-r#155. Branch manifests are small and there are
+/// typically only a handful (graphs × orders), so unbounded concurrency is
+/// safe here — no need for `buffer_unordered`.
+async fn fetch_named_graph_branches(
+    cs: Arc<dyn ContentStore>,
+    named_graphs: &[NamedGraphRouting],
+    cache_dir: &Path,
+) -> io::Result<Vec<(GraphId, RunSortOrder, BranchManifest)>> {
+    // Build one fully-owned future per fetch so the combined future has no
+    // lifetime ties back into `load_from_root_v6`'s stack frame.
+    let mut fetches = Vec::new();
+    for ng in named_graphs {
+        let g_id = ng.g_id;
+        for (order, branch_cid) in &ng.orders {
+            let cs = Arc::clone(&cs);
+            let branch_cid = branch_cid.clone();
+            let cache_dir = cache_dir.to_path_buf();
+            let order = *order;
+            fetches.push(async move {
+                let bytes = fetch_cached_bytes_cid(cs.as_ref(), &branch_cid, &cache_dir).await?;
+                let branch = read_branch_from_bytes(&bytes)?;
+                Ok::<_, io::Error>((g_id, order, branch))
+            });
+        }
+    }
+
+    futures::future::try_join_all(fetches).await
 }
 
 // ============================================================================
