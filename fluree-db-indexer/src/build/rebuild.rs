@@ -53,7 +53,7 @@ pub async fn rebuild_index_from_commits_with_store<C>(
 where
     C: ContentStore + Clone + Send + Sync + 'static,
 {
-    use fluree_db_core::commit::codec::read_commit_envelope;
+    use futures::stream::StreamExt;
     use run_index::resolver::{RebuildChunk, SharedResolverState};
     use run_index::spool::SortedCommitInfo;
 
@@ -101,38 +101,66 @@ where
             // spawn_blocking pins this async task to a single OS thread.
 
             // ---- Phase A: Walk commit chain backward to collect CIDs ----
-            let _span_a = tracing::debug_span!("commit_chain_walk").entered();
+            //
+            // Single-pass DAG walk that captures both the chronological CID
+            // list and the authoritative `NsSplitMode` from the genesis
+            // commit. Envelope fetches use byte-range reads (~128 KiB probe)
+            // instead of full-blob reads, so per-commit bandwidth on remote
+            // storage drops from the whole commit blob to the envelope
+            // header plus metadata.
+            let _span_a =
+                tracing::debug_span!("commit_chain_walk", commits = tracing::field::Empty)
+                    .entered();
+            let walk_started = std::time::Instant::now();
             let (commit_cids, ledger_split_mode) = {
                 // stop_at_t=0 collects all commits (t starts at 1).
-                let dag =
-                    fluree_db_core::collect_dag_cids(&content_store, &head_commit_id, 0).await?;
+                let (dag, split_mode) = fluree_db_core::collect_dag_cids_with_split_mode(
+                    &content_store,
+                    &head_commit_id,
+                    0,
+                )
+                .await?;
 
-                // collect_dag_cids returns (t, cid) sorted by t descending.
-                // Reverse for chronological (genesis-first) order.
+                // Sorted by t descending; reverse for chronological (genesis-first).
                 let cids: Vec<ContentId> = dag.into_iter().rev().map(|(_, cid)| cid).collect();
-
-                // Extract ns_split_mode by scanning envelopes.
-                // The last seen value (closest to genesis) is authoritative.
-                let mut split_mode = fluree_db_core::ns_encoding::NsSplitMode::default();
-                for cid in &cids {
-                    let bytes = content_store
-                        .get(cid)
-                        .await
-                        .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
-                    let envelope = read_commit_envelope(&bytes)
-                        .map_err(|e| IndexerError::StorageRead(e.to_string()))?;
-                    if let Some(mode) = envelope.ns_split_mode {
-                        split_mode = mode;
-                    }
-                }
-
                 (cids, split_mode)
             };
+            _span_a.record("commits", commit_cids.len());
+            tracing::info!(
+                commits = commit_cids.len(),
+                split_mode = ?ledger_split_mode,
+                elapsed_ms = walk_started.elapsed().as_millis() as u64,
+                "Phase A complete: commit chain walked"
+            );
             drop(_span_a);
 
             // ---- Phase B: Resolve commits into batched chunks ----
-            let _span_b =
-                tracing::debug_span!("commit_resolve", commits = commit_cids.len()).entered();
+            //
+            // Fetches are pipelined via `buffered(K)` so the next K commit
+            // blobs are in flight while the resolver works on the current
+            // one, hiding S3 round-trip latency behind local decode cost.
+            // `buffered` preserves input order, so chunk boundaries and the
+            // spatial/fulltext entry-range bookkeeping stay byte-identical
+            // to serial execution.
+            //
+            // Concurrency is env-tunable (FLUREE_REBUILD_FETCH_CONCURRENCY),
+            // defaulting to 3 — enough to hide typical 25-50ms S3 RTT while
+            // keeping per-blob memory overhead bounded. K=1 reproduces the
+            // previous serial behavior for regression parity.
+            let _span_b = tracing::debug_span!(
+                "commit_resolve",
+                commits = commit_cids.len(),
+                fetch_concurrency = tracing::field::Empty,
+            )
+            .entered();
+
+            let fetch_concurrency: usize = std::env::var("FLUREE_REBUILD_FETCH_CONCURRENCY")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&k| k > 0)
+                .unwrap_or(3);
+            _span_b.record("fetch_concurrency", fetch_concurrency);
+
             let mut shared = SharedResolverState::new_for_ledger(&ledger_id);
 
             // Pre-insert rdf:type into predicate dictionary so class tracking
@@ -167,7 +195,24 @@ where
             let mut total_retracts = 0u64;
             let resolve_started = std::time::Instant::now();
 
-            for (i, cid) in commit_cids.iter().enumerate() {
+            let total_commits = commit_cids.len();
+            let fetch_store = content_store.clone();
+            let mut fetch_stream =
+                futures::stream::iter(commit_cids.iter().cloned().enumerate().collect::<Vec<_>>())
+                    .map(move |(i, cid)| {
+                        let store = fetch_store.clone();
+                        async move {
+                            let bytes = store.get(&cid).await.map_err(|e| {
+                                IndexerError::StorageRead(format!("read {}: {}", cid, e))
+                            })?;
+                            Ok::<_, IndexerError>((i, cid, bytes))
+                        }
+                    })
+                    .buffered(fetch_concurrency);
+
+            while let Some(res) = fetch_stream.next().await {
+                let (i, cid, bytes) = res?;
+
                 // If chunk is non-empty and near budget, flush before processing
                 // the next commit to avoid memory bloat on large commits.
                 if !chunk.is_empty() && chunk.flake_count() >= chunk_max_flakes {
@@ -179,11 +224,6 @@ where
                     fulltext_cursor = fulltext_end;
                     chunks.push(std::mem::take(&mut chunk));
                 }
-
-                let bytes = content_store
-                    .get(cid)
-                    .await
-                    .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", cid, e)))?;
 
                 let resolved = shared
                     .resolve_commit_into_chunk(&bytes, &cid.digest_hex(), &mut chunk)
@@ -204,7 +244,7 @@ where
                 if (i + 1) % 500 == 0 {
                     tracing::info!(
                         commits_resolved = i + 1,
-                        total_commits = commit_cids.len(),
+                        total_commits,
                         t = resolved.t,
                         chunk_flakes = chunk.flake_count(),
                         elapsed_ms = resolve_started.elapsed().as_millis() as u64,
