@@ -11,7 +11,7 @@ use crate::graph::Graph;
 use crate::query::builder::QueryCore;
 use crate::view::GraphDb;
 use crate::{
-    ApiError, Fluree, NameService, QueryResult, Result, TrackedErrorResponse, TrackedQueryResponse,
+    ApiError, Fluree, QueryResult, Result, TrackedErrorResponse, TrackedQueryResponse,
     TrackingOptions,
 };
 
@@ -39,20 +39,17 @@ use std::sync::Arc;
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct GraphQueryBuilder<'a, 'g, N> {
-    graph: &'g Graph<'a, N>,
+pub struct GraphQueryBuilder<'a, 'g> {
+    graph: &'g Graph<'a>,
     core: QueryCore<'g>,
     #[cfg(feature = "iceberg")]
     /// When true, use graph source fallback for resolution (set by `with_r2rml()`).
     graph_source_fallback: bool,
 }
 
-impl<'a, 'g, N> GraphQueryBuilder<'a, 'g, N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl<'a, 'g> GraphQueryBuilder<'a, 'g> {
     /// Create a new builder (called by `Graph::query()`).
-    pub(crate) fn new(graph: &'g Graph<'a, N>) -> Self {
+    pub(crate) fn new(graph: &'g Graph<'a>) -> Self {
         Self {
             graph,
             core: QueryCore::new(),
@@ -280,18 +277,15 @@ where
 /// let snapshot = fluree.graph("mydb:main").load().await?;
 /// let result = snapshot.query().jsonld(&q).execute().await?;
 /// ```
-pub struct GraphSnapshotQueryBuilder<'a, 'v, N> {
-    fluree: &'a Fluree<N>,
+pub struct GraphSnapshotQueryBuilder<'a, 'v> {
+    fluree: &'a Fluree,
     view: &'v GraphDb,
     core: QueryCore<'v>,
 }
 
-impl<'a: 'v, 'v, N> GraphSnapshotQueryBuilder<'a, 'v, N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl<'a: 'v, 'v> GraphSnapshotQueryBuilder<'a, 'v> {
     /// Create a new builder from a fluree reference and a view.
-    pub fn new_from_parts(fluree: &'a Fluree<N>, view: &'v GraphDb) -> Self {
+    pub fn new_from_parts(fluree: &'a Fluree, view: &'v GraphDb) -> Self {
         Self {
             fluree,
             view,

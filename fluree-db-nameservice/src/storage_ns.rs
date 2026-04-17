@@ -22,10 +22,10 @@ use crate::ns_format::{
 };
 use crate::{
     deserialize_json, parse_default_context_value, serialize_json, AdminPublisher, CasResult,
-    ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup, GraphSourcePublisher,
-    GraphSourceRecord, GraphSourceType, NameService, NameServiceError, NsLookupResult, NsRecord,
-    Publisher, RefKind, RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher,
-    StatusValue,
+    ConfigCasResult, ConfigLookup, ConfigPublisher, ConfigValue, GraphSourceLookup,
+    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
+    NsLookupResult, NsRecord, Publisher, RefKind, RefLookup, RefPublisher, RefValue, Result,
+    StatusCasResult, StatusLookup, StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -897,7 +897,7 @@ where
 }
 
 #[async_trait]
-impl<S> RefPublisher for StorageNameService<S>
+impl<S> RefLookup for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
@@ -962,7 +962,13 @@ where
             }
         }
     }
+}
 
+#[async_trait]
+impl<S> RefPublisher for StorageNameService<S>
+where
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+{
     async fn compare_and_set_ref(
         &self,
         ledger_id: &str,
@@ -1395,7 +1401,7 @@ where
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl<S> StatusPublisher for StorageNameService<S>
+impl<S> StatusLookup for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
@@ -1418,7 +1424,13 @@ where
 
         Ok(Some(file.to_status_value()))
     }
+}
 
+#[async_trait]
+impl<S> StatusPublisher for StorageNameService<S>
+where
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+{
     async fn push_status(
         &self,
         ledger_id: &str,
@@ -1488,7 +1500,7 @@ where
 }
 
 #[async_trait]
-impl<S> ConfigPublisher for StorageNameService<S>
+impl<S> ConfigLookup for StorageNameService<S>
 where
     S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
 {
@@ -1511,7 +1523,13 @@ where
 
         Ok(Some(file.to_config_value()))
     }
+}
 
+#[async_trait]
+impl<S> ConfigPublisher for StorageNameService<S>
+where
+    S: StorageRead + StorageWrite + StorageList + StorageCas + Debug + Send + Sync,
+{
     async fn push_config(
         &self,
         ledger_id: &str,
@@ -2235,7 +2253,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_storage_retract_bumps_status_v() {
-        use crate::StatusPublisher;
+        use crate::StatusLookup;
 
         let ns = make_storage_ns();
         ns.publish_ledger_init("mydb:main").await.unwrap();

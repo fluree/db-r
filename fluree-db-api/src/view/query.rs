@@ -9,9 +9,7 @@ use crate::query::helpers::{
     tracker_for_tracked_endpoint,
 };
 use crate::view::{GraphDb, QueryInput};
-use crate::{
-    ApiError, ExecutableQuery, Fluree, NameService, QueryResult, Result, Tracker, TrackingOptions,
-};
+use crate::{ApiError, ExecutableQuery, Fluree, QueryResult, Result, Tracker, TrackingOptions};
 use fluree_db_query::execute::{
     execute_prepared, prepare_execution_with_binary_store, ContextConfig,
 };
@@ -47,10 +45,7 @@ pub(crate) fn maybe_wrap_for_graph_source(
 // Query Execution
 // ============================================================================
 
-impl<N> Fluree<N>
-where
-    N: NameService,
-{
+impl Fluree {
     /// Execute a query against a GraphDb.
     ///
     /// Accepts JSON-LD or SPARQL via `QueryInput`. Wrapper settings
@@ -529,8 +524,8 @@ where
 
     /// Execute against a GraphDb with explicit R2RML provider.
     ///
-    /// Used by callers that have access to the full `Fluree<N>` instance
-    /// with `N: GraphSourcePublisher` (e.g., server query handlers with iceberg support).
+    /// Used by callers that need R2RML/Iceberg graph source support
+    /// (e.g., server query handlers with iceberg support).
     pub(crate) async fn execute_view_internal_with_r2rml<'b>(
         &self,
         db: &GraphDb,

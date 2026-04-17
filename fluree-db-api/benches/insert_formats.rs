@@ -67,7 +67,7 @@ static LEDGER_COUNTER: AtomicU64 = AtomicU64::new(0);
 // Type aliases (matches vector_query.rs pattern)
 // ---------------------------------------------------------------------------
 
-type BenchFluree = fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
+type BenchFluree = fluree_db_api::Fluree;
 type BenchLedger = fluree_db_api::LedgerState;
 
 // ---------------------------------------------------------------------------

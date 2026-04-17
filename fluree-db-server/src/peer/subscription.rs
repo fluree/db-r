@@ -10,9 +10,8 @@ use futures::StreamExt;
 
 use crate::config::ServerConfig;
 use crate::peer::state::PeerState;
-use crate::state::FlureeInstance;
 
-use fluree_db_api::{NotifyResult, NsNotify};
+use fluree_db_api::{Fluree, NotifyResult, NsNotify};
 use fluree_db_core::ledger_id::split_ledger_id;
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::NsRecord;
@@ -23,12 +22,12 @@ use fluree_sse::{SseEvent, SseParser, SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 pub struct PeerSubscriptionTask {
     config: ServerConfig,
     peer_state: Arc<PeerState>,
-    fluree: FlureeInstance,
+    fluree: Arc<Fluree>,
     http_client: reqwest::Client,
 }
 
 impl PeerSubscriptionTask {
-    pub fn new(config: ServerConfig, peer_state: Arc<PeerState>, fluree: FlureeInstance) -> Self {
+    pub fn new(config: ServerConfig, peer_state: Arc<PeerState>, fluree: Arc<Fluree>) -> Self {
         let http_client = reqwest::Client::builder()
             // No timeout for SSE - it's a long-lived connection
             .connect_timeout(Duration::from_secs(30))
@@ -245,10 +244,7 @@ impl PeerSubscriptionTask {
 
         for ledger_id in &sub.ledgers {
             // Preload by loading into the connection-level ledger cache.
-            let result = match &self.fluree {
-                FlureeInstance::File(f) => f.ledger_cached(ledger_id).await.map(|_| ()),
-                FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await.map(|_| ()),
-            };
+            let result = self.fluree.ledger_cached(ledger_id).await.map(|_| ());
 
             match result {
                 Ok(()) => {
@@ -262,10 +258,7 @@ impl PeerSubscriptionTask {
     }
 
     async fn disconnect_cached_ledger(&self, ledger_id: &str) {
-        match &self.fluree {
-            FlureeInstance::File(f) => f.disconnect_ledger(ledger_id).await,
-            FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
-        }
+        self.fluree.disconnect_ledger(ledger_id).await;
     }
 
     async fn refresh_cached_ledger_from_record(&self, record: &LedgerRecord) {
@@ -277,30 +270,18 @@ impl PeerSubscriptionTask {
             }
         };
 
-        match &self.fluree {
-            FlureeInstance::File(f) => {
-                let Some(mgr) = f.ledger_manager() else {
-                    return;
-                };
-                self.notify_mgr(mgr, record, ns_record).await;
-            }
-            FlureeInstance::Proxy(p) => {
-                let Some(mgr) = p.ledger_manager() else {
-                    return;
-                };
-                self.notify_mgr(mgr, record, ns_record).await;
-            }
+        let Some(mgr) = self.fluree.ledger_manager() else {
+            return;
         };
+        self.notify_mgr(mgr, record, ns_record).await;
     }
 
-    async fn notify_mgr<N>(
+    async fn notify_mgr(
         &self,
-        mgr: &Arc<fluree_db_api::LedgerManager<N>>,
+        mgr: &Arc<fluree_db_api::LedgerManager>,
         record: &LedgerRecord,
         ns_record: NsRecord,
-    ) where
-        N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
-    {
+    ) {
         match mgr
             .notify(NsNotify {
                 ledger_id: record.ledger_id.clone(),

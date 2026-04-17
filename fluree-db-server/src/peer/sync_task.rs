@@ -5,14 +5,14 @@
 //! the local [`FileNameService`]** via `RefPublisher` CAS operations. This means a restarted
 //! peer can serve queries immediately without waiting for SSE replay.
 //!
-//! Used for shared-storage peers where `FlureeInstance::File` is available.
+//! Used for shared-storage peers where the nameservice is read-write.
 //! Proxy-storage peers continue to use `PeerSubscriptionTask`.
 
 use std::sync::Arc;
 
 use fluree_db_api::{NotifyResult, NsNotify};
 use fluree_db_nameservice::{
-    CasResult, NameServiceError, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
+    CasResult, NameServiceError, NameServiceEvent, NsRecord, RefKind, RefValue,
 };
 use fluree_db_nameservice_sync::watch::{RemoteEvent, RemoteWatch};
 use fluree_db_nameservice_sync::SseRemoteWatch;
@@ -20,12 +20,11 @@ use futures::StreamExt;
 
 use crate::config::ServerConfig;
 use crate::peer::state::PeerState;
-use crate::state::FileFluree;
 
 /// Background task that syncs nameservice state from a remote transaction server
-/// into the local `FileNameService` via SSE events and `RefPublisher` CAS operations.
+/// into the local nameservice via SSE events and `RefPublisher` CAS operations.
 pub struct PeerSyncTask {
-    fluree: Arc<FileFluree>,
+    fluree: Arc<fluree_db_api::Fluree>,
     peer_state: Arc<PeerState>,
     watch: SseRemoteWatch,
     config: ServerConfig,
@@ -33,7 +32,7 @@ pub struct PeerSyncTask {
 
 impl PeerSyncTask {
     pub fn new(
-        fluree: Arc<FileFluree>,
+        fluree: Arc<fluree_db_api::Fluree>,
         peer_state: Arc<PeerState>,
         watch: SseRemoteWatch,
         config: ServerConfig,
@@ -98,6 +97,16 @@ impl PeerSyncTask {
                         .await;
 
                     if changed {
+                        // Emit event for graph source index update
+                        if let Some(ref index_id) = record.index_id {
+                            self.fluree.event_bus().notify(
+                                NameServiceEvent::GraphSourceIndexPublished {
+                                    graph_source_id: graph_source_id.clone(),
+                                    index_id: index_id.clone(),
+                                    index_t: record.index_t,
+                                },
+                            );
+                        }
                         tracing::info!(
                             graph_source_id = %graph_source_id,
                             index_t = record.index_t,
@@ -107,6 +116,11 @@ impl PeerSyncTask {
                 }
                 RemoteEvent::GraphSourceRetracted { graph_source_id } => {
                     self.peer_state.remove_graph_source(&graph_source_id).await;
+                    self.fluree
+                        .event_bus()
+                        .notify(NameServiceEvent::GraphSourceRetracted {
+                            graph_source_id: graph_source_id.clone(),
+                        });
                     tracing::info!(graph_source_id = %graph_source_id, "Graph source retracted from remote");
                 }
             }
@@ -116,7 +130,10 @@ impl PeerSyncTask {
     /// Persist remote ledger state into local FileNameService, then update
     /// in-memory watermarks and notify LedgerManager.
     async fn handle_ledger_updated(&self, record: &NsRecord) {
-        let ns = self.fluree.nameservice();
+        let Some(ns) = self.fluree.nameservice_mode().publisher() else {
+            tracing::error!("PeerSyncTask requires a read-write nameservice");
+            return;
+        };
 
         // 1. Ensure ledger exists locally (idempotent)
         match ns.publish_ledger_init(&record.ledger_id).await {
@@ -276,13 +293,18 @@ impl PeerSyncTask {
         }
 
         // 5. Notify LedgerManager (AFTER NS is updated, so reload sees new refs)
+        // Note: events are emitted automatically by NotifyingNameService when
+        // the CAS operations above succeed — no manual emission needed here.
         self.refresh_cached_ledger(record).await;
     }
 
     /// Retract ledger locally and evict from cache.
     async fn handle_ledger_retracted(&self, ledger_id: &str) {
         // 1. Retract via Publisher::retract()
-        let ns = self.fluree.nameservice();
+        let Some(ns) = self.fluree.nameservice_mode().publisher() else {
+            tracing::error!("PeerSyncTask requires a read-write nameservice");
+            return;
+        };
         if let Err(e) = ns.retract(ledger_id).await {
             tracing::warn!(
                 ledger_id = %ledger_id,
@@ -290,6 +312,8 @@ impl PeerSyncTask {
                 "Failed to retract ledger locally"
             );
         }
+
+        // Note: retraction event emitted automatically by NotifyingNameService.
 
         // 2. Clear in-memory watermarks
         self.peer_state.remove_ledger(ledger_id).await;

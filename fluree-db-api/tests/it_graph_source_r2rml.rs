@@ -23,7 +23,6 @@ use fluree_db_api::{
     execute_with_r2rml, ExecutableQuery, FlureeBuilder, ParsedContext, Pattern, VarRegistry,
 };
 use fluree_db_core::{GraphDbRef, NoOverlay, Tracker};
-use fluree_db_nameservice::GraphSourceLookup;
 use fluree_db_query::ir::GraphName;
 use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 use fluree_db_query::triple::{Ref, Term, TriplePattern};

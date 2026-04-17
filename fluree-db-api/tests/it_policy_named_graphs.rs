@@ -21,7 +21,7 @@ async fn policy_applies_to_named_graph_queries() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 

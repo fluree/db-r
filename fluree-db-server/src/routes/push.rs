@@ -65,7 +65,6 @@ async fn push_ledger_local(
     // Load cached ledger handle.
     let handle = state
         .fluree
-        .as_file()
         .ledger_cached(&ledger)
         .await
         .map_err(ServerError::Api)?;
@@ -98,7 +97,7 @@ async fn push_ledger_local(
         .map_err(|e| ServerError::bad_request(format!("failed to read request body: {}", e)))?;
     let body: PushCommitsRequest = serde_json::from_slice(&bytes)?;
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let resp = fluree
         .push_commits_with_handle(&handle, body, &opts, index_config)
         .await

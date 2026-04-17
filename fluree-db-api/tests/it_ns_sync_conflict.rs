@@ -21,11 +21,7 @@ use support::start_background_indexer_local;
 
 /// Helper: create a ledger, insert data with a custom namespace, and index it.
 /// Returns the Fluree instance, the ledger ID, and the temp dir (kept alive).
-async fn setup_indexed_ledger() -> (
-    fluree_db_api::Fluree<fluree_db_nameservice::file::FileNameService>,
-    String,
-    tempfile::TempDir,
-) {
+async fn setup_indexed_ledger() -> (fluree_db_api::Fluree, String, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let path = tmp.path().to_string_lossy().to_string();
 
@@ -33,7 +29,7 @@ async fn setup_indexed_ledger() -> (
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));

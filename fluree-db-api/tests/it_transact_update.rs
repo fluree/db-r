@@ -26,12 +26,7 @@ fn ctx_ex() -> JsonValue {
     })
 }
 
-async fn seed_users(
-    ledger_id: &str,
-) -> (
-    fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
-    LedgerState,
-) {
+async fn seed_users(ledger_id: &str) -> (fluree_db_api::Fluree, LedgerState) {
     let fluree = FlureeBuilder::memory().build_memory();
 
     let db0 = LedgerSnapshot::genesis(ledger_id);
@@ -57,10 +52,7 @@ async fn seed_users(
     (fluree, seeded.ledger)
 }
 
-async fn query_names(
-    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
-    ledger: &LedgerState,
-) -> Vec<String> {
+async fn query_names(fluree: &fluree_db_api::Fluree, ledger: &LedgerState) -> Vec<String> {
     let q = json!({
         "@context": ctx_ex_schema(),
         "select": ["?name"],
@@ -1890,7 +1882,7 @@ async fn update_values_wildcard_delete_index_plus_novelty() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         Default::default(),
     );
 
@@ -2018,7 +2010,7 @@ async fn update_wildcard_delete_duplicate_facts_across_index_and_novelty() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         Default::default(),
     );
 
@@ -2145,7 +2137,7 @@ async fn update_values_wildcard_delete_after_updates_and_indexing() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         Default::default(),
     );
 

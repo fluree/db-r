@@ -136,7 +136,7 @@ async fn show_local(
             ));
         }
 
-        let fluree = state.fluree.as_file();
+        let fluree = &state.fluree;
 
         // Parse commit ref: "t:N" → by transaction number, otherwise by prefix/CID
         let detail = if let Some(t_str) = commit_ref.strip_prefix("t:") {

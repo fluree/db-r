@@ -19,12 +19,11 @@ use crate::error::{BuilderError, BuilderErrors};
 use crate::ledger_manager::LedgerHandle;
 use crate::tx::{IndexingMode, IndexingStatus, StageResult, TransactResult, TransactResultRef};
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, TrackedErrorResponse,
-    TrackedTransactionInput, Tracker, TrackingOptions,
+    ApiError, Fluree, PolicyContext, Result, TrackedErrorResponse, TrackedTransactionInput,
+    Tracker, TrackingOptions,
 };
 use fluree_db_core::{ContentId, ContentKind};
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
-use fluree_db_nameservice::Publisher;
 use fluree_db_transact::{
     parse_trig_phase1, CommitOpts, NamedGraphBlock, NamespaceRegistry, RawTrigMeta, Txn, TxnOpts,
     TxnType,
@@ -248,18 +247,15 @@ impl std::fmt::Debug for Staged {
 ///     .execute().await?;
 /// let ledger = result.ledger;
 /// ```
-pub struct OwnedTransactBuilder<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct OwnedTransactBuilder<'a> {
+    fluree: &'a Fluree,
     ledger: LedgerState,
     core: TransactCore<'a>,
 }
 
-impl<'a, N> OwnedTransactBuilder<'a, N>
-where
-    N: NameService + Publisher,
-{
+impl<'a> OwnedTransactBuilder<'a> {
     /// Create a new builder (called by `Fluree::stage_owned()`).
-    pub(crate) fn new(fluree: &'a Fluree<N>, ledger: LedgerState) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree, ledger: LedgerState) -> Self {
         Self {
             fluree,
             ledger,
@@ -597,18 +593,15 @@ where
 ///     .insert(&data)
 ///     .execute().await?;
 /// ```
-pub struct RefTransactBuilder<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct RefTransactBuilder<'a> {
+    fluree: &'a Fluree,
     handle: &'a LedgerHandle,
     core: TransactCore<'a>,
 }
 
-impl<'a, N> RefTransactBuilder<'a, N>
-where
-    N: NameService + Publisher + Clone + Send + Sync + 'static,
-{
+impl<'a> RefTransactBuilder<'a> {
     /// Create a new builder (called by `Fluree::stage()`).
-    pub(crate) fn new(fluree: &'a Fluree<N>, handle: &'a LedgerHandle) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree, handle: &'a LedgerHandle) -> Self {
         Self {
             fluree,
             handle,
@@ -712,14 +705,11 @@ where
 ///
 /// This is the shared logic for `RefTransactBuilder::execute()` and
 /// `GraphTransactBuilder::commit()`.
-pub(crate) async fn commit_with_handle<N>(
-    fluree: &Fluree<N>,
+pub(crate) async fn commit_with_handle(
+    fluree: &Fluree,
     handle: &LedgerHandle,
     core: TransactCore<'_>,
-) -> Result<TransactResultRef>
-where
-    N: NameService + Publisher + Clone + Send + Sync + 'static,
-{
+) -> Result<TransactResultRef> {
     core.validate().map_err(ApiError::Builder)?;
 
     let index_config = core.index_config.unwrap_or_default();

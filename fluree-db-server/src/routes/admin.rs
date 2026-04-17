@@ -64,7 +64,10 @@ pub async fn stats(
             uptime_secs: state.uptime_secs(),
             storage_type: state.config.storage_type_str(),
             indexing_enabled: state.config.indexing_enabled,
-            cached_ledgers: state.fluree.cached_ledger_count().await,
+            cached_ledgers: match state.fluree.ledger_manager() {
+                Some(mgr) => mgr.cached_count().await,
+                None => 0,
+            },
             version: env!("CARGO_PKG_VERSION"),
         })
     }

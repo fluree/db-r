@@ -8,10 +8,10 @@
 use fluree_db_connection::{connect_async, ConnectionHandle};
 use fluree_db_core::{ContentId, ContentKind, StorageRead, StorageWrite};
 use fluree_db_nameservice::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourceLookup, GraphSourcePublisher, GraphSourceType, NameService, NsLookupResult,
-    Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPayload, StatusPublisher,
-    StatusValue,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigLookup, ConfigPayload, ConfigPublisher,
+    ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceType, NameService,
+    NsLookupResult, Publisher, RefKind, RefLookup, RefPublisher, RefValue, StatusCasResult,
+    StatusLookup, StatusPayload, StatusPublisher, StatusValue,
 };
 use fluree_db_storage_aws::DynamoDbNameService;
 use fs2::FileExt;
@@ -205,7 +205,7 @@ async fn localstack_s3_and_dynamodb_smoke() {
     let alias = "mydb:main";
 
     // Init materializes all concern items (meta, head, index, status, config)
-    aws.nameservice()
+    aws.nameservice_arc()
         .publish_ledger_init(alias)
         .await
         .expect("publish_ledger_init should succeed");

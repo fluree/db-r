@@ -14,7 +14,7 @@ use serde_json::json;
 use support::{graphdb_from_ledger, start_background_indexer_local};
 
 async fn index_and_load_db(
-    fluree: &fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>,
+    fluree: &fluree_db_api::Fluree,
     handle: &fluree_db_indexer::IndexerHandle,
     ledger: LedgerState,
     t: i64,
@@ -48,7 +48,7 @@ async fn explain_no_optimization_when_equal_selectivity() {
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));
@@ -116,7 +116,7 @@ async fn explain_reorders_bound_object_email_first() {
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));
@@ -180,7 +180,7 @@ async fn explain_reorders_badge_property_scan_before_class_scan() {
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));
@@ -243,7 +243,7 @@ async fn explain_includes_inputs_fields_and_flags() {
     let mut fluree = FlureeBuilder::memory().build_memory();
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));

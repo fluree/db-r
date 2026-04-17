@@ -8,16 +8,7 @@ use crate::{
 
 use fluree_db_query::parse::parse_query;
 
-impl<N> Fluree<N>
-where
-    N: crate::NameService
-        + crate::Publisher
-        + crate::GraphSourcePublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
+impl Fluree {
     /// Execute a query against a loaded dataset with BM25 and vector index provider support.
     ///
     /// This enables both `f:searchText` (BM25) and `f:queryVector` (similarity search) patterns

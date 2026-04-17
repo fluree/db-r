@@ -1080,17 +1080,12 @@ async fn sparql_update_templates_support_graph_iri_blocks() {
     assert_eq!(status, StatusCode::OK, "update failed: {json}");
 
     // Named graph reads may depend on indexing; assert by inspecting the committed flakes directly.
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached("test:main")
-        .await
-        .unwrap();
+    let handle = state.fluree.ledger_cached("test:main").await.unwrap();
     let snap = handle.snapshot().await;
     let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
     let expected_graph_sid = ns.sid_for_iri("http://example.org/g1");
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1189,12 +1184,7 @@ async fn sparql_update_with_clause_scopes_default_templates_and_where() {
     assert_eq!(status, StatusCode::OK, "with update failed: {json}");
 
     // Assert via committed flakes (indexing is disabled in these server tests).
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached("test:main")
-        .await
-        .unwrap();
+    let handle = state.fluree.ledger_cached("test:main").await.unwrap();
     let snap = handle.snapshot().await;
     let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
 
@@ -1202,7 +1192,7 @@ async fn sparql_update_with_clause_scopes_default_templates_and_where() {
     let s_sid = ns.sid_for_iri("http://example.org/s");
     let p_sid = ns.sid_for_iri("http://example.org/p");
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1298,12 +1288,7 @@ async fn sparql_update_using_clause_scopes_where_default_graph() {
     assert_eq!(status, StatusCode::OK, "using update failed: {json}");
 
     // Assert via committed flakes (indexing is disabled in these server tests).
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached("test:main")
-        .await
-        .unwrap();
+    let handle = state.fluree.ledger_cached("test:main").await.unwrap();
     let snap = handle.snapshot().await;
     let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
 
@@ -1311,7 +1296,7 @@ async fn sparql_update_using_clause_scopes_where_default_graph() {
     let s_sid = ns.sid_for_iri("http://example.org/s");
     let p_sid = ns.sid_for_iri("http://example.org/p");
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1426,12 +1411,7 @@ async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
     );
 
     // Assert via committed flakes (indexing is disabled in these server tests).
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached("test:main")
-        .await
-        .unwrap();
+    let handle = state.fluree.ledger_cached("test:main").await.unwrap();
     let snap = handle.snapshot().await;
     let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
 
@@ -1439,7 +1419,7 @@ async fn sparql_update_multiple_using_clauses_merge_default_graph_for_where() {
     let a_sid = ns.sid_for_iri("http://example.org/a");
     let marker_sid = ns.sid_for_iri("http://example.org/marker");
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1541,12 +1521,7 @@ async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
     assert_eq!(status, StatusCode::OK, "using-named update failed: {json}");
 
     // The latest commit should not contain an assertion of "g2-new" in graph g2.
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached("test:main")
-        .await
-        .unwrap();
+    let handle = state.fluree.ledger_cached("test:main").await.unwrap();
     let snap = handle.snapshot().await;
     let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
 
@@ -1554,7 +1529,7 @@ async fn sparql_update_using_named_clause_restricts_where_named_graphs() {
     let s_sid = ns.sid_for_iri("http://example.org/s");
     let p_sid = ns.sid_for_iri("http://example.org/p");
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let export = fluree
         .export_commit_range(
             &handle,
@@ -1715,12 +1690,7 @@ async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_
     );
 
     // Assert via committed flakes (indexing is disabled in these server tests).
-    let handle = state
-        .fluree
-        .as_file()
-        .ledger_cached("test:main")
-        .await
-        .unwrap();
+    let handle = state.fluree.ledger_cached("test:main").await.unwrap();
     let snap = handle.snapshot().await;
     let mut ns = NamespaceRegistry::from_db(&snap.snapshot);
 
@@ -1728,7 +1698,7 @@ async fn sparql_update_multiple_using_named_clauses_allow_multiple_named_graphs_
     let a_sid = ns.sid_for_iri("http://example.org/a");
     let marker_sid = ns.sid_for_iri("http://example.org/marker2");
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let export = fluree
         .export_commit_range(
             &handle,

@@ -17,7 +17,7 @@
 //!
 //! # Server Role
 //! These endpoints are only available on transaction servers (file-backed mode).
-//! Peer-mode instances return 404 to avoid panicking on `as_file()`.
+//! Peer-mode instances return 404 since write operations require a read-write nameservice.
 
 use axum::{
     extract::{Path, State},
@@ -25,9 +25,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use fluree_db_api::{NameService, Publisher};
-use fluree_db_nameservice::GraphSourceLookup;
-use fluree_db_nameservice::{CasResult, NameServiceError, RefKind, RefPublisher, RefValue};
+use fluree_db_nameservice::{CasResult, NameServiceError, RefKind, RefValue};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -78,9 +76,9 @@ pub struct SnapshotResponse {
 // ============================================================================
 
 /// Ensure we are running in file-backed (transaction server) mode.
-/// Returns 404 in proxy/peer mode to avoid panicking on `as_file()`.
-fn require_file_mode(state: &AppState) -> Result<(), ServerError> {
-    if !state.fluree.is_file() {
+/// Returns 404 in proxy/peer mode since write operations require a read-write nameservice.
+fn require_read_write_mode(state: &AppState) -> Result<(), ServerError> {
+    if state.fluree.nameservice_mode().is_read_only() {
         return Err(ServerError::not_found(
             "Nameservice sync endpoints are not available in peer mode",
         ));
@@ -102,7 +100,7 @@ pub async fn push_commit_ref(
     StorageProxyBearer(principal): StorageProxyBearer,
     Json(body): Json<PushRefRequest>,
 ) -> Result<Response, ServerError> {
-    require_file_mode(&state)?;
+    require_read_write_mode(&state)?;
 
     if !principal.is_authorized_for_ledger(&alias) {
         return Err(ServerError::not_found("Ledger not found"));
@@ -121,7 +119,7 @@ pub async fn push_index_ref(
     StorageProxyBearer(principal): StorageProxyBearer,
     Json(body): Json<PushRefRequest>,
 ) -> Result<Response, ServerError> {
-    require_file_mode(&state)?;
+    require_read_write_mode(&state)?;
 
     if !principal.is_authorized_for_ledger(&alias) {
         return Err(ServerError::not_found("Ledger not found"));
@@ -137,7 +135,9 @@ async fn push_ref_inner(
     kind: RefKind,
     body: PushRefRequest,
 ) -> Result<Response, ServerError> {
-    let ns = state.fluree.as_file().nameservice();
+    let ns = state.fluree.nameservice_mode().publisher().ok_or_else(|| {
+        ServerError::internal("Write operations require a read-write nameservice")
+    })?;
 
     let result = ns
         .compare_and_set_ref(alias, kind, body.expected.as_ref(), &body.new)
@@ -173,13 +173,15 @@ pub async fn init_ledger(
     Path(alias): Path<String>,
     StorageProxyBearer(principal): StorageProxyBearer,
 ) -> Result<Json<InitResponse>, ServerError> {
-    require_file_mode(&state)?;
+    require_read_write_mode(&state)?;
 
     if !principal.is_authorized_for_ledger(&alias) {
         return Err(ServerError::not_found("Ledger not found"));
     }
 
-    let ns = state.fluree.as_file().nameservice();
+    let ns = state.fluree.nameservice_mode().publisher().ok_or_else(|| {
+        ServerError::internal("Write operations require a read-write nameservice")
+    })?;
 
     match ns.publish_ledger_init(&alias).await {
         Ok(()) => Ok(Json(InitResponse { created: true })),
@@ -198,9 +200,9 @@ pub async fn snapshot(
     State(state): State<Arc<AppState>>,
     StorageProxyBearer(principal): StorageProxyBearer,
 ) -> Result<Json<SnapshotResponse>, ServerError> {
-    require_file_mode(&state)?;
+    require_read_write_mode(&state)?;
 
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     let ns = fluree.nameservice();
 
     let all_ledgers = ns

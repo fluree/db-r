@@ -114,7 +114,7 @@ async fn iceberg_map_local(state: Arc<AppState>, request: Request) -> Result<imp
     async move {
         tracing::info!(status = "start", name = %req.name, "iceberg map requested");
 
-        let fluree = state.fluree.as_file();
+        let fluree = &state.fluree;
         let iceberg_config = build_iceberg_config(&req)?;
 
         let response = if let Some(ref r2rml_content) = req.r2rml {

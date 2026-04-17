@@ -14,7 +14,6 @@ mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerManagerConfig, LedgerState, Novelty};
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_nameservice::memory::MemoryNameService;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 use serde_json::json;
 use support::{
@@ -22,7 +21,7 @@ use support::{
     trigger_index_and_wait_outcome,
 };
 
-type MemoryFluree = fluree_db_api::Fluree<MemoryNameService>;
+type MemoryFluree = fluree_db_api::Fluree;
 type MemoryLedger = LedgerState;
 
 // =============================================================================
@@ -182,7 +181,7 @@ async fn time_travel_index_current() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 
@@ -253,7 +252,7 @@ async fn time_travel_index_plus_novelty() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 
@@ -309,7 +308,6 @@ async fn time_travel_index_plus_novelty() {
             eprintln!("After tx2: t={}", ledger.t());
 
             // Check nameservice before indexing
-            use fluree_db_nameservice::NameService;
             let ns_record_before = fluree
                 .nameservice()
                 .lookup(ledger_id)
@@ -414,7 +412,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 
@@ -549,7 +547,7 @@ async fn time_travel_retraction_across_index_novelty_boundary() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 
@@ -642,7 +640,7 @@ async fn time_travel_consistent_results_across_scenarios() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 
@@ -773,7 +771,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 

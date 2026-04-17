@@ -208,17 +208,16 @@ impl CommitOpts {
 /// # Returns
 ///
 /// A tuple of (CommitReceipt, new LedgerState)
-pub async fn commit<C, N>(
+pub async fn commit<N>(
     view: LedgerView,
     mut ns_registry: NamespaceRegistry,
-    content_store: &C,
+    content_store: &dyn ContentStore,
     nameservice: &N,
     index_config: &IndexConfig,
     opts: CommitOpts,
 ) -> Result<(CommitReceipt, LedgerState)>
 where
-    C: ContentStore,
-    N: NameService + Publisher,
+    N: NameService + Publisher + ?Sized,
 {
     // 1. Extract flakes from view
     let (mut base, flakes) = view.into_parts();

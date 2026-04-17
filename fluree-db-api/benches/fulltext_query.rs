@@ -184,7 +184,7 @@ const EXTRA_VOCAB: &[&str] = &[
 // Type aliases
 // ---------------------------------------------------------------------------
 
-type BenchFluree = fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
+type BenchFluree = fluree_db_api::Fluree;
 type BenchLedger = fluree_db_api::LedgerState;
 
 // ---------------------------------------------------------------------------

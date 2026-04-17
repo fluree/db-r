@@ -1,12 +1,15 @@
 //! Nameservice traits and implementations for Fluree DB
 //!
-//! This crate provides the core abstractions for ledger discovery, publishing,
-//! and subscription. It defines four main traits:
+//! This crate provides the core abstractions for ledger discovery and publishing.
+//! Main traits:
 //!
 //! - [`NameService`]: Read-only lookup of ledger metadata
 //! - [`Publisher`]: Publishing commit and index updates
 //! - [`RefPublisher`]: Explicit compare-and-set ref operations for sync
-//! - [`Publication`]: Optional subscription support for reactive updates
+//!
+//! Event notification is provided by [`LedgerEventBus`], a standalone
+//! broadcast channel. Wrap any nameservice in [`NotifyingNameService`] to
+//! get automatic event emission after successful writes.
 //!
 //! # Implementations
 //!
@@ -15,10 +18,12 @@
 //! - [`StorageNameService`]: Storage-backed implementation using CAS operations
 
 mod error;
+mod event_bus;
 #[cfg(feature = "native")]
 pub mod file;
 pub mod ledger_config;
 pub mod memory;
+mod notifying;
 pub(crate) mod ns_format;
 pub mod storage_ns;
 pub mod tracking;
@@ -26,7 +31,9 @@ pub mod tracking;
 pub mod tracking_file;
 
 pub use error::{NameServiceError, Result};
+pub use event_bus::LedgerEventBus;
 pub use ledger_config::{AuthRequirement, LedgerConfig, Origin, ReplicationDefaults};
+pub use notifying::NotifyingNameService;
 
 use fluree_db_core::StorageExtError;
 
@@ -399,7 +406,9 @@ pub enum NsLookupResult {
 ///
 /// Implementations provide ledger discovery by ledger ID.
 #[async_trait]
-pub trait NameService: GraphSourceLookup + Debug + Send + Sync {
+pub trait NameService:
+    GraphSourceLookup + RefLookup + StatusLookup + ConfigLookup + Debug + Send + Sync
+{
     /// Look up a ledger by its ledger ID (e.g. "mydb:main")
     ///
     /// Returns `None` if the ledger is not found.
@@ -562,6 +571,16 @@ pub trait Publisher: Debug + Send + Sync {
     /// Returns `Some(ledger_id)` for the value to write into commit's ns field.
     fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String>;
 }
+
+/// Combined read-write nameservice trait.
+///
+/// A convenience super-trait for components that need both `NameService`
+/// (lookup) and `Publisher` (write) access via a single `dyn` reference.
+/// All types that implement both `NameService` and `Publisher` automatically
+/// implement this trait via the blanket impl.
+pub trait ReadWriteNameService: NameService + Publisher {}
+
+impl<T> ReadWriteNameService for T where T: NameService + Publisher {}
 
 /// Admin-level publisher operations
 ///
@@ -734,26 +753,6 @@ pub struct Subscription {
     pub receiver: broadcast::Receiver<NameServiceEvent>,
 }
 
-/// Optional publication trait for reactive updates
-///
-/// This trait is only implemented where the backend supports pubsub.
-/// Not all nameservice implementations support subscriptions.
-#[async_trait]
-pub trait Publication: Debug + Send + Sync {
-    /// Subscribe to nameservice events with a given scope
-    ///
-    /// Returns a subscription handle that can be used to receive events.
-    /// The receiver will receive all events; filtering by scope is the
-    /// caller's responsibility (allows uniform broadcast channel usage).
-    async fn subscribe(&self, scope: SubscriptionScope) -> Result<Subscription>;
-
-    /// Unsubscribe from updates (no-op for stateless implementations)
-    async fn unsubscribe(&self, scope: &SubscriptionScope) -> Result<()>;
-
-    /// Get all known ledger IDs for a ledger (commit history)
-    async fn known_ledger_ids(&self, ledger_id: &str) -> Result<Vec<String>>;
-}
-
 // ---------------------------------------------------------------------------
 // Ref-level CAS (compare-and-set) types and trait
 // ---------------------------------------------------------------------------
@@ -798,6 +797,21 @@ pub enum CasResult {
     Conflict { actual: Option<RefValue> },
 }
 
+/// Read-only ref access for ledger head pointers.
+///
+/// Provides `get_ref` for reading commit/index head refs.
+/// This is the read-only counterpart to [`RefPublisher`].
+#[async_trait]
+pub trait RefLookup: Debug + Send + Sync {
+    /// Read the current ref value for a ledger ID + kind.
+    ///
+    /// Returns:
+    /// - `Some(RefValue { id: None, t: 0 })` — ref exists, unborn
+    /// - `Some(RefValue { id: Some(..), .. })` — ref exists with CID identity
+    /// - `None` — ledger ID/ref completely unknown
+    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>>;
+}
+
 /// Explicit ref-level CAS operations for sync.
 ///
 /// CAS compares on **identity** via `id` (ContentId). `t` serves as a
@@ -812,15 +826,7 @@ pub enum CasResult {
 /// ancestry.  If ancestry-based FF is ever needed, commit parent links and a
 /// graph walk would be required — that is out of scope here.
 #[async_trait]
-pub trait RefPublisher: Debug + Send + Sync {
-    /// Read the current ref value for a ledger ID + kind.
-    ///
-    /// Returns:
-    /// - `Some(RefValue { id: None, t: 0 })` — ref exists, unborn
-    /// - `Some(RefValue { id: Some(..), .. })` — ref exists with CID identity
-    /// - `None` — ledger ID/ref completely unknown
-    async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>>;
-
+pub trait RefPublisher: RefLookup {
     /// Atomic compare-and-set.
     ///
     /// Updates the ref **only if** the current identity matches `expected`.
@@ -1097,6 +1103,20 @@ pub enum ConfigCasResult {
 // V2 Publisher Traits (Status and Config)
 // ---------------------------------------------------------------------------
 
+/// Read-only status access.
+///
+/// Provides `get_status` for reading ledger operational status.
+/// This is the read-only counterpart to [`StatusPublisher`].
+#[async_trait]
+pub trait StatusLookup: Debug + Send + Sync {
+    /// Get current status for a ledger ID.
+    ///
+    /// Returns:
+    /// - `Some(StatusValue)` — record exists with status
+    /// - `None` — record doesn't exist at all
+    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>>;
+}
+
 /// Publisher for status concern (v2 extension).
 ///
 /// Status tracks operational metadata like queue depth, locks, progress,
@@ -1105,14 +1125,7 @@ pub enum ConfigCasResult {
 ///
 /// Status always exists once a record is created (initial state is "ready" with v=1).
 #[async_trait]
-pub trait StatusPublisher: Debug + Send + Sync {
-    /// Get current status for a ledger ID.
-    ///
-    /// Returns:
-    /// - `Some(StatusValue)` — record exists with status
-    /// - `None` — record doesn't exist at all
-    async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>>;
-
+pub trait StatusPublisher: StatusLookup {
     /// Push status with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.
@@ -1133,6 +1146,20 @@ pub trait StatusPublisher: Debug + Send + Sync {
     ) -> Result<StatusCasResult>;
 }
 
+/// Read-only config access.
+///
+/// Provides `get_config` for reading ledger configuration.
+/// This is the read-only counterpart to [`ConfigPublisher`].
+#[async_trait]
+pub trait ConfigLookup: Debug + Send + Sync {
+    /// Get current config for a ledger ID.
+    ///
+    /// Returns:
+    /// - `Some(ConfigValue)` — record exists (may be unborn with v=0)
+    /// - `None` — record doesn't exist at all
+    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>>;
+}
+
 /// Publisher for config concern (v2 extension).
 ///
 /// Config tracks settings like default context, index thresholds, and other
@@ -1141,14 +1168,7 @@ pub trait StatusPublisher: Debug + Send + Sync {
 ///
 /// Config can be "unborn" (v=0, payload=None) if no config has been set yet.
 #[async_trait]
-pub trait ConfigPublisher: Debug + Send + Sync {
-    /// Get current config for a ledger ID.
-    ///
-    /// Returns:
-    /// - `Some(ConfigValue)` — record exists (may be unborn with v=0)
-    /// - `None` — record doesn't exist at all
-    async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>>;
-
+pub trait ConfigPublisher: ConfigLookup {
     /// Push config with CAS semantics.
     ///
     /// Updates only if current matches expected. Returns conflict with actual on mismatch.
@@ -1167,6 +1187,37 @@ pub trait ConfigPublisher: Debug + Send + Sync {
         expected: Option<&ConfigValue>,
         new: &ConfigValue,
     ) -> Result<ConfigCasResult>;
+}
+
+/// A dynamically-dispatched nameservice with full read-write capability.
+///
+/// This is the complete set of nameservice traits needed for full read-write
+/// access to a nameservice. All concrete nameservice backends (File, Memory,
+/// DynamoDB, S3 storage-backed) implement this automatically via the blanket
+/// impl.
+///
+/// Use `Arc<dyn NameServicePublisher>` when a component needs ownership of a
+/// nameservice that supports all operations.
+pub trait NameServicePublisher:
+    NameService
+    + Publisher
+    + AdminPublisher
+    + RefPublisher
+    + GraphSourcePublisher
+    + StatusPublisher
+    + ConfigPublisher
+{
+}
+
+impl<T> NameServicePublisher for T where
+    T: NameService
+        + Publisher
+        + AdminPublisher
+        + RefPublisher
+        + GraphSourcePublisher
+        + StatusPublisher
+        + ConfigPublisher
+{
 }
 
 #[cfg(test)]

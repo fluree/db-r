@@ -27,7 +27,7 @@ use axum::{
     Json,
 };
 use fluree_db_api::block_fetch::{self, BlockContent, EnforcementMode, LedgerBlockContext};
-use fluree_db_api::{verify_commit_blob, NameService, StorageMethod, StorageRead};
+use fluree_db_api::{verify_commit_blob, StorageMethod, StorageRead};
 use fluree_db_core::flake::Flake;
 use fluree_db_core::ContentKind;
 use fluree_db_core::{ContentId, CODEC_FLUREE_COMMIT};
@@ -238,7 +238,6 @@ pub async fn get_ns_record(
     // Storage proxy is only enabled on transaction servers (validated in config)
     let ns_record = state
         .fluree
-        .as_file()
         .nameservice()
         .lookup(&ledger_id)
         .await
@@ -306,7 +305,7 @@ pub async fn get_block(
     let _ = kind;
 
     // 3. Namespace guard: ensure `body.ledger` is a real ledger (not a graph source alias)
-    let fluree = state.fluree.as_file();
+    let fluree = &state.fluree;
     fluree
         .nameservice()
         .lookup(&body.ledger)

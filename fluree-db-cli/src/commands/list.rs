@@ -4,7 +4,6 @@ use crate::error::{CliError, CliResult};
 use colored::Colorize;
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_nameservice::{GraphSourceLookup, NameService};
 
 pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> CliResult<()> {
     if let Some(remote_name) = remote_flag {

@@ -11,10 +11,10 @@ use aws_config::meta::region::RegionProviderChain;
 use fluree_db_api::{tx, Fluree};
 use fluree_db_connection::ConnectionConfig;
 use fluree_db_indexer::IndexerConfig;
-use fluree_db_nameservice::NameService;
 use fluree_db_storage_aws::{DynamoDbConfig, DynamoDbNameService, S3Config, S3Storage};
 use fs2::FileExt;
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
 use testcontainers::core::{IntoContainerPort, WaitFor};
 use testcontainers::{runners::AsyncRunner, GenericImage, ImageExt};
@@ -133,11 +133,12 @@ async fn start_localstack(
     (lock, container, endpoint)
 }
 
-fn build_fluree(
-    storage: S3Storage,
-    nameservice: DynamoDbNameService,
-) -> Fluree<DynamoDbNameService> {
-    Fluree::new(ConnectionConfig::default(), storage, nameservice)
+fn build_fluree(storage: S3Storage, nameservice: DynamoDbNameService) -> Fluree {
+    Fluree::new(
+        ConnectionConfig::default(),
+        storage,
+        fluree_db_api::NameServiceMode::ReadWrite(Arc::new(nameservice)),
+    )
 }
 
 async fn list_object_keys(sdk_config: &aws_config::SdkConfig, bucket: &str) -> Vec<String> {
@@ -295,7 +296,7 @@ async fn s3_testcontainers_indexing_test() {
     // Start background indexing worker + handle (LocalSet since worker may be !Send)
     let (local, handle) = support::start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        nameservice.clone(),
         IndexerConfig::small(),
     );
     fluree.set_indexing_mode(tx::IndexingMode::Background(handle.clone()));

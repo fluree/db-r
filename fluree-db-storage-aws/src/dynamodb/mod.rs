@@ -22,10 +22,11 @@ use fluree_db_core::ledger_id::{
 };
 use fluree_db_core::ContentId;
 use fluree_db_nameservice::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
-    NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue,
-    StatusCasResult, StatusPayload, StatusPublisher, StatusValue,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigLookup, ConfigPayload, ConfigPublisher,
+    ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
+    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefLookup,
+    RefPublisher, RefValue, StatusCasResult, StatusLookup, StatusPayload, StatusPublisher,
+    StatusValue,
 };
 use schema::*;
 use std::collections::HashMap;
@@ -1315,10 +1316,10 @@ impl AdminPublisher for DynamoDbNameService {
     }
 }
 
-// ─── RefPublisher ───────────────────────────────────────────────────────────
+// ─── RefLookup ─────────────────────────────────────────────────────────────
 
 #[async_trait]
-impl RefPublisher for DynamoDbNameService {
+impl RefLookup for DynamoDbNameService {
     async fn get_ref(
         &self,
         ledger_id: &str,
@@ -1362,7 +1363,12 @@ impl RefPublisher for DynamoDbNameService {
             }
         }
     }
+}
 
+// ─── RefPublisher ───────────────────────────────────────────────────────────
+
+#[async_trait]
+impl RefPublisher for DynamoDbNameService {
     async fn compare_and_set_ref(
         &self,
         ledger_id: &str,
@@ -1836,10 +1842,10 @@ impl GraphSourceLookup for DynamoDbNameService {
     }
 }
 
-// ─── StatusPublisher ────────────────────────────────────────────────────────
+// ─── StatusLookup ──────────────────────────────────────────────────────────
 
 #[async_trait]
-impl StatusPublisher for DynamoDbNameService {
+impl StatusLookup for DynamoDbNameService {
     async fn get_status(
         &self,
         ledger_id: &str,
@@ -1890,7 +1896,12 @@ impl StatusPublisher for DynamoDbNameService {
             }
         }
     }
+}
 
+// ─── StatusPublisher ────────────────────────────────────────────────────────
+
+#[async_trait]
+impl StatusPublisher for DynamoDbNameService {
     async fn push_status(
         &self,
         ledger_id: &str,
@@ -1959,15 +1970,16 @@ impl StatusPublisher for DynamoDbNameService {
     }
 }
 
-// ─── ConfigPublisher (ledger configs only) ──────────────────────────────────
+// ─── ConfigLookup (ledger configs only) ─────────────────────────────────────
 //
-// ConfigPublisher handles ledger configs (ConfigPayload with default_context +
-// extra). Graph-source config lives under GraphSourcePublisher as raw
-// config_json. Calling get_config/push_config on a graph-source ledger_id returns
-// None / Conflict to prevent cross-contamination of the config_v watermark.
+// ConfigLookup/ConfigPublisher handle ledger configs (ConfigPayload with
+// default_context + extra). Graph-source config lives under
+// GraphSourcePublisher as raw config_json. Calling get_config/push_config on a
+// graph-source ledger_id returns None / Conflict to prevent
+// cross-contamination of the config_v watermark.
 
 #[async_trait]
-impl ConfigPublisher for DynamoDbNameService {
+impl ConfigLookup for DynamoDbNameService {
     async fn get_config(
         &self,
         ledger_id: &str,
@@ -2027,7 +2039,12 @@ impl ConfigPublisher for DynamoDbNameService {
             }
         }
     }
+}
 
+// ─── ConfigPublisher ────────────────────────────────────────────────────────
+
+#[async_trait]
+impl ConfigPublisher for DynamoDbNameService {
     async fn push_config(
         &self,
         ledger_id: &str,

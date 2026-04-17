@@ -1,7 +1,6 @@
 #![cfg(feature = "native")]
 
 use fluree_db_api::FlureeBuilder;
-use fluree_db_api::NameService;
 use fluree_db_core::ContentStore;
 use serde_json::json;
 
@@ -17,7 +16,7 @@ async fn debug_graph_ids_after_named_graph_index() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        fluree.nameservice_mode().clone(),
         fluree_db_indexer::IndexerConfig::small(),
     );
 

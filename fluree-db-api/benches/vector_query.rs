@@ -73,7 +73,7 @@ const DATASET_SIZES: &[usize] = &[1_000, 5_000];
 // Type aliases (matches test support pattern)
 // ---------------------------------------------------------------------------
 
-type BenchFluree = fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
+type BenchFluree = fluree_db_api::Fluree;
 type BenchLedger = fluree_db_api::LedgerState;
 
 // ---------------------------------------------------------------------------

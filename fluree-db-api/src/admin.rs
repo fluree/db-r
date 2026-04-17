@@ -12,9 +12,7 @@
 use crate::{error::ApiError, tx::IndexingMode, Result};
 use fluree_db_core::{address_path::ledger_id_to_path_prefix, format_ledger_id, DEFAULT_BRANCH};
 use fluree_db_indexer::{clean_garbage, rebuild_index_from_commits, CleanGarbageConfig};
-use fluree_db_nameservice::{
-    AdminPublisher, GraphSourcePublisher, NameService, NsRecord, Publisher,
-};
+use fluree_db_nameservice::NsRecord;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
@@ -206,11 +204,7 @@ fn normalize_ledger_id(ledger_id: &str) -> String {
 // Fluree Drop Implementation
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    // NOTE: Storage trait provides full read/write/delete capabilities.
-    N: NameService + Publisher + Send + Sync + 'static,
-{
+impl crate::Fluree {
     /// Drop a ledger
     ///
     /// This operation:
@@ -254,7 +248,7 @@ where
         };
 
         // 2. Lookup current state (for status reporting)
-        let record = self.nameservice.lookup(&ledger_id).await?;
+        let record = self.nameservice().lookup(&ledger_id).await?;
         let status = match &record {
             None => DropStatus::NotFound,
             Some(r) if r.retracted => DropStatus::AlreadyRetracted,
@@ -283,10 +277,11 @@ where
         // 5. Retract or purge from nameservice
         // Soft drop: retract (mark as retracted, alias cannot be reused)
         // Hard drop: purge (remove record entirely, alias can be reused)
+        let publisher = self.publisher()?;
         let ns_result = if matches!(mode, DropMode::Hard) {
-            self.nameservice.purge(&ledger_id).await
+            publisher.purge(&ledger_id).await
         } else {
-            self.nameservice.retract(&ledger_id).await
+            publisher.retract(&ledger_id).await
         };
         if let Err(e) = ns_result {
             // Log but don't fail - retract/purge may fail if truly not found
@@ -337,7 +332,7 @@ where
 
         // Look up the record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup(&ledger_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Branch not found: {}", ledger_id)))?;
@@ -351,7 +346,7 @@ where
 
         if record.branches > 0 {
             // Has children — retract but preserve storage
-            self.nameservice.retract(&ledger_id).await?;
+            self.publisher()?.retract(&ledger_id).await?;
             report.deferred = true;
 
             // Disconnect from cache
@@ -405,7 +400,7 @@ where
         report.artifacts_deleted += count;
         report.warnings.extend(warnings);
 
-        let parent_new_count = self.nameservice.drop_branch(ledger_id).await?;
+        let parent_new_count = self.publisher()?.drop_branch(ledger_id).await?;
 
         if let Some(mgr) = &self.ledger_manager {
             mgr.disconnect(ledger_id).await;
@@ -421,7 +416,7 @@ where
         ancestor_id: &str,
         report: &mut BranchDropReport,
     ) {
-        let Ok(Some(ancestor)) = self.nameservice.lookup(ancestor_id).await else {
+        let Ok(Some(ancestor)) = self.nameservice().lookup(ancestor_id).await else {
             return;
         };
 
@@ -586,10 +581,7 @@ where
 // Graph Source Drop Implementation
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Drop a graph source
     ///
     /// This operation:
@@ -626,7 +618,7 @@ where
 
         // 1. Lookup graph source record (for status)
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(&graph_source_id)
             .await?;
         let status = match &record {
@@ -669,7 +661,7 @@ where
         }
 
         // 3. Retract from nameservice (always attempt, idempotent)
-        if let Err(e) = self.nameservice.retract_graph_source(name, branch).await {
+        if let Err(e) = self.publisher()?.retract_graph_source(name, branch).await {
             warn!(name = %name, branch = %branch, error = %e, "Nameservice graph source retract warning");
             report.warnings.push(format!("Nameservice retract: {}", e));
         }
@@ -683,10 +675,7 @@ where
 // Index Status and Trigger (minimal bounds - not native-only)
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService,
-{
+impl crate::Fluree {
     /// Get current indexing status for a ledger
     ///
     /// Returns status from both nameservice (index_t, commit_t) and
@@ -698,7 +687,7 @@ where
 
         // Get nameservice record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup(&ledger_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_id)))?;
@@ -763,7 +752,7 @@ where
 
         // Look up current state
         let record = self
-            .nameservice
+            .nameservice()
             .lookup(&ledger_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_id)))?;
@@ -955,10 +944,7 @@ where
 // Reindex (requires AdminPublisher for allow-equal publish)
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + AdminPublisher,
-{
+impl crate::Fluree {
     /// Full offline reindex from commit history
     ///
     /// Rebuilds the binary index by replaying all commits. This operation:
@@ -976,7 +962,7 @@ where
 
         // 1. Look up current state and capture commit_t for conflict detection
         let record = self
-            .nameservice
+            .nameservice()
             .lookup(&ledger_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_id)))?;
@@ -1020,9 +1006,13 @@ where
         );
 
         // 4. Conflict detection: check if ledger advanced during rebuild
-        let final_record = self.nameservice.lookup(&ledger_id).await?.ok_or_else(|| {
-            ApiError::NotFound(format!("Ledger disappeared during reindex: {}", ledger_id))
-        })?;
+        let final_record = self
+            .nameservice()
+            .lookup(&ledger_id)
+            .await?
+            .ok_or_else(|| {
+                ApiError::NotFound(format!("Ledger disappeared during reindex: {}", ledger_id))
+            })?;
 
         if final_record.commit_t != initial_commit_t {
             return Err(ApiError::ReindexConflict {
@@ -1032,7 +1022,7 @@ where
         }
 
         // 5. Publish new index (allows same t for reindex via AdminPublisher)
-        self.nameservice
+        self.publisher()?
             .publish_index_allow_equal(&ledger_id, index_result.index_t, &index_result.root_id)
             .await?;
 
@@ -1075,10 +1065,7 @@ where
 // Ledger Config
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + fluree_db_nameservice::ConfigPublisher,
-{
+impl crate::Fluree {
     /// Store a `LedgerConfig` blob in CAS and update the config_id on the
     /// NsRecord via ConfigPublisher.
     ///
@@ -1102,7 +1089,8 @@ where
             .await?;
 
         // Update config_id via ConfigPublisher (preserving existing payload fields).
-        let current = self.nameservice.get_config(&ledger_id).await?;
+        let publisher = self.publisher()?;
+        let current = publisher.get_config(&ledger_id).await?;
         let existing_payload = current
             .as_ref()
             .and_then(|c| c.payload.clone())
@@ -1115,8 +1103,7 @@ where
                 extra: existing_payload.extra,
             }),
         );
-        match self
-            .nameservice
+        match publisher
             .push_config(&ledger_id, current.as_ref(), &new_config)
             .await?
         {
