@@ -47,6 +47,10 @@ pub enum Error {
     /// Generic error with message
     #[error("{0}")]
     Other(String),
+
+    /// Fuel limit exceeded during a tracked operation.
+    #[error("{0}")]
+    FuelExceeded(#[from] crate::tracking::FuelExceededError),
 }
 
 impl Error {

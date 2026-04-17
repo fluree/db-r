@@ -986,6 +986,7 @@ impl crate::Fluree {
         txn: fluree_db_transact::Txn,
         index_config: Option<&IndexConfig>,
         policy: Option<&crate::PolicyContext>,
+        tracker: Option<&Tracker>,
     ) -> Result<StageResult> {
         let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
 
@@ -999,6 +1000,11 @@ impl crate::Fluree {
         };
         if let Some(p) = policy {
             options = options.with_policy(p);
+        }
+        if let Some(t) = tracker {
+            if t.is_enabled() {
+                options = options.with_tracker(t);
+            }
         }
 
         #[cfg(feature = "shacl")]

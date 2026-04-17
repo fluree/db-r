@@ -507,15 +507,12 @@ async fn query_connection_jsonld_tracked_single_ledger() {
     // Verify response status is successful
     assert_eq!(tracked.status, 200);
 
-    // Verify fuel tracking returns an integer value
+    // Verify fuel tracking returns a positive decimal value
     assert!(
         tracked.fuel.is_some(),
         "fuel should be present in tracked response"
     );
-    assert!(
-        tracked.fuel.unwrap() > 0,
-        "fuel should be a positive integer"
-    );
+    assert!(tracked.fuel.unwrap() > 0.0, "fuel should be positive");
 }
 
 #[tokio::test]
@@ -565,13 +562,10 @@ WHERE {
     names.sort();
     assert_eq!(names, vec!["Alice", "Bob"]);
 
-    // Verify fuel tracking returns an integer value
+    // Verify fuel tracking returns a positive decimal value
     assert!(
         tracked.fuel.is_some(),
         "fuel should be present in tracked response"
     );
-    assert!(
-        tracked.fuel.unwrap() > 0,
-        "fuel should be a positive integer"
-    );
+    assert!(tracked.fuel.unwrap() > 0.0, "fuel should be positive");
 }

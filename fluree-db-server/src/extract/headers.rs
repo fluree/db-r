@@ -45,8 +45,8 @@ pub struct FlureeHeaders {
     /// Track execution time
     pub track_time: bool,
 
-    /// Maximum fuel limit
-    pub max_fuel: Option<i64>,
+    /// Maximum fuel limit (decimal). Internally converted to micro-fuel.
+    pub max_fuel: Option<f64>,
 
     /// Content-Type header value
     pub content_type: Option<String>,
@@ -142,7 +142,7 @@ impl FlureeHeaders {
         fluree_headers.track_time =
             fluree_headers.track_meta || is_header_truthy(headers, Self::TRACK_TIME);
 
-        // Numeric headers
+        // Numeric headers (decimal allowed)
         if let Some(val) = get_header_str(headers, Self::MAX_FUEL) {
             fluree_headers.max_fuel = Some(val.parse().map_err(|_| {
                 ServerError::invalid_header(format!("{} must be a number", Self::MAX_FUEL))
@@ -180,7 +180,7 @@ impl FlureeHeaders {
             track_time: self.track_meta || self.track_time,
             track_fuel: self.track_meta || self.track_fuel || self.max_fuel.is_some(),
             track_policy: self.track_meta,
-            max_fuel: self.max_fuel.map(|v| v as u64),
+            max_fuel: self.max_fuel.map(fluree_db_core::tracking::fuel_to_micro),
         }
     }
 
@@ -344,7 +344,9 @@ impl FlureeHeaders {
 
         if let Some(max_fuel) = self.max_fuel {
             if !opts.contains_key("max-fuel") {
-                opts.insert("max-fuel".to_string(), JsonValue::Number(max_fuel.into()));
+                if let Some(n) = serde_json::Number::from_f64(max_fuel) {
+                    opts.insert("max-fuel".to_string(), JsonValue::Number(n));
+                }
             }
         }
 

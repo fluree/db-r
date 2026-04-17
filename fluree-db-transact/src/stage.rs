@@ -195,6 +195,13 @@ pub async fn stage(
             }
         }
 
+        // Per-transaction baseline (10 fuel) covering parse, validation, commit
+        // log write, and indexing overhead. Per-flake cost (1 micro-fuel) is
+        // charged later against the staged flake set.
+        if let Some(tracker) = options.tracker {
+            tracker.consume_fuel(10_000)?;
+        }
+
         let new_t = ledger.t() + 1;
         tracing::debug!(new_t = new_t, "computed new transaction t");
 
@@ -370,7 +377,7 @@ pub async fn stage(
         if let Some(tracker) = options.tracker {
             for flake in &flakes {
                 if !is_schema_flake(&flake.p, &flake.o) {
-                    tracker.consume_fuel_one()?;
+                    tracker.consume_fuel(1)?;
                 }
             }
         }
@@ -446,6 +453,13 @@ pub async fn stage_flakes(
             }
         }
 
+        // Per-transaction baseline (10 fuel) covering parse, validation, commit
+        // log write, and indexing overhead. Per-flake cost (1 micro-fuel) is
+        // charged below.
+        if let Some(tracker) = options.tracker {
+            tracker.consume_fuel(10_000)?;
+        }
+
         // 2. Build graph routing map.
         //
         // If the caller provided graph_sids (push/import path), use it.
@@ -470,7 +484,7 @@ pub async fn stage_flakes(
         if let Some(tracker) = options.tracker {
             for flake in &flakes {
                 if !is_schema_flake(&flake.p, &flake.o) {
-                    tracker.consume_fuel_one()?;
+                    tracker.consume_fuel(1)?;
                 }
             }
         }
@@ -1511,8 +1525,9 @@ pub async fn stage_with_shacl(
     options: StageOptions<'_>,
     shacl_cache: &ShaclCache,
 ) -> Result<(LedgerView, NamespaceRegistry)> {
-    // Capture graph_delta before stage() consumes the txn (needed for per-graph SHACL).
+    // Capture graph_delta + tracker before stage() consumes the options/txn.
     let graph_delta = txn.graph_delta.clone();
+    let tracker = options.tracker;
 
     // First, perform regular staging
     let (view, mut ns_registry) = stage(ledger, txn, ns_registry, options).await?;
@@ -1534,8 +1549,9 @@ pub async fn stage_with_shacl(
     // Create SHACL engine from cache
     let engine = ShaclEngine::new(shacl_cache.clone());
 
-    // Validate staged flakes against shapes (per graph)
-    let report = validate_staged_nodes(&view, &engine, Some(&graph_sids)).await?;
+    // Validate staged flakes against shapes (per graph). The tracker (if any)
+    // is attached to GraphDbRef so SHACL's db.range calls charge fuel.
+    let report = validate_staged_nodes(&view, &engine, Some(&graph_sids), tracker).await?;
 
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
@@ -1567,7 +1583,8 @@ pub async fn validate_view_with_shacl(
     }
 
     let engine = ShaclEngine::new(shacl_cache.clone());
-    let report = validate_staged_nodes(view, &engine, graph_sids).await?;
+    // No tracker context available on this entry point (commit-transfer path).
+    let report = validate_staged_nodes(view, &engine, graph_sids, None).await?;
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
     }
@@ -1588,6 +1605,7 @@ async fn validate_staged_nodes(
     view: &LedgerView,
     engine: &ShaclEngine,
     graph_sids: Option<&HashMap<GraphId, Sid>>,
+    tracker: Option<&fluree_db_core::Tracker>,
 ) -> Result<ValidationReport> {
     use fluree_vocab::namespaces::RDF;
     use fluree_vocab::rdf_names;
@@ -1622,7 +1640,10 @@ async fn validate_staged_nodes(
     for (g_id, subjects) in &subjects_by_graph {
         // Build GraphDbRef for this graph.
         // Use staged_t so GraphDbRef sees staged flakes (which have t > snapshot.t).
-        let db = fluree_db_core::GraphDbRef::new(snapshot, *g_id, view, view.staged_t());
+        let mut db = fluree_db_core::GraphDbRef::new(snapshot, *g_id, view, view.staged_t());
+        if let Some(t) = tracker {
+            db = db.with_tracker(t);
+        }
 
         for subject in subjects {
             // Get the node's types for shape targeting

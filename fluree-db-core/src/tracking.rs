@@ -1,10 +1,11 @@
 //! Query/transaction execution tracking
 //!
-//! This module implements the legacy tracking behavior:
-//! - Enablement via opts.meta (bool or object) and/or opts.max-fuel
-//! - Time returned as formatted string like "12.34ms"
-//! - Fuel counted per emitted item; limit errors when total == limit + 1
-//! - Policy stats: {policy-id -> {executed, allowed}}
+//! Internal accumulator stores **micro-fuel** (1 fuel = 1000 micro-fuel).
+//! The user-facing fuel value is decimal: micro-fuel / 1000, rounded to 3 places.
+//!
+//! All `TrackingOptions::max_fuel` and `FuelExceededError` field values are
+//! micro-fuel. Use the helper methods (`limit_fuel`, `used_fuel`) for
+//! user-facing decimal representations.
 
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -14,13 +15,34 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+/// Conversion factor between fuel and micro-fuel.
+pub const MICRO_FUEL_PER_FUEL: u64 = 1000;
+
+/// Round a fuel value to 3 decimal places (matches the user-facing precision).
+#[inline]
+pub fn round_fuel(fuel: f64) -> f64 {
+    (fuel * 1000.0).round() / 1000.0
+}
+
+/// Convert micro-fuel to fuel (rounded to 3 decimals).
+#[inline]
+pub fn micro_to_fuel(micro: u64) -> f64 {
+    round_fuel(micro as f64 / MICRO_FUEL_PER_FUEL as f64)
+}
+
+/// Convert a decimal fuel value to micro-fuel (rounded).
+#[inline]
+pub fn fuel_to_micro(fuel: f64) -> u64 {
+    (fuel * MICRO_FUEL_PER_FUEL as f64).round().max(0.0) as u64
+}
+
 /// Tracking options parsed from query `opts`
 #[derive(Debug, Clone, Default)]
 pub struct TrackingOptions {
     pub track_time: bool,
     pub track_fuel: bool,
     pub track_policy: bool,
-    /// None = unlimited, Some(0) also unlimited
+    /// Micro-fuel limit. None or Some(0) = unlimited.
     pub max_fuel: Option<u64>,
 }
 
@@ -30,7 +52,7 @@ impl TrackingOptions {
     /// Expected shapes:
     /// - `"opts": {"meta": true}` enables all tracking
     /// - `"opts": {"meta": {"time": true, "fuel": true, "policy": true}}` selective
-    /// - `"opts": {"max-fuel": 1000}` implicitly enables fuel tracking
+    /// - `"opts": {"max-fuel": 1000}` (decimal allowed) implicitly enables fuel tracking
     ///
     /// Also accepts camel/snake variants for max-fuel (`max_fuel`, `maxFuel`).
     pub fn from_opts_value(opts: Option<&JsonValue>) -> Self {
@@ -43,7 +65,8 @@ impl TrackingOptions {
             .get("max-fuel")
             .or_else(|| opts.get("max_fuel"))
             .or_else(|| opts.get("maxFuel"))
-            .and_then(|v| v.as_u64());
+            .and_then(|v| v.as_f64())
+            .map(fuel_to_micro);
 
         let track_all = matches!(meta, Some(JsonValue::Bool(true)));
         let meta_obj = meta.and_then(|v| v.as_object());
@@ -89,19 +112,32 @@ pub struct PolicyStats {
     pub allowed: u64,
 }
 
-/// Fuel limit exceeded message: "Fuel limit exceeded"
+/// Fuel limit exceeded. Field values are micro-fuel; use the helpers for fuel decimals.
 #[derive(Debug, Clone, Error)]
 #[error("Fuel limit exceeded")]
 pub struct FuelExceededError {
-    pub used: u64,
-    pub limit: u64,
+    /// Micro-fuel consumed when the limit was hit.
+    pub used_micro_fuel: u64,
+    /// Configured micro-fuel limit.
+    pub limit_micro_fuel: u64,
+}
+
+impl FuelExceededError {
+    /// User-facing fuel decimal (rounded to 3 places).
+    pub fn used_fuel(&self) -> f64 {
+        micro_to_fuel(self.used_micro_fuel)
+    }
+    /// User-facing fuel decimal (rounded to 3 places).
+    pub fn limit_fuel(&self) -> f64 {
+        micro_to_fuel(self.limit_micro_fuel)
+    }
 }
 
 struct TrackerInner {
     // Time tracking
     start_time: Option<Instant>,
 
-    // Fuel tracking
+    // Fuel tracking (micro-fuel internally)
     fuel_total: AtomicU64,
     fuel_limit: u64, // 0 = unlimited
 
@@ -160,23 +196,24 @@ impl Tracker {
             .unwrap_or(false)
     }
 
-    /// Consume one unit of fuel (per emitted flake/item).
+    /// Consume `units` of micro-fuel.
     ///
-    /// Allows exactly `limit` items, errors when total becomes `limit + 1`.
+    /// Allows total consumption up to and including the limit; errors when the
+    /// total would strictly exceed the limit.
     #[inline]
-    pub fn consume_fuel_one(&self) -> Result<(), FuelExceededError> {
+    pub fn consume_fuel(&self, units: u64) -> Result<(), FuelExceededError> {
         let Some(inner) = &self.0 else {
             return Ok(());
         };
-        if !inner.options.track_fuel {
+        if !inner.options.track_fuel || units == 0 {
             return Ok(());
         }
 
-        let new_total = inner.fuel_total.fetch_add(1, Ordering::Relaxed) + 1;
-        if inner.fuel_limit > 0 && new_total == inner.fuel_limit + 1 {
+        let new_total = inner.fuel_total.fetch_add(units, Ordering::Relaxed) + units;
+        if inner.fuel_limit > 0 && new_total > inner.fuel_limit {
             return Err(FuelExceededError {
-                used: new_total,
-                limit: inner.fuel_limit,
+                used_micro_fuel: new_total,
+                limit_micro_fuel: inner.fuel_limit,
             });
         }
         Ok(())
@@ -221,7 +258,7 @@ impl Tracker {
             fuel: inner
                 .options
                 .track_fuel
-                .then(|| inner.fuel_total.load(Ordering::Relaxed)),
+                .then(|| micro_to_fuel(inner.fuel_total.load(Ordering::Relaxed))),
             policy: if inner.options.track_policy {
                 inner.policy_stats.read().ok().map(|m| m.clone())
             } else {
@@ -237,9 +274,9 @@ pub struct TrackingTally {
     /// Formatted time string like `"12.34ms"`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
-    /// Total fuel consumed (just the number)
+    /// Total fuel consumed (decimal, rounded to 3 places).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fuel: Option<u64>,
+    pub fuel: Option<f64>,
     /// Policy stats: `{policy-id -> {executed, allowed}}`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<HashMap<String, PolicyStats>>,

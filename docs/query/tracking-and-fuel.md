@@ -39,7 +39,7 @@ Or enable specific metrics:
 
 Tracking provides:
 - **time**: Query execution duration (formatted as "12.34ms")
-- **fuel**: Number of items/flakes processed
+- **fuel**: Total cost as a decimal value (rounded to 3 places)
 - **policy**: Policy evaluation statistics (`{policy-id: {executed: N, allowed: M}}`)
 
 ## Fuel Limits
@@ -48,14 +48,30 @@ Fuel limits control resource consumption, preventing runaway queries from consum
 
 ### What Is Fuel?
 
-Fuel is a measure of query execution cost. One unit of fuel is consumed for each item emitted:
-- Each flake/triple matched during index scans
-- Each item expanded during graph crawl formatting
-- Each non-schema flake staged during transactions
+Fuel is a decimal measure of query/transaction cost. Internally it is accumulated as **micro-fuel** (1 fuel = 1000 micro-fuel) and reported back rounded to 3 decimal places. Costs reflect actual work — primarily I/O — rather than output cardinality.
+
+Cost ladder (per event):
+
+| Event | Cost (fuel) |
+|---|---|
+| Index leaflet touched (per scan batch, regardless of cache state) | 1.000 |
+| Flake returned from a `db.range` call (e.g. SHACL graph reads, graph crawl) | 0.001 |
+| Overlay/novelty row materialized | 0.001 |
+| R2RML row emitted (Iceberg/Parquet) | 0.001 |
+| Transaction commit baseline (once per commit) | 10.000 |
+| Staged flake (per non-schema flake in a transaction) | 0.001 |
+| `REGEX` / `REPLACE` evaluation | 0.001 |
+| Hash function (`MD5`, `SHA1`, `SHA256`, `SHA384`, `SHA512`) | 0.001 |
+| `UUID` / `STRUUID` | 0.001 |
+| `geof:distance` | 0.001 |
+| Vector similarity (`DotProduct`, `CosineSimilarity`, `EuclideanDistance`) | 0.002 |
+| `Fulltext` (per-row BM25 scoring) | 0.005 |
+
+Cheap operations (comparisons, arithmetic, type checks, simple string ops, datetime extraction, etc.) cost zero — instrumentation overhead would dwarf the actual cost.
 
 ### Setting Fuel Limits
 
-Set fuel limits via `opts.max-fuel`. Setting a fuel limit implicitly enables fuel tracking:
+Set fuel limits via `opts.max-fuel` (decimal allowed). Setting a fuel limit implicitly enables fuel tracking:
 
 ```json
 {
@@ -68,7 +84,7 @@ Set fuel limits via `opts.max-fuel`. Setting a fuel limit implicitly enables fue
 }
 ```
 
-You can also use `"maxFuel"` or `"max_fuel"` as alternative key names.
+You can also use `"maxFuel"` or `"max_fuel"` as alternative key names. The HTTP equivalent is the `fluree-max-fuel` header.
 
 ### Fuel Limit Behavior
 
@@ -86,7 +102,7 @@ When tracking is enabled, the response includes tracking information as top-leve
   "status": 200,
   "result": [...],
   "time": "12.34ms",
-  "fuel": 42,
+  "fuel": 42.317,
   "policy": {
     "http://example.org/myPolicy": {
       "executed": 10,
@@ -95,6 +111,8 @@ When tracking is enabled, the response includes tracking information as top-leve
   }
 }
 ```
+
+The `fuel` value is decimal with up to 3 places of precision. The HTTP `x-fdb-fuel` response header carries the same value.
 
 ## Best Practices
 

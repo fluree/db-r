@@ -1064,10 +1064,9 @@ impl<'a> GraphCrawlFormatter<'a> {
 
     fn apply_fuel_tracking(&self, flakes: Vec<Flake>) -> Result<Vec<Flake>> {
         if let Some(tracker) = self.tracker {
-            // Count fuel per flake emitted downstream (post-filters).
-            for _ in 0..flakes.len() {
-                tracker.consume_fuel_one()?;
-            }
+            // Graph crawl uses db.range (not the fuel-aware cursor), so charge
+            // per flake here at 1 micro-fuel each.
+            tracker.consume_fuel(flakes.len() as u64)?;
         }
         Ok(flakes)
     }

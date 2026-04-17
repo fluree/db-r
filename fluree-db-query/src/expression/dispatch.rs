@@ -114,20 +114,55 @@ impl Function {
             Function::Sha384 => hash::eval_sha384(args, row, ctx),
             Function::Sha512 => hash::eval_sha512(args, row, ctx),
 
-            // UUID functions
-            Function::Uuid => uuid::eval_uuid(args),
-            Function::StrUuid => uuid::eval_struuid(args),
+            // UUID functions — 1 micro-fuel each
+            Function::Uuid => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(1)?;
+                }
+                uuid::eval_uuid(args)
+            }
+            Function::StrUuid => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(1)?;
+                }
+                uuid::eval_struuid(args)
+            }
 
-            // Vector functions
-            Function::DotProduct => vector::eval_dot_product(args, row, ctx),
-            Function::CosineSimilarity => vector::eval_cosine_similarity(args, row, ctx),
-            Function::EuclideanDistance => vector::eval_euclidean_distance(args, row, ctx),
+            // Vector similarity — 2 micro-fuel each (per-dim float math)
+            Function::DotProduct => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(2)?;
+                }
+                vector::eval_dot_product(args, row, ctx)
+            }
+            Function::CosineSimilarity => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(2)?;
+                }
+                vector::eval_cosine_similarity(args, row, ctx)
+            }
+            Function::EuclideanDistance => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(2)?;
+                }
+                vector::eval_euclidean_distance(args, row, ctx)
+            }
 
-            // Geospatial functions
-            Function::GeofDistance => geo::eval_geof_distance(args, row, ctx),
+            // Geospatial distance — 1 micro-fuel
+            Function::GeofDistance => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(1)?;
+                }
+                geo::eval_geof_distance(args, row, ctx)
+            }
 
-            // Fulltext scoring
-            Function::Fulltext => fulltext::eval_fulltext(args, row, ctx),
+            // Fulltext scoring — 5 micro-fuel (touches multiple corpus stats per match)
+            Function::Fulltext => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(5)?;
+                }
+                fulltext::eval_fulltext(args, row, ctx)
+            }
 
             // Fluree-specific functions
             Function::T => fluree::eval_t(args, row),

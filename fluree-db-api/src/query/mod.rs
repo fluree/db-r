@@ -78,7 +78,7 @@ pub struct TrackedQueryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fuel: Option<u64>,
+    pub fuel: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<std::collections::HashMap<String, PolicyStats>>,
 }
@@ -114,7 +114,7 @@ pub struct TrackedErrorResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub fuel: Option<u64>,
+    pub fuel: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<std::collections::HashMap<String, PolicyStats>>,
 }

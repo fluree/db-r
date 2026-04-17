@@ -11,6 +11,8 @@ use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 
+use fluree_db_core::Tracker;
+
 use crate::format::branch::BranchManifest;
 use crate::format::run_record::RunSortOrder;
 use crate::format::run_record_v2::cmp_v2_for_order;
@@ -55,6 +57,8 @@ pub struct BinaryCursor {
     epoch: u64,
     /// Time bound for overlay ops (only emit ops with t <= to_t).
     to_t: i64,
+    /// Optional fuel tracker. When set, charges 1 fuel per leaflet returned.
+    tracker: Option<Tracker>,
 }
 
 /// State for a leaf that's been opened via `LeafHandle`.
@@ -93,6 +97,7 @@ impl BinaryCursor {
             leaf_overlay_end: 0,
             epoch: 0,
             to_t: i64::MAX,
+            tracker: None,
         }
     }
 
@@ -121,7 +126,17 @@ impl BinaryCursor {
             leaf_overlay_end: 0,
             epoch: 0,
             to_t: i64::MAX,
+            tracker: None,
         }
+    }
+
+    /// Attach a fuel tracker. Charges 1 fuel (1000 micro-fuel) per leaflet
+    /// returned by `next_batch` (regardless of cache hit/miss).
+    pub fn with_tracker(mut self, tracker: Tracker) -> Self {
+        if tracker.is_enabled() {
+            self.tracker = Some(tracker);
+        }
+        self
     }
 
     /// Set overlay ops.
@@ -292,6 +307,15 @@ impl BinaryCursor {
 
                     if batch.is_empty() {
                         continue;
+                    }
+
+                    // Charge 1 fuel per leaflet returned (per-touch, regardless
+                    // of cache state). Caller can downcast the io::Error to
+                    // recover the original FuelExceededError.
+                    if let Some(tracker) = &self.tracker {
+                        if let Err(e) = tracker.consume_fuel(1000) {
+                            return Err(io::Error::other(e));
+                        }
                     }
 
                     // Put the leaf back before returning.

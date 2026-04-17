@@ -346,6 +346,12 @@ impl<'a> OwnedTransactBuilder<'a> {
         // Pre-built Txn IR path (e.g., SPARQL UPDATE lowered to Txn)
         if let Some(txn) = self.core.pre_built_txn {
             let txn_type = txn.txn_type;
+            let tracker = self
+                .core
+                .tracking
+                .clone()
+                .map(Tracker::new)
+                .unwrap_or_default();
             let StageResult {
                 view,
                 ns_registry,
@@ -358,6 +364,7 @@ impl<'a> OwnedTransactBuilder<'a> {
                     txn,
                     Some(&index_config),
                     self.core.policy.as_ref(),
+                    Some(&tracker),
                 )
                 .await?;
 
@@ -495,6 +502,12 @@ impl<'a> OwnedTransactBuilder<'a> {
 
         // Pre-built Txn IR path
         if let Some(txn) = self.core.pre_built_txn {
+            let tracker = self
+                .core
+                .tracking
+                .clone()
+                .map(Tracker::new)
+                .unwrap_or_default();
             let stage_result = self
                 .fluree
                 .stage_transaction_from_txn(
@@ -502,6 +515,7 @@ impl<'a> OwnedTransactBuilder<'a> {
                     txn,
                     Some(&index_config),
                     self.core.policy.as_ref(),
+                    Some(&tracker),
                 )
                 .await?;
             return Ok(Staged {
@@ -746,6 +760,7 @@ pub(crate) async fn commit_with_handle(
                     txn,
                     Some(&index_config),
                     core.policy.as_ref(),
+                    Some(&tracker),
                 )
                 .await?;
             (stage_result, txn_type, core.commit_opts)

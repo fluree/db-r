@@ -561,8 +561,9 @@ impl Operator for R2rmlScanOperator {
                             // Helper function to emit an output row (inlined to avoid borrow issues)
                             macro_rules! emit_row {
                                 ($object_binding:expr) => {{
-                                    // Fuel tracking: count each emitted row
-                                    ctx.tracker.consume_fuel_one()?;
+                                    // R2RML rows are tabular (Parquet/Arrow), not
+                                    // FLI3 leaflets — charge per row at 1 micro-fuel.
+                                    ctx.tracker.consume_fuel(1)?;
 
                                     // Build output row
                                     let mut out_row: Vec<Binding> =

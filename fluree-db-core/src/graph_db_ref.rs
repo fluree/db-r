@@ -51,6 +51,10 @@ pub struct GraphDbRef<'a> {
     /// Use for infrastructure queries (config resolution, policy loading) that
     /// call `binding.as_sid()` / `binding.as_lit()` directly.
     pub eager: bool,
+    /// Optional fuel tracker. When set, `range()` / `range_with_opts()` charge
+    /// 1 micro-fuel per flake returned. This catches read paths (e.g., SHACL
+    /// validation) that don't go through the cursor's per-leaflet charge.
+    pub tracker: Option<&'a crate::tracking::Tracker>,
 }
 
 impl std::fmt::Debug for GraphDbRef<'_> {
@@ -79,7 +83,25 @@ impl<'a> GraphDbRef<'a> {
             t,
             runtime_small_dicts: None,
             eager: false,
+            tracker: None,
         }
+    }
+
+    /// Attach a fuel tracker. When set, `range`/`range_with_opts` charge
+    /// 1 micro-fuel per flake returned.
+    pub fn with_tracker(mut self, tracker: &'a crate::tracking::Tracker) -> Self {
+        if tracker.is_enabled() {
+            self.tracker = Some(tracker);
+        }
+        self
+    }
+
+    #[inline]
+    fn charge_range_fuel(&self, n_flakes: usize) -> Result<()> {
+        if let Some(t) = self.tracker {
+            t.consume_fuel(n_flakes as u64)?;
+        }
+        Ok(())
     }
 
     pub fn with_runtime_small_dicts(mut self, runtime_small_dicts: &'a RuntimeSmallDicts) -> Self {
@@ -126,7 +148,7 @@ impl<'a> GraphDbRef<'a> {
         match_val: RangeMatch,
     ) -> Result<Vec<Flake>> {
         let opts = RangeOptions::default().with_to_t(self.t);
-        range_with_overlay(
+        let flakes = range_with_overlay(
             self.snapshot,
             self.g_id,
             self.overlay,
@@ -135,7 +157,9 @@ impl<'a> GraphDbRef<'a> {
             match_val,
             opts,
         )
-        .await
+        .await?;
+        self.charge_range_fuel(flakes.len())?;
+        Ok(flakes)
     }
 
     /// Execute a range query with explicit options, auto-filling `to_t`
@@ -152,7 +176,7 @@ impl<'a> GraphDbRef<'a> {
         } else {
             opts
         };
-        range_with_overlay(
+        let flakes = range_with_overlay(
             self.snapshot,
             self.g_id,
             self.overlay,
@@ -161,7 +185,9 @@ impl<'a> GraphDbRef<'a> {
             match_val,
             opts,
         )
-        .await
+        .await?;
+        self.charge_range_fuel(flakes.len())?;
+        Ok(flakes)
     }
 
     /// Execute a bounded range query with explicit start/end flakes,

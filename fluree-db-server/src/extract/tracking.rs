@@ -32,9 +32,11 @@ pub fn tracking_headers(tally: &TrackingTally) -> HeaderMap {
         }
     }
 
-    // Add fuel header if present (convert to string)
+    // Add fuel header if present. Format decimal fuel to up to 3 places without
+    // trailing zeros (e.g. `1.234`, `1`, `0.5`).
     if let Some(fuel) = tally.fuel {
-        if let Ok(value) = HeaderValue::from_str(&fuel.to_string()) {
+        let formatted = format_fuel(fuel);
+        if let Ok(value) = HeaderValue::from_str(&formatted) {
             headers.insert(HeaderName::from_static(X_FDB_FUEL), value);
         }
     }
@@ -50,4 +52,14 @@ pub fn tracking_headers(tally: &TrackingTally) -> HeaderMap {
     }
 
     headers
+}
+
+fn format_fuel(fuel: f64) -> String {
+    let s = format!("{:.3}", fuel);
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }

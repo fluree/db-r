@@ -1796,8 +1796,10 @@ impl Operator for BinaryScanOperator {
                 filter,
                 projection,
             )
+            .with_tracker(ctx.tracker.clone())
         } else {
             BinaryCursor::scan_all(Arc::clone(&store_arc), order, branch, filter, projection)
+                .with_tracker(ctx.tracker.clone())
         };
 
         // Overlay: translate novelty flakes to OverlayOp and attach to cursor.
@@ -1936,10 +1938,8 @@ impl Operator for BinaryScanOperator {
 
             match cursor.next_batch() {
                 Ok(Some(batch)) => {
+                    // Per-leaflet fuel charge happens inside cursor.next_batch.
                     let n = self.batch_to_bindings(&batch, &mut columns, Some(ctx))?;
-                    for _ in 0..n {
-                        ctx.tracker.consume_fuel_one()?;
-                    }
                     produced += n;
                 }
                 Ok(None) => {
@@ -1948,15 +1948,24 @@ impl Operator for BinaryScanOperator {
                     break;
                 }
                 Err(e) => {
+                    // Cursor surfaces fuel exhaustion as io::Error wrapping
+                    // FuelExceededError; recover the original error here.
+                    if let Some(fuel_err) = e
+                        .get_ref()
+                        .and_then(|inner| inner.downcast_ref::<fluree_db_core::FuelExceededError>())
+                    {
+                        return Err(QueryError::FuelLimitExceeded(fuel_err.clone()));
+                    }
                     return Err(QueryError::Internal(format!("V3 cursor: {}", e)));
                 }
             }
         }
 
         if produced < batch_size && self.range_iter.is_some() {
+            // Overlay/novelty rows are in-memory; charge per row at 1 micro-fuel.
             let n = self.flakes_to_bindings(&mut columns, ctx, batch_size - produced)?;
             for _ in 0..n {
-                ctx.tracker.consume_fuel_one()?;
+                ctx.tracker.consume_fuel(1)?;
             }
             produced += n;
         }

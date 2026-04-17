@@ -268,20 +268,21 @@ async fn fuel_integration_test() {
         .fuel
         .expect("Query with meta should report fuel");
 
-    // Fuel should be a positive number representing computational cost
+    // Fuel should be a positive decimal representing computational cost
     assert!(
-        query_fuel > 0,
+        query_fuel > 0.0,
         "Query fuel should be greater than 0, got: {}",
         query_fuel
     );
 
     // Fuel should roughly correspond to the number of flakes traversed
-    // (may not be exact due to query optimization differences)
-    let total_flakes = ledger.current_stats().flakes as u64;
+    // (may not be exact due to query optimization differences). Per-row charge
+    // is 1 fuel each in this step.
+    let total_flakes = ledger.current_stats().flakes as f64;
     // Some in-memory fixtures don't materialize stats; avoid asserting against zero.
-    if total_flakes > 0 {
+    if total_flakes > 0.0 {
         assert!(
-            query_fuel <= total_flakes * 2, // Allow some overhead for query processing
+            query_fuel <= total_flakes * 2.0, // Allow some overhead for query processing
             "Query fuel ({}) should be reasonable compared to total flakes ({})",
             query_fuel,
             total_flakes
@@ -292,16 +293,22 @@ async fn fuel_integration_test() {
     // Test fuel limits (short-circuiting)
     // =========================================================================
 
-    // Query with very low fuel limit should fail
+    // Query with very low fuel limit should fail. The fixture is in-memory
+    // (genesis, no binary index), so this exercises the overlay path which
+    // charges 1 micro-fuel per row; a 0.001-fuel limit (1 micro-fuel) trips
+    // on the second row.
     let query_with_limit = json!({
         "@context": support::default_context(),
         "select": ["?s", "?p", "?o"],
         "where": {"@id": "?s", "?p": "?o"},
-        "opts": {"maxFuel": 1}
+        "opts": {"maxFuel": 0.001}
     });
 
     let limited_result = support::query_jsonld(&fluree, &ledger, &query_with_limit).await;
-    assert!(limited_result.is_err(), "Query with maxFuel=1 should fail");
+    assert!(
+        limited_result.is_err(),
+        "Query with very low maxFuel should fail"
+    );
     let err_msg = limited_result.unwrap_err().to_string();
     assert!(
         err_msg.contains("Fuel limit exceeded") || err_msg.contains("fuel"),

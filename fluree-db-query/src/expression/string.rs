@@ -281,6 +281,9 @@ pub fn eval_regex<R: RowAccess>(
                 return Ok(Some(ComparableValue::Bool(t.starts_with(prefix))));
             }
             let re = build_regex_with_flags(&p, &flags)?;
+            if let Some(ctx) = ctx {
+                ctx.tracker.consume_fuel(1)?;
+            }
             Ok(Some(ComparableValue::Bool(re.is_match(&t))))
         }
         (None, _) | (_, None) => Ok(None),
@@ -391,6 +394,9 @@ pub fn eval_replace<R: RowAccess>(
             Some(ComparableValue::String(r)),
         ) => {
             let re = build_regex_with_flags(&p, &flags)?;
+            if let Some(ctx) = ctx {
+                ctx.tracker.consume_fuel(1)?;
+            }
             let replaced = re.replace_all(&s, r.as_ref()).into_owned();
             Ok(Some(string_with_lang(&replaced, lang)))
         }

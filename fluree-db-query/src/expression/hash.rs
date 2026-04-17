@@ -88,7 +88,12 @@ where
     check_arity(args, 1, fn_name)?;
     match args[0].eval_to_comparable(row, ctx)? {
         Some(v) => match v.as_str() {
-            Some(s) => Ok(Some(ComparableValue::String(Arc::from(hash_fn(s))))),
+            Some(s) => {
+                if let Some(ctx) = ctx {
+                    ctx.tracker.consume_fuel(1)?;
+                }
+                Ok(Some(ComparableValue::String(Arc::from(hash_fn(s)))))
+            }
             None => Err(QueryError::InvalidFilter(format!(
                 "{} requires a string argument",
                 fn_name
