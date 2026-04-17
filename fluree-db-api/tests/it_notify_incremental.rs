@@ -288,3 +288,51 @@ async fn notify_returns_not_loaded_for_uncached_ledger() {
 
     assert_eq!(result, NotifyResult::NotLoaded);
 }
+
+/// Regression for the peer-mode query path (fluree/db-r#155):
+/// `load_ledger_for_query` now calls `mgr.notify(NsNotify { record: None })`
+/// instead of `mgr.reload()`. For a small commit gap — which is what a peer
+/// typically sees when an index-only advance or single commit lands — the
+/// notify path must NOT return `Reloaded` (the heavy blocking path); it must
+/// pick an incremental action. This pins that contract at the exact call
+/// shape used by the server.
+#[tokio::test]
+async fn notify_with_no_record_matches_server_query_path_contract() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/notify-server-contract:main";
+    let manager = fluree
+        .ledger_manager()
+        .expect("ledger_manager should be present");
+
+    // Cache an initial committed state (what the peer would hold).
+    let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
+    let ledger1 = insert_data(&fluree, ledger0, "item1").await;
+    let _handle = manager.get_or_load(ledger_id).await.expect("load");
+
+    // Simulate a small remote advance (one new commit) landing while the
+    // peer sits on the prior state.
+    let _ledger2 = insert_data(&fluree, ledger1, "item2").await;
+
+    // Exact call shape the server now emits from `load_ledger_for_query`
+    // when peer freshness is stale.
+    let result = manager
+        .notify(NsNotify {
+            ledger_id: ledger_id.to_string(),
+            record: None,
+        })
+        .await
+        .expect("notify");
+
+    assert!(
+        matches!(
+            result,
+            NotifyResult::CommitsApplied { .. } | NotifyResult::IndexUpdated
+        ),
+        "server query-path notify should take an incremental branch, got: {result:?}"
+    );
+    assert_ne!(
+        result,
+        NotifyResult::Reloaded,
+        "small advances must not trigger the blocking reload path"
+    );
+}

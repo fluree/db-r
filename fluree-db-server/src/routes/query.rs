@@ -21,8 +21,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use fluree_db_api::dataset::GraphSelector;
 use fluree_db_api::{
-    DatasetSpec, FreshnessCheck, FreshnessSource, GraphDb, GraphSource, LedgerState, TimeSpec,
-    TrackingTally,
+    DatasetSpec, FreshnessCheck, FreshnessSource, GraphDb, GraphSource, LedgerState, NotifyResult,
+    NsNotify, TimeSpec, TrackingTally,
 };
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -2274,8 +2274,11 @@ pub async fn explain(
 /// Load a ledger for query execution
 ///
 /// In transaction mode, simply loads the ledger via ledger_cached().
-/// In peer mode with shared storage, checks if the local ledger is stale vs SSE watermarks
-/// and reloads if needed using LedgerManager::reload() for coalesced reloading.
+/// In peer mode with shared storage, checks if the local ledger is stale vs
+/// SSE watermarks and refreshes if needed via `LedgerManager::notify()`. The
+/// `UpdatePlan` inside `notify()` picks the minimal action — `IndexOnly` (the
+/// common index-rebuild case) uses `apply_index_v2` which does not block
+/// concurrent queries; only large commit gaps fall back to a full reload.
 pub(crate) async fn load_ledger_for_query(
     state: &AppState,
     ledger_id: &str,
@@ -2304,23 +2307,36 @@ pub(crate) async fn load_ledger_for_query(
     // Check freshness using FreshnessSource trait
     // If no watermark available (SSE hasn't seen ledger), treat as current (lenient policy)
     if let Some(watermark) = peer_state.watermark(ledger_id) {
-        match handle.check_freshness(&watermark).await {
-            FreshnessCheck::Stale => {
-                // Remote is ahead - reload ledger from shared storage
-                // Uses LedgerManager::reload() which handles coalescing
-                tracing::info!(
-                    ledger_id = ledger_id,
-                    remote_index_t = watermark.index_t,
-                    "Refreshing ledger for peer query"
-                );
+        if handle.check_freshness(&watermark).await == FreshnessCheck::Stale {
+            tracing::info!(
+                ledger_id = ledger_id,
+                remote_index_t = watermark.index_t,
+                "Refreshing ledger for peer query"
+            );
 
-                if let Some(mgr) = fluree.ledger_manager() {
-                    mgr.reload(ledger_id).await.map_err(ServerError::Api)?;
-                    state.refresh_counter.fetch_add(1, Ordering::Relaxed);
+            if let Some(mgr) = fluree.ledger_manager() {
+                // Use notify() → UpdatePlan so a pure index advance uses
+                // apply_index_v2 (non-blocking, no state lock across I/O),
+                // falling back to the heavier reload only for large commit
+                // gaps. The prior mgr.reload() took the blocking path even
+                // for common index-only advances (fluree/db-r#155).
+                let result = mgr
+                    .notify(NsNotify {
+                        ledger_id: ledger_id.to_string(),
+                        record: None,
+                    })
+                    .await
+                    .map_err(ServerError::Api)?;
+
+                // Only count actual refreshes (not Current/NotLoaded no-ops).
+                match result {
+                    NotifyResult::NotLoaded | NotifyResult::Current => {}
+                    NotifyResult::IndexUpdated
+                    | NotifyResult::CommitsApplied { .. }
+                    | NotifyResult::Reloaded => {
+                        state.refresh_counter.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
-            }
-            FreshnessCheck::Current => {
-                // Local is fresh, use cached
             }
         }
     } else {
