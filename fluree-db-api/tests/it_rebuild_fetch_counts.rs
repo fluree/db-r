@@ -114,11 +114,7 @@ impl<C: ContentStore + Send + Sync> ContentStore for CountingContentStore<C> {
     }
 }
 
-async fn seed_commits(
-    fluree: &fluree_db_api::Fluree,
-    ledger_id: &str,
-    n: usize,
-) -> LedgerState {
+async fn seed_commits(fluree: &fluree_db_api::Fluree, ledger_id: &str, n: usize) -> LedgerState {
     let db0 = LedgerSnapshot::genesis(ledger_id);
     let mut ledger = LedgerState::new(db0, Novelty::new(0));
     let idx_cfg = IndexConfig {
