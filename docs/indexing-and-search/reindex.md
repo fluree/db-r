@@ -158,8 +158,8 @@ The reindex operation:
 1. **Looks up** the current ledger state and captures `commit_t` for conflict detection
 2. **Cancels** any active background indexing for the ledger
 3. **Rebuilds** a fresh binary columnar index from the full commit chain using `rebuild_index_from_commits`:
-   - **Phase A**: Walks the commit chain backward to collect all commit CIDs, then reverses to chronological order
-   - **Phase B**: Resolves commits into batched chunks with chunk-local dictionaries (subjects, strings) and shared global dictionaries (predicates, datatypes, graphs, languages, numbigs, vectors)
+   - **Phase A**: Walks the commit DAG once, reading only the envelope header of each commit via byte-range requests (`ContentStore::get_range`). Returns the chronological CID list plus the genesis-most `NsSplitMode` in a single pass, so per-commit bandwidth on remote storage is ~128 KiB rather than the full commit blob.
+   - **Phase B**: Resolves commits into batched chunks with chunk-local dictionaries (subjects, strings) and shared global dictionaries (predicates, datatypes, graphs, languages, numbigs, vectors). Commit blobs are pre-fetched concurrently (`buffered(K)`, default `K=3`, env-tunable via `FLUREE_REBUILD_FETCH_CONCURRENCY`) so S3 round-trip latency overlaps with local decode cost.
    - **Phase C**: Merges per-chunk dictionaries into global dictionaries with remap tables
    - **Phase D**: Builds SPOT indexes from sorted commit files via k-way merge with graph-aware partitioning
    - **Phase E**: Builds secondary indexes (PSOT, POST, OPST) per-graph from partitioned run files
@@ -185,7 +185,18 @@ let config = IndexerConfig::default()
     .with_run_budget_bytes(2 * 1024 * 1024 * 1024); // 2 GB
 ```
 
-### 3. Verify After Reindex
+### 3. Tune Phase B Fetch Concurrency for Remote Storage
+
+When reindexing from remote storage (S3) on latency-bound platforms like AWS Lambda, Phase B benefits from fetching several commit blobs in parallel so S3 round-trip latency (25–50 ms) overlaps with local decode cost.
+
+```bash
+# Default: 3. Increase for high-latency links; pin to 1 for strict serial behavior.
+export FLUREE_REBUILD_FETCH_CONCURRENCY=4
+```
+
+In-flight memory is bounded by `K × avg_commit_blob_size`. For typical commits (< 1 MB) and `K=3`, the overhead is negligible against the `run_budget_bytes` pool. Pathologically large commits (hundreds of MB) should set `K=1` to avoid transient memory spikes.
+
+### 4. Verify After Reindex
 
 After reindex, verify the results:
 
@@ -199,7 +210,7 @@ let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
 let query_result = fluree.query(&db, &sample_query).await?;
 ```
 
-### 4. Concurrent Operations
+### 5. Concurrent Operations
 
 During reindex:
 - Queries continue to work (using old index + novelty)
