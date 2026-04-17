@@ -129,16 +129,21 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Create a token with read+write scope for this ledger
+    // Create a token with read+write scope for this ledger.
+    //
+    // No `fluree.identity` / `sub` claim: this test exercises the bearer-scope
+    // write path, not identity-based policy. Setting `fluree.identity` would
+    // inject that identity into `opts.identity` on every request, which in turn
+    // causes the server to build a PolicyContext — and unresolvable identities
+    // fail closed. See `tests/policy_integration.rs` for the identity + policy
+    // path and its impersonation semantics.
     let secret = [7u8; 32];
     let signing_key = SigningKey::from_bytes(&secret);
 
     let claims = serde_json::json!({
       "iss": fluree_db_credential::did_from_pubkey(&signing_key.verifying_key().to_bytes()),
-      "sub": "user@example.com",
       "exp": now_secs() + 3600,
       "iat": now_secs(),
-      "fluree.identity": "ex:AuthUser",
       "fluree.ledger.read.ledgers": ["auth2:test"],
       "fluree.ledger.write.ledgers": ["auth2:test"]
     });

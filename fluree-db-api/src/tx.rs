@@ -881,14 +881,18 @@ where
             trig_meta,
             named_graphs,
             None,
+            None,
         )
         .await
     }
 
-    /// Stage a transaction with optional TriG metadata, named graphs, and external tracker.
+    /// Stage a transaction with optional TriG metadata, named graphs, external tracker,
+    /// and policy context.
     ///
     /// When `external_tracker` is provided, it is used for fuel accounting instead of
     /// the default limits-only tracker derived from the transaction body opts.
+    /// When `policy` is provided, modify policies are enforced on staged flakes
+    /// (unless the wrapper is root).
     #[allow(clippy::too_many_arguments)]
     pub async fn stage_transaction_with_named_graphs_tracked(
         &self,
@@ -900,6 +904,7 @@ where
         trig_meta: Option<&RawTrigMeta>,
         named_graphs: &[NamedGraphBlock],
         external_tracker: Option<&Tracker>,
+        policy: Option<&crate::PolicyContext>,
     ) -> Result<StageResult> {
         let mut ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
 
@@ -953,6 +958,9 @@ where
         if tracker.is_enabled() {
             options = options.with_tracker(tracker);
         }
+        if let Some(p) = policy {
+            options = options.with_policy(p);
+        }
 
         #[cfg(feature = "shacl")]
         let (view, ns_registry) =
@@ -974,12 +982,14 @@ where
     /// Stage a pre-built transaction IR (bypasses JSON/Turtle parsing).
     ///
     /// This is used for SPARQL UPDATE where the transaction has already been
-    /// lowered to the IR representation.
+    /// lowered to the IR representation. When `policy` is `Some`, modify policies
+    /// are enforced on staged flakes (unless the wrapper is root).
     pub async fn stage_transaction_from_txn(
         &self,
         ledger: LedgerState,
         txn: fluree_db_transact::Txn,
         index_config: Option<&IndexConfig>,
+        policy: Option<&crate::PolicyContext>,
     ) -> Result<StageResult> {
         let ns_registry = NamespaceRegistry::from_db(&ledger.snapshot);
 
@@ -987,10 +997,13 @@ where
         let txn_meta = txn.txn_meta.clone();
         let graph_delta = txn.graph_delta.clone();
 
-        let options = match index_config {
+        let mut options = match index_config {
             Some(cfg) => StageOptions::new().with_index_config(cfg),
             None => StageOptions::default(),
         };
+        if let Some(p) = policy {
+            options = options.with_policy(p);
+        }
 
         #[cfg(feature = "shacl")]
         let (view, ns_registry) =

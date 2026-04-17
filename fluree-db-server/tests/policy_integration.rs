@@ -1253,3 +1253,273 @@ async fn comma_separated_policy_class_header() {
     assert!(names.contains(&"Public Post") && names.contains(&"Internal Memo"));
     assert!(!names.contains(&"Executive Salaries"));
 }
+
+// ── Write-policy enforcement tests ───────────────────────────────────────────
+//
+// These validate the end-to-end policy path for transactions:
+//   bearer identity → `apply_auth_identity_to_opts`
+//   → `fluree_db_api::build_policy_context`
+//   → `TxBuilder.policy(ctx)` → `Fluree::transact_tracked_with_policy`
+//
+// Covers JSON-LD `/v1/fluree/update`, SPARQL UPDATE, and the impersonation
+// gate's behavior on writes. The setup installs a required `f:modify` gate on
+// the employee class (denies modifying `ex:content` unless the target doc's
+// classification is "internal") and a blanket `f:allow: true` modify policy on
+// the manager class, so both the denial and the allow paths exercise real
+// policy evaluation rather than a no-policy fallthrough.
+
+/// Bearer token with both read and write scopes for `ledger`.
+fn identity_token_rw(signing_key: &SigningKey, identity: &str, ledger: &str) -> String {
+    let claims = serde_json::json!({
+        "iss": did_from_pubkey(&signing_key.verifying_key().to_bytes()),
+        "exp": now_secs() + 3600,
+        "iat": now_secs(),
+        "fluree.identity": identity,
+        "fluree.ledger.read.ledgers": [ledger],
+        "fluree.ledger.write.ledgers": [ledger],
+    });
+    create_jws(&claims, signing_key)
+}
+
+/// Insert modify policies on top of the view-only setup:
+/// - `ex:employee-modify-deny`: employees may not modify `ex:content` on any
+///   document. Carries a custom `f:exMessage` surfaced on denial.
+/// - `ex:manager-modify-allow`: blanket `f:allow: true` modify for managers.
+async fn add_modify_policies(app: &axum::Router, ledger: &str) {
+    let policy_tx = serde_json::json!({
+        "@context": {
+            "f": "https://ns.flur.ee/db#",
+            "ex": "http://example.org/"
+        },
+        "insert": [
+            {
+                "@id": "ex:employee-modify-deny",
+                "@type": ["f:AccessPolicy", "ex:EmployeeClass"],
+                "f:onProperty": [{"@id": "ex:content"}],
+                "f:action": [{"@id": "f:modify"}],
+                "f:exMessage": "Employees may not modify document content.",
+                "f:allow": false
+            },
+            {
+                "@id": "ex:manager-modify-allow",
+                "@type": ["f:AccessPolicy", "ex:ManagerClass"],
+                "f:action": [{"@id": "f:modify"}],
+                "f:allow": true
+            }
+        ]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/fluree/insert/{}", ledger))
+                .header("content-type", "application/json")
+                .body(Body::from(policy_tx.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "insert modify policies");
+}
+
+/// WHERE/DELETE/INSERT body that rewrites `ex:doc1`'s `ex:content`. The
+/// employee deny policy blocks all `ex:content` modifications for that class;
+/// managers bypass via their blanket modify-allow policy.
+fn modify_public_doc_content_body() -> JsonValue {
+    serde_json::json!({
+        "@context": {"ex": "http://example.org/"},
+        "where": {"@id": "ex:doc1", "ex:content": "?c"},
+        "delete": {"@id": "ex:doc1", "ex:content": "?c"},
+        "insert": {"@id": "ex:doc1", "ex:content": "rewritten"}
+    })
+}
+
+/// An employee bearer attempting to rewrite a public document's `ex:content`
+/// is denied by the required modify gate. The response is HTTP 400 and the
+/// `error` field carries the custom `f:exMessage` verbatim.
+#[tokio::test]
+async fn employee_bearer_update_denied_with_ex_message() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "wpol1:main").await;
+    add_modify_policies(&app, "wpol1:main").await;
+
+    let signing_key = SigningKey::from_bytes(&[30u8; 32]);
+    let token = identity_token_rw(
+        &signing_key,
+        "http://example.org/employee-user",
+        "wpol1:main",
+    );
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/update/wpol1:main")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {}", token));
+
+    let resp = app
+        .oneshot(
+            req.body(Body::from(modify_public_doc_content_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "employee write must be rejected; got body: {}",
+        json
+    );
+    let err_msg = json
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        err_msg.contains("Employees may not modify document content."),
+        "expected custom f:exMessage in error; got: {}",
+        err_msg
+    );
+}
+
+/// Control: a manager bearer can rewrite the same document — the manager
+/// class has a blanket `f:allow: true` modify policy, so the gate's required
+/// constraint (which only applies to the employee class) never fires.
+/// Demonstrates the setup isn't trivially denying all writes.
+#[tokio::test]
+async fn manager_bearer_update_allowed() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "wpol2:main").await;
+    add_modify_policies(&app, "wpol2:main").await;
+
+    let signing_key = SigningKey::from_bytes(&[31u8; 32]);
+    let token = identity_token_rw(
+        &signing_key,
+        "http://example.org/manager-user",
+        "wpol2:main",
+    );
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/update/wpol2:main")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {}", token));
+
+    let resp = app
+        .oneshot(
+            req.body(Body::from(modify_public_doc_content_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "manager write must succeed; got body: {}",
+        json
+    );
+}
+
+/// A root bearer (no `f:policyClass`) impersonating the employee identity via
+/// `opts.identity` is rejected. Policy enforcement follows the impersonated
+/// identity, not the bearer's own unrestricted service-account identity —
+/// impersonation doesn't bypass policy, it tests under the target's view.
+#[tokio::test]
+async fn root_bearer_impersonating_employee_update_denied() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "wpol3:main").await;
+    add_modify_policies(&app, "wpol3:main").await;
+    register_root_identity(&app, "wpol3:main", "http://example.org/svc-writer").await;
+
+    let signing_key = SigningKey::from_bytes(&[32u8; 32]);
+    let token = identity_token_rw(&signing_key, "http://example.org/svc-writer", "wpol3:main");
+
+    let mut body = modify_public_doc_content_body();
+    body.as_object_mut().unwrap().insert(
+        "opts".to_string(),
+        serde_json::json!({"identity": "http://example.org/employee-user"}),
+    );
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/update/wpol3:main")
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {}", token));
+
+    let resp = app
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "impersonated employee write must be rejected; got body: {}",
+        json
+    );
+    let err_msg = json
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        err_msg.contains("Employees may not modify document content."),
+        "expected exMessage in error; got: {}",
+        err_msg
+    );
+}
+
+/// SPARQL UPDATE under an employee bearer is subject to the same modify gate
+/// as the JSON-LD path. Confirms end-to-end enforcement on the
+/// `application/sparql-update` transport: the server builds a PolicyContext
+/// from the bearer-derived identity and routes through the policy-enforcing
+/// transact path, not a root bypass.
+#[tokio::test]
+async fn sparql_update_under_employee_bearer_denied() {
+    let (_tmp, state) = policy_test_state().await;
+    let app = setup_policy_ledger(build_router(state), "wpol4:main").await;
+    add_modify_policies(&app, "wpol4:main").await;
+
+    let signing_key = SigningKey::from_bytes(&[33u8; 32]);
+    let token = identity_token_rw(
+        &signing_key,
+        "http://example.org/employee-user",
+        "wpol4:main",
+    );
+
+    let sparql = "PREFIX ex: <http://example.org/> \
+                  DELETE { ex:doc1 ex:content ?c } \
+                  INSERT { ex:doc1 ex:content \"rewritten\" } \
+                  WHERE  { ex:doc1 ex:content ?c }";
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/fluree/update/wpol4:main")
+        .header("content-type", "application/sparql-update")
+        .header("authorization", format!("Bearer {}", token));
+
+    let resp = app
+        .oneshot(req.body(Body::from(sparql)).unwrap())
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "employee SPARQL UPDATE must be rejected; got body: {}",
+        json
+    );
+    let err_msg = json
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    assert!(
+        err_msg.contains("Employees may not modify document content."),
+        "expected exMessage in error; got: {}",
+        err_msg
+    );
+}

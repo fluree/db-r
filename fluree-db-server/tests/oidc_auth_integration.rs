@@ -126,13 +126,16 @@ async fn oidc_rs256_bearer_allows_read_and_write() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Create OIDC token with read+write scope
+    // Create OIDC token with read+write scope.
+    //
+    // Omit `sub` / `fluree.identity`: this test exercises OIDC-scoped writes,
+    // not identity-based policy. A present identity triggers PolicyContext
+    // construction, and unresolvable identities fail closed — see
+    // `tests/policy_integration.rs` for the identity + policy path.
     let claims = json!({
         "iss": issuer,
-        "sub": "user@example.com",
         "exp": now_secs() + 3600,
         "iat": now_secs(),
-        "fluree.identity": "ex:OidcUser",
         "fluree.ledger.read.ledgers": ["oidc:test"],
         "fluree.ledger.write.ledgers": ["oidc:test"]
     });
@@ -378,10 +381,10 @@ async fn oidc_kid_miss_refresh_finds_new_key() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 
     // Now kid-2 should work (JWKS was warmed with updated endpoint including kid-2)
-    // First insert data (need write scope too)
+    // First insert data (need write scope too). Omit `sub` to avoid triggering
+    // identity-based policy enforcement — this test is about JWKS key refresh.
     let claims_rw = json!({
         "iss": issuer,
-        "sub": "user@example.com",
         "exp": now_secs() + 3600,
         "iat": now_secs(),
         "fluree.ledger.read.ledgers": ["oidc3:test"],
@@ -538,10 +541,11 @@ async fn oidc_embedded_jwk_still_works_alongside_jwks() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Create Ed25519 JWS token (existing path) with read+write
+    // Create Ed25519 JWS token (existing path) with read+write.
+    // Omit `sub` to avoid triggering identity-based policy enforcement — this
+    // test is about Ed25519 embedded-JWK coexistence with JWKS.
     let claims = json!({
         "iss": did,
-        "sub": "user@example.com",
         "exp": now_secs() + 3600,
         "iat": now_secs(),
         "fluree.ledger.read.ledgers": ["oidc5:test"],

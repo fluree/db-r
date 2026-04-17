@@ -169,16 +169,6 @@ impl<'a> TransactCore<'a> {
                 hint: "Call .insert(), .upsert(), .update(), .insert_turtle(), .upsert_turtle(), or .txn()",
             });
         }
-        // Pre-built Txn IR currently bypasses the tracked+policy path (it has no original txn_json),
-        // so refuse the configuration rather than silently skipping policy enforcement.
-        if self.pre_built_txn.is_some() && self.policy.is_some() {
-            errors.push(BuilderError::Invalid {
-                field: "policy",
-                message:
-                    "policy enforcement is not supported when using a pre-built txn; provide a JSON transaction operation instead"
-                        .to_string(),
-            });
-        }
         if errors.is_empty() {
             Ok(())
         } else {
@@ -367,7 +357,12 @@ where
                 graph_delta,
             } = self
                 .fluree
-                .stage_transaction_from_txn(self.ledger, txn, Some(&index_config))
+                .stage_transaction_from_txn(
+                    self.ledger,
+                    txn,
+                    Some(&index_config),
+                    self.core.policy.as_ref(),
+                )
                 .await?;
 
             // Add extracted transaction metadata and graph delta to commit opts
@@ -506,7 +501,12 @@ where
         if let Some(txn) = self.core.pre_built_txn {
             let stage_result = self
                 .fluree
-                .stage_transaction_from_txn(self.ledger, txn, Some(&index_config))
+                .stage_transaction_from_txn(
+                    self.ledger,
+                    txn,
+                    Some(&index_config),
+                    self.core.policy.as_ref(),
+                )
                 .await?;
             return Ok(Staged {
                 view: stage_result.view,
@@ -763,7 +763,12 @@ where
             let txn_type = txn.txn_type;
             // For pre-built Txn, don't attach raw_txn (we don't have the original format)
             let stage_result = fluree
-                .stage_transaction_from_txn(ledger_state, txn, Some(&index_config))
+                .stage_transaction_from_txn(
+                    ledger_state,
+                    txn,
+                    Some(&index_config),
+                    core.policy.as_ref(),
+                )
                 .await?;
             (stage_result, txn_type, core.commit_opts)
         } else {
@@ -828,6 +833,7 @@ where
                         trig_meta.as_ref(),
                         &named_graphs,
                         tracker_ref,
+                        core.policy.as_ref(),
                     )
                     .await?;
                 (stage_result, txn_type, commit_opts)
@@ -995,6 +1001,7 @@ where
                         trig_meta.as_ref(),
                         named_graphs,
                         tracker_ref,
+                        None,
                     )
                     .await?;
                 (stage_result, *txn_type, commit_opts)
