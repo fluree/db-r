@@ -24,6 +24,7 @@ pub(crate) mod count_plan_exec;
 pub(crate) mod count_rows;
 pub mod datalog_rules;
 pub mod dataset;
+pub mod dataset_operator;
 pub mod dict_overlay;
 pub mod distinct;
 pub mod error;
@@ -96,6 +97,7 @@ pub use bind::BindOperator;
 pub use binding::{Batch, BatchError, BatchView, Binding, RowAccess, RowView};
 pub use context::{ExecutionContext, WellKnownDatatypes};
 pub use dataset::{ActiveGraph, ActiveGraphs, DataSet, GraphRef};
+pub use dataset_operator::{DatasetBuilder, DatasetOperator, ScanDatasetBuilder};
 pub use distinct::DistinctOperator;
 pub use error::{QueryError, Result};
 pub use execute::{
