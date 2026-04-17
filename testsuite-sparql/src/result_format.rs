@@ -236,13 +236,11 @@ pub fn parse_srx(xml: &str) -> Result<SparqlResults> {
                     _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if current_term.is_some() || in_boolean {
-                    text_buf.push_str(
-                        &e.unescape()
-                            .context("Failed to unescape XML text content")?,
-                    );
-                }
+            Ok(Event::Text(ref e)) if current_term.is_some() || in_boolean => {
+                text_buf.push_str(
+                    &e.unescape()
+                        .context("Failed to unescape XML text content")?,
+                );
             }
             Ok(Event::Eof) => break,
             Err(e) => bail!("XML parse error: {e}"),
@@ -591,17 +589,15 @@ fn parse_rdf_dawg_result_set(content: &str) -> Result<SparqlResults> {
                     State::BindingVariable => {
                         current_var_name = Some(text_buf.trim().to_string());
                     }
-                    State::BindingValue { datatype } => {
-                        // Only set if not already set by rdf:resource attribute
-                        if current_value.is_none() {
-                            let val = text_buf.trim().to_string();
-                            if !val.is_empty() {
-                                current_value = Some(RdfTerm::Literal {
-                                    value: val,
-                                    datatype,
-                                    language: None,
-                                });
-                            }
+                    // Only set if not already set by rdf:resource attribute
+                    State::BindingValue { datatype } if current_value.is_none() => {
+                        let val = text_buf.trim().to_string();
+                        if !val.is_empty() {
+                            current_value = Some(RdfTerm::Literal {
+                                value: val,
+                                datatype,
+                                language: None,
+                            });
                         }
                     }
                     _ => {}

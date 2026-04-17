@@ -68,11 +68,9 @@ pub fn rdfxml_to_ntriples(content: &str, base_url: &str) -> Result<String> {
                     }
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if in_property {
-                    if let Ok(unescaped) = e.unescape() {
-                        text_buf.push_str(&unescaped);
-                    }
+            Ok(Event::Text(ref e)) if in_property => {
+                if let Ok(unescaped) = e.unescape() {
+                    text_buf.push_str(&unescaped);
                 }
             }
             Ok(Event::End(ref e)) => {
