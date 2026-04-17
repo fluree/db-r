@@ -231,6 +231,30 @@ fn is_batched_object_eligible(
         && no_bounds
         && no_constraint
 }
+
+/// Check if the right pattern is eligible for a batched subject existence join.
+///
+/// Eligible patterns have shape: `(?s, fixed_p, fixed_o)` where subject is bound
+/// from the left, predicate is fixed, object is fixed, and the join emits no new
+/// right-side variables. This lets us probe PSOT once for a batch of subjects
+/// instead of opening one scan per left row for existence checks such as
+/// `?person rdf:type :Person`.
+fn is_batched_subject_exists_eligible(
+    bind_instructions: &[BindInstruction],
+    right_pattern: &TriplePattern,
+) -> bool {
+    let has_subject_bind = bind_instructions
+        .iter()
+        .any(|b| b.position == PatternPosition::Subject);
+    let pred_fixed = right_pattern.p.is_sid();
+    let obj_fixed = !matches!(&right_pattern.o, Term::Var(_));
+    let no_obj_bind = !bind_instructions
+        .iter()
+        .any(|b| b.position == PatternPosition::Object);
+    let no_constraint = right_pattern.dtc.is_none();
+
+    has_subject_bind && pred_fixed && obj_fixed && no_obj_bind && no_constraint
+}
 /// Bind-join operator for nested-loop join
 ///
 /// For each row from the left operator, substitutes bound variables into
@@ -293,6 +317,8 @@ pub struct NestedLoopJoinOperator {
     batched_eligible: bool,
     /// Whether this join is eligible for batched object join
     batched_object_eligible: bool,
+    /// Whether this join is eligible for batched subject existence join
+    batched_exists_eligible: bool,
     /// Column index in left batch for the subject binding (batched mode)
     subject_left_col: Option<usize>,
     /// Column index in left batch for the object binding (batched object mode)
@@ -521,7 +547,10 @@ impl NestedLoopJoinOperator {
         let batched_eligible = is_batched_eligible(&bind_instructions, &right_pattern);
         let batched_object_eligible = !batched_eligible
             && is_batched_object_eligible(&bind_instructions, &right_pattern, has_bounds);
-        let subject_left_col = if batched_eligible {
+        let batched_exists_eligible = !batched_eligible
+            && !batched_object_eligible
+            && is_batched_subject_exists_eligible(&bind_instructions, &right_pattern);
+        let subject_left_col = if batched_eligible || batched_exists_eligible {
             bind_instructions
                 .iter()
                 .find(|b| b.position == PatternPosition::Subject)
@@ -537,14 +566,15 @@ impl NestedLoopJoinOperator {
         } else {
             None
         };
-        let batched_predicate = if batched_eligible || batched_object_eligible {
-            match &right_pattern.p {
-                Ref::Sid(sid) => Some(sid.clone()),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        let batched_predicate =
+            if batched_eligible || batched_object_eligible || batched_exists_eligible {
+                match &right_pattern.p {
+                    Ref::Sid(sid) => Some(sid.clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            };
 
         Self {
             left,
@@ -566,6 +596,7 @@ impl NestedLoopJoinOperator {
             object_bounds,
             batched_eligible,
             batched_object_eligible,
+            batched_exists_eligible,
             subject_left_col,
             object_left_col,
             batched_predicate,
@@ -934,9 +965,11 @@ impl Operator for NestedLoopJoinOperator {
             right_subject_is_var = matches!(&self.right_pattern.s, Ref::Var(_)),
             right_predicate_is_fixed = self.right_pattern.p.is_sid(),
             right_object_is_var = matches!(&self.right_pattern.o, Term::Var(_)),
+            right_object_is_bound = !matches!(&self.right_pattern.o, Term::Var(_)),
             right_has_dtc = self.right_pattern.dtc.is_some(),
             batched_eligible = self.batched_eligible,
             batched_object_eligible = self.batched_object_eligible,
+            batched_exists_eligible = self.batched_exists_eligible,
             "opened nested loop join"
         );
 
@@ -956,15 +989,18 @@ impl Operator for NestedLoopJoinOperator {
         // - Binary store must be available (batched path reads leaf files directly)
         // - Single-db mode (ActiveGraphs::Single), subjects are Binding::Sid
         // - Dataset mode with exactly one graph (ActiveGraphs::Many len==1), subjects are Binding::IriMatch
-        let use_batched = (self.batched_eligible || self.batched_object_eligible)
-            && ctx.binary_store.is_some()
-            && match ctx.active_graphs() {
-                // Object-batched path currently emits `Binding::EncodedSid` for the new
-                // subject var. Keep it single-ledger only to avoid dataset-mode IriMatch
-                // requirements.
-                ActiveGraphs::Single => true,
-                ActiveGraphs::Many(graphs) => self.batched_eligible && graphs.len() == 1,
-            };
+        let use_batched =
+            (self.batched_eligible || self.batched_object_eligible || self.batched_exists_eligible)
+                && ctx.binary_store.is_some()
+                && match ctx.active_graphs() {
+                    // Object-batched path currently emits `Binding::EncodedSid` for the new
+                    // subject var. Keep it single-ledger only to avoid dataset-mode IriMatch
+                    // requirements.
+                    ActiveGraphs::Single => true,
+                    ActiveGraphs::Many(graphs) => {
+                        (self.batched_eligible || self.batched_exists_eligible) && graphs.len() == 1
+                    }
+                };
 
         if !self.logged_runtime_mode {
             let (active_graph_mode, active_graph_count) = match ctx.active_graphs() {
@@ -975,6 +1011,7 @@ impl Operator for NestedLoopJoinOperator {
                 use_batched,
                 batched_eligible = self.batched_eligible,
                 batched_object_eligible = self.batched_object_eligible,
+                batched_exists_eligible = self.batched_exists_eligible,
                 has_binary_store = ctx.binary_store.is_some(),
                 active_graph_mode,
                 active_graph_count,
@@ -1307,6 +1344,15 @@ impl NestedLoopJoinOperator {
             self.flush_batched_object_accumulator_binary(ctx)
                 .instrument(tracing::debug_span!(
                     "join_flush_batched_object_binary",
+                    accum_len,
+                    batch_size = ctx.batch_size,
+                    to_t = ctx.to_t,
+                ))
+                .await
+        } else if self.batched_exists_eligible {
+            self.flush_batched_exists_accumulator_binary(ctx)
+                .instrument(tracing::debug_span!(
+                    "join_flush_batched_exists_binary",
                     accum_len,
                     batch_size = ctx.batch_size,
                     to_t = ctx.to_t,
@@ -2221,6 +2267,84 @@ impl NestedLoopJoinOperator {
         );
         Ok(())
     }
+
+    /// Binary-index batched existence scan for subject-bound joins with fixed objects.
+    ///
+    /// Probes PSOT once for the batch of bound subjects and scatters a copy of the
+    /// left row for each matching existence hit.
+    async fn flush_batched_exists_accumulator_binary(
+        &mut self,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<()> {
+        if self.batched_accumulator.is_empty() {
+            return Ok(());
+        }
+
+        let overall_start = Instant::now();
+        let store = ctx.binary_store.as_ref().unwrap().clone();
+        let (s_id_to_accum, unique_s_ids) = self.group_accumulator_by_subject();
+        if unique_s_ids.is_empty() {
+            self.clear_batched_state();
+            return Ok(());
+        }
+
+        let Some(bound_object) = Some(&self.right_pattern.o) else {
+            self.clear_batched_state();
+            return Ok(());
+        };
+        let dict_overlay = make_dict_overlay(ctx, &store);
+        let probe_matches = batched_subject_probe_binary(
+            ctx,
+            &store,
+            &SubjectProbeParams {
+                pred_sid: self
+                    .batched_predicate
+                    .as_ref()
+                    .expect("batched predicate set"),
+                subject_ids: &unique_s_ids,
+                object_bounds: None,
+                bound_object: Some(bound_object),
+                emit_object: false,
+                dict_overlay: dict_overlay.as_ref(),
+            },
+        )?;
+
+        let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); self.batched_accumulator.len()];
+        let mut matched_rows: u64 = 0;
+
+        for probe_match in probe_matches {
+            if let Some(accum_indices) = s_id_to_accum.get(&probe_match.subject_id) {
+                for &accum_idx in accum_indices {
+                    let (batch_idx, row_idx, _) = self.batched_accumulator[accum_idx];
+                    let left_batch = self.stored_left_batches.get(batch_idx).ok_or_else(|| {
+                        QueryError::Internal("batched existence join: left batch missing".into())
+                    })?;
+                    let mut combined = Vec::with_capacity(self.combined_schema.len());
+                    for col in 0..self.left_schema.len() {
+                        combined.push(left_batch.get_by_col(row_idx, col).clone());
+                    }
+                    if !apply_inline(
+                        &self.inline_ops,
+                        &self.combined_schema,
+                        &mut combined,
+                        Some(ctx),
+                    )? {
+                        continue;
+                    }
+                    scatter[accum_idx].push(combined);
+                    matched_rows += 1;
+                }
+            }
+        }
+
+        self.emit_scatter_to_output(scatter, ctx.batch_size)?;
+        tracing::debug!(
+            total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64,
+            matched_rows,
+            "join batched existence flush complete"
+        );
+        Ok(())
+    }
 }
 
 fn term_matches_probe_value(
@@ -2997,6 +3121,51 @@ mod tests {
         assert_eq!(join.right_index_hint, Some(IndexType::Opst));
         assert_eq!(join.right_scan_inline_ops.len(), 1);
         assert!(join.inline_ops.is_empty());
+    }
+
+    #[test]
+    fn test_join_enables_batched_subject_existence_for_fixed_object() {
+        let left_schema: Arc<[VarId]> = Arc::from(vec![VarId(0)].into_boxed_slice());
+        let right_pattern = TriplePattern::new(
+            Ref::Var(VarId(0)),
+            Ref::Sid(Sid::new(100, "type")),
+            Term::Sid(Sid::new(101, "Person")),
+        );
+
+        struct MockOp;
+        #[async_trait]
+        impl Operator for MockOp {
+            fn schema(&self) -> &[VarId] {
+                &[]
+            }
+            async fn open(&mut self, _: &ExecutionContext<'_>) -> Result<()> {
+                Ok(())
+            }
+            async fn next_batch(&mut self, _: &ExecutionContext<'_>) -> Result<Option<Batch>> {
+                Ok(None)
+            }
+            fn close(&mut self) {}
+        }
+
+        let join = NestedLoopJoinOperator::new(
+            Box::new(MockOp),
+            left_schema,
+            right_pattern,
+            None,
+            Vec::new(),
+            EmitMask {
+                s: false,
+                p: false,
+                o: false,
+            },
+        );
+
+        assert!(!join.batched_eligible);
+        assert!(!join.batched_object_eligible);
+        assert!(join.batched_exists_eligible);
+        assert_eq!(join.subject_left_col, Some(0));
+        assert!(join.object_left_col.is_none());
+        assert!(join.right_new_vars.is_empty());
     }
 
     #[test]
