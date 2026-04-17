@@ -666,11 +666,11 @@ impl<'a> ExecutionContext<'a> {
             return None;
         }
         let store = self.binary_store.as_ref()?;
-        Some(
-            store
-                .graph_with_novelty(self.binary_g_id, self.dict_novelty.clone())
-                .with_namespace_codes_fallback(self.namespace_codes_fallback.clone()),
-        )
+        let view = store
+            .graph_with_novelty(self.binary_g_id, self.dict_novelty.clone())
+            .with_namespace_codes_fallback(self.namespace_codes_fallback.clone())
+            .with_tracker(self.tracker.clone());
+        Some(view)
     }
 
     /// Decode an `EncodedLit` binding value using DictNovelty-aware routing.

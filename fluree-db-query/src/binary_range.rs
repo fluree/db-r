@@ -167,6 +167,19 @@ impl RangeProvider for BinaryRangeProvider {
         opts: &RangeOptions,
         overlay: &dyn OverlayProvider,
     ) -> std::io::Result<Vec<Flake>> {
+        self.range_tracked(g_id, index, test, match_val, opts, overlay, None)
+    }
+
+    fn range_tracked(
+        &self,
+        g_id: GraphId,
+        index: IndexType,
+        test: RangeTest,
+        match_val: &RangeMatch,
+        opts: &RangeOptions,
+        overlay: &dyn OverlayProvider,
+        tracker: Option<&fluree_db_core::Tracker>,
+    ) -> std::io::Result<Vec<Flake>> {
         match test {
             RangeTest::Eq => binary_range_eq_v3(
                 &self.store,
@@ -177,6 +190,7 @@ impl RangeProvider for BinaryRangeProvider {
                 match_val,
                 opts,
                 overlay,
+                tracker,
             ),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -234,6 +248,7 @@ impl RangeProvider for BinaryRangeProvider {
 /// V3 equality range query: scan the appropriate index order with filters,
 /// decode each row to a `Flake`, apply overlay merge.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn binary_range_eq_v3(
     store: &Arc<BinaryIndexStore>,
     dict_novelty: &Arc<DictNovelty>,
@@ -243,10 +258,17 @@ fn binary_range_eq_v3(
     match_val: &RangeMatch,
     opts: &RangeOptions,
     overlay: &dyn OverlayProvider,
+    tracker: Option<&fluree_db_core::Tracker>,
 ) -> std::io::Result<Vec<fluree_db_core::Flake>> {
     let order = index_type_to_sort_order(index);
-    let view =
-        BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
+    let view = {
+        let v =
+            BinaryGraphView::with_novelty(Arc::clone(store), g_id, Some(Arc::clone(dict_novelty)));
+        match tracker {
+            Some(t) => v.with_tracker(t.clone()),
+            None => v,
+        }
+    };
 
     // Build filter from bound match components.
     let mut filter = BinaryFilter::default();
@@ -399,6 +421,10 @@ fn binary_range_eq_v3(
     } else {
         BinaryCursor::scan_all(Arc::clone(store), order, branch, filter, projection)
     };
+
+    if let Some(t) = tracker {
+        cursor = cursor.with_tracker(t.clone());
+    }
 
     // Apply overlay.
     let effective_to_t = opts.to_t.unwrap_or_else(|| store.max_t());

@@ -28,7 +28,7 @@ use crate::flake::Flake;
 use crate::ids::GraphId;
 use crate::overlay::OverlayProvider;
 use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
-use crate::range::{range_bounded_with_overlay, range_with_overlay};
+use crate::range::{range_bounded_with_overlay, range_with_overlay_tracked};
 use crate::runtime_small_dicts::RuntimeSmallDicts;
 
 /// Bundled database reference for range queries.
@@ -148,7 +148,7 @@ impl<'a> GraphDbRef<'a> {
         match_val: RangeMatch,
     ) -> Result<Vec<Flake>> {
         let opts = RangeOptions::default().with_to_t(self.t);
-        let flakes = range_with_overlay(
+        let flakes = range_with_overlay_tracked(
             self.snapshot,
             self.g_id,
             self.overlay,
@@ -156,8 +156,11 @@ impl<'a> GraphDbRef<'a> {
             test,
             match_val,
             opts,
+            self.tracker,
         )
         .await?;
+        // Per-flake baseline (1 micro-fuel each) covers materialization cost and
+        // novelty-only paths where no leaflet/dict touch was charged below.
         self.charge_range_fuel(flakes.len())?;
         Ok(flakes)
     }
@@ -176,7 +179,7 @@ impl<'a> GraphDbRef<'a> {
         } else {
             opts
         };
-        let flakes = range_with_overlay(
+        let flakes = range_with_overlay_tracked(
             self.snapshot,
             self.g_id,
             self.overlay,
@@ -184,6 +187,7 @@ impl<'a> GraphDbRef<'a> {
             test,
             match_val,
             opts,
+            self.tracker,
         )
         .await?;
         self.charge_range_fuel(flakes.len())?;

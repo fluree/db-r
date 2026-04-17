@@ -921,6 +921,14 @@ impl Operator for NestedLoopJoinOperator {
             left_schema_cols = self.left_schema.len(),
             right_new_vars = self.right_new_vars.len(),
             bind_instructions = self.bind_instructions.len(),
+            subject_bound_from_left = self
+                .bind_instructions
+                .iter()
+                .any(|b| b.position == PatternPosition::Subject),
+            object_bound_from_left = self
+                .bind_instructions
+                .iter()
+                .any(|b| b.position == PatternPosition::Object),
             unify_instructions = self.unify_instructions.len(),
             has_object_bounds = self.object_bounds.is_some(),
             right_subject_is_var = matches!(&self.right_pattern.s, Ref::Var(_)),

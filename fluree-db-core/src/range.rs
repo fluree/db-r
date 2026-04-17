@@ -77,12 +77,39 @@ pub async fn range_with_overlay<O>(
 where
     O: OverlayProvider + ?Sized,
 {
+    range_with_overlay_tracked(snapshot, g_id, overlay, index, test, match_val, opts, None).await
+}
+
+/// Tracker-aware variant of [`range_with_overlay`]. Threads `tracker` to the
+/// underlying [`crate::range_provider::RangeProvider::range_tracked`] so dict
+/// touches and leaflet decodes can be charged.
+#[allow(clippy::too_many_arguments)]
+pub async fn range_with_overlay_tracked<O>(
+    snapshot: &LedgerSnapshot,
+    g_id: GraphId,
+    overlay: &O,
+    index: IndexType,
+    test: RangeTest,
+    match_val: RangeMatch,
+    opts: RangeOptions,
+    tracker: Option<&crate::tracking::Tracker>,
+) -> Result<Vec<Flake>>
+where
+    O: OverlayProvider + ?Sized,
+{
     match snapshot.range_provider.as_ref() {
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
             provider
-                .range(g_id, index, test, &match_val, &opts, &overlay_ref)
-                .map_err(|e| crate::error::Error::Io(e.to_string()))
+                .range_tracked(g_id, index, test, &match_val, &opts, &overlay_ref, tracker)
+                .map_err(|e| {
+                    match e.get_ref().and_then(|inner| {
+                        inner.downcast_ref::<crate::tracking::FuelExceededError>()
+                    }) {
+                        Some(fe) => crate::error::Error::FuelExceeded(fe.clone()),
+                        None => crate::error::Error::Io(e.to_string()),
+                    }
+                })
         }
         None if snapshot.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.

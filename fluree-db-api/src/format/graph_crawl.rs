@@ -189,6 +189,14 @@ pub async fn format_async(
         FormatError::InvalidBinding("Graph crawl format called without graph_select spec".into())
     })?;
 
+    // Attach the tracker to the GraphDbRef so db.range calls inside the
+    // formatter charge per-leaflet + per-dict-touch fuel through the
+    // BinaryGraphView/BinaryCursor wiring (not just the per-flake baseline).
+    let db = match tracker {
+        Some(t) => db.with_tracker(t),
+        None => db,
+    };
+
     let formatter = GraphCrawlFormatter::new(db, compactor, spec, config, policy, tracker);
 
     // Shared cache across all rows
@@ -1021,16 +1029,16 @@ impl<'a> GraphCrawlFormatter<'a> {
                 FormatError::InvalidBinding(format!("Failed to fetch subject properties: {}", e))
             })?;
 
-        // Policy filtering: only when policy is Some and not root
-        // Zero overhead when policy is None (common case)
+        // Policy filtering: only when policy is Some and not root.
+        // Per-flake / per-leaflet / per-dict-touch fuel charges happen inside
+        // db.range via the GraphDbRef tracker — no extra charge needed here.
         if let Some(policy_ctx) = self.policy {
             if !policy_ctx.wrapper().is_root() {
-                let filtered = self.filter_flakes_by_policy(flakes, policy_ctx);
-                return self.apply_fuel_tracking(filtered);
+                return Ok(self.filter_flakes_by_policy(flakes, policy_ctx));
             }
         }
 
-        self.apply_fuel_tracking(flakes)
+        Ok(flakes)
     }
 
     /// Fetch subjects that have this object via predicate (reverse lookup using POST index)
@@ -1051,23 +1059,15 @@ impl<'a> GraphCrawlFormatter<'a> {
             })?;
 
         // Policy filtering: only when policy is Some and not root
-        // Zero overhead when policy is None (common case)
+        // Zero overhead when policy is None (common case).
+        // Per-flake / per-leaflet / per-dict-touch fuel charges happen inside
+        // db.range via the GraphDbRef tracker — no extra charge needed here.
         if let Some(policy_ctx) = self.policy {
             if !policy_ctx.wrapper().is_root() {
-                let filtered = self.filter_flakes_by_policy(flakes, policy_ctx);
-                return self.apply_fuel_tracking(filtered);
+                return Ok(self.filter_flakes_by_policy(flakes, policy_ctx));
             }
         }
 
-        self.apply_fuel_tracking(flakes)
-    }
-
-    fn apply_fuel_tracking(&self, flakes: Vec<Flake>) -> Result<Vec<Flake>> {
-        if let Some(tracker) = self.tracker {
-            // Graph crawl uses db.range (not the fuel-aware cursor), so charge
-            // per flake here at 1 micro-fuel each.
-            tracker.consume_fuel(flakes.len() as u64)?;
-        }
         Ok(flakes)
     }
 

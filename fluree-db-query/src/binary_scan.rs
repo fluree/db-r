@@ -1087,12 +1087,18 @@ impl BinaryScanOperator {
         let mut bindings = Vec::with_capacity(ncols.max(base_len));
         let store_arc: Arc<BinaryIndexStore> = Arc::clone(self.store());
         let dict_novelty_arc = ctx.and_then(|c| c.dict_novelty.clone());
-        let view = BinaryGraphView::with_novelty(
-            Arc::clone(&store_arc),
-            self.g_id,
-            dict_novelty_arc.clone(),
-        )
-        .with_namespace_codes_fallback(ctx.and_then(|c| c.namespace_codes_fallback.clone()));
+        let view = {
+            let mut v = BinaryGraphView::with_novelty(
+                Arc::clone(&store_arc),
+                self.g_id,
+                dict_novelty_arc.clone(),
+            )
+            .with_namespace_codes_fallback(ctx.and_then(|c| c.namespace_codes_fallback.clone()));
+            if let Some(c) = ctx {
+                v = v.with_tracker(c.tracker.clone());
+            }
+            v
+        };
         // DictOverlay is no longer needed here for decoding — BinaryGraphView
         // handles watermark routing internally. DictOverlay is still used for
         // overlay translation (translate_overlay_flakes) in BinaryScanOperator::open.
@@ -1152,7 +1158,7 @@ impl BinaryScanOperator {
             if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
                 let subject_iri = view
                     .resolve_subject_iri(s_id)
-                    .map_err(|e| QueryError::Internal(format!("resolve_subject_iri: {e}")))?;
+                    .map_err(|e| QueryError::from_io("resolve_subject_iri", e))?;
                 if subject_iri != target_iri.as_ref() {
                     continue;
                 }
@@ -1170,7 +1176,7 @@ impl BinaryScanOperator {
             // watermark checks when dict_novelty is present.
             let decode_value = |o_type: u16, o_key: u64, p_id: u32| -> Result<FlakeValue> {
                 view.decode_value(o_type, o_key, p_id)
-                    .map_err(|e| QueryError::Internal(format!("decode_value: {e}")))
+                    .map_err(|e| QueryError::from_io("decode_value", e))
             };
 
             let decoded_o = if needs_o_decode {
@@ -1213,7 +1219,7 @@ impl BinaryScanOperator {
                     // novel subjects return Sid directly without IRI round-trip.
                     let sid = view
                         .resolve_subject_sid(s_id)
-                        .map_err(|e| QueryError::Internal(format!("resolve_subject_sid: {e}")))?;
+                        .map_err(|e| QueryError::from_io("resolve_subject_sid", e))?;
                     Binding::Sid(sid)
                 };
                 if !Self::set_binding_at(&mut bindings, pos, binding) {
@@ -1948,15 +1954,7 @@ impl Operator for BinaryScanOperator {
                     break;
                 }
                 Err(e) => {
-                    // Cursor surfaces fuel exhaustion as io::Error wrapping
-                    // FuelExceededError; recover the original error here.
-                    if let Some(fuel_err) = e
-                        .get_ref()
-                        .and_then(|inner| inner.downcast_ref::<fluree_db_core::FuelExceededError>())
-                    {
-                        return Err(QueryError::FuelLimitExceeded(fuel_err.clone()));
-                    }
-                    return Err(QueryError::Internal(format!("V3 cursor: {}", e)));
+                    return Err(QueryError::from_io("V3 cursor", e));
                 }
             }
         }

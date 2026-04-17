@@ -110,6 +110,19 @@ impl QueryError {
     pub fn execution(msg: impl Into<String>) -> Self {
         Self::Internal(msg.into())
     }
+
+    /// Convert an `io::Error` to a `QueryError`, preserving fuel-exhaustion
+    /// errors (which `BinaryGraphView`/`BinaryCursor` smuggle through as
+    /// `io::Error::other(FuelExceededError)`).
+    pub fn from_io(context: &str, err: std::io::Error) -> Self {
+        if let Some(fe) = err
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<fluree_db_core::FuelExceededError>())
+        {
+            return Self::FuelLimitExceeded(fe.clone());
+        }
+        Self::Internal(format!("{context}: {err}"))
+    }
 }
 
 /// Result type for query operations

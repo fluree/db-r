@@ -1427,3 +1427,49 @@ mem:fact-01kp8y8sj2452zvzzpexfrnvep a mem:Fact ;
     mem:branch "misc/fixes" ;
     mem:createdAt "2026-04-15T16:05:57.954523+00:00"^^xsd:dateTime ;
     mem:rationale "This is a recurring memory hotspot for large update/delete transactions and should be recalled before doing staging performance work." .
+
+mem:fact-01kpdqtnax7zn3twyyn50xxwmz a mem:Fact ;
+    mem:content "Fuel tracking gotcha: `BinaryScanOperator::batch_to_bindings` now attaches a tracker-aware `BinaryGraphView`, but dict-touch fuel exhaustion from `resolve_subject_iri` / `resolve_subject_sid` / `decode_value` is still mapped to `QueryError::Internal` instead of `FuelLimitExceeded`. Separately, `ExecutionContext::graph_view()` does not attach `ctx.tracker`, so late-materialization helpers that go through `ctx.resolve_subject_iri()` / `decode_encoded_value()` bypass the new dict-touch charging entirely." ;
+    mem:tag "binary-scan" ;
+    mem:tag "dict-touch" ;
+    mem:tag "fuel" ;
+    mem:tag "late-materialization" ;
+    mem:tag "query" ;
+    mem:tag "tracking" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-query/src/binary_scan.rs" ;
+    mem:artifactRef "fluree-db-query/src/context.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-17T12:49:35.582316+00:00"^^xsd:dateTime ;
+    mem:rationale "Future work on fuel accounting needs to preserve proper FuelExceeded propagation and avoid underbilling in late-materialized query paths." .
+
+mem:fact-01kpehw5sdpvgc26bxg5jthh2s a mem:Fact ;
+    mem:content "Lambda/query warmup currently overpromises dict warming: `fluree-db-server` calls `BinaryIndexStore::preload_dict_leaves()` during preload, but that method is still a TODO returning `Ok(0)`. Also, duplicate remote fetch prevention is asymmetric: dict leaves use `LeafletCache::try_get_or_load_dict_leaf` single-flight, but generic artifact-cache/leaf open paths do not coalesce concurrent cold misses, so the same CID can still be fetched from remote multiple times under concurrency." ;
+    mem:tag "binary-index" ;
+    mem:tag "cache" ;
+    mem:tag "lambda" ;
+    mem:tag "performance" ;
+    mem:tag "s3" ;
+    mem:tag "warmup" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-binary-index/src/read/artifact_cache.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/binary_index_store.rs" ;
+    mem:artifactRef "fluree-db-binary-index/src/read/leaflet_cache.rs" ;
+    mem:artifactRef "fluree-db-server/src/lib.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-17T20:24:48.173473+00:00"^^xsd:dateTime ;
+    mem:rationale "This is an easy-to-miss reason warm Lambdas may not improve much and why duplicated S3 reads can still happen even though some cache layers exist." .
+
+mem:fact-01kpepmqtapmksm216fde5jv75 a mem:Fact ;
+    mem:content "The fused fast path for `COUNT(DISTINCT ?o)` with an existence-only same-subject join is intended for `?s <p_count> ?o1 . ?s <p_exists> ?o2`, and it must be order-insensitive. If detection only checks the first triple for the counted object var, queries like `?s a Person . ?s sourceLink ?link` fall back to the generic nested-loop join plan even though they match the fast-path shape." ;
+    mem:tag "count-distinct" ;
+    mem:tag "fast-path" ;
+    mem:tag "join" ;
+    mem:tag "planner" ;
+    mem:tag "query-perf" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/execute/operator_tree.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-17T21:48:07.370571+00:00"^^xsd:dateTime ;
+    mem:rationale "This planner gotcha is subtle and directly affects Lambda perf investigations for same-subject COUNT(DISTINCT) queries." .

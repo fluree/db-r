@@ -1550,6 +1550,10 @@ pub struct BinaryGraphView {
     g_id: GraphId,
     dict_novelty: Option<Arc<fluree_db_core::dict_novelty::DictNovelty>>,
     namespace_codes_fallback: Option<Arc<HashMap<u16, String>>>,
+    /// Optional fuel tracker. When set, each forward-pack dict touch (a call
+    /// into the persisted dictionary that wasn't satisfied by in-memory
+    /// novelty) charges 1 fuel = 1000 micro-fuel.
+    tracker: Option<fluree_db_core::Tracker>,
 }
 
 impl BinaryGraphView {
@@ -1559,6 +1563,7 @@ impl BinaryGraphView {
             g_id,
             dict_novelty: None,
             namespace_codes_fallback: None,
+            tracker: None,
         }
     }
 
@@ -1578,7 +1583,26 @@ impl BinaryGraphView {
             g_id,
             dict_novelty,
             namespace_codes_fallback: None,
+            tracker: None,
         }
+    }
+
+    /// Attach a fuel tracker. When set, each forward-pack dict touch (a call
+    /// into the persisted dict that didn't short-circuit through novelty)
+    /// charges 1 fuel.
+    pub fn with_tracker(mut self, tracker: fluree_db_core::Tracker) -> Self {
+        if tracker.is_enabled() {
+            self.tracker = Some(tracker);
+        }
+        self
+    }
+
+    #[inline]
+    fn charge_dict_touch(&self) -> io::Result<()> {
+        if let Some(t) = &self.tracker {
+            t.consume_fuel(1000).map_err(io::Error::other)?;
+        }
+        Ok(())
     }
 
     /// Provide snapshot-derived namespace codes for novelty subject decoding when
@@ -1599,10 +1623,11 @@ impl BinaryGraphView {
     /// is set: dict-backed types (IriRef, StringDict, JsonArena) route through
     /// watermark checks; all other types delegate directly to the store.
     pub fn decode_value(&self, o_type: u16, o_key: u64, p_id: u32) -> io::Result<FlakeValue> {
+        let ot = OType::from_u16(o_type);
+        let kind = ot.decode_kind();
         if let Some(ref dn) = self.dict_novelty {
             if dn.is_initialized() {
-                let ot = OType::from_u16(o_type);
-                match ot.decode_kind() {
+                match kind {
                     DecodeKind::IriRef => {
                         if let Some(sid) = self.resolve_novel_subject_sid(dn, o_key) {
                             return Ok(FlakeValue::Ref(sid));
@@ -1621,6 +1646,14 @@ impl BinaryGraphView {
                     _ => {} // Non-dict types: straight to store
                 }
             }
+        }
+        // Charge a dict touch only when the value is dict-backed (not inline-
+        // encoded) and we didn't already satisfy it from novelty above.
+        if matches!(
+            kind,
+            DecodeKind::IriRef | DecodeKind::StringDict | DecodeKind::JsonArena
+        ) {
+            self.charge_dict_touch()?;
         }
         self.store.decode_value_v3(o_type, o_key, p_id, self.g_id)
     }
@@ -1657,6 +1690,13 @@ impl BinaryGraphView {
                     }
                 }
             }
+        }
+        // Charge a dict touch for dict-backed ObjKinds when novelty didn't satisfy.
+        if o_kind == ObjKind::REF_ID.as_u8()
+            || o_kind == ObjKind::LEX_ID.as_u8()
+            || o_kind == ObjKind::JSON_ID.as_u8()
+        {
+            self.charge_dict_touch()?;
         }
         let result = self
             .store
@@ -1695,6 +1735,8 @@ impl BinaryGraphView {
                 }
             }
         }
+        // Persisted-store path: this is a forward-pack touch. Charge fuel.
+        self.charge_dict_touch()?;
         let result = self.store.resolve_subject_iri(s_id).or_else(|store_err| {
             let Some(dn) = self.dict_novelty.as_ref() else {
                 return Err(store_err);
@@ -1731,6 +1773,8 @@ impl BinaryGraphView {
                 }
             }
         }
+        // Persisted forward-pack lookup; charge before the I/O.
+        self.charge_dict_touch()?;
         let iri = self.store.resolve_subject_iri(s_id)?;
         if let Some(sid) = self.store.find_subject_sid(&iri)? {
             Ok(sid)

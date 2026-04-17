@@ -1710,14 +1710,18 @@ fn detect_exists_join_count_distinct_object(
     };
 
     let (sv_a, pred_a, ov_a) = validate_simple_triple(a)?;
-    let (sv_b, pred_b, _ov_b) = validate_simple_triple(b)?;
+    let (sv_b, pred_b, ov_b) = validate_simple_triple(b)?;
     if sv_a != sv_b {
         return None;
     }
 
-    // One of the object vars must be the COUNT DISTINCT input.
+    // One of the object vars must be the COUNT DISTINCT input. Accept either
+    // triple order so callers don't miss the fused fast path just because the
+    // existence predicate appears before the counted predicate in the query.
     if ov_a == in_var {
         Some((pred_a, pred_b, out_var))
+    } else if ov_b == in_var {
+        Some((pred_b, pred_a, out_var))
     } else {
         None
     }
@@ -3166,5 +3170,71 @@ mod tests {
         let op = result.unwrap();
         // Empty patterns should produce EmptyOperator with empty schema
         assert_eq!(op.schema().len(), 0);
+    }
+
+    #[test]
+    fn test_detect_exists_join_count_distinct_object_accepts_either_pattern_order() {
+        let s = VarId(0);
+        let exists_o = VarId(1);
+        let counted_o = VarId(2);
+        let out = VarId(3);
+        let exists_pred = Ref::Sid(Sid::new(100, "rdf:type"));
+        let count_pred = Ref::Sid(Sid::new(100, "sourceLink"));
+
+        let counted_first = ParsedQuery {
+            context: ParsedContext::default(),
+            orig_context: None,
+            output: QueryOutput::Select(vec![out]),
+            patterns: vec![
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(s),
+                    count_pred.clone(),
+                    Term::Var(counted_o),
+                )),
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(s),
+                    exists_pred.clone(),
+                    Term::Var(exists_o),
+                )),
+            ],
+            options: QueryOptions::default(),
+            graph_select: None,
+            post_values: None,
+        };
+        let reversed = ParsedQuery {
+            context: ParsedContext::default(),
+            orig_context: None,
+            output: QueryOutput::Select(vec![out]),
+            patterns: vec![
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(s),
+                    exists_pred.clone(),
+                    Term::Var(exists_o),
+                )),
+                Pattern::Triple(TriplePattern::new(
+                    Ref::Var(s),
+                    count_pred.clone(),
+                    Term::Var(counted_o),
+                )),
+            ],
+            options: QueryOptions::default(),
+            graph_select: None,
+            post_values: None,
+        };
+        let options = QueryOptions::new().with_aggregates(vec![crate::aggregate::AggregateSpec {
+            function: crate::aggregate::AggregateFn::CountDistinct,
+            input_var: Some(counted_o),
+            output_var: out,
+            distinct: false,
+        }]);
+
+        assert_eq!(
+            detect_exists_join_count_distinct_object(&counted_first, &options),
+            Some((count_pred.clone(), exists_pred.clone(), out))
+        );
+        assert_eq!(
+            detect_exists_join_count_distinct_object(&reversed, &options),
+            Some((count_pred, exists_pred, out))
+        );
     }
 }

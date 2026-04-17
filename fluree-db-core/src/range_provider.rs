@@ -18,6 +18,7 @@ use crate::ids::GraphId;
 use crate::overlay::OverlayProvider;
 use crate::query_bounds::{RangeMatch, RangeOptions, RangeTest};
 use crate::sid::Sid;
+use crate::tracking::Tracker;
 use std::collections::HashMap;
 
 /// A range query backend that can execute range queries against an index.
@@ -59,6 +60,23 @@ pub trait RangeProvider: Send + Sync {
         opts: &RangeOptions,
         overlay: &dyn OverlayProvider,
     ) -> std::io::Result<Vec<Flake>>;
+
+    /// Tracker-aware variant of [`range`](Self::range). The default
+    /// implementation discards the tracker and falls back to `range`. Concrete
+    /// implementations should override to charge fuel for leaflet/dict touches
+    /// during scan and decode.
+    fn range_tracked(
+        &self,
+        g_id: GraphId,
+        index: IndexType,
+        test: RangeTest,
+        match_val: &RangeMatch,
+        opts: &RangeOptions,
+        overlay: &dyn OverlayProvider,
+        _tracker: Option<&Tracker>,
+    ) -> std::io::Result<Vec<Flake>> {
+        self.range(g_id, index, test, match_val, opts, overlay)
+    }
 
     /// Execute a bounded range query with explicit start/end flakes.
     ///

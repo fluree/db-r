@@ -195,11 +195,11 @@ pub async fn stage(
             }
         }
 
-        // Per-transaction baseline (10 fuel) covering parse, validation, commit
-        // log write, and indexing overhead. Per-flake cost (1 micro-fuel) is
-        // charged later against the staged flake set.
+        // Per-transaction baseline (100 fuel) covering parse, validation,
+        // commit log write, and indexing overhead. Per-flake cost (1 micro-fuel)
+        // is charged later against the staged flake set.
         if let Some(tracker) = options.tracker {
-            tracker.consume_fuel(10_000)?;
+            tracker.consume_fuel(100_000)?;
         }
 
         let new_t = ledger.t() + 1;
@@ -453,11 +453,11 @@ pub async fn stage_flakes(
             }
         }
 
-        // Per-transaction baseline (10 fuel) covering parse, validation, commit
-        // log write, and indexing overhead. Per-flake cost (1 micro-fuel) is
-        // charged below.
+        // Per-transaction baseline (100 fuel) covering parse, validation,
+        // commit log write, and indexing overhead. Per-flake cost (1 micro-fuel)
+        // is charged below.
         if let Some(tracker) = options.tracker {
-            tracker.consume_fuel(10_000)?;
+            tracker.consume_fuel(100_000)?;
         }
 
         // 2. Build graph routing map.
