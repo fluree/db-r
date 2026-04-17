@@ -97,11 +97,35 @@ impl FlureeToolService {
         );
 
         // Execute SPARQL query with identity-based policy (if identity is present)
-        let result = self
-            .state
-            .fluree
-            .query_ledger_sparql_with_identity(&req.ledger, &req.query, identity)
-            .await;
+        let to_err =
+            |e: fluree_db_api::ApiError| rmcp::ErrorData::internal_error(e.to_string(), None);
+        let result = match identity {
+            Some(id) => {
+                let opts = fluree_db_api::QueryConnectionOptions {
+                    identity: Some(id.to_string()),
+                    ..Default::default()
+                };
+                let view = self
+                    .state
+                    .fluree
+                    .db_with_policy(&req.ledger, &opts)
+                    .await
+                    .map_err(to_err)?;
+                view.query(self.state.fluree.as_ref())
+                    .sparql(&req.query)
+                    .execute_formatted()
+                    .await
+            }
+            None => {
+                self.state
+                    .fluree
+                    .graph(&req.ledger)
+                    .query()
+                    .sparql(&req.query)
+                    .execute_formatted()
+                    .await
+            }
+        };
 
         match result {
             Ok(json_result) => {
@@ -201,7 +225,8 @@ impl FlureeToolService {
         let info = self
             .state
             .fluree
-            .build_ledger_info(&req.ledger)
+            .ledger_info(&req.ledger)
+            .execute()
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, "Failed to build ledger info");

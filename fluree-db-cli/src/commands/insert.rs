@@ -165,14 +165,11 @@ pub async fn run(
 
 /// Build a `PolicyContext` from `PolicyArgs` against a freshly-loaded ledger state.
 /// Returns `None` when no policy flags are set.
-pub async fn build_policy_ctx<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+pub async fn build_policy_ctx(
+    fluree: &fluree_db_api::Fluree,
     alias: &str,
     policy: &PolicyArgs,
-) -> CliResult<Option<fluree_db_api::PolicyContext>>
-where
-    N: fluree_db_api::NameService + Clone + Send + Sync + 'static,
-{
+) -> CliResult<Option<fluree_db_api::PolicyContext>> {
     if !policy.is_set() {
         return Ok(None);
     }

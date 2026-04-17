@@ -27,7 +27,7 @@ use fluree_db_api::{GraphDb, QueryResult};
 // =============================================================================
 
 /// Type alias for memory-backed Fluree instance.
-pub type MemoryFluree = fluree_db_api::Fluree<fluree_db_nameservice::memory::MemoryNameService>;
+pub type MemoryFluree = fluree_db_api::Fluree;
 
 /// Type alias for memory-backed ledger state.
 pub type MemoryLedger = LedgerState;
@@ -63,70 +63,55 @@ pub fn graphdb_from_ledger(ledger: &LedgerState) -> GraphDb {
 }
 
 /// Execute a JSON-LD query against a loaded `LedgerState` via the normal `GraphDb` query path.
-pub async fn query_jsonld<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+pub async fn query_jsonld(
+    fluree: &fluree_db_api::Fluree,
     ledger: &LedgerState,
     query_json: &JsonValue,
-) -> fluree_db_api::Result<QueryResult>
-where
-    N: fluree_db_api::NameService,
-{
+) -> fluree_db_api::Result<QueryResult> {
     let db = graphdb_from_ledger(ledger);
     fluree.query(&db, query_json).await
 }
 
 /// Execute a SPARQL query against a loaded `LedgerState` via the normal `GraphDb` query path.
-pub async fn query_sparql<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+pub async fn query_sparql(
+    fluree: &fluree_db_api::Fluree,
     ledger: &LedgerState,
     sparql: &str,
-) -> fluree_db_api::Result<QueryResult>
-where
-    N: fluree_db_api::NameService,
-{
+) -> fluree_db_api::Result<QueryResult> {
     let db = graphdb_from_ledger(ledger);
     fluree.query(&db, sparql).await
 }
 
 /// Execute a JSON-LD query and return formatted JSON-LD output (async formatting path).
-pub async fn query_jsonld_formatted<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+pub async fn query_jsonld_formatted(
+    fluree: &fluree_db_api::Fluree,
     ledger: &LedgerState,
     query_json: &JsonValue,
-) -> fluree_db_api::Result<JsonValue>
-where
-    N: fluree_db_api::NameService,
-{
+) -> fluree_db_api::Result<JsonValue> {
     let db = graphdb_from_ledger(ledger);
     let result = fluree.query(&db, query_json).await?;
     Ok(result.to_jsonld_async(db.as_graph_db_ref()).await?)
 }
 
 /// Execute a JSON-LD query and format using a provided formatter config (async).
-pub async fn query_jsonld_format<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+pub async fn query_jsonld_format(
+    fluree: &fluree_db_api::Fluree,
     ledger: &LedgerState,
     query_json: &JsonValue,
     config: &fluree_db_api::FormatterConfig,
-) -> fluree_db_api::Result<JsonValue>
-where
-    N: fluree_db_api::NameService,
-{
+) -> fluree_db_api::Result<JsonValue> {
     let db = graphdb_from_ledger(ledger);
     let result = fluree.query(&db, query_json).await?;
     Ok(result.format_async(db.as_graph_db_ref(), config).await?)
 }
 
 /// Execute a JSON-LD query with policy enforcement via view composition.
-pub async fn query_jsonld_with_policy<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+pub async fn query_jsonld_with_policy(
+    fluree: &fluree_db_api::Fluree,
     ledger: &LedgerState,
     query_json: &JsonValue,
     policy: &fluree_db_policy::PolicyContext,
-) -> fluree_db_api::Result<QueryResult>
-where
-    N: fluree_db_api::NameService,
-{
+) -> fluree_db_api::Result<QueryResult> {
     let db = graphdb_from_ledger(ledger).with_policy(Arc::new(policy.clone()));
     fluree.query(&db, query_json).await
 }
@@ -135,14 +120,11 @@ where
 ///
 /// This uses the public builder path (`GraphDb::query(...).execute_tracked()`), not
 /// the `Fluree::query_ledger_tracked` convenience.
-pub async fn query_jsonld_tracked<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+pub async fn query_jsonld_tracked(
+    fluree: &fluree_db_api::Fluree,
     ledger: &LedgerState,
     query_json: &JsonValue,
-) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
-where
-    N: fluree_db_api::NameService,
-{
+) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse> {
     let db = graphdb_from_ledger(ledger);
     db.query(fluree).jsonld(query_json).execute_tracked().await
 }
@@ -160,13 +142,7 @@ pub fn genesis_ledger(fluree: &MemoryFluree, ledger_id: &str) -> MemoryLedger {
 /// The ledger ID is normalized to canonical `name:branch` form (e.g., `"mydb"` → `"mydb:main"`)
 /// so that the `LedgerSnapshot.ledger_id` matches the canonical form used by the nameservice and
 /// content-addressed storage paths.
-pub fn genesis_ledger_for_fluree<N>(
-    _fluree: &fluree_db_api::Fluree<N>,
-    ledger_id: &str,
-) -> LedgerState
-where
-    N: fluree_db_api::NameService,
-{
+pub fn genesis_ledger_for_fluree(_fluree: &fluree_db_api::Fluree, ledger_id: &str) -> LedgerState {
     let canonical = fluree_db_core::ledger_id::normalize_ledger_id(ledger_id)
         .unwrap_or_else(|_| ledger_id.to_string());
     let db = LedgerSnapshot::genesis(&canonical);
@@ -247,16 +223,13 @@ pub async fn trigger_index_and_wait_outcome(
 /// - `handle.trigger(ledger_id, receipt.t)`
 /// - `completion.wait().await`
 #[cfg(feature = "native")]
-pub fn start_background_indexer_local<N>(
+pub fn start_background_indexer_local(
     backend: fluree_db_core::StorageBackend,
-    nameservice: N,
+    nameservice: Arc<dyn fluree_db_nameservice::ReadWriteNameService>,
     config: fluree_db_indexer::IndexerConfig,
-) -> (LocalSet, fluree_db_indexer::IndexerHandle)
-where
-    N: fluree_db_nameservice::NameService + fluree_db_nameservice::Publisher + Clone + 'static,
-{
+) -> (LocalSet, fluree_db_indexer::IndexerHandle) {
     let (worker, handle) =
-        fluree_db_api::BackgroundIndexerWorker::new(backend, Arc::new(nameservice), config);
+        fluree_db_api::BackgroundIndexerWorker::new(backend, nameservice, config);
 
     let local = LocalSet::new();
     local.spawn_local(worker.run());

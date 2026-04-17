@@ -126,25 +126,15 @@ pub async fn run(
 /// Prints effective import settings (memory budget, parallelism, chunk size,
 /// run budget) to stderr so the user can cancel if the values look excessive.
 /// Shows a live progress bar unless `quiet` is set.
-async fn run_bulk_import<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+async fn run_bulk_import(
+    fluree: &fluree_db_api::Fluree,
     ledger: &str,
     path: &Path,
     fluree_dir: &Path,
     verbose: bool,
     quiet: bool,
     import_opts: &ImportOpts,
-) -> CliResult<()>
-where
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::RefPublisher
-        + fluree_db_nameservice::ConfigPublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
+) -> CliResult<()> {
     use colored::Colorize;
     use fluree_db_api::ImportPhase;
     use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
@@ -502,22 +492,12 @@ fn is_flpack_path(path: &Path) -> bool {
 /// Reads the pack stream from a local file, writes all CAS objects into the
 /// local storage under the given `ledger` name, then sets the commit and index
 /// heads from the embedded nameservice manifest.
-async fn run_flpack_import<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+async fn run_flpack_import(
+    fluree: &fluree_db_api::Fluree,
     ledger: &str,
     path: &Path,
     dirs: &FlureeDir,
-) -> CliResult<()>
-where
-    N: fluree_db_nameservice::NameService
-        + fluree_db_nameservice::Publisher
-        + fluree_db_nameservice::ConfigPublisher
-        + fluree_db_nameservice::RefPublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
+) -> CliResult<()> {
     use colored::Colorize;
     use fluree_db_core::pack::{
         decode_frame, read_stream_preamble, PackFrame, DEFAULT_MAX_PAYLOAD,

@@ -85,7 +85,6 @@ async fn pack_ledger_local(
     // Load cached ledger handle.
     let handle = state
         .fluree
-        .as_direct()
         .ledger_cached(&ledger)
         .await
         .map_err(ServerError::Api)?;
@@ -102,7 +101,7 @@ async fn pack_ledger_local(
     let (tx, rx) = mpsc::channel(64);
 
     // Spawn producer task.
-    let fluree = state.fluree.as_direct().clone();
+    let fluree = state.fluree.clone();
     tokio::spawn(async move {
         stream_pack(&fluree, &handle, &pack_request, tx).await;
     });

@@ -1,5 +1,6 @@
 #![cfg(feature = "native")]
 
+use std::sync::Arc;
 mod support;
 
 use fluree_db_api::{ApiError, FlureeBuilder};
@@ -118,7 +119,7 @@ async fn commit_t_resolves_indexed_commit_from_txn_meta_post_lookup() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
 

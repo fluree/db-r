@@ -8,9 +8,8 @@
 
 #![cfg(feature = "native")]
 
-mod support;
-
 use std::sync::Arc;
+mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig, LedgerState};
 use fluree_db_binary_index::BinaryIndexStore;
@@ -120,7 +119,7 @@ async fn property_and_class_statistics_persist_in_db_root() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -203,7 +202,7 @@ async fn class_statistics_decrement_after_delete_refresh() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -285,7 +284,7 @@ async fn statistics_work_with_memory_storage_when_indexed() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -375,7 +374,7 @@ async fn ledger_info_api_returns_expected_structure() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -640,7 +639,7 @@ async fn ledger_info_api_with_context_compacts_stats_iris() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -795,7 +794,7 @@ async fn ledger_info_property_datatypes_option_merges_novelty() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -908,7 +907,7 @@ async fn ledger_info_realtime_edges_merge_novelty_ref_counts() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -1017,7 +1016,7 @@ async fn ledger_info_stats_update_across_novelty_then_second_index_refresh() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -1266,7 +1265,7 @@ async fn ndv_cardinality_estimates_are_accurate() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -1426,7 +1425,7 @@ async fn selectivity_calculation_is_correct() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -1531,7 +1530,7 @@ async fn multi_class_entities_tracked_correctly() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -1644,7 +1643,7 @@ async fn class_property_type_distribution_tracked() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -1766,7 +1765,7 @@ async fn large_dataset_statistics_accuracy() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));

@@ -19,481 +19,18 @@ use crate::config::{ServerConfig, ServerRole};
 use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
-use fluree_db_api::{Fluree, FlureeBuilder, FlureeClient, IndexConfig, QueryConnectionOptions};
-use fluree_db_nameservice::Publication;
+use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, NameServiceMode};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-/// Proxy-backed Fluree instance type (peer with proxy storage access)
-pub type ProxyFluree = Fluree<ProxyNameService>;
-
-/// Unified Fluree instance wrapper
-///
-/// Allows AppState to work with either file-backed or proxy-backed Fluree
-/// instances, selected at runtime based on configuration.
-#[derive(Clone)]
-pub enum FlureeInstance {
-    /// Direct storage backend (file, S3, DynamoDB, etc.) built via `FlureeBuilder::build_client()`.
-    Direct(Arc<FlureeClient>),
-    /// Proxy-backed storage (peer proxying through transaction server)
-    Proxy(Arc<ProxyFluree>),
-}
-
-impl std::fmt::Debug for FlureeInstance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FlureeInstance::Direct(_) => write!(f, "FlureeInstance::Direct(...)"),
-            FlureeInstance::Proxy(_) => write!(f, "FlureeInstance::Proxy(...)"),
-        }
-    }
-}
-
-impl FlureeInstance {
-    /// Check if this is a file-backed instance
-    pub fn is_direct(&self) -> bool {
-        matches!(self, FlureeInstance::Direct(_))
-    }
-
-    /// Check if this is a proxy-backed instance
-    pub fn is_proxy(&self) -> bool {
-        matches!(self, FlureeInstance::Proxy(_))
-    }
-
-    /// Get the file-backed instance (panics if proxy)
-    ///
-    /// Use this in code paths that are guaranteed to be transaction-mode only
-    /// (e.g., write handlers which forward to tx server in peer mode).
-    pub fn as_direct(&self) -> &Arc<FlureeClient> {
-        match self {
-            FlureeInstance::Direct(f) => f,
-            FlureeInstance::Proxy(_) => panic!("Expected file-backed Fluree instance"),
-        }
-    }
-
-    /// Get the proxy-backed instance (panics if file)
-    pub fn as_proxy(&self) -> &Arc<ProxyFluree> {
-        match self {
-            FlureeInstance::Proxy(p) => p,
-            FlureeInstance::Direct(_) => panic!("Expected proxy-backed Fluree instance"),
-        }
-    }
-
-    /// Get the storage backend from whichever variant is active.
-    pub fn backend(&self) -> &fluree_db_core::StorageBackend {
-        match self {
-            FlureeInstance::Direct(f) => f.backend(),
-            FlureeInstance::Proxy(p) => p.backend(),
-        }
-    }
-
-    /// Lookup a ledger in the nameservice
-    ///
-    /// Works with both file-backed and proxy-backed instances.
-    pub async fn nameservice_lookup(
-        &self,
-        ledger_id: &str,
-    ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::NsRecord>> {
-        use fluree_db_nameservice::NameService as _;
-        match self {
-            FlureeInstance::Direct(f) => f.nameservice().lookup(ledger_id).await,
-            FlureeInstance::Proxy(p) => p.nameservice().lookup(ledger_id).await,
-        }
-    }
-
-    /// Check if a ledger exists by ledger ID
-    ///
-    /// Returns `true` if the ledger is registered in the nameservice,
-    /// `false` otherwise. This is a lightweight check that only queries
-    /// the nameservice without loading the ledger data.
-    pub async fn ledger_exists(&self, ledger_id: &str) -> fluree_db_api::Result<bool> {
-        match self {
-            FlureeInstance::Direct(f) => f.ledger_exists(ledger_id).await,
-            FlureeInstance::Proxy(p) => p.ledger_exists(ledger_id).await,
-        }
-    }
-
-    /// List all non-retracted branches for a ledger.
-    pub async fn list_branches(
-        &self,
-        ledger_name: &str,
-    ) -> fluree_db_api::Result<Vec<fluree_db_nameservice::NsRecord>> {
-        match self {
-            FlureeInstance::Direct(f) => f.list_branches(ledger_name).await,
-            FlureeInstance::Proxy(p) => p.list_branches(ledger_name).await,
-        }
-    }
-
-    /// List all nameservice records (ledgers)
-    pub async fn all_ns_records(
-        &self,
-    ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::NsRecord>> {
-        use fluree_db_nameservice::NameService as _;
-        match self {
-            FlureeInstance::Direct(f) => f.nameservice().all_records().await,
-            FlureeInstance::Proxy(p) => p.nameservice().all_records().await,
-        }
-    }
-
-    /// List all graph source records
-    pub async fn all_graph_source_records(
-        &self,
-    ) -> fluree_db_nameservice::Result<Vec<fluree_db_nameservice::GraphSourceRecord>> {
-        use fluree_db_nameservice::GraphSourceLookup as _;
-        match self {
-            FlureeInstance::Direct(f) => f.nameservice().all_graph_source_records().await,
-            // Proxy mode: graph source records not available locally
-            FlureeInstance::Proxy(_) => Ok(Vec::new()),
-        }
-    }
-
-    /// Lookup a graph source by ID (e.g., "my-gs:main")
-    pub async fn lookup_graph_source(
-        &self,
-        graph_source_id: &str,
-    ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::GraphSourceRecord>> {
-        use fluree_db_nameservice::GraphSourceLookup as _;
-        match self {
-            FlureeInstance::Direct(f) => f.nameservice().lookup_graph_source(graph_source_id).await,
-            // Proxy mode: graph source records not available locally
-            FlureeInstance::Proxy(_) => Ok(None),
-        }
-    }
-
-    // === Connection-level query methods (no ledger loading required) ===
-
-    /// Execute a SPARQL query against a connection (dataset specified via FROM clause)
-    pub async fn query_connection_sparql_jsonld(
-        &self,
-        sparql: &str,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::Direct(f) => f.query_from().sparql(sparql).execute_formatted().await,
-            FlureeInstance::Proxy(p) => p.query_from().sparql(sparql).execute_formatted().await,
-        }
-    }
-
-    /// Execute a JSON-LD query against a connection (dataset specified via from/to keys)
-    ///
-    /// This is the connection-scoped query path that properly handles:
-    /// - History queries (from + to keys)
-    /// - Multi-ledger union queries (from: [ledger1, ledger2])
-    /// - Time-travel queries (from: "ledger@t:123")
-    pub async fn query_connection_jsonld(
-        &self,
-        query_json: &serde_json::Value,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::Direct(f) => {
-                f.query_from().jsonld(query_json).execute_formatted().await
-            }
-            FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_formatted().await,
-        }
-    }
-
-    /// Execute a tracked JSON-LD query against a connection.
-    ///
-    /// Returns a tracked response body (status/result/time/fuel/policy) that callers can
-    /// forward directly, and optionally translate to tracking headers.
-    pub async fn query_connection_jsonld_tracked(
-        &self,
-        query_json: &serde_json::Value,
-    ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
-    {
-        match self {
-            FlureeInstance::Direct(f) => f.query_from().jsonld(query_json).execute_tracked().await,
-            FlureeInstance::Proxy(p) => p.query_from().jsonld(query_json).execute_tracked().await,
-        }
-    }
-
-    // === Ledger-level query methods (load graph, run query, return JSON) ===
-
-    /// Load a graph and execute a JSON-LD query.
-    ///
-    /// With iceberg support, resolves graph sources transparently and
-    /// enables R2RML providers for GRAPH pattern execution.
-    pub async fn query_ledger_jsonld(
-        &self,
-        ledger_id: &str,
-        query_json: &serde_json::Value,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::Direct(f) => {
-                let view = f.load_graph_db_or_graph_source(ledger_id).await?;
-                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
-                    .jsonld(query_json)
-                    .execute_formatted()
-                    .await
-            }
-            FlureeInstance::Proxy(p) => {
-                p.graph(ledger_id)
-                    .query()
-                    .jsonld(query_json)
-                    .execute_formatted()
-                    .await
-            }
-        }
-    }
-
-    /// Load a graph and execute a tracked query (with fuel metering)
-    pub async fn query_ledger_tracked(
-        &self,
-        ledger_id: &str,
-        query_json: &serde_json::Value,
-    ) -> std::result::Result<fluree_db_api::TrackedQueryResponse, fluree_db_api::TrackedErrorResponse>
-    {
-        match self {
-            FlureeInstance::Direct(f) => {
-                let view = f
-                    .load_graph_db_or_graph_source(ledger_id)
-                    .await
-                    .map_err(|e| {
-                        fluree_db_api::TrackedErrorResponse::new(404, e.to_string(), None)
-                    })?;
-                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
-                    .jsonld(query_json)
-                    .execute_tracked()
-                    .await
-            }
-            FlureeInstance::Proxy(p) => {
-                p.graph(ledger_id)
-                    .query()
-                    .jsonld(query_json)
-                    .execute_tracked()
-                    .await
-            }
-        }
-    }
-
-    /// Load a graph and execute a SPARQL query
-    pub async fn query_ledger_sparql_jsonld(
-        &self,
-        ledger_id: &str,
-        sparql: &str,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::Direct(f) => {
-                let view = f.load_graph_db_or_graph_source(ledger_id).await?;
-                fluree_db_api::GraphSnapshotQueryBuilder::new_from_parts(f, &view)
-                    .sparql(sparql)
-                    .execute_formatted()
-                    .await
-            }
-            FlureeInstance::Proxy(p) => {
-                p.graph(ledger_id)
-                    .query()
-                    .sparql(sparql)
-                    .execute_formatted()
-                    .await
-            }
-        }
-    }
-
-    /// Load a graph and execute a SPARQL query with optional identity-based policy
-    ///
-    /// If `identity` is provided, the query will be executed with policy enforcement
-    /// based on the identity's `f:policyClass` property. If no policies are found
-    /// for the identity, the query is denied by default.
-    pub async fn query_ledger_sparql_with_identity(
-        &self,
-        ledger_id: &str,
-        sparql: &str,
-        identity: Option<&str>,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        match identity {
-            Some(identity_iri) => {
-                let opts = QueryConnectionOptions {
-                    identity: Some(identity_iri.to_string()),
-                    ..Default::default()
-                };
-                self.query_ledger_sparql_with_opts(ledger_id, sparql, &opts)
-                    .await
-            }
-            None => {
-                // No identity - execute without policy
-                self.query_ledger_sparql_jsonld(ledger_id, sparql).await
-            }
-        }
-    }
-
-    /// Execute a SPARQL query with a fully-specified `QueryConnectionOptions`.
-    ///
-    /// Honors `identity`, `policy_class`, `policy` (inline), `policy_values`,
-    /// and `default_allow`. When `opts.has_any_policy_inputs()` is false, the
-    /// query runs without policy enforcement (root path).
-    pub async fn query_ledger_sparql_with_opts(
-        &self,
-        ledger_id: &str,
-        sparql: &str,
-        opts: &QueryConnectionOptions,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        if !opts.has_any_policy_inputs() {
-            return self.query_ledger_sparql_jsonld(ledger_id, sparql).await;
-        }
-        match self {
-            FlureeInstance::Direct(f) => {
-                let view = f.db_with_policy(ledger_id, opts).await?;
-                view.query(f.as_ref())
-                    .sparql(sparql)
-                    .execute_formatted()
-                    .await
-            }
-            FlureeInstance::Proxy(p) => {
-                let view = p.db_with_policy(ledger_id, opts).await?;
-                view.query(p.as_ref())
-                    .sparql(sparql)
-                    .execute_formatted()
-                    .await
-            }
-        }
-    }
-
-    /// Load a ledger and explain a query plan
-    pub async fn explain_ledger(
-        &self,
-        ledger_id: &str,
-        query_json: &serde_json::Value,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::Direct(f) => {
-                let ledger = f.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
-                    .with_default_context(ledger.default_context.clone());
-                f.explain(&db, query_json).await
-            }
-            FlureeInstance::Proxy(p) => {
-                let ledger = p.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
-                    .with_default_context(ledger.default_context.clone());
-                p.explain(&db, query_json).await
-            }
-        }
-    }
-
-    /// Load a ledger and explain a SPARQL query plan.
-    pub async fn explain_ledger_sparql(
-        &self,
-        ledger_id: &str,
-        sparql: &str,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        match self {
-            FlureeInstance::Direct(f) => {
-                let ledger = f.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
-                    .with_default_context(ledger.default_context.clone());
-                f.explain_sparql(&db, sparql).await
-            }
-            FlureeInstance::Proxy(p) => {
-                let ledger = p.ledger(ledger_id).await?;
-                let db = fluree_db_api::GraphDb::from_ledger_state(&ledger)
-                    .with_default_context(ledger.default_context.clone());
-                p.explain_sparql(&db, sparql).await
-            }
-        }
-    }
-
-    /// Load a ledger directly (for peer mode freshness checking in shared storage mode)
-    ///
-    /// Returns the ledger state with its index_t for freshness comparison.
-    /// In proxy mode, this always fetches the latest from the transaction server.
-    pub async fn ledger_index_t(&self, ledger_id: &str) -> fluree_db_api::Result<i64> {
-        match self {
-            FlureeInstance::Direct(f) => {
-                let ledger = f.ledger(ledger_id).await?;
-                Ok(ledger.index_t())
-            }
-            FlureeInstance::Proxy(p) => {
-                let ledger = p.ledger(ledger_id).await?;
-                Ok(ledger.index_t())
-            }
-        }
-    }
-
-    /// Spawn the ledger manager maintenance task (idle eviction)
-    ///
-    /// Returns JoinHandle for graceful shutdown. Call `.abort()` on shutdown.
-    /// Returns None if caching is not enabled.
-    pub fn spawn_maintenance(&self) -> Option<tokio::task::JoinHandle<()>> {
-        match self {
-            FlureeInstance::Direct(f) => f.spawn_maintenance(),
-            FlureeInstance::Proxy(p) => p.spawn_maintenance(),
-        }
-    }
-
-    /// Get count of cached ledgers (for metrics/stats)
-    ///
-    /// Returns 0 if caching is not enabled.
-    pub async fn cached_ledger_count(&self) -> usize {
-        match self {
-            FlureeInstance::Direct(f) => {
-                if let Some(mgr) = f.ledger_manager() {
-                    mgr.cached_count().await
-                } else {
-                    0
-                }
-            }
-            FlureeInstance::Proxy(p) => {
-                if let Some(mgr) = p.ledger_manager() {
-                    mgr.cached_count().await
-                } else {
-                    0
-                }
-            }
-        }
-    }
-
-    /// Disconnect a ledger from the connection cache
-    ///
-    /// Releases the cached ledger state, forcing a fresh load on the next access.
-    /// If caching is disabled, this is a no-op.
-    pub async fn disconnect_ledger(&self, ledger_id: &str) {
-        match self {
-            FlureeInstance::Direct(f) => f.disconnect_ledger(ledger_id).await,
-            FlureeInstance::Proxy(p) => p.disconnect_ledger(ledger_id).await,
-        }
-    }
-
-    /// Disconnect the entire Fluree system
-    ///
-    /// Performs best-effort cleanup: cancels indexing, evicts all cached
-    /// ledgers, and clears caches. See `Fluree::disconnect` for details.
-    pub async fn disconnect(&self) {
-        match self {
-            FlureeInstance::Direct(f) => f.disconnect().await,
-            FlureeInstance::Proxy(p) => p.disconnect().await,
-        }
-    }
-
-    /// Build comprehensive ledger info (for MCP get_data_model and /fluree/ledger-info)
-    ///
-    /// Works with both file-backed and proxy-backed instances. Loads the ledger
-    /// into cache if not already cached, then builds metadata including commit info,
-    /// namespace codes, and statistics.
-    pub async fn build_ledger_info(
-        &self,
-        ledger_id: &str,
-    ) -> fluree_db_api::Result<serde_json::Value> {
-        let admin_storage = self.backend().admin_storage_cloned().ok_or_else(|| {
-            fluree_db_api::ApiError::config("ledger_info requires a managed storage backend")
-        })?;
-        let handle = match self {
-            FlureeInstance::Direct(f) => f.ledger_cached(ledger_id).await?,
-            FlureeInstance::Proxy(p) => p.ledger_cached(ledger_id).await?,
-        };
-        let ledger_state = handle.snapshot().await.to_ledger_state();
-        fluree_db_api::ledger_info::build_ledger_info(&ledger_state, &admin_storage, None)
-            .await
-            .map_err(|e| fluree_db_api::ApiError::internal(e.to_string()))
-    }
-}
-
 /// Application state shared across all request handlers
 ///
 /// Uses `Arc<AppState>` for sharing across handlers via axum's State extractor.
 pub struct AppState {
-    /// Fluree instance (file-backed or proxy-backed depending on config)
-    pub fluree: FlureeInstance,
+    /// Fluree instance (storage and nameservice mode selected at startup)
+    pub fluree: Arc<Fluree>,
 
     /// Server configuration
     pub config: ServerConfig,
@@ -532,10 +69,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn spawn_leaflet_cache_stats_logger<N>(fluree: Arc<Fluree<N>>) -> tokio::task::JoinHandle<()>
-    where
-        N: fluree_db_nameservice::NameService + Clone + Send + Sync + 'static,
-    {
+    fn spawn_leaflet_cache_stats_logger(fluree: &Arc<Fluree>) -> tokio::task::JoinHandle<()> {
         // Keep logging lightweight and periodic: one line per minute.
         let cache = Arc::clone(fluree.leaflet_cache());
         let budget_mb = fluree.cache_budget_mb();
@@ -660,7 +194,7 @@ impl AppState {
     /// - Neither: in-memory storage at `.fluree/storage`
     async fn create_direct_fluree(
         config: &ServerConfig,
-    ) -> Result<(FlureeInstance, tokio::task::JoinHandle<()>), fluree_db_api::ApiError> {
+    ) -> Result<(Arc<Fluree>, tokio::task::JoinHandle<()>), fluree_db_api::ApiError> {
         let mut builder = if let Some(ref path) = config.connection_config {
             // Connection config: build from JSON-LD (supports S3, DynamoDB, split storage, etc.)
             let json_str = std::fs::read_to_string(path).map_err(|e| {
@@ -706,14 +240,14 @@ impl AppState {
             "Initialized direct backend"
         );
 
-        let handle = Self::spawn_leaflet_cache_stats_logger(Arc::clone(&fluree));
-        Ok((FlureeInstance::Direct(fluree), handle))
+        let handle = Self::spawn_leaflet_cache_stats_logger(&fluree);
+        Ok((fluree, handle))
     }
 
     /// Create a proxy-backed Fluree instance for peer proxy mode
     fn create_proxy_fluree(
         config: &ServerConfig,
-    ) -> Result<(FlureeInstance, tokio::task::JoinHandle<()>), fluree_db_api::ApiError> {
+    ) -> Result<(Arc<Fluree>, tokio::task::JoinHandle<()>), fluree_db_api::ApiError> {
         let tx_url = config
             .tx_server_url
             .clone()
@@ -726,12 +260,13 @@ impl AppState {
         let storage = ProxyStorage::new(tx_url.clone(), token.clone());
         let nameservice = ProxyNameService::new(tx_url, token);
 
-        let fluree = FlureeBuilder::memory().build_with(storage, nameservice);
+        let ns_mode = NameServiceMode::ReadOnly(Arc::new(nameservice));
+        let fluree = FlureeBuilder::memory().build_with(storage, ns_mode);
 
         tracing::info!("Initialized peer with proxy storage mode");
         let fluree = Arc::new(fluree);
-        let handle = Self::spawn_leaflet_cache_stats_logger::<_>(Arc::clone(&fluree));
-        Ok((FlureeInstance::Proxy(fluree), handle))
+        let handle = Self::spawn_leaflet_cache_stats_logger(&fluree);
+        Ok((fluree, handle))
     }
 
     /// Get server uptime in seconds
@@ -739,26 +274,12 @@ impl AppState {
         self.start_time.elapsed().as_secs()
     }
 
-    /// Subscribe to nameservice events with a given scope
-    ///
-    /// Convenience method for accessing the nameservice subscription functionality.
-    /// Note: In proxy mode, this returns a dummy subscription since peers don't
-    /// serve the /fluree/events endpoint.
-    pub async fn subscribe_events(
+    /// Subscribe to ledger/graph-source change events via the event bus.
+    pub fn subscribe_events(
         &self,
         scope: fluree_db_nameservice::SubscriptionScope,
-    ) -> fluree_db_nameservice::Result<fluree_db_nameservice::Subscription> {
-        match &self.fluree {
-            FlureeInstance::Direct(f) => {
-                let pub_ns = f.nameservice().publication().ok_or_else(|| {
-                    fluree_db_nameservice::NameServiceError::storage(
-                        "Subscription requires a nameservice that supports publication",
-                    )
-                })?;
-                pub_ns.subscribe(scope).await
-            }
-            FlureeInstance::Proxy(f) => f.nameservice().subscribe(scope).await,
-        }
+    ) -> fluree_db_nameservice::Subscription {
+        self.fluree.event_bus().subscribe(scope)
     }
 }
 

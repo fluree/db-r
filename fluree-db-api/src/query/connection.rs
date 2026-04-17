@@ -13,10 +13,7 @@ use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 
 type TrackedResult<T> = std::result::Result<T, crate::query::TrackedErrorResponse>;
 
-impl<N> Fluree<N>
-where
-    N: crate::NameService + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     async fn prepare_single_view_for_connection(
         &self,
         spec: &DatasetSpec,

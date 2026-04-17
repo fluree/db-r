@@ -5,14 +5,11 @@
 //! credentials.
 
 use async_trait::async_trait;
-use fluree_db_nameservice::{
-    NameService, NameServiceError, NsRecord, Publication, Result, Subscription, SubscriptionScope,
-};
+use fluree_db_nameservice::{NameService, NameServiceError, NsRecord, Result};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 use std::fmt::Debug;
 use std::time::Duration;
-use tokio::sync::broadcast;
 
 /// NameService implementation that proxies lookups through the transaction server
 #[derive(Clone)]
@@ -124,6 +121,43 @@ impl ProxyNameService {
 }
 
 #[async_trait]
+impl fluree_db_nameservice::RefLookup for ProxyNameService {
+    async fn get_ref(
+        &self,
+        _ledger_id: &str,
+        _kind: fluree_db_nameservice::RefKind,
+    ) -> Result<Option<fluree_db_nameservice::RefValue>> {
+        Err(NameServiceError::storage(
+            "get_ref not supported in proxy mode".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::StatusLookup for ProxyNameService {
+    async fn get_status(
+        &self,
+        _ledger_id: &str,
+    ) -> Result<Option<fluree_db_nameservice::StatusValue>> {
+        Err(NameServiceError::storage(
+            "get_status not supported in proxy mode".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
+impl fluree_db_nameservice::ConfigLookup for ProxyNameService {
+    async fn get_config(
+        &self,
+        _ledger_id: &str,
+    ) -> Result<Option<fluree_db_nameservice::ConfigValue>> {
+        Err(NameServiceError::storage(
+            "get_config not supported in proxy mode".to_string(),
+        ))
+    }
+}
+
+#[async_trait]
 impl NameService for ProxyNameService {
     async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
         let url = self.ns_url(ledger_id);
@@ -201,29 +235,6 @@ impl NameService for ProxyNameService {
 }
 
 #[async_trait]
-impl Publication for ProxyNameService {
-    async fn subscribe(&self, scope: SubscriptionScope) -> Result<Subscription> {
-        // Create a dummy broadcast channel that will never receive events.
-        // In proxy mode, peers don't serve the /fluree/events endpoint;
-        // they subscribe to the tx server's events via HTTP/SSE instead.
-        // This implementation exists for type compatibility only.
-        let (_, receiver) = broadcast::channel(1);
-        Ok(Subscription { scope, receiver })
-    }
-
-    async fn unsubscribe(&self, _scope: &SubscriptionScope) -> Result<()> {
-        // No-op for proxy mode
-        Ok(())
-    }
-
-    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
-        // Proxy mode doesn't track commit history locally.
-        // Return empty - the transaction server has this information.
-        Ok(Vec::new())
-    }
-}
-
-#[async_trait]
 impl fluree_db_nameservice::GraphSourceLookup for ProxyNameService {
     async fn lookup_graph_source(
         &self,
@@ -243,41 +254,6 @@ impl fluree_db_nameservice::GraphSourceLookup for ProxyNameService {
         &self,
     ) -> Result<Vec<fluree_db_nameservice::GraphSourceRecord>> {
         Ok(Vec::new())
-    }
-}
-
-#[async_trait]
-impl fluree_db_nameservice::GraphSourcePublisher for ProxyNameService {
-    async fn publish_graph_source(
-        &self,
-        _name: &str,
-        _branch: &str,
-        _source_type: fluree_db_nameservice::GraphSourceType,
-        _config: &str,
-        _dependencies: &[String],
-    ) -> Result<()> {
-        Err(NameServiceError::storage(
-            "Graph source publishing is not supported in proxy mode. \
-             Forward the request to the transaction server.",
-        ))
-    }
-
-    async fn publish_graph_source_index(
-        &self,
-        _name: &str,
-        _branch: &str,
-        _index_id: &fluree_db_core::ContentId,
-        _index_t: i64,
-    ) -> Result<()> {
-        Err(NameServiceError::storage(
-            "Graph source index publishing is not supported in proxy mode.",
-        ))
-    }
-
-    async fn retract_graph_source(&self, _name: &str, _branch: &str) -> Result<()> {
-        Err(NameServiceError::storage(
-            "Graph source retraction is not supported in proxy mode.",
-        ))
     }
 }
 

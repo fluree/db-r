@@ -1,7 +1,6 @@
 use crate::context::{self, LedgerMode};
 use crate::error::{CliError, CliResult};
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_nameservice::{GraphSourceLookup, NameService};
 
 pub async fn run(
     ledger: Option<&str>,

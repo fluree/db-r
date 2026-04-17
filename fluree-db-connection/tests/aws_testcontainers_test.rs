@@ -8,10 +8,10 @@
 use fluree_db_connection::{connect_async, ConnectionHandle};
 use fluree_db_core::{ContentId, ContentKind, StorageRead, StorageWrite};
 use fluree_db_nameservice::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPayload, ConfigPublisher, ConfigValue,
-    GraphSourceLookup, GraphSourcePublisher, GraphSourceType, NameService, NsLookupResult,
-    Publisher, RefKind, RefPublisher, RefValue, StatusCasResult, StatusPayload, StatusPublisher,
-    StatusValue,
+    AdminPublisher, CasResult, ConfigCasResult, ConfigLookup, ConfigPayload, ConfigPublisher,
+    ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceType, NameService,
+    NsLookupResult, Publisher, RefKind, RefLookup, RefPublisher, RefValue, StatusCasResult,
+    StatusLookup, StatusPayload, StatusPublisher, StatusValue,
 };
 use fluree_db_storage_aws::DynamoDbNameService;
 use fs2::FileExt;
@@ -30,7 +30,12 @@ fn test_index_id(label: &str) -> ContentId {
     ContentId::new(ContentKind::IndexRoot, label.as_bytes())
 }
 
-async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
+async fn publish_commit(
+    ns: &(impl RefPublisher + ?Sized),
+    ledger_id: &str,
+    t: i64,
+    cid: &ContentId,
+) {
     let new = RefValue {
         id: Some(cid.clone()),
         t,
@@ -220,14 +225,14 @@ async fn localstack_s3_and_dynamodb_smoke() {
     let alias = "mydb:main";
 
     // Init materializes all concern items (meta, head, index, status, config)
-    aws.nameservice()
+    aws.nameservice_arc()
         .publish_ledger_init(alias)
         .await
         .expect("publish_ledger_init should succeed");
 
     // Publish commit head
     let commit_id = test_commit_id("commit:1");
-    publish_commit(aws.nameservice(), alias, 1, &commit_id).await;
+    publish_commit(aws.nameservice_arc().as_ref(), alias, 1, &commit_id).await;
 
     // Publish index head
     let index_id = test_index_id("index:1");
@@ -246,7 +251,13 @@ async fn localstack_s3_and_dynamodb_smoke() {
     assert_eq!(record.index_t, 1);
 
     // Monotonic: older t should be silently ignored
-    publish_commit(aws.nameservice(), alias, 0, &test_commit_id("old-commit")).await;
+    publish_commit(
+        aws.nameservice_arc().as_ref(),
+        alias,
+        0,
+        &test_commit_id("old-commit"),
+    )
+    .await;
     let record2 = aws.lookup(alias).await.expect("lookup").expect("exists");
     assert_eq!(
         record2.commit_head_id.as_ref(),

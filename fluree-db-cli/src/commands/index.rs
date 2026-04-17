@@ -33,9 +33,12 @@ pub async fn run_index(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> 
     .map_err(|e| CliError::Import(format!("indexing failed: {e}")))?;
 
     // Publish the new index
-    use fluree_db_nameservice::AdminPublisher;
     fluree
-        .nameservice()
+        .nameservice_mode()
+        .publisher()
+        .ok_or_else(|| {
+            CliError::Config("write operations require a read-write nameservice".into())
+        })?
         .publish_index_allow_equal(&ledger_id, result.index_t, &result.root_id)
         .await
         .map_err(|e| CliError::Import(format!("failed to publish index: {e}")))?;

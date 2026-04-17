@@ -6,7 +6,6 @@
 mod support;
 
 use fluree_db_api::FlureeBuilder;
-use fluree_db_nameservice::NameService;
 use serde_json::json;
 
 /// Extract sorted name strings from query result rows.

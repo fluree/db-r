@@ -22,15 +22,9 @@
 
 use crate::config::ConnectionConfig;
 use crate::error::{ConnectionError, Result};
-use async_trait::async_trait;
 use fluree_db_core::LedgerSnapshot;
-use fluree_db_nameservice::{
-    AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue, GraphSourceLookup,
-    GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService, NameServiceError,
-    NsLookupResult, NsRecord, Publisher, RefKind, RefPublisher, RefValue, StatusCasResult,
-    StatusPublisher, StatusValue, StorageNameService,
-};
-use fluree_db_storage_aws::{DynamoDbNameService, S3Storage};
+use fluree_db_nameservice::NameServicePublisher;
+use fluree_db_storage_aws::S3Storage;
 use once_cell::sync::OnceCell;
 use std::sync::Arc;
 
@@ -40,323 +34,24 @@ use std::sync::Arc;
 /// in Lambda environments where cold start latency matters.
 static SDK_CONFIG: OnceCell<aws_config::SdkConfig> = OnceCell::new();
 
-/// Runtime nameservice wrapper that can hold either DynamoDB or storage-backed nameservice
+/// Full nameservice capability for AWS backends.
 ///
-/// This enum provides a unified interface for both nameservice types.
-#[derive(Clone)]
-pub enum AwsNameService {
-    /// DynamoDB-backed nameservice
-    DynamoDb(Arc<DynamoDbNameService>),
-    /// S3 storage-backed nameservice
-    Storage(Arc<StorageNameService<S3Storage>>),
+/// Extends [`NameServicePublisher`] with [`ReadWriteNameService`] to enable
+/// trait object coercion for the background indexer. Both `DynamoDbNameService`
+/// and `StorageNameService<S3Storage>` satisfy this automatically.
+///
+/// Replaces the former `AwsNameService` dispatch enum.
+pub trait AwsNameServiceDyn:
+    NameServicePublisher + fluree_db_nameservice::ReadWriteNameService
+{
 }
 
-impl std::fmt::Debug for AwsNameService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DynamoDb(ns) => f.debug_tuple("DynamoDb").field(ns).finish(),
-            Self::Storage(ns) => f.debug_tuple("Storage").field(ns).finish(),
-        }
-    }
-}
-
-#[async_trait]
-impl NameService for AwsNameService {
-    async fn lookup(
-        &self,
-        ledger_id: &str,
-    ) -> std::result::Result<Option<NsRecord>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.lookup(ledger_id).await,
-            Self::Storage(ns) => ns.lookup(ledger_id).await,
-        }
-    }
-
-    async fn all_records(&self) -> std::result::Result<Vec<NsRecord>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.all_records().await,
-            Self::Storage(ns) => ns.all_records().await,
-        }
-    }
-
-    async fn create_branch(
-        &self,
-        ledger_name: &str,
-        new_branch: &str,
-        source_branch: &str,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => {
-                ns.create_branch(ledger_name, new_branch, source_branch)
-                    .await
-            }
-            Self::Storage(ns) => {
-                ns.create_branch(ledger_name, new_branch, source_branch)
-                    .await
-            }
-        }
-    }
-
-    async fn drop_branch(
-        &self,
-        ledger_id: &str,
-    ) -> std::result::Result<Option<u32>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.drop_branch(ledger_id).await,
-            Self::Storage(ns) => ns.drop_branch(ledger_id).await,
-        }
-    }
-
-    async fn reset_head(
-        &self,
-        ledger_id: &str,
-        snapshot: fluree_db_nameservice::NsRecordSnapshot,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.reset_head(ledger_id, snapshot).await,
-            Self::Storage(ns) => ns.reset_head(ledger_id, snapshot).await,
-        }
-    }
-}
-
-#[async_trait]
-impl Publisher for AwsNameService {
-    async fn publish_ledger_init(
-        &self,
-        ledger_id: &str,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.publish_ledger_init(ledger_id).await,
-            Self::Storage(ns) => ns.publish_ledger_init(ledger_id).await,
-        }
-    }
-
-    async fn publish_commit(
-        &self,
-        ledger_id: &str,
-        commit_t: i64,
-        commit_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.publish_commit(ledger_id, commit_t, commit_id).await,
-            Self::Storage(ns) => ns.publish_commit(ledger_id, commit_t, commit_id).await,
-        }
-    }
-
-    async fn publish_index(
-        &self,
-        ledger_id: &str,
-        index_t: i64,
-        index_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.publish_index(ledger_id, index_t, index_id).await,
-            Self::Storage(ns) => ns.publish_index(ledger_id, index_t, index_id).await,
-        }
-    }
-
-    async fn retract(&self, ledger_id: &str) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.retract(ledger_id).await,
-            Self::Storage(ns) => ns.retract(ledger_id).await,
-        }
-    }
-
-    fn publishing_ledger_id(&self, ledger_id: &str) -> Option<String> {
-        match self {
-            Self::DynamoDb(ns) => ns.publishing_ledger_id(ledger_id),
-            Self::Storage(ns) => ns.publishing_ledger_id(ledger_id),
-        }
-    }
-}
-
-#[async_trait]
-impl AdminPublisher for AwsNameService {
-    async fn publish_index_allow_equal(
-        &self,
-        ledger_id: &str,
-        index_t: i64,
-        index_id: &fluree_db_core::ContentId,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => {
-                ns.publish_index_allow_equal(ledger_id, index_t, index_id)
-                    .await
-            }
-            Self::Storage(ns) => {
-                ns.publish_index_allow_equal(ledger_id, index_t, index_id)
-                    .await
-            }
-        }
-    }
-}
-
-#[async_trait]
-impl RefPublisher for AwsNameService {
-    async fn get_ref(
-        &self,
-        ledger_id: &str,
-        kind: RefKind,
-    ) -> std::result::Result<Option<RefValue>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.get_ref(ledger_id, kind).await,
-            Self::Storage(ns) => ns.get_ref(ledger_id, kind).await,
-        }
-    }
-
-    async fn compare_and_set_ref(
-        &self,
-        ledger_id: &str,
-        kind: RefKind,
-        expected: Option<&RefValue>,
-        new: &RefValue,
-    ) -> std::result::Result<CasResult, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.compare_and_set_ref(ledger_id, kind, expected, new).await,
-            Self::Storage(ns) => ns.compare_and_set_ref(ledger_id, kind, expected, new).await,
-        }
-    }
-}
-
-#[async_trait]
-impl GraphSourcePublisher for AwsNameService {
-    async fn publish_graph_source(
-        &self,
-        name: &str,
-        branch: &str,
-        source_type: GraphSourceType,
-        config: &str,
-        dependencies: &[String],
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => {
-                ns.publish_graph_source(name, branch, source_type, config, dependencies)
-                    .await
-            }
-            Self::Storage(ns) => {
-                ns.publish_graph_source(name, branch, source_type, config, dependencies)
-                    .await
-            }
-        }
-    }
-
-    async fn publish_graph_source_index(
-        &self,
-        name: &str,
-        branch: &str,
-        index_id: &fluree_db_core::ContentId,
-        index_t: i64,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => {
-                ns.publish_graph_source_index(name, branch, index_id, index_t)
-                    .await
-            }
-            Self::Storage(ns) => {
-                ns.publish_graph_source_index(name, branch, index_id, index_t)
-                    .await
-            }
-        }
-    }
-
-    async fn retract_graph_source(
-        &self,
-        name: &str,
-        branch: &str,
-    ) -> std::result::Result<(), NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.retract_graph_source(name, branch).await,
-            Self::Storage(ns) => ns.retract_graph_source(name, branch).await,
-        }
-    }
-}
-
-#[async_trait]
-impl GraphSourceLookup for AwsNameService {
-    async fn lookup_graph_source(
-        &self,
-        address: &str,
-    ) -> std::result::Result<Option<GraphSourceRecord>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.lookup_graph_source(address).await,
-            Self::Storage(ns) => ns.lookup_graph_source(address).await,
-        }
-    }
-
-    async fn lookup_any(
-        &self,
-        address: &str,
-    ) -> std::result::Result<NsLookupResult, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.lookup_any(address).await,
-            Self::Storage(ns) => ns.lookup_any(address).await,
-        }
-    }
-
-    async fn all_graph_source_records(
-        &self,
-    ) -> std::result::Result<Vec<GraphSourceRecord>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.all_graph_source_records().await,
-            Self::Storage(ns) => ns.all_graph_source_records().await,
-        }
-    }
-}
-
-#[async_trait]
-impl StatusPublisher for AwsNameService {
-    async fn get_status(
-        &self,
-        ledger_id: &str,
-    ) -> std::result::Result<Option<StatusValue>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.get_status(ledger_id).await,
-            Self::Storage(ns) => ns.get_status(ledger_id).await,
-        }
-    }
-
-    async fn push_status(
-        &self,
-        ledger_id: &str,
-        expected: Option<&StatusValue>,
-        new: &StatusValue,
-    ) -> std::result::Result<StatusCasResult, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.push_status(ledger_id, expected, new).await,
-            Self::Storage(ns) => ns.push_status(ledger_id, expected, new).await,
-        }
-    }
-}
-
-#[async_trait]
-impl ConfigPublisher for AwsNameService {
-    async fn get_config(
-        &self,
-        ledger_id: &str,
-    ) -> std::result::Result<Option<ConfigValue>, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.get_config(ledger_id).await,
-            Self::Storage(ns) => ns.get_config(ledger_id).await,
-        }
-    }
-
-    async fn push_config(
-        &self,
-        ledger_id: &str,
-        expected: Option<&ConfigValue>,
-        new: &ConfigValue,
-    ) -> std::result::Result<ConfigCasResult, NameServiceError> {
-        match self {
-            Self::DynamoDb(ns) => ns.push_config(ledger_id, expected, new).await,
-            Self::Storage(ns) => ns.push_config(ledger_id, expected, new).await,
-        }
-    }
-}
+impl<T: NameServicePublisher> AwsNameServiceDyn for T {}
 
 /// AWS-specific connection handle for Lambda deployments
 ///
-/// S3Storage and nameservice (DynamoDB or S3-backed) are Clone,
-/// so this handle can be cheaply cloned for concurrent operations.
+/// S3Storage and nameservice are Clone (via `Arc`), so this handle can be
+/// cheaply cloned for concurrent operations.
 #[derive(Clone)]
 pub struct AwsConnectionHandle {
     /// Connection configuration
@@ -365,8 +60,8 @@ pub struct AwsConnectionHandle {
     index_storage: S3Storage,
     /// Optional separate S3 storage for commits
     commit_storage: Option<S3Storage>,
-    /// Nameservice (DynamoDB or S3 storage-backed)
-    nameservice: AwsNameService,
+    /// Nameservice (DynamoDB or S3 storage-backed), type-erased
+    nameservice: Arc<dyn AwsNameServiceDyn>,
 }
 
 impl std::fmt::Debug for AwsConnectionHandle {
@@ -391,7 +86,7 @@ impl AwsConnectionHandle {
         config: ConnectionConfig,
         index_storage: S3Storage,
         commit_storage: Option<S3Storage>,
-        nameservice: AwsNameService,
+        nameservice: Arc<dyn AwsNameServiceDyn>,
     ) -> Self {
         Self {
             config,
@@ -418,8 +113,11 @@ impl AwsConnectionHandle {
         self.commit_storage.as_ref().unwrap_or(&self.index_storage)
     }
 
-    /// Get a reference to the nameservice
-    pub fn nameservice(&self) -> &AwsNameService {
+    /// Get the nameservice as a type-erased trait object.
+    ///
+    /// This `Arc` can be cloned and wrapped in `NameServiceMode::ReadWrite()`
+    /// by higher-level layers.
+    pub fn nameservice_arc(&self) -> &Arc<dyn AwsNameServiceDyn> {
         &self.nameservice
     }
 
@@ -464,7 +162,7 @@ impl AwsConnectionHandle {
     /// Look up a ledger record by ledger ID
     ///
     /// Returns the full `NsRecord` including commit and index IDs.
-    pub async fn lookup(&self, ledger_id: &str) -> Result<Option<NsRecord>> {
+    pub async fn lookup(&self, ledger_id: &str) -> Result<Option<fluree_db_nameservice::NsRecord>> {
         self.nameservice
             .lookup(ledger_id)
             .await

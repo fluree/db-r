@@ -28,10 +28,10 @@ use crate::ns_format::{
 };
 use crate::{
     check_cas_expectation, deserialize_json, parse_default_context_value, ref_values_match,
-    serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigPublisher, ConfigValue,
-    GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType, NameService,
-    NameServiceError, NameServiceEvent, NsLookupResult, NsRecord, Publication, Publisher, RefKind,
-    RefPublisher, RefValue, Result, StatusCasResult, StatusPublisher, StatusValue, Subscription,
+    serialize_json, AdminPublisher, CasResult, ConfigCasResult, ConfigLookup, ConfigPublisher,
+    ConfigValue, GraphSourceLookup, GraphSourcePublisher, GraphSourceRecord, GraphSourceType,
+    NameService, NameServiceError, NsLookupResult, NsRecord, Publisher, RefKind, RefLookup,
+    RefPublisher, RefValue, Result, StatusCasResult, StatusLookup, StatusPublisher, StatusValue,
 };
 use async_trait::async_trait;
 use fluree_db_core::ledger_id::{format_ledger_id, normalize_ledger_id, split_ledger_id};
@@ -39,15 +39,12 @@ use fluree_db_core::{CasAction, CasOutcome, ContentId, FileStorage, StorageCas};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
-use tokio::sync::broadcast;
 
 /// File-based nameservice using ns@v2 format
 #[derive(Clone)]
 pub struct FileNameService {
     /// File storage for atomic read-modify-write operations
     storage: FileStorage,
-    /// In-process event sender for reactive subscriptions.
-    event_tx: broadcast::Sender<NameServiceEvent>,
 }
 
 impl Debug for FileNameService {
@@ -136,18 +133,8 @@ struct GraphSourceIndexFileV2WithT {
 impl FileNameService {
     /// Create a new file-based nameservice
     pub fn new(base_path: impl Into<PathBuf>) -> Self {
-        // Small buffer; consumers should treat this as best-effort.
-        let (event_tx, _event_rx) = broadcast::channel(128);
         Self {
             storage: FileStorage::new(base_path),
-            event_tx,
-        }
-    }
-
-    /// Emit a `NameServiceEvent` if the CAS outcome was `Written`.
-    fn emit_on_write<T>(&self, outcome: &CasOutcome<T>, event: NameServiceEvent) {
-        if matches!(outcome, CasOutcome::Written) {
-            let _ = self.event_tx.send(event);
         }
     }
 
@@ -672,13 +659,11 @@ impl Publisher for FileNameService {
     ) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::ns_address(&ledger_name, &branch);
-        let commit_id_for_event = commit_id.clone();
         let ledger_name_c = ledger_name.clone();
         let branch_c = branch.clone();
         let cid_str = commit_id.to_string();
 
-        let outcome = self
-            .storage
+        self.storage
             .compare_and_swap(&address, |bytes| {
                 let cid_val = Some(cid_str.clone());
 
@@ -727,15 +712,6 @@ impl Publisher for FileNameService {
             })
             .await?;
 
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::LedgerCommitPublished {
-                ledger_id: format_ledger_id(&ledger_name, &branch),
-                commit_id: commit_id_for_event,
-                commit_t,
-            },
-        );
-
         Ok(())
     }
 
@@ -747,11 +723,9 @@ impl Publisher for FileNameService {
     ) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::index_address(&ledger_name, &branch);
-        let index_id_for_event = index_id.clone();
         let cid_str = index_id.to_string();
 
-        let outcome = self
-            .storage
+        self.storage
             .compare_and_swap(&address, |bytes| {
                 if let Some(data) = bytes {
                     let existing: NsIndexFileV2 = deserialize_json(data)?;
@@ -772,15 +746,6 @@ impl Publisher for FileNameService {
             })
             .await?;
 
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::LedgerIndexPublished {
-                ledger_id: format_ledger_id(&ledger_name, &branch),
-                index_id: index_id_for_event,
-                index_t,
-            },
-        );
-
         Ok(())
     }
 
@@ -788,8 +753,7 @@ impl Publisher for FileNameService {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::ns_address(&ledger_name, &branch);
 
-        let outcome = self
-            .storage
+        self.storage
             .compare_and_swap(&address, |bytes| {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
@@ -806,13 +770,6 @@ impl Publisher for FileNameService {
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
-
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::LedgerRetracted {
-                ledger_id: format_ledger_id(&ledger_name, &branch),
-            },
-        );
 
         Ok(())
     }
@@ -846,11 +803,9 @@ impl AdminPublisher for FileNameService {
     ) -> Result<()> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::index_address(&ledger_name, &branch);
-        let index_id_for_event = index_id.clone();
         let cid_str = index_id.to_string();
 
-        let outcome = self
-            .storage
+        self.storage
             .compare_and_swap(&address, |bytes| {
                 let should_update = match bytes {
                     Some(data) => {
@@ -876,16 +831,6 @@ impl AdminPublisher for FileNameService {
             })
             .await?;
 
-        // Only emit event if update actually happened
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::LedgerIndexPublished {
-                ledger_id: format_ledger_id(&ledger_name, &branch),
-                index_id: index_id_for_event,
-                index_t,
-            },
-        );
-
         Ok(())
     }
 }
@@ -905,18 +850,14 @@ impl GraphSourcePublisher for FileNameService {
         let branch_c = branch.to_string();
         let config_c = config.to_string();
         let dependencies_c = dependencies.to_vec();
-        let dependencies_for_event = dependencies.to_vec();
-        let source_type_for_event = source_type.clone();
         let kind_type_str = match source_type.kind() {
             crate::GraphSourceKind::Index => "f:IndexSource".to_string(),
             crate::GraphSourceKind::Mapped => "f:MappedSource".to_string(),
             crate::GraphSourceKind::Ledger => "f:LedgerSource".to_string(),
         };
         let source_type_str = source_type.to_type_string();
-        let gs_id_for_event = format_ledger_id(name, branch);
 
-        let outcome = self
-            .storage
+        self.storage
             .compare_and_swap::<(), _>(&address, |bytes| {
                 // For graph source config, we always update (config changes are allowed)
                 // Only preserve retracted status if already set
@@ -949,15 +890,6 @@ impl GraphSourcePublisher for FileNameService {
             })
             .await?;
 
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::GraphSourceConfigPublished {
-                graph_source_id: gs_id_for_event,
-                source_type: source_type_for_event,
-                dependencies: dependencies_for_event,
-            },
-        );
-
         Ok(())
     }
 
@@ -970,13 +902,10 @@ impl GraphSourcePublisher for FileNameService {
     ) -> Result<()> {
         let address = Self::index_address(name, branch);
         let cid_str = index_id.to_string();
-        let index_id_for_event = index_id.clone();
         let name_c = name.to_string();
         let branch_c = branch.to_string();
-        let gs_id_for_event = format_ledger_id(name, branch);
 
-        let outcome = self
-            .storage
+        self.storage
             .compare_and_swap(&address, |bytes| {
                 // Strictly monotonic: only update if new_t > existing_t
                 if let Some(data) = bytes {
@@ -999,24 +928,12 @@ impl GraphSourcePublisher for FileNameService {
             })
             .await?;
 
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::GraphSourceIndexPublished {
-                graph_source_id: gs_id_for_event,
-                index_id: index_id_for_event,
-                index_t,
-            },
-        );
-
         Ok(())
     }
 
     async fn retract_graph_source(&self, name: &str, branch: &str) -> Result<()> {
         let address = Self::ns_address(name, branch);
-        let gs_id_for_event = format_ledger_id(name, branch);
-
-        let outcome = self
-            .storage
+        self.storage
             .compare_and_swap(&address, |bytes| {
                 let Some(data) = bytes else {
                     return Ok(CasAction::Abort(()));
@@ -1030,13 +947,6 @@ impl GraphSourcePublisher for FileNameService {
                 Ok(CasAction::Write(new_bytes))
             })
             .await?;
-
-        self.emit_on_write(
-            &outcome,
-            NameServiceEvent::GraphSourceRetracted {
-                graph_source_id: gs_id_for_event,
-            },
-        );
 
         Ok(())
     }
@@ -1149,7 +1059,7 @@ impl GraphSourceLookup for FileNameService {
 }
 
 #[async_trait]
-impl RefPublisher for FileNameService {
+impl RefLookup for FileNameService {
     async fn get_ref(&self, ledger_id: &str, kind: RefKind) -> Result<Option<RefValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         match kind {
@@ -1202,7 +1112,10 @@ impl RefPublisher for FileNameService {
             }
         }
     }
+}
 
+#[async_trait]
+impl RefPublisher for FileNameService {
     async fn compare_and_set_ref(
         &self,
         ledger_id: &str,
@@ -1213,7 +1126,6 @@ impl RefPublisher for FileNameService {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let expected_clone = expected.cloned();
         let new_clone = new.clone();
-        let event_tx = self.event_tx.clone();
         let normalized_address = format_ledger_id(&ledger_name, &branch);
 
         match kind {
@@ -1294,15 +1206,6 @@ impl RefPublisher for FileNameService {
                     CasOutcome::Aborted(r) => r,
                 };
 
-                if result == CasResult::Updated {
-                    if let Some(ref cid) = new.id {
-                        let _ = event_tx.send(NameServiceEvent::LedgerCommitPublished {
-                            ledger_id: format_ledger_id(&ledger_name, &branch),
-                            commit_id: cid.clone(),
-                            commit_t: new.t,
-                        });
-                    }
-                }
                 Ok(result)
             }
 
@@ -1386,37 +1289,9 @@ impl RefPublisher for FileNameService {
                     CasOutcome::Aborted(r) => r,
                 };
 
-                if result == CasResult::Updated {
-                    if let Some(ref cid) = new.id {
-                        let _ = event_tx.send(NameServiceEvent::LedgerIndexPublished {
-                            ledger_id: format_ledger_id(&ledger_name, &branch),
-                            index_id: cid.clone(),
-                            index_t: new.t,
-                        });
-                    }
-                }
                 Ok(result)
             }
         }
-    }
-}
-
-#[async_trait]
-impl Publication for FileNameService {
-    async fn subscribe(&self, scope: crate::SubscriptionScope) -> Result<Subscription> {
-        Ok(Subscription {
-            scope,
-            receiver: self.event_tx.subscribe(),
-        })
-    }
-
-    async fn unsubscribe(&self, _scope: &crate::SubscriptionScope) -> Result<()> {
-        Ok(())
-    }
-
-    async fn known_ledger_ids(&self, _ledger_id: &str) -> Result<Vec<String>> {
-        // CID-only nameservice no longer stores storage addresses.
-        Ok(vec![])
     }
 }
 
@@ -1425,7 +1300,7 @@ impl Publication for FileNameService {
 // ---------------------------------------------------------------------------
 
 #[async_trait]
-impl StatusPublisher for FileNameService {
+impl StatusLookup for FileNameService {
     async fn get_status(&self, ledger_id: &str) -> Result<Option<StatusValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::ns_address(&ledger_name, &branch);
@@ -1434,7 +1309,10 @@ impl StatusPublisher for FileNameService {
 
         Ok(main_file.map(|f| f.to_status_value()))
     }
+}
 
+#[async_trait]
+impl StatusPublisher for FileNameService {
     async fn push_status(
         &self,
         ledger_id: &str,
@@ -1496,7 +1374,7 @@ impl StatusPublisher for FileNameService {
 }
 
 #[async_trait]
-impl ConfigPublisher for FileNameService {
+impl ConfigLookup for FileNameService {
     async fn get_config(&self, ledger_id: &str) -> Result<Option<ConfigValue>> {
         let (ledger_name, branch) = split_ledger_id(ledger_id)?;
         let address = Self::ns_address(&ledger_name, &branch);
@@ -1505,7 +1383,10 @@ impl ConfigPublisher for FileNameService {
 
         Ok(main_file.map(|f| f.to_config_value()))
     }
+}
 
+#[async_trait]
+impl ConfigPublisher for FileNameService {
     async fn push_config(
         &self,
         ledger_id: &str,
@@ -1579,10 +1460,8 @@ impl ConfigPublisher for FileNameService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CasResult, RefPublisher, RefValue};
     use fluree_db_core::ContentKind;
     use tempfile::TempDir;
-    use tokio::sync::broadcast::error::TryRecvError;
 
     /// Create a test ContentId from a label string (deterministic, reproducible).
     fn test_cid(label: &str) -> ContentId {
@@ -1595,47 +1474,6 @@ mod tests {
         (temp_dir, ns)
     }
 
-    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
-        let new = RefValue {
-            id: Some(cid.clone()),
-            t,
-        };
-        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
-            CasResult::Updated => {}
-            CasResult::Conflict { actual } => {
-                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                    panic!("unexpected commit publish conflict: {actual:?}");
-                }
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_file_ns_emits_events_on_publish_commit_monotonic() {
-        let (_temp, ns) = setup().await;
-        let mut sub = ns
-            .subscribe(crate::SubscriptionScope::resource_id("mydb:main"))
-            .await
-            .unwrap();
-
-        let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid1).await;
-        let evt = sub.receiver.recv().await.unwrap();
-        assert_eq!(
-            evt,
-            NameServiceEvent::LedgerCommitPublished {
-                ledger_id: "mydb:main".to_string(),
-                commit_id: cid1.clone(),
-                commit_t: 1
-            }
-        );
-
-        // Lower t should not emit a new event.
-        let cid_old = test_cid("commit-old");
-        publish_commit(&ns, "mydb:main", 0, &cid_old).await;
-        assert!(matches!(sub.receiver.try_recv(), Err(TryRecvError::Empty)));
-    }
-
     #[tokio::test]
     async fn test_file_ns_publish_commit() {
         let (_temp, ns) = setup().await;
@@ -1645,21 +1483,21 @@ mod tests {
         let cid_old = test_cid("commit-old");
 
         // First publish
-        publish_commit(&ns, "mydb:main", 1, &cid1).await;
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(cid1.clone()));
         assert_eq!(record.commit_t, 1);
 
         // Higher t should update
-        publish_commit(&ns, "mydb:main", 5, &cid2).await;
+        ns.publish_commit("mydb:main", 5, &cid2).await.unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(cid2.clone()));
         assert_eq!(record.commit_t, 5);
 
         // Lower t should be ignored
-        publish_commit(&ns, "mydb:main", 3, &cid_old).await;
+        ns.publish_commit("mydb:main", 3, &cid_old).await.unwrap();
 
         let record = ns.lookup("mydb:main").await.unwrap().unwrap();
         assert_eq!(record.commit_head_id, Some(cid2.clone()));
@@ -1674,7 +1512,9 @@ mod tests {
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
 
         // Publish commit
-        publish_commit(&ns, "mydb:main", 10, &commit_cid).await;
+        ns.publish_commit("mydb:main", 10, &commit_cid)
+            .await
+            .unwrap();
 
         // Publish index (written to separate file)
         ns.publish_index("mydb:main", 5, &index_cid).await.unwrap();
@@ -1694,7 +1534,9 @@ mod tests {
         let index_new_cid = ContentId::new(ContentKind::IndexRoot, b"index-new");
 
         // Publish commit with embedded index
-        publish_commit(&ns, "mydb:main", 10, &commit_cid).await;
+        ns.publish_commit("mydb:main", 10, &commit_cid)
+            .await
+            .unwrap();
 
         // Manually add index to main file
         let main_path = temp.path().join("ns@v2/mydb/main.json");
@@ -1724,9 +1566,15 @@ mod tests {
     async fn test_file_ns_all_records() {
         let (_temp, ns) = setup().await;
 
-        publish_commit(&ns, "db1:main", 1, &test_cid("commit-1")).await;
-        publish_commit(&ns, "db2:main", 1, &test_cid("commit-2")).await;
-        publish_commit(&ns, "db3:dev", 1, &test_cid("commit-3")).await;
+        ns.publish_commit("db1:main", 1, &test_cid("commit-1"))
+            .await
+            .unwrap();
+        ns.publish_commit("db2:main", 1, &test_cid("commit-2"))
+            .await
+            .unwrap();
+        ns.publish_commit("db3:dev", 1, &test_cid("commit-3"))
+            .await
+            .unwrap();
 
         let records = ns.all_records().await.unwrap();
         assert_eq!(records.len(), 3);
@@ -1736,7 +1584,9 @@ mod tests {
     async fn test_file_ns_ledger_with_slash() {
         let (_temp, ns) = setup().await;
 
-        publish_commit(&ns, "tenant/customers:main", 1, &test_cid("commit-1")).await;
+        ns.publish_commit("tenant/customers:main", 1, &test_cid("commit-1"))
+            .await
+            .unwrap();
 
         let record = ns.lookup("tenant/customers:main").await.unwrap().unwrap();
         assert_eq!(record.name, "tenant/customers");
@@ -1864,7 +1714,9 @@ mod tests {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
-        publish_commit(&ns, "ledger:main", 1, &test_cid("commit-1")).await;
+        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"))
+            .await
+            .unwrap();
 
         // Create a graph source
         ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, "{}", &[])
@@ -1894,7 +1746,9 @@ mod tests {
         let (_temp, ns) = setup().await;
 
         // Create a regular ledger
-        publish_commit(&ns, "ledger:main", 1, &test_cid("commit-1")).await;
+        ns.publish_commit("ledger:main", 1, &test_cid("commit-1"))
+            .await
+            .unwrap();
 
         // lookup_graph_source should return None for a ledger
         let result = ns.lookup_graph_source("ledger:main").await.unwrap();
@@ -2004,7 +1858,7 @@ mod tests {
     async fn test_file_ref_get_ref_after_publish() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 5, &cid1).await;
+        ns.publish_commit("mydb:main", 5, &cid1).await.unwrap();
 
         let commit = ns
             .get_ref("mydb:main", RefKind::CommitHead)
@@ -2039,7 +1893,7 @@ mod tests {
     async fn test_file_ref_cas_conflict_already_exists() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid1).await;
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
         let new_ref = RefValue { id: None, t: 2 };
         let result = ns
@@ -2059,7 +1913,7 @@ mod tests {
     async fn test_file_ref_cas_cid_mismatch() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid1).await;
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
         let wrong_cid = test_cid("wrong");
         let expected = RefValue {
@@ -2084,7 +1938,7 @@ mod tests {
     async fn test_file_ref_cas_success() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid1).await;
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
         // Expected must match what's stored: id from CID
         let expected = RefValue {
@@ -2115,7 +1969,7 @@ mod tests {
     async fn test_file_ref_cas_commit_strict_monotonic() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 5, &cid1).await;
+        ns.publish_commit("mydb:main", 5, &cid1).await.unwrap();
 
         let expected = RefValue {
             id: Some(cid1),
@@ -2140,7 +1994,9 @@ mod tests {
         let (_dir, ns) = setup().await;
         let commit_cid = test_cid("commit-1");
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
-        publish_commit(&ns, "mydb:main", 5, &commit_cid).await;
+        ns.publish_commit("mydb:main", 5, &commit_cid)
+            .await
+            .unwrap();
         ns.publish_index("mydb:main", 5, &index_cid).await.unwrap();
 
         // Expected must match stored: id from CID
@@ -2164,7 +2020,7 @@ mod tests {
     async fn test_file_ref_fast_forward_commit() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid1).await;
+        ns.publish_commit("mydb:main", 1, &cid1).await.unwrap();
 
         let new_ref = RefValue {
             id: Some(test_cid("commit-5")),
@@ -2188,7 +2044,7 @@ mod tests {
     async fn test_file_ref_fast_forward_rejected_stale() {
         let (_dir, ns) = setup().await;
         let cid1 = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 10, &cid1).await;
+        ns.publish_commit("mydb:main", 10, &cid1).await.unwrap();
 
         let new_ref = RefValue {
             id: Some(test_cid("old")),
@@ -2211,7 +2067,9 @@ mod tests {
         let (_dir, ns) = setup().await;
         let commit_cid = test_cid("commit-1");
         let index_cid = ContentId::new(ContentKind::IndexRoot, b"index-1");
-        publish_commit(&ns, "mydb:main", 5, &commit_cid).await;
+        ns.publish_commit("mydb:main", 5, &commit_cid)
+            .await
+            .unwrap();
         ns.publish_index("mydb:main", 3, &index_cid).await.unwrap();
 
         let index = ns
@@ -2392,7 +2250,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-5");
-        publish_commit(&ns, "mydb:main", 5, &cid).await;
+        ns.publish_commit("mydb:main", 5, &cid).await.unwrap();
 
         ns.create_branch("mydb", "feature-x", "main").await.unwrap();
 
@@ -2409,7 +2267,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid).await;
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
         ns.create_branch("mydb", "dev", "main").await.unwrap();
 
@@ -2422,7 +2280,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-3");
-        publish_commit(&ns, "mydb:main", 3, &cid).await;
+        ns.publish_commit("mydb:main", 3, &cid).await.unwrap();
 
         ns.create_branch("mydb", "dev", "main").await.unwrap();
         ns.create_branch("mydb", "staging", "main").await.unwrap();
@@ -2442,7 +2300,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid).await;
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
         ns.create_branch("mydb", "release/v1.0", "main")
             .await
@@ -2470,7 +2328,7 @@ mod tests {
         let (_temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-1");
-        publish_commit(&ns, "mydb:main", 1, &cid).await;
+        ns.publish_commit("mydb:main", 1, &cid).await.unwrap();
 
         ns.create_branch("mydb", "dead", "main").await.unwrap();
         ns.retract("mydb:dead").await.unwrap();
@@ -2485,7 +2343,7 @@ mod tests {
         let (temp, ns) = setup().await;
         ns.publish_ledger_init("mydb:main").await.unwrap();
         let cid = test_cid("commit-2");
-        publish_commit(&ns, "mydb:main", 2, &cid).await;
+        ns.publish_commit("mydb:main", 2, &cid).await.unwrap();
 
         ns.create_branch("mydb", "persisted", "main").await.unwrap();
 

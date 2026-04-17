@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use fluree_db_server::telemetry::{create_request_span, set_span_error_code};
+use fluree_db_server::telemetry::{create_request_span, extract_trace_id, set_span_error_code};
 use http::{HeaderMap, HeaderValue};
 use tracing::Subscriber;
 use tracing_subscriber::layer::{Context, Layer};
@@ -112,7 +112,7 @@ async fn request_span_has_expected_fields() {
     let span = create_request_span(
         "query",
         Some("req-123"),
-        &headers,
+        extract_trace_id(&headers).as_deref(),
         Some("mydb:main"),
         None,
         Some("sparql"),
@@ -159,7 +159,14 @@ async fn request_span_otel_name_includes_format() {
     let (store, _guard) = init_capture();
     let headers = HeaderMap::new();
 
-    let span = create_request_span("query", None, &headers, None, None, Some("sparql"));
+    let span = create_request_span(
+        "query",
+        None,
+        extract_trace_id(&headers).as_deref(),
+        None,
+        None,
+        Some("sparql"),
+    );
     let _entered = span.enter();
     drop(_entered);
 
@@ -182,7 +189,14 @@ async fn request_span_otel_name_without_format() {
     let (store, _guard) = init_capture();
     let headers = HeaderMap::new();
 
-    let span = create_request_span("ledger:create", None, &headers, None, None, None);
+    let span = create_request_span(
+        "ledger:create",
+        None,
+        extract_trace_id(&headers).as_deref(),
+        None,
+        None,
+        None,
+    );
     let _entered = span.enter();
     drop(_entered);
 
@@ -204,7 +218,14 @@ async fn set_error_code_records_on_span() {
     let (store, _guard) = init_capture();
     let headers = HeaderMap::new();
 
-    let span = create_request_span("transact", None, &headers, None, None, Some("json-ld"));
+    let span = create_request_span(
+        "transact",
+        None,
+        extract_trace_id(&headers).as_deref(),
+        None,
+        None,
+        Some("json-ld"),
+    );
 
     // Record error code on the span
     set_span_error_code(&span, "error:ParseError");
@@ -232,7 +253,14 @@ async fn error_code_is_empty_on_success() {
     let headers = HeaderMap::new();
 
     // Create span but don't set error code (success path)
-    let span = create_request_span("query", None, &headers, None, None, Some("json-ld"));
+    let span = create_request_span(
+        "query",
+        None,
+        extract_trace_id(&headers).as_deref(),
+        None,
+        None,
+        Some("json-ld"),
+    );
     let _entered = span.enter();
     drop(_entered);
 

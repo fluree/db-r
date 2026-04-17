@@ -36,7 +36,7 @@ use crate::format::FormatterConfig;
 use crate::ledger_info::{gs_record_to_jsonld, ns_record_to_jsonld};
 use crate::query::builder::QueryCore;
 use crate::view::QueryInput;
-use crate::{ApiError, Fluree, GraphDb, GraphSourcePublisher, NameService, Result};
+use crate::{ApiError, Fluree, GraphDb, Result};
 use fluree_db_ledger::IndexConfig;
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
 use serde_json::json;
@@ -87,17 +87,14 @@ use serde_json::json;
 /// - `f:graphSourceDependencies` - Source ledger dependencies
 /// - `f:graphSourceIndex` - Index address
 /// - `f:graphSourceIndexT` - Index t value
-pub struct NameserviceQueryBuilder<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct NameserviceQueryBuilder<'a> {
+    fluree: &'a Fluree,
     core: QueryCore<'a>,
 }
 
-impl<'a, N> NameserviceQueryBuilder<'a, N>
-where
-    N: NameService + GraphSourcePublisher + Clone + Send + Sync + 'static,
-{
+impl<'a> NameserviceQueryBuilder<'a> {
     /// Create a new builder (called by `Fluree::nameservice_query()`).
-    pub(crate) fn new(fluree: &'a Fluree<N>) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree) -> Self {
         Self {
             fluree,
             core: QueryCore::new(),
@@ -241,10 +238,10 @@ where
         format_config: Option<FormatterConfig>,
     ) -> Result<JsonValue> {
         // 1. Get all ledger records
-        let ledger_records = self.fluree.nameservice.all_records().await?;
+        let ledger_records = self.fluree.nameservice().all_records().await?;
 
         // 2. Get all graph source records
-        let gs_records = self.fluree.nameservice.all_graph_source_records().await?;
+        let gs_records = self.fluree.nameservice().all_graph_source_records().await?;
 
         // 3. Convert to JSON-LD
         let mut all_records: Vec<JsonValue> =
@@ -327,39 +324,34 @@ mod tests {
     use super::*;
     use crate::FlureeBuilder;
     use fluree_db_core::{ContentId, ContentKind};
-    use fluree_db_nameservice::{
-        memory::MemoryNameService, CasResult, GraphSourceType, RefPublisher, RefValue,
-    };
+    use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, Publisher};
 
-    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
-        let new = RefValue {
-            id: Some(cid.clone()),
-            t,
-        };
-        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
-            CasResult::Updated => {}
-            CasResult::Conflict { actual } => {
-                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                    panic!("unexpected commit publish conflict: {actual:?}");
-                }
-            }
-        }
-    }
-
-    async fn setup_ns_with_records() -> Fluree<MemoryNameService> {
+    async fn setup_ns_with_records() -> Fluree {
         let fluree = FlureeBuilder::memory().build_memory();
 
         // Create some ledger records
         let cid1 = ContentId::new(ContentKind::Commit, b"commit-1");
         let cid2 = ContentId::new(ContentKind::Commit, b"commit-2");
         let cid3 = ContentId::new(ContentKind::Commit, b"commit-3");
-        publish_commit(&fluree.nameservice, "db1:main", 10, &cid1).await;
-        publish_commit(&fluree.nameservice, "db1:dev", 5, &cid2).await;
-        publish_commit(&fluree.nameservice, "db2:main", 20, &cid3).await;
+        fluree
+            .nameservice_mode
+            .publish_commit("db1:main", 10, &cid1)
+            .await
+            .unwrap();
+        fluree
+            .nameservice_mode
+            .publish_commit("db1:dev", 5, &cid2)
+            .await
+            .unwrap();
+        fluree
+            .nameservice_mode
+            .publish_commit("db2:main", 20, &cid3)
+            .await
+            .unwrap();
 
         // Create a graph source record
         fluree
-            .nameservice
+            .nameservice_mode
             .publish_graph_source(
                 "my-search",
                 "main",

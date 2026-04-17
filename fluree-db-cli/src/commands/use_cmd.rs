@@ -2,7 +2,6 @@ use crate::config::{self, TomlSyncConfigStore};
 use crate::context;
 use crate::error::{CliError, CliResult};
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_nameservice::NameService;
 
 pub async fn run(ledger: &str, dirs: &FlureeDir) -> CliResult<()> {
     let fluree = context::build_fluree(dirs)?;

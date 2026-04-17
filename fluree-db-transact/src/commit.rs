@@ -292,8 +292,8 @@ pub async fn commit<C, N>(
     opts: CommitOpts,
 ) -> Result<(CommitReceipt, LedgerState)>
 where
-    C: ContentStore,
-    N: NameService + RefPublisher,
+    C: ContentStore + ?Sized,
+    N: NameService + RefPublisher + ?Sized,
 {
     // 1. Extract flakes from view
     let (mut base, flakes) = view.into_parts();
@@ -527,6 +527,16 @@ where
 
             // 8. Publish to nameservice through the explicit ref-CAS API so
             // callers get a real conflict if another writer wins the race.
+            //
+            // During rebase replay (`skip_sequencing`), intermediate replays
+            // may target t values that are still behind the branch's current
+            // head (the old pre-rebase commits still populate the head until
+            // the final replay's t exceeds them). In that mode we fast-forward
+            // monotonically and treat a "stale t" conflict as a silent no-op
+            // — only the final replay whose t exceeds the existing head
+            // actually moves the branch forward, which matches the semantics
+            // of the legacy `publish_commit` (strictly-monotonic, silent on
+            // stale updates).
             let new_head_ref = RefValue {
                 id: Some(commit_cid.clone()),
                 t: new_t,
@@ -549,6 +559,24 @@ where
             };
             match publish_result {
                 CasResult::Updated => {}
+                CasResult::Conflict { actual } if skip_sequencing => {
+                    // Stale-t conflict during rebase replay — the branch head
+                    // hasn't caught up yet. Treat as a no-op; a later replay
+                    // (whose new_t exceeds the current head) will succeed.
+                    let head_ahead = actual.as_ref().map(|r| r.t >= new_t).unwrap_or(false);
+                    if !head_ahead {
+                        return Err(TransactError::PublishLostRace {
+                            ledger_id: ledger_id_for_publish.clone(),
+                            attempted_t: new_t,
+                            attempted_commit_id: commit_cid.to_string(),
+                            published_t: actual.as_ref().map(|r| r.t).unwrap_or(0),
+                            published_commit_id: actual
+                                .and_then(|r| r.id)
+                                .map(|cid| cid.to_string())
+                                .unwrap_or_else(|| "None".to_string()),
+                        });
+                    }
+                }
                 CasResult::Conflict { actual } => {
                     return Err(TransactError::PublishLostRace {
                         ledger_id: ledger_id_for_publish.clone(),
@@ -878,7 +906,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-    impl RefPublisher for LosePublishRaceNameService {
+    impl fluree_db_nameservice::RefLookup for LosePublishRaceNameService {
         async fn get_ref(
             &self,
             ledger_id: &str,
@@ -886,7 +914,30 @@ mod tests {
         ) -> fluree_db_nameservice::Result<Option<RefValue>> {
             self.inner.get_ref(ledger_id, kind).await
         }
+    }
 
+    #[async_trait::async_trait]
+    impl fluree_db_nameservice::StatusLookup for LosePublishRaceNameService {
+        async fn get_status(
+            &self,
+            ledger_id: &str,
+        ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::StatusValue>> {
+            self.inner.get_status(ledger_id).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl fluree_db_nameservice::ConfigLookup for LosePublishRaceNameService {
+        async fn get_config(
+            &self,
+            ledger_id: &str,
+        ) -> fluree_db_nameservice::Result<Option<fluree_db_nameservice::ConfigValue>> {
+            self.inner.get_config(ledger_id).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RefPublisher for LosePublishRaceNameService {
         async fn compare_and_set_ref(
             &self,
             ledger_id: &str,

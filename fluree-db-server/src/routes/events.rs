@@ -23,8 +23,7 @@ use axum::{
 };
 use chrono::Utc;
 use fluree_db_nameservice::{
-    GraphSourcePublisher, GraphSourceRecord, NameService, NameServiceEvent, NsRecord,
-    SubscriptionScope,
+    GraphSourceRecord, NameService, NameServiceEvent, NsRecord, SubscriptionScope,
 };
 use fluree_sse::{SSE_KIND_GRAPH_SOURCE, SSE_KIND_LEDGER};
 use futures::stream::{self, Stream, StreamExt};
@@ -214,7 +213,7 @@ fn retracted_sse_event(kind: &'static str, resource_id: &str) -> Event {
 /// Build the initial snapshot of records on connection
 async fn build_initial_snapshot<N>(ns: &N, params: &EventsQuery) -> Vec<Event>
 where
-    N: NameService + GraphSourcePublisher,
+    N: NameService,
 {
     let mut events = Vec::new();
 
@@ -297,7 +296,7 @@ fn event_kind(event: &NameServiceEvent) -> &'static str {
 /// Transform a nameservice event to an SSE Event, fetching the current record
 async fn transform_event<N>(ns: &N, event: NameServiceEvent) -> Option<Event>
 where
-    N: NameService + GraphSourcePublisher,
+    N: NameService,
 {
     let resource_id = event_resource_id(&event).to_string();
 
@@ -433,19 +432,13 @@ pub async fn events(
         );
     }
 
-    // Clone nameservice for use in async closures
+    // Clone nameservice mode for use in async closures
     // Events endpoint is only available in transaction mode (checked above)
-    let ns = state.fluree.as_direct().nameservice().clone();
+    let ns = state.fluree.nameservice_mode().clone();
 
     // 1. SUBSCRIBE FIRST (events during snapshot queue in receiver)
     // This ensures no gap between snapshot and live events
-    let pub_ns = ns.publication().ok_or_else(|| {
-        ServerError::internal("Events endpoint requires a nameservice that supports publication")
-    })?;
-    let subscription = pub_ns
-        .subscribe(SubscriptionScope::All)
-        .await
-        .map_err(|e| ServerError::internal(format!("Failed to subscribe to events: {}", e)))?;
+    let subscription = state.fluree.event_bus().subscribe(SubscriptionScope::All);
 
     // 2. Build initial snapshot using effective params
     let initial_events = build_initial_snapshot(&ns, &effective_params).await;

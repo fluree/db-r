@@ -47,13 +47,13 @@ use crate::{publish_index_result, IndexResult};
 #[cfg(feature = "embedded-orchestrator")]
 use fluree_db_core::Storage;
 use fluree_db_core::StorageBackend;
-use fluree_db_nameservice::{NameService, Publisher};
+use fluree_db_nameservice::ReadWriteNameService;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{oneshot, watch, Mutex, Notify};
-use tracing::{debug, info, warn, Instrument};
+use tracing::{debug, info, warn};
 
 tokio::task_local! {
     static INDEX_REQUEST_CORRELATION: IndexRequestCorrelation;
@@ -203,10 +203,6 @@ struct LedgerIndexState {
     retry_count: u32,
     /// When to retry next (if in backoff)
     next_retry_at: Option<tokio::time::Instant>,
-    /// Latest concrete request metadata associated with queued work.
-    request_correlation: Option<IndexRequestCorrelation>,
-    /// Best-effort fallback span context for direct/manual trigger calls.
-    request_context_span: Option<tracing::Span>,
 }
 
 impl Default for LedgerIndexState {
@@ -220,8 +216,6 @@ impl Default for LedgerIndexState {
             cancelled: false,
             retry_count: 0,
             next_retry_at: None,
-            request_correlation: None,
-            request_context_span: None,
         }
     }
 }
@@ -256,8 +250,6 @@ impl LedgerIndexState {
         self.pending_min_t = self.waiters.iter().map(|(min_t, _)| *min_t).min();
         if self.pending_min_t.is_none() {
             self.phase = IndexPhase::Idle;
-            self.request_correlation = None;
-            self.request_context_span = None;
         }
     }
 
@@ -281,18 +273,19 @@ use fluree_db_ledger::{IndexConfig, LedgerState};
 ///
 /// Note: Does not spawn background tasks. Use in a single-threaded async context
 /// (e.g., `LocalSet`) or manage threading at a higher level.
-pub struct IndexerOrchestrator<N> {
+pub struct IndexerOrchestrator {
     backend: StorageBackend,
-    nameservice: Arc<N>,
+    nameservice: Arc<dyn ReadWriteNameService>,
     config: IndexerConfig,
 }
 
-impl<N> IndexerOrchestrator<N>
-where
-    N: NameService + Publisher + 'static,
-{
+impl IndexerOrchestrator {
     /// Create a new indexer orchestrator
-    pub fn new(backend: StorageBackend, nameservice: Arc<N>, config: IndexerConfig) -> Self {
+    pub fn new(
+        backend: StorageBackend,
+        nameservice: Arc<dyn ReadWriteNameService>,
+        config: IndexerConfig,
+    ) -> Self {
         Self {
             backend,
             nameservice,
@@ -353,7 +346,7 @@ where
     }
 
     /// Get a reference to the nameservice
-    pub fn nameservice(&self) -> &Arc<N> {
+    pub fn nameservice(&self) -> &Arc<dyn ReadWriteNameService> {
         &self.nameservice
     }
 
@@ -405,24 +398,7 @@ impl IndexerHandle {
     ///
     /// Fire-and-forget: just drop the returned `IndexCompletion`.
     pub async fn trigger(&self, ledger_id: impl Into<String>, min_t: i64) -> IndexCompletion {
-        self.trigger_with_correlation(ledger_id, min_t, current_index_request_correlation())
-            .await
-    }
-
-    /// Trigger indexing while explicitly carrying copied request correlation.
-    pub async fn trigger_with_correlation(
-        &self,
-        ledger_id: impl Into<String>,
-        min_t: i64,
-        correlation: Option<IndexRequestCorrelation>,
-    ) -> IndexCompletion {
         let ledger_id = ledger_id.into();
-        let request_context_span = if correlation.is_none() {
-            let current_span = tracing::Span::current();
-            current_span.id().map(|_| current_span)
-        } else {
-            None
-        };
         let (tx, rx) = oneshot::channel();
         let (phase, pending_min_t, waiter_count);
 
@@ -440,15 +416,6 @@ impl IndexerHandle {
 
             // Add waiter
             state.waiters.push((min_t, tx));
-
-            // When multiple requests coalesce, prefer the latest concrete
-            // request metadata over leaving stale or absent fields behind.
-            if correlation.is_some() {
-                state.request_correlation = correlation.clone();
-                state.request_context_span = None;
-            } else if request_context_span.is_some() {
-                state.request_context_span = request_context_span.clone();
-            }
 
             // Update coalesced min_t
             state.pending_min_t = Some(
@@ -473,9 +440,6 @@ impl IndexerHandle {
         info!(
             ledger_id = %ledger_id,
             requested_min_t = min_t,
-            request_id = correlation.as_ref().and_then(|ctx| ctx.request_id.as_deref()),
-            trace_id = correlation.as_ref().and_then(|ctx| ctx.trace_id.as_deref()),
-            trigger_operation = correlation.as_ref().and_then(|ctx| ctx.operation.as_deref()),
             phase = ?phase,
             pending_min_t = ?pending_min_t,
             waiter_count,
@@ -502,8 +466,6 @@ impl IndexerHandle {
                 // Resolve all waiters as cancelled (they haven't been satisfied)
                 state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                 state.pending_min_t = None;
-                state.request_correlation = None;
-                state.request_context_span = None;
                 if state.phase == IndexPhase::Pending {
                     state.phase = IndexPhase::Idle;
                 }
@@ -528,8 +490,6 @@ impl IndexerHandle {
             state.cancelled = true;
             state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
             state.pending_min_t = None;
-            state.request_correlation = None;
-            state.request_context_span = None;
             if state.phase == IndexPhase::Pending {
                 state.phase = IndexPhase::Idle;
             }
@@ -612,23 +572,20 @@ impl IndexerHandle {
 /// - Exponential backoff on failures (capped at 30s)
 /// - Cooperative cancellation
 /// - Clean shutdown when all handles are dropped
-pub struct BackgroundIndexerWorker<N> {
+pub struct BackgroundIndexerWorker {
     backend: StorageBackend,
-    nameservice: Arc<N>,
+    nameservice: Arc<dyn ReadWriteNameService>,
     config: IndexerConfig,
     states: Arc<Mutex<LedgerStates>>,
     tick_rx: watch::Receiver<u64>,
     idle_notify: Arc<Notify>,
 }
 
-impl<N> BackgroundIndexerWorker<N>
-where
-    N: NameService + Publisher + 'static,
-{
+impl BackgroundIndexerWorker {
     /// Create a new worker and its associated handle
     pub fn new(
         backend: StorageBackend,
-        nameservice: Arc<N>,
+        nameservice: Arc<dyn ReadWriteNameService>,
         config: IndexerConfig,
     ) -> (Self, IndexerHandle) {
         let states = Arc::new(Mutex::new(BTreeMap::new()));
@@ -722,8 +679,6 @@ where
                     if state.cancelled && state.has_pending_work() {
                         state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                         state.pending_min_t = None;
-                        state.request_correlation = None;
-                        state.request_context_span = None;
                         state.phase = IndexPhase::Idle;
                         state.cancelled = false;
                     }
@@ -739,7 +694,7 @@ where
     async fn process_ledger(&self, ledger_id: &str) {
         let process_started = Instant::now();
 
-        let (pending_min_t, waiter_count, retry_count, correlation, context_span) = {
+        let (pending_min_t, waiter_count, retry_count) = {
             let lock_started = Instant::now();
             let states = self.states.lock().await;
             debug!(
@@ -748,13 +703,7 @@ where
                 "Acquired state lock for queued indexing snapshot"
             );
             if let Some(state) = states.get(ledger_id) {
-                (
-                    state.pending_min_t,
-                    state.waiters.len(),
-                    state.retry_count,
-                    state.request_correlation.clone(),
-                    state.request_context_span.clone(),
-                )
+                (state.pending_min_t, state.waiters.len(), state.retry_count)
             } else {
                 debug!(
                     ledger_id = %ledger_id,
@@ -763,13 +712,6 @@ where
                 return;
             }
         };
-        let request_id = correlation
-            .as_ref()
-            .and_then(|ctx| ctx.request_id.as_deref());
-        let trace_id = correlation.as_ref().and_then(|ctx| ctx.trace_id.as_deref());
-        let trigger_operation = correlation
-            .as_ref()
-            .and_then(|ctx| ctx.operation.as_deref());
 
         // Mark as in-progress
         {
@@ -804,31 +746,13 @@ where
             }
         }
 
-        if let Some(span) = context_span.as_ref() {
-            span.in_scope(|| {
-                info!(
-                    ledger_id = %ledger_id,
-                    request_id,
-                    trace_id,
-                    trigger_operation,
-                    pending_min_t = ?pending_min_t,
-                    waiter_count,
-                    retry_count,
-                    "Starting queued indexing work"
-                );
-            });
-        } else {
-            info!(
-                ledger_id = %ledger_id,
-                request_id,
-                trace_id,
-                trigger_operation,
-                pending_min_t = ?pending_min_t,
-                waiter_count,
-                retry_count,
-                "Starting queued indexing work"
-            );
-        }
+        info!(
+            ledger_id = %ledger_id,
+            pending_min_t = ?pending_min_t,
+            waiter_count,
+            retry_count,
+            "Starting queued indexing work"
+        );
 
         // Re-check nameservice for current state
         debug!(ledger_id = %ledger_id, "Looking up nameservice record for queued indexing work");
@@ -843,34 +767,16 @@ where
                         IndexOutcome::Failed("Ledger not found".to_string()),
                     );
                     state.pending_min_t = None;
-                    state.request_correlation = None;
-                    state.request_context_span = None;
                     state.phase = IndexPhase::Idle;
                 }
                 return;
             }
             Err(e) => {
-                if let Some(span) = context_span.as_ref() {
-                    span.in_scope(|| {
-                        warn!(
-                            ledger_id = %ledger_id,
-                            request_id,
-                            trace_id,
-                            trigger_operation,
-                            error = %e,
-                            "Nameservice lookup failed, will retry"
-                        );
-                    });
-                } else {
-                    warn!(
-                        ledger_id = %ledger_id,
-                        request_id,
-                        trace_id,
-                        trigger_operation,
+                warn!(
+                ledger_id = %ledger_id,
                         error = %e,
                         "Nameservice lookup failed, will retry"
                     );
-                }
                 self.schedule_retry(ledger_id, &e.to_string()).await;
                 return;
             }
@@ -878,35 +784,15 @@ where
 
         let current_index_t = record.index_t;
         let commit_gap = record.commit_t - current_index_t;
-        if let Some(span) = context_span.as_ref() {
-            span.in_scope(|| {
-                info!(
-                    ledger_id = %ledger_id,
-                    request_id,
-                    trace_id,
-                    trigger_operation,
-                    current_index_t,
-                    commit_t = record.commit_t,
-                    commit_gap,
-                    pending_min_t = ?pending_min_t,
-                    has_index = record.index_head_id.is_some(),
-                    "Loaded ledger state for queued indexing work"
-                );
-            });
-        } else {
-            info!(
-                ledger_id = %ledger_id,
-                request_id,
-                trace_id,
-                trigger_operation,
-                current_index_t,
-                commit_t = record.commit_t,
-                commit_gap,
-                pending_min_t = ?pending_min_t,
-                has_index = record.index_head_id.is_some(),
-                "Loaded ledger state for queued indexing work"
-            );
-        }
+        info!(
+            ledger_id = %ledger_id,
+            current_index_t,
+            commit_t = record.commit_t,
+            commit_gap,
+            pending_min_t = ?pending_min_t,
+            has_index = record.index_head_id.is_some(),
+            "Loaded ledger state for queued indexing work"
+        );
 
         // Check if index already satisfies all waiters
         {
@@ -1093,50 +979,17 @@ where
             "Queued indexing is about to call build_index_for_record"
         );
         // Execute refresh-first indexing to CURRENT commit_t
-        if let Some(span) = context_span.as_ref() {
-            span.in_scope(|| {
-                info!(
-                    ledger_id = %ledger_id,
-                    request_id,
-                    trace_id,
-                    trigger_operation,
-                    current_index_t,
-                    commit_t = record.commit_t,
-                    commit_gap,
-                    pending_min_t = ?pending_min_t,
-                    "Starting index build for queued work"
-                );
-            });
-        } else {
-            info!(
-                ledger_id = %ledger_id,
-                request_id,
-                trace_id,
-                trigger_operation,
-                current_index_t,
-                commit_t = record.commit_t,
-                commit_gap,
-                pending_min_t = ?pending_min_t,
-                "Starting index build for queued work"
-            );
-        }
+        info!(
+            ledger_id = %ledger_id,
+            current_index_t,
+            commit_t = record.commit_t,
+            commit_gap,
+            pending_min_t = ?pending_min_t,
+            "Starting index build for queued work"
+        );
         let content_store = self.backend.content_store(ledger_id);
-        let build_future = async {
-            if let Some(correlation) = correlation.clone() {
-                with_index_request_correlation(
-                    correlation,
-                    crate::build_index_for_record(content_store, &record, self.config.clone()),
-                )
-                .await
-            } else {
-                crate::build_index_for_record(content_store, &record, self.config.clone()).await
-            }
-        };
-        let result = if let Some(span) = context_span.clone() {
-            build_future.instrument(span).await
-        } else {
-            build_future.await
-        };
+        let result =
+            crate::build_index_for_record(content_store, &record, self.config.clone()).await;
 
         match result {
             Ok(index_result) => {
@@ -1144,50 +997,18 @@ where
                 if let Err(e) =
                     crate::publish_index_result(self.nameservice.as_ref(), &index_result).await
                 {
-                    if let Some(span) = context_span.as_ref() {
-                        span.in_scope(|| {
-                            warn!(
-                                ledger_id = %ledger_id,
-                                request_id,
-                                trace_id,
-                                trigger_operation,
-                                error = %e,
-                                "Failed to publish index, will retry"
-                            );
-                        });
-                    } else {
-                        warn!(
-                            ledger_id = %ledger_id,
-                            request_id,
-                            trace_id,
-                            trigger_operation,
+                    warn!(
+                    ledger_id = %ledger_id,
                             error = %e,
                             "Failed to publish index, will retry"
                         );
-                    }
                     self.schedule_retry(ledger_id, &e.to_string()).await;
                 } else {
-                    if let Some(span) = context_span.as_ref() {
-                        span.in_scope(|| {
-                            info!(
-                                ledger_id = %ledger_id,
-                                request_id,
-                                trace_id,
-                                trigger_operation,
-                                index_t = index_result.index_t,
-                                "Successfully indexed ledger"
-                            );
-                        });
-                    } else {
-                        info!(
-                            ledger_id = %ledger_id,
-                            request_id,
-                            trace_id,
-                            trigger_operation,
+                    info!(
+                    ledger_id = %ledger_id,
                             index_t = index_result.index_t,
                             "Successfully indexed ledger"
                         );
-                    }
 
                     // Spawn garbage collection (fire-and-forget, non-fatal).
                     let gc_store = self.backend.content_store(&index_result.ledger_id);
@@ -1231,27 +1052,11 @@ where
                 }
             }
             Err(e) => {
-                if let Some(span) = context_span.as_ref() {
-                    span.in_scope(|| {
-                        warn!(
-                            ledger_id = %ledger_id,
-                            request_id,
-                            trace_id,
-                            trigger_operation,
-                            error = %e,
-                            "Indexing failed, will retry"
-                        );
-                    });
-                } else {
-                    warn!(
-                        ledger_id = %ledger_id,
-                        request_id,
-                        trace_id,
-                        trigger_operation,
+                warn!(
+                ledger_id = %ledger_id,
                         error = %e,
                         "Indexing failed, will retry"
                     );
-                }
                 self.schedule_retry(ledger_id, &e.to_string()).await;
             }
         }
@@ -1265,8 +1070,6 @@ where
             if state.cancelled {
                 state.resolve_waiters_below(i64::MAX, IndexOutcome::Cancelled);
                 state.pending_min_t = None;
-                state.request_correlation = None;
-                state.request_context_span = None;
                 state.phase = IndexPhase::Idle;
                 return;
             }
@@ -1341,9 +1144,9 @@ fn current_ns_record(ledger: &LedgerState) -> Option<&fluree_db_nameservice::NsR
 }
 
 #[cfg(feature = "embedded-orchestrator")]
-pub async fn maybe_refresh_after_commit<S, N>(
+pub async fn maybe_refresh_after_commit<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn ReadWriteNameService,
     mut ledger: LedgerState,
     index_config: &IndexConfig,
     indexer_config: IndexerConfig,
@@ -1351,7 +1154,6 @@ pub async fn maybe_refresh_after_commit<S, N>(
 ) -> (LedgerState, PostCommitIndexResult)
 where
     S: Storage + fluree_db_core::StorageMethod + Clone + Send + Sync + 'static,
-    N: fluree_db_nameservice::NameService + Publisher,
 {
     // Check threshold
     if ledger.maybe_trigger_index(index_config).is_none() {
@@ -1459,16 +1261,15 @@ where
 /// - Should typically run *before* staging (since `stage()` also checks max novelty).
 /// - Errors are fatal here because the caller is explicitly trying to unblock commits.
 #[cfg(feature = "embedded-orchestrator")]
-pub async fn require_refresh_before_commit<S, N>(
+pub async fn require_refresh_before_commit<S>(
     storage: &S,
-    nameservice: &N,
+    nameservice: &dyn ReadWriteNameService,
     mut ledger: LedgerState,
     indexer_config: IndexerConfig,
     _target_t: i64,
 ) -> Result<LedgerState>
 where
     S: Storage + fluree_db_core::StorageMethod + Clone + Send + Sync + 'static,
-    N: fluree_db_nameservice::NameService + Publisher,
 {
     let ledger_addr = ledger.ledger_id().to_string();
     let cs: std::sync::Arc<dyn fluree_db_core::ContentStore> = std::sync::Arc::new(
@@ -1500,7 +1301,8 @@ mod tests {
     use fluree_db_core::{
         ContentAddressedWrite, ContentId, ContentKind, Flake, FlakeValue, MemoryStorage, Sid,
     };
-    use fluree_db_nameservice::{memory::MemoryNameService, CasResult, RefPublisher, RefValue};
+    use fluree_db_nameservice::memory::MemoryNameService;
+    use fluree_db_nameservice::{NameService, Publisher};
     use fluree_db_novelty::{Commit, CommitRef};
     use std::collections::HashMap;
 
@@ -1612,21 +1414,6 @@ mod tests {
         ContentId::new(ContentKind::Commit, &blob)
     }
 
-    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
-        let new = RefValue {
-            id: Some(cid.clone()),
-            t,
-        };
-        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
-            CasResult::Updated => {}
-            CasResult::Conflict { actual } => {
-                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                    panic!("unexpected commit publish conflict: {actual:?}");
-                }
-            }
-        }
-    }
-
     #[tokio::test]
     async fn test_orchestrator_needs_indexing_no_commits() {
         let storage = MemoryStorage::new();
@@ -1665,7 +1452,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         let orchestrator = IndexerOrchestrator::new(
             StorageBackend::Managed(Arc::new(storage)),
@@ -1699,7 +1486,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-current"));
@@ -1739,7 +1526,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid1 = store_commit(&storage, &commit1).await;
-        publish_commit(ns.as_ref(), "test:main", 1, &cid1).await;
+        ns.publish_commit("test:main", 1, &cid1).await.unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-behind"));
@@ -1766,7 +1553,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid2 = store_commit(&storage, &commit2).await;
-        publish_commit(ns.as_ref(), "test:main", 2, &cid2).await;
+        ns.publish_commit("test:main", 2, &cid2).await.unwrap();
 
         // Index is now behind - needs indexing
         let needs = orchestrator.needs_indexing("test:main").await.unwrap();
@@ -1794,7 +1581,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-ledger"));
@@ -1830,7 +1617,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-idx-publish"));
@@ -1870,7 +1657,7 @@ mod tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        publish_commit(ns.as_ref(), "test:main", 1, &cid).await;
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         let config = IndexerConfig::small()
             .with_data_dir(std::env::temp_dir().join("fluree-test-orch-existing"));
@@ -2094,33 +1881,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_trigger_captures_request_correlation() {
-        let storage = StorageBackend::Managed(Arc::new(MemoryStorage::new()));
-        let ns = Arc::new(MemoryNameService::new());
-        let (_worker, handle) = BackgroundIndexerWorker::new(storage, ns, IndexerConfig::small());
-        let correlation =
-            IndexRequestCorrelation::new(Some("req-123"), Some("trace-456"), Some("insert"));
-
-        with_index_request_correlation(correlation.clone(), async {
-            let _completion = handle.trigger("test:main", 1).await;
-        })
-        .await;
-
-        {
-            let states = handle.states.lock().await;
-            let state = states.get("test:main").expect("state exists");
-            assert_eq!(state.request_correlation, Some(correlation.clone()));
-        }
-
-        // A trigger without correlation should not erase the last concrete metadata
-        // while the ledger still has queued work.
-        let _completion = handle.trigger("test:main", 2).await;
-        let states = handle.states.lock().await;
-        let state = states.get("test:main").expect("state exists");
-        assert_eq!(state.request_correlation, Some(correlation));
-    }
-
-    #[tokio::test]
     async fn test_handle_wait_for_idle_immediate_return() {
         let storage = MemoryStorage::new();
         let ns = Arc::new(MemoryNameService::new());
@@ -2212,7 +1972,8 @@ mod embedded_tests {
         MemoryStorage, Sid,
     };
     use fluree_db_ledger::LedgerState;
-    use fluree_db_nameservice::{memory::MemoryNameService, CasResult, RefPublisher, RefValue};
+    use fluree_db_nameservice::memory::MemoryNameService;
+    use fluree_db_nameservice::Publisher;
     use fluree_db_novelty::{Commit, Novelty};
     use std::collections::HashMap;
 
@@ -2336,21 +2097,6 @@ mod embedded_tests {
         ContentId::new(ContentKind::Commit, &blob)
     }
 
-    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
-        let new = RefValue {
-            id: Some(cid.clone()),
-            t,
-        };
-        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
-            CasResult::Updated => {}
-            CasResult::Conflict { actual } => {
-                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                    panic!("unexpected commit publish conflict: {actual:?}");
-                }
-            }
-        }
-    }
-
     #[tokio::test]
     async fn test_maybe_refresh_below_threshold_returns_not_attempted() {
         let storage = MemoryStorage::new();
@@ -2419,7 +2165,7 @@ mod embedded_tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        publish_commit(&ns, "test:main", 1, &cid).await;
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         // Create a LedgerState with enough novelty to trigger threshold
         let db = LedgerSnapshot::genesis("test:main");
@@ -2472,7 +2218,7 @@ mod embedded_tests {
             ns_split_mode: None,
         };
         let cid = store_commit(&storage, &commit).await;
-        publish_commit(&ns, "test:main", 1, &cid).await;
+        ns.publish_commit("test:main", 1, &cid).await.unwrap();
 
         let db = LedgerSnapshot::genesis("test:main");
         let mut novelty = Novelty::new(0);

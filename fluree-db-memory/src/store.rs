@@ -5,7 +5,6 @@ use crate::types::{
 };
 use chrono::Utc;
 use fluree_db_api::Fluree;
-use fluree_db_nameservice::file::FileNameService;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
@@ -92,7 +91,7 @@ const MEMORY_LEDGER_ID: &str = "__memory:main";
 /// When `memory_dir` is set, mutations are also written to `.ttl` files
 /// for git-based sharing. The ledger serves as a derived query cache.
 pub struct MemoryStore {
-    fluree: Fluree<FileNameService>,
+    fluree: Fluree,
     memory_dir: Option<PathBuf>,
 }
 
@@ -101,7 +100,7 @@ impl MemoryStore {
     ///
     /// Pass `memory_dir` to enable file-based sync (e.g., `.fluree-memory/`).
     /// Pass `None` for legacy behavior (ledger-only, no file sharing).
-    pub fn new(fluree: Fluree<FileNameService>, memory_dir: Option<PathBuf>) -> Self {
+    pub fn new(fluree: Fluree, memory_dir: Option<PathBuf>) -> Self {
         Self { fluree, memory_dir }
     }
 

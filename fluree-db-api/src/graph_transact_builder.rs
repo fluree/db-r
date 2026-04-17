@@ -11,11 +11,10 @@ use crate::graph_query_builder::GraphSnapshotQueryBuilder;
 use crate::tx_builder::{commit_with_handle, Staged, TransactCore, TransactOperation};
 use crate::view::GraphDb;
 use crate::{
-    ApiError, Fluree, NameService, PolicyContext, Result, TrackedErrorResponse,
-    TrackedTransactionInput, Tracker, TrackingOptions, TransactResultRef,
+    ApiError, Fluree, PolicyContext, Result, TrackedErrorResponse, TrackedTransactionInput,
+    Tracker, TrackingOptions, TransactResultRef,
 };
 use fluree_db_ledger::IndexConfig;
-use fluree_db_nameservice::Publisher;
 use fluree_db_transact::{CommitOpts, TxnOpts};
 
 // ============================================================================
@@ -45,23 +44,14 @@ use fluree_db_transact::{CommitOpts, TxnOpts};
 ///     .stage()
 ///     .await?;
 /// ```
-pub struct GraphTransactBuilder<'a, 'g, N> {
-    graph: &'g Graph<'a, N>,
+pub struct GraphTransactBuilder<'a, 'g> {
+    graph: &'g Graph<'a>,
     core: TransactCore<'g>,
 }
 
-impl<'a, 'g, N> GraphTransactBuilder<'a, 'g, N>
-where
-    N: NameService
-        + Publisher
-        + fluree_db_nameservice::RefPublisher
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-{
+impl<'a, 'g> GraphTransactBuilder<'a, 'g> {
     /// Create a new builder (called by `Graph::transact()`).
-    pub(crate) fn new(graph: &'g Graph<'a, N>) -> Self {
+    pub(crate) fn new(graph: &'g Graph<'a>) -> Self {
         Self {
             graph,
             core: TransactCore::new(),
@@ -181,7 +171,7 @@ where
     ///
     /// let preview = staged.query().jsonld(&q).execute().await?;
     /// ```
-    pub async fn stage(self) -> Result<StagedGraph<'a, N>> {
+    pub async fn stage(self) -> Result<StagedGraph<'a>> {
         self.core.validate().map_err(ApiError::Builder)?;
 
         let op = self.core.operation.unwrap();
@@ -266,16 +256,13 @@ where
 ///
 /// let preview = staged.query().jsonld(&q).execute().await?;
 /// ```
-pub struct StagedGraph<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct StagedGraph<'a> {
+    fluree: &'a Fluree,
     staged: Staged,
     staged_view: GraphDb,
 }
 
-impl<'a, N> StagedGraph<'a, N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl<'a> StagedGraph<'a> {
     /// Create a query builder that sees the staged changes.
     ///
     /// # Example
@@ -283,7 +270,7 @@ where
     /// ```ignore
     /// let preview = staged.query().jsonld(&q).execute().await?;
     /// ```
-    pub fn query(&self) -> GraphSnapshotQueryBuilder<'a, '_, N> {
+    pub fn query(&self) -> GraphSnapshotQueryBuilder<'a, '_> {
         GraphSnapshotQueryBuilder::new_from_parts(self.fluree, &self.staged_view)
     }
 

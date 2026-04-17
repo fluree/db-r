@@ -20,7 +20,7 @@ use fluree_db_core::{ledger_id::split_ledger_id, ContentId, ContentStore};
 #[cfg(feature = "vector")]
 use fluree_db_ledger::LedgerState;
 #[cfg(feature = "vector")]
-use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
+use fluree_db_nameservice::GraphSourceType;
 #[cfg(feature = "vector")]
 use fluree_db_query::parse::parse_query;
 #[cfg(feature = "vector")]
@@ -43,10 +43,7 @@ use tracing::{info, warn};
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Create a vector similarity search index.
     ///
     /// This operation:
@@ -98,7 +95,7 @@ where
 
         // Check if graph source already exists (prevent duplicates)
         if let Some(existing) = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(&graph_source_id)
             .await?
         {
@@ -197,7 +194,7 @@ where
             }
         }))?;
 
-        self.nameservice
+        self.publisher()?
             .publish_graph_source(
                 &config.name,
                 config.effective_branch(),
@@ -208,7 +205,7 @@ where
             .await?;
 
         // Publish index CID and watermark
-        self.nameservice
+        self.publisher()?
             .publish_graph_source_index(
                 &config.name,
                 config.effective_branch(),
@@ -308,10 +305,7 @@ where
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<N> crate::Fluree<N>
-where
-    N: NameService + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Load a vector index from storage (head snapshot).
     ///
     /// Vector indexes are head-only and do not support time-travel queries.
@@ -320,7 +314,7 @@ where
 
         // Look up graph source record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -351,7 +345,7 @@ where
     ) -> Result<VectorStalenessCheck> {
         // Look up graph source record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -370,7 +364,7 @@ where
         // Check minimum head across all dependencies
         let mut ledger_t: Option<i64> = None;
         for dep in &record.dependencies {
-            let ledger_record = self.nameservice.lookup(dep).await?.ok_or_else(|| {
+            let ledger_record = self.nameservice().lookup(dep).await?.ok_or_else(|| {
                 crate::ApiError::NotFound(format!("Source ledger not found: {}", dep))
             })?;
             ledger_t = Some(match ledger_t {
@@ -400,10 +394,7 @@ where
 // =============================================================================
 
 #[cfg(feature = "vector")]
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Sync a vector index to catch up with ledger updates.
     ///
     /// This operation performs incremental updates when possible,
@@ -418,7 +409,7 @@ where
 
         // 1. Look up graph source record to get config and index address
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -583,7 +574,7 @@ where
         })?;
 
         // 11. Update graph source index record (head pointer)
-        self.nameservice
+        self.publisher()?
             .publish_graph_source_index(&name, &branch, &new_index_id, ledger_t)
             .await?;
 
@@ -615,7 +606,7 @@ where
 
         // 1. Look up graph source record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -741,7 +732,7 @@ where
         })?;
 
         // 7. Update graph source index record (head pointer)
-        self.nameservice
+        self.publisher()?
             .publish_graph_source_index(&name, &branch, &new_index_id, ledger_t)
             .await?;
 
@@ -772,7 +763,7 @@ where
 
         // Look up graph source record
         let record = self
-            .nameservice
+            .nameservice()
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
@@ -795,7 +786,7 @@ where
             ))
         })?;
 
-        self.nameservice
+        self.publisher()?
             .retract_graph_source(&name, &branch)
             .await?;
 

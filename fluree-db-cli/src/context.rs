@@ -4,7 +4,6 @@ use crate::remote_client::{RefreshConfig, RemoteLedgerClient};
 use colored::Colorize;
 use fluree_db_api::server_defaults::FlureeDir;
 use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig};
-use fluree_db_nameservice::file::FileNameService;
 use fluree_db_nameservice::RemoteName;
 use fluree_db_nameservice_sync::{
     RemoteAuth, RemoteAuthType, RemoteConfig, RemoteEndpoint, SyncConfigStore,
@@ -33,10 +32,7 @@ fn remote_timeout() -> Duration {
 /// Resolved ledger mode: either local or tracked (remote-only).
 pub enum LedgerMode {
     /// Local ledger via Fluree API (traditional path).
-    Local {
-        fluree: Box<Fluree<FileNameService>>,
-        alias: String,
-    },
+    Local { fluree: Box<Fluree>, alias: String },
     /// Remote-only tracked ledger via HTTP.
     Tracked {
         client: Box<RemoteLedgerClient>,
@@ -307,7 +303,7 @@ pub fn resolve_ledger(explicit: Option<&str>, dirs: &FlureeDir) -> CliResult<Str
 ///
 /// Honors `[server].storage_path` and `[server.indexing]` thresholds
 /// from the config file if set, otherwise falls back to defaults.
-pub fn build_fluree(dirs: &FlureeDir) -> CliResult<Fluree<FileNameService>> {
+pub fn build_fluree(dirs: &FlureeDir) -> CliResult<Fluree> {
     let storage = config::resolve_storage_path(dirs);
     let storage_str = storage.to_string_lossy().to_string();
     let mut builder = FlureeBuilder::file(storage_str).without_ledger_caching();

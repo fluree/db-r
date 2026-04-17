@@ -9,6 +9,7 @@
 //! The `vector_search_post_indexing_*` tests exercise the binary index path:
 //! transact → index build → query from arena (not novelty).
 
+use std::sync::Arc;
 mod support;
 
 use fluree_db_api::FlureeBuilder;
@@ -483,7 +484,6 @@ async fn vector_search_mixed_datatypes() {
 async fn vector_search_post_indexing() {
     use fluree_db_api::{IndexConfig, LedgerState, Novelty};
     use fluree_db_core::LedgerSnapshot;
-    use fluree_db_nameservice::NameService;
     use fluree_db_transact::{CommitOpts, TxnOpts};
     use support::start_background_indexer_local;
 
@@ -492,7 +492,7 @@ async fn vector_search_post_indexing() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
 
@@ -613,7 +613,7 @@ async fn vector_search_novelty_plus_indexed() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
 
@@ -800,7 +800,7 @@ async fn vector_cosine_normalized_optimization() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        (*fluree.nameservice()).clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
 

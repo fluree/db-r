@@ -9,6 +9,7 @@
 
 #![cfg(feature = "native")]
 
+use std::sync::Arc;
 mod support;
 
 use fluree_db_api::{FlureeBuilder, IndexConfig};
@@ -73,7 +74,7 @@ async fn config_graph_survives_indexing() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -170,7 +171,7 @@ async fn upsert_enforce_unique_self_conflict_after_indexing() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -268,7 +269,7 @@ async fn upsert_enforce_unique_urn_iris_after_indexing() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));
@@ -379,7 +380,7 @@ async fn failed_unique_violation_no_corruption_after_indexing() {
 
     let (local, handle) = start_background_indexer_local(
         fluree.backend().clone(),
-        fluree.nameservice().clone(),
+        Arc::new(fluree.nameservice_mode().clone()),
         fluree_db_indexer::IndexerConfig::small(),
     );
     fluree.set_indexing_mode(fluree_db_api::tx::IndexingMode::Background(handle.clone()));

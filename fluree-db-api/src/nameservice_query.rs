@@ -26,7 +26,7 @@
 use crate::ledger_info::{gs_record_to_jsonld, ns_record_to_jsonld};
 use crate::{ApiError, FlureeBuilder, GraphDb, Result};
 use fluree_db_ledger::IndexConfig;
-use fluree_db_nameservice::{GraphSourcePublisher, NameService};
+use fluree_db_nameservice::NameService;
 use fluree_db_transact::{CommitOpts, TxnOpts, TxnType};
 use serde_json::{json, Value as JsonValue};
 
@@ -59,7 +59,7 @@ use serde_json::{json, Value as JsonValue};
 /// ```
 pub async fn query_nameservice<N>(nameservice: &N, query_json: &JsonValue) -> Result<JsonValue>
 where
-    N: NameService + GraphSourcePublisher,
+    N: NameService,
 {
     // 1. Get all ledger records
     let ledger_records = nameservice.all_records().await?;
@@ -123,23 +123,8 @@ mod tests {
     use super::*;
     use fluree_db_core::{ContentId, ContentKind};
     use fluree_db_nameservice::{
-        memory::MemoryNameService, CasResult, GraphSourceType, RefPublisher, RefValue,
+        memory::MemoryNameService, GraphSourcePublisher, GraphSourceType, Publisher,
     };
-
-    async fn publish_commit(ns: &impl RefPublisher, ledger_id: &str, t: i64, cid: &ContentId) {
-        let new = RefValue {
-            id: Some(cid.clone()),
-            t,
-        };
-        match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
-            CasResult::Updated => {}
-            CasResult::Conflict { actual } => {
-                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                    panic!("unexpected commit publish conflict: {actual:?}");
-                }
-            }
-        }
-    }
 
     async fn setup_ns_with_records() -> MemoryNameService {
         let ns = MemoryNameService::new();
@@ -148,9 +133,9 @@ mod tests {
         let cid1 = ContentId::new(ContentKind::Commit, b"commit-1");
         let cid2 = ContentId::new(ContentKind::Commit, b"commit-2");
         let cid3 = ContentId::new(ContentKind::Commit, b"commit-3");
-        publish_commit(&ns, "db1:main", 10, &cid1).await;
-        publish_commit(&ns, "db1:dev", 5, &cid2).await;
-        publish_commit(&ns, "db2:main", 20, &cid3).await;
+        ns.publish_commit("db1:main", 10, &cid1).await.unwrap();
+        ns.publish_commit("db1:dev", 5, &cid2).await.unwrap();
+        ns.publish_commit("db2:main", 20, &cid3).await.unwrap();
 
         // Create a graph source record
         ns.publish_graph_source(

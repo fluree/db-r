@@ -8,7 +8,9 @@ use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
 use crate::extract::{FlureeHeaders, MaybeDataBearer};
 use crate::state::AppState;
-use crate::telemetry::{create_request_span, extract_request_id, set_span_error_code};
+use crate::telemetry::{
+    create_request_span, extract_request_id, extract_trace_id, set_span_error_code,
+};
 use axum::extract::{Path, Query, Request, State};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -63,11 +65,12 @@ async fn show_local(
     query: CommitShowQuery,
 ) -> Result<Response> {
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
 
     let span = create_request_span(
         "commit:show",
         request_id.as_deref(),
-        &headers.raw,
+        trace_id.as_deref(),
         None,
         None,
         None,
@@ -133,44 +136,30 @@ async fn show_local(
             ));
         }
 
-        // Dispatch commit show across File/Client variants.
-        // Proxy mode is already guarded above so it never reaches here.
-        macro_rules! commit_show {
-            ($fluree:expr) => {{
-                let fluree = $fluree;
-                if let Some(t_str) = commit_ref.strip_prefix("t:") {
-                    let t: i64 = t_str.parse().map_err(|_| {
-                        ServerError::bad_request(format!("Invalid transaction number: '{t_str}'"))
-                    })?;
-                    fluree
-                        .graph(&alias)
-                        .commit_t(t)
-                        .identity(identity.as_deref())
-                        .policy_class(policy_class)
-                        .execute()
-                        .await
-                        .map_err(ServerError::Api)?
-                } else {
-                    fluree
-                        .graph(&alias)
-                        .commit_prefix(commit_ref)
-                        .identity(identity.as_deref())
-                        .policy_class(policy_class)
-                        .execute()
-                        .await
-                        .map_err(ServerError::Api)?
-                }
-            }};
-        }
+        let fluree = &state.fluree;
 
-        let detail = match &state.fluree {
-            crate::state::FlureeInstance::Direct(d) => commit_show!(d),
-            crate::state::FlureeInstance::Proxy(_) => {
-                // Unreachable: proxy mode guard above returns early.
-                return Err(ServerError::NotImplemented(
-                    "Commit show is not available in proxy storage mode".to_string(),
-                ));
-            }
+        // Parse commit ref: "t:N" → by transaction number, otherwise by prefix/CID
+        let detail = if let Some(t_str) = commit_ref.strip_prefix("t:") {
+            let t: i64 = t_str.parse().map_err(|_| {
+                ServerError::bad_request(format!("Invalid transaction number: '{t_str}'"))
+            })?;
+            fluree
+                .graph(&alias)
+                .commit_t(t)
+                .identity(identity.as_deref())
+                .policy_class(policy_class)
+                .execute()
+                .await
+                .map_err(ServerError::Api)?
+        } else {
+            fluree
+                .graph(&alias)
+                .commit_prefix(commit_ref)
+                .identity(identity.as_deref())
+                .policy_class(policy_class)
+                .execute()
+                .await
+                .map_err(ServerError::Api)?
         };
 
         tracing::info!(status = "success", t = detail.t, "commit show complete");

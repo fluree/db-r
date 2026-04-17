@@ -12,7 +12,7 @@ use fluree_db_core::ledger_id::format_ledger_id;
 use fluree_db_core::{collect_dag_cids, load_commit_by_id, CommonAncestor};
 use fluree_db_core::{ConflictKey, ContentId, ContentStore, Flake};
 use fluree_db_ledger::{LedgerState, LedgerView};
-use fluree_db_nameservice::{NameService, NsRecord, NsRecordSnapshot, Publisher};
+use fluree_db_nameservice::{NsRecord, NsRecordSnapshot};
 use fluree_db_novelty::compute_delta_keys;
 use fluree_db_transact::{CommitOpts, NamespaceRegistry};
 use rustc_hash::FxHashSet;
@@ -40,10 +40,7 @@ pub struct MergeReport {
     pub strategy: Option<String>,
 }
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + fluree_db_nameservice::RefPublisher + 'static,
-{
+impl crate::Fluree {
     /// Merge a source branch into a target branch.
     ///
     /// Supports fast-forward merges (when the target has not diverged) and
@@ -76,7 +73,7 @@ where
     ) -> Result<MergeReport> {
         let source_id = format_ledger_id(ledger_name, source_branch);
         let source_record = self
-            .nameservice
+            .nameservice()
             .lookup(&source_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(source_id.clone()))?;
@@ -99,7 +96,7 @@ where
 
         let target_id = format_ledger_id(ledger_name, resolved_target);
         let target_record = self
-            .nameservice
+            .nameservice()
             .lookup(&target_id)
             .await?
             .ok_or_else(|| ApiError::NotFound(target_id.clone()))?;
@@ -114,9 +111,12 @@ where
         // Compute common ancestor to determine fast-forward eligibility.
         // Build a BranchedContentStore for the source so we can walk both
         // commit chains through parent namespaces.
-        let source_store =
-            LedgerState::build_branched_store(&self.nameservice, &source_record, self.backend())
-                .await?;
+        let source_store = LedgerState::build_branched_store(
+            &self.nameservice_mode,
+            &source_record,
+            self.backend(),
+        )
+        .await?;
 
         let target_head = target_record.commit_head_id.as_ref();
         let ancestor = match target_head {
@@ -137,21 +137,6 @@ where
             (None, None) => true,
             _ => false,
         };
-
-        // Already up to date: source and target point at the same commit.
-        // Nothing to copy or advance; return a successful no-op report.
-        if target_head == Some(&source_head_id) {
-            return Ok(MergeReport {
-                target: resolved_target.to_string(),
-                source: source_branch.to_string(),
-                fast_forward: true,
-                new_head_t: source_head_t,
-                new_head_id: source_head_id,
-                commits_copied: 0,
-                conflict_count: 0,
-                strategy: None,
-            });
-        }
 
         // Snapshot target nameservice state before mutations.
         // If any step fails after publish_commit, we roll back.
@@ -203,7 +188,7 @@ where
                     "merge failed, rolling back nameservice state"
                 );
                 if let Err(rollback_err) = self
-                    .nameservice
+                    .nameservice()
                     .reset_head(&target_id, target_snapshot)
                     .await
                 {
@@ -239,29 +224,10 @@ where
             .copy_commit_chain(source_store, source_head_id, stop_at_t, target_id)
             .await?;
 
-        // Advance target's HEAD to source's HEAD via CAS to detect concurrent moves.
-        use fluree_db_nameservice::{CasResult, RefValue};
-
-        let new_ref = RefValue {
-            id: Some(source_head_id.clone()),
-            t: source_head_t,
-        };
-        match self
-            .nameservice
-            .fast_forward_commit(target_id, &new_ref, 3)
-            .await?
-        {
-            CasResult::Updated => {}
-            CasResult::Conflict { actual } => {
-                return Err(ApiError::internal(format!(
-                    "Fast-forward merge conflict on {}: target head moved concurrently \
-                     (attempted t={}, actual t={})",
-                    target_id,
-                    source_head_t,
-                    actual.as_ref().map(|r| r.t).unwrap_or(0),
-                )));
-            }
-        }
+        // Advance target's HEAD to source's HEAD.
+        self.publisher()?
+            .publish_commit(target_id, source_head_t, source_head_id)
+            .await?;
 
         // Copy source's index to target namespace.
         let source_id = &source_record.ledger_id;
@@ -275,7 +241,7 @@ where
                     "failed to copy index during merge; target will rebuild from commits"
                 );
             } else if let Err(e) = self
-                .nameservice
+                .publisher()?
                 .publish_index(target_id, source_record.index_t, index_cid)
                 .await
             {
@@ -329,9 +295,12 @@ where
 
         // Compute target delta. Build a branched store if target is also a branch.
         let target_delta = if target_record.source_branch.is_some() {
-            let target_store =
-                LedgerState::build_branched_store(&self.nameservice, target_record, self.backend())
-                    .await?;
+            let target_store = LedgerState::build_branched_store(
+                &self.nameservice_mode,
+                target_record,
+                self.backend(),
+            )
+            .await?;
             compute_delta_keys(target_store, target_head_id.clone(), ancestor.t).await?
         } else {
             let target_store = self.content_store(target_id);
@@ -355,7 +324,8 @@ where
         }
 
         // Load target state for staging the merge commit.
-        let target_state = LedgerState::load(&self.nameservice, target_id, self.backend()).await?;
+        let target_state =
+            LedgerState::load(&self.nameservice_mode, target_id, self.backend()).await?;
 
         // Collect source flakes and metadata: walk source commits from HEAD
         // to ancestor, gathering flakes, namespace deltas, and graph deltas.
@@ -397,11 +367,12 @@ where
 
         let content_store = self.content_store(target_id);
 
+        let publisher = self.publisher()?;
         let (receipt, _new_state) = fluree_db_transact::commit(
             view,
             ns_registry,
             &content_store,
-            &self.nameservice,
+            publisher,
             &self.index_config,
             commit_opts,
         )

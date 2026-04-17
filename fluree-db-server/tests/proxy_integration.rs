@@ -488,7 +488,7 @@ async fn test_peer_proxy_state_creation() {
 
     let (_tmp, state) = result.unwrap();
     assert!(state.config.is_proxy_storage_mode());
-    assert!(state.fluree.is_proxy());
+    assert!(state.fluree.nameservice_mode().is_read_only());
 }
 
 /// Test that FlureeInstance correctly identifies proxy mode
@@ -503,9 +503,8 @@ async fn test_fluree_instance_proxy_identification() {
 
     let (_tmp, state) = result.unwrap();
 
-    // Check FlureeInstance type
-    assert!(state.fluree.is_proxy());
-    assert!(!state.fluree.is_direct());
+    // Check that proxy mode produces a read-only nameservice
+    assert!(state.fluree.nameservice_mode().is_read_only());
 }
 
 // =============================================================================
@@ -1315,7 +1314,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
     assert_eq!(resp.status(), StatusCode::OK, "Transact should succeed");
 
     // Reindex to build binary leaves (FLI3) + refresh cache so binary_store is present.
-    let fluree = state.fluree.as_direct();
+    let fluree = &state.fluree;
     let reindex_result = fluree
         .reindex("leaf:test", ReindexOptions::default())
         .await
@@ -1480,7 +1479,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     // Reindex via tx server state (direct call) and refresh, then fetch DB root JSON over HTTP.
     // (The server is running in-process; state is still available in this test.)
     use fluree_db_api::ReindexOptions;
-    let fluree = state.fluree.as_direct();
+    let fluree = &state.fluree;
     let reindex_result = fluree
         .reindex("peer:test", ReindexOptions::default())
         .await
@@ -1625,7 +1624,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
         "Transact should succeed"
     );
 
-    let fluree = state.fluree.as_direct();
+    let fluree = &state.fluree;
     let reindex_result = fluree
         .reindex("raw:test", ReindexOptions::default())
         .await
@@ -1869,7 +1868,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
 
     // Step 3: Reindex to build the index
     // This creates real leaf nodes in storage
-    let fluree = state.fluree.as_direct();
+    let fluree = &state.fluree;
     let reindex_result = fluree
         .reindex(alias, ReindexOptions::default())
         .await
@@ -2036,7 +2035,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // Reindex
-    let fluree = state.fluree.as_direct();
+    let fluree = &state.fluree;
     let reindex_result = fluree
         .reindex(alias, ReindexOptions::default())
         .await

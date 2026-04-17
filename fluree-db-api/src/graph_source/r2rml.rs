@@ -18,7 +18,7 @@ use fluree_db_iceberg::{
     scan::{FileScanTask, ScanConfig, SendScanPlanner},
     IcebergGsConfig,
 };
-use fluree_db_nameservice::{GraphSourcePublisher, GraphSourceType, NameService, Publisher};
+use fluree_db_nameservice::GraphSourceType;
 use fluree_db_query::error::{QueryError, Result as QueryResult};
 use fluree_db_query::r2rml::{R2rmlProvider, R2rmlTableProvider};
 use fluree_db_r2rml::mapping::CompiledR2rmlMapping;
@@ -29,10 +29,7 @@ use tracing::{debug, info, warn};
 // Iceberg/R2RML Graph Source Creation
 // =============================================================================
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl crate::Fluree {
     /// Create an Iceberg graph source.
     ///
     /// This operation:
@@ -75,7 +72,7 @@ where
             .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
 
         // 4. Publish graph source record to nameservice
-        self.nameservice
+        self.publisher()?
             .publish_graph_source(
                 &config.name,
                 config.effective_branch(),
@@ -161,7 +158,7 @@ where
             .to_json()
             .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {e}")))?;
 
-        self.nameservice
+        self.publisher()?
             .publish_graph_source(
                 &config.iceberg.name,
                 config.iceberg.effective_branch(),
@@ -295,18 +292,18 @@ where
 /// let ctx = ExecutionContext::new(&db, &vars)
 ///     .with_r2rml_providers(&provider, &provider);
 /// ```
-pub struct FlureeR2rmlProvider<'a, N> {
-    fluree: &'a crate::Fluree<N>,
+pub struct FlureeR2rmlProvider<'a> {
+    fluree: &'a crate::Fluree,
 }
 
-impl<'a, N> FlureeR2rmlProvider<'a, N> {
+impl<'a> FlureeR2rmlProvider<'a> {
     /// Create a new R2RML provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree) -> Self {
         Self { fluree }
     }
 }
 
-impl<N> std::fmt::Debug for FlureeR2rmlProvider<'_, N> {
+impl std::fmt::Debug for FlureeR2rmlProvider<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeR2rmlProvider")
             .finish_non_exhaustive()
@@ -314,10 +311,7 @@ impl<N> std::fmt::Debug for FlureeR2rmlProvider<'_, N> {
 }
 
 #[async_trait]
-impl<N> R2rmlProvider for FlureeR2rmlProvider<'_, N>
-where
-    N: NameService,
-{
+impl R2rmlProvider for FlureeR2rmlProvider<'_> {
     /// Check if a graph source has an R2RML mapping.
     async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
         match self
@@ -495,10 +489,7 @@ where
 }
 
 #[async_trait]
-impl<N> R2rmlTableProvider for FlureeR2rmlProvider<'_, N>
-where
-    N: NameService,
-{
+impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
     /// Scan an Iceberg table and return column batches.
     ///
     /// This method connects to the Iceberg catalog, executes a scan with

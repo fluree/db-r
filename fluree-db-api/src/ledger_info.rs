@@ -969,7 +969,6 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
 // ============================================================================
 
 use crate::{ApiError, Fluree};
-use fluree_db_nameservice::NameService;
 
 /// Builder for retrieving comprehensive ledger metadata.
 ///
@@ -985,19 +984,16 @@ use fluree_db_nameservice::NameService;
 ///     .execute()
 ///     .await?;
 /// ```
-pub struct LedgerInfoBuilder<'a, N> {
-    fluree: &'a Fluree<N>,
+pub struct LedgerInfoBuilder<'a> {
+    fluree: &'a Fluree,
     ledger_id: String,
     context: Option<&'a JsonValue>,
     options: LedgerInfoOptions,
 }
 
-impl<'a, N> LedgerInfoBuilder<'a, N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl<'a> LedgerInfoBuilder<'a> {
     /// Create a new builder (called by `Fluree::ledger_info()`).
-    pub(crate) fn new(fluree: &'a Fluree<N>, ledger_id: String) -> Self {
+    pub(crate) fn new(fluree: &'a Fluree, ledger_id: String) -> Self {
         Self {
             fluree,
             ledger_id,

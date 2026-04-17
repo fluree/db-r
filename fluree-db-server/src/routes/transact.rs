@@ -363,7 +363,7 @@ async fn update_local(
     let span = create_request_span(
         "update",
         request_id.as_deref(),
-        &credential.headers,
+        extract_trace_id(&credential.headers).as_deref(),
         None, // ledger ID determined later
         None, // tenant_id not yet supported
         Some(input_format),
@@ -509,7 +509,7 @@ async fn update_ledger_local(
     let span = create_request_span(
         "update",
         request_id.as_deref(),
-        &credential.headers,
+        extract_trace_id(&credential.headers).as_deref(),
         Some(&ledger),
         None,
         Some(input_format),
@@ -635,7 +635,7 @@ async fn insert_local(
     let span = create_request_span(
         "insert",
         request_id.as_deref(),
-        &credential.headers,
+        extract_trace_id(&credential.headers).as_deref(),
         None,
         None,
         Some(input_format),
@@ -780,7 +780,7 @@ async fn upsert_local(
     let span = create_request_span(
         "upsert",
         request_id.as_deref(),
-        &credential.headers,
+        extract_trace_id(&credential.headers).as_deref(),
         None,
         None,
         Some(input_format),
@@ -939,7 +939,7 @@ async fn insert_ledger_local(
     let span = create_request_span(
         "insert",
         request_id.as_deref(),
-        &credential.headers,
+        extract_trace_id(&credential.headers).as_deref(),
         Some(&ledger),
         None,
         Some(input_format),
@@ -1085,7 +1085,7 @@ async fn upsert_ledger_local(
     let span = create_request_span(
         "upsert",
         request_id.as_deref(),
-        &credential.headers,
+        extract_trace_id(&credential.headers).as_deref(),
         Some(&ledger),
         None,
         Some(input_format),
@@ -1219,7 +1219,7 @@ async fn execute_transaction(
 
         // Get cached ledger handle (loads if not cached)
         // Transaction execution is only in transaction mode (peers forward)
-        let handle = match state.fluree.as_direct().ledger_cached(ledger_id).await {
+        let handle = match state.fluree.ledger_cached(ledger_id).await {
             Ok(handle) => handle,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -1277,7 +1277,7 @@ async fn execute_transaction(
         // Build and execute the transaction via the builder API.
         // Hoisted above CommitOpts assembly so we can spawn the raw-txn upload
         // in parallel with the rest of the pipeline when the request is signed.
-        let fluree = state.fluree.as_direct();
+        let fluree = &state.fluree;
 
         // If the request was signed, ALWAYS store the original signed envelope for provenance.
         // (No opt-in needed; this is the primary reason to store txn payloads.)
@@ -1419,7 +1419,7 @@ async fn execute_turtle_transaction(
         tracing::debug!(tx_id = %tx_id, "computed transaction ID");
 
         // Get cached ledger handle (loads if not cached)
-        let handle = match state.fluree.as_direct().ledger_cached(ledger_id).await {
+        let handle = match state.fluree.ledger_cached(ledger_id).await {
             Ok(handle) => handle,
             Err(e) => {
                 let server_error = ServerError::Api(e);
@@ -1435,7 +1435,7 @@ async fn execute_turtle_transaction(
 
         // Build fluree handle first so we can spawn the raw-txn upload in
         // parallel with the rest of the pipeline.
-        let fluree = state.fluree.as_direct();
+        let fluree = &state.fluree;
 
         // If the request was signed, ALWAYS store the original signed envelope for provenance.
         let mut commit_opts = match &did {
@@ -1601,7 +1601,7 @@ async fn execute_sparql_update_request(
     };
 
     // Get ledger handle
-    let handle = match state.fluree.as_direct().ledger_cached(&ledger_id).await {
+    let handle = match state.fluree.ledger_cached(&ledger_id).await {
         Ok(handle) => handle,
         Err(e) => {
             let server_error = ServerError::Api(e);
@@ -1698,7 +1698,7 @@ async fn execute_sparql_update_request(
     );
 
     // Execute the transaction using the Txn IR directly
-    let fluree = state.fluree.as_direct();
+    let fluree = &state.fluree;
     let mut builder = fluree.stage(&handle).txn(txn);
     let mut commit_opts = CommitOpts::default();
     if let Some(d) = &effective_identity {

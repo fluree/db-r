@@ -79,10 +79,10 @@ fn force_auth_opts(query: &mut JsonValue, identity: Option<&str>, policy_class: 
 /// Returns `false` in proxy mode, on lookup errors, and for any identity lookup
 /// result other than `FoundNoPolicies`.
 async fn bearer_can_impersonate(state: &AppState, ledger_id: &str, bearer_identity: &str) -> bool {
-    if !state.fluree.is_direct() {
+    if state.config.is_proxy_storage_mode() {
         return false;
     }
-    let fluree = state.fluree.as_direct();
+    let fluree = &state.fluree;
     let Ok(ledger) = fluree.ledger(ledger_id).await else {
         return false;
     };

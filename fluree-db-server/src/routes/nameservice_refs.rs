@@ -17,7 +17,7 @@
 //!
 //! # Server Role
 //! These endpoints are only available on transaction servers (file-backed mode).
-//! Proxy-mode instances return 404 since they lack direct storage access.
+//! Peer-mode instances return 404 since write operations require a read-write nameservice.
 
 use axum::{
     extract::{Path, State},
@@ -25,8 +25,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use fluree_db_api::Publisher;
-use fluree_db_nameservice::{CasResult, NameServiceError, RefKind, RefPublisher, RefValue};
+use fluree_db_nameservice::{CasResult, NameServiceError, RefKind, RefValue};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -76,12 +75,12 @@ pub struct SnapshotResponse {
 // Guards
 // ============================================================================
 
-/// Ensure we are running in direct storage mode (File or Client).
-/// Returns 404 in proxy/peer mode where nameservice sync is not available.
-fn require_direct_mode(state: &AppState) -> Result<(), ServerError> {
-    if state.fluree.is_proxy() {
+/// Ensure we are running in file-backed (transaction server) mode.
+/// Returns 404 in proxy/peer mode since write operations require a read-write nameservice.
+fn require_read_write_mode(state: &AppState) -> Result<(), ServerError> {
+    if state.fluree.nameservice_mode().is_read_only() {
         return Err(ServerError::not_found(
-            "Nameservice sync endpoints are not available in proxy mode",
+            "Nameservice sync endpoints are not available in peer mode",
         ));
     }
     Ok(())
@@ -101,7 +100,7 @@ pub async fn push_commit_ref(
     StorageProxyBearer(principal): StorageProxyBearer,
     Json(body): Json<PushRefRequest>,
 ) -> Result<Response, ServerError> {
-    require_direct_mode(&state)?;
+    require_read_write_mode(&state)?;
 
     if !principal.is_authorized_for_ledger(&alias) {
         return Err(ServerError::not_found("Ledger not found"));
@@ -120,7 +119,7 @@ pub async fn push_index_ref(
     StorageProxyBearer(principal): StorageProxyBearer,
     Json(body): Json<PushRefRequest>,
 ) -> Result<Response, ServerError> {
-    require_direct_mode(&state)?;
+    require_read_write_mode(&state)?;
 
     if !principal.is_authorized_for_ledger(&alias) {
         return Err(ServerError::not_found("Ledger not found"));
@@ -136,24 +135,14 @@ async fn push_ref_inner(
     kind: RefKind,
     body: PushRefRequest,
 ) -> Result<Response, ServerError> {
-    // Dispatch CAS operation across Direct/Proxy nameservice variants.
-    macro_rules! cas_ref {
-        ($ns:expr) => {{
-            $ns.compare_and_set_ref(alias, kind, body.expected.as_ref(), &body.new)
-                .await
-                .map_err(|e| ServerError::internal(format!("CAS operation failed: {}", e)))?
-        }};
-    }
+    let ns = state.fluree.nameservice_mode().publisher().ok_or_else(|| {
+        ServerError::internal("Write operations require a read-write nameservice")
+    })?;
 
-    let result = match &state.fluree {
-        crate::state::FlureeInstance::Direct(d) => cas_ref!(d.nameservice()),
-        crate::state::FlureeInstance::Proxy(_) => {
-            // Unreachable: require_direct_mode guard above returns early.
-            return Err(ServerError::NotImplemented(
-                "Nameservice sync is not available in proxy mode".to_string(),
-            ));
-        }
-    };
+    let result = ns
+        .compare_and_set_ref(alias, kind, body.expected.as_ref(), &body.new)
+        .await
+        .map_err(|e| ServerError::internal(format!("CAS operation failed: {}", e)))?;
 
     match result {
         CasResult::Updated => {
@@ -184,30 +173,17 @@ pub async fn init_ledger(
     Path(alias): Path<String>,
     StorageProxyBearer(principal): StorageProxyBearer,
 ) -> Result<Json<InitResponse>, ServerError> {
-    require_direct_mode(&state)?;
+    require_read_write_mode(&state)?;
 
     if !principal.is_authorized_for_ledger(&alias) {
         return Err(ServerError::not_found("Ledger not found"));
     }
 
-    // Dispatch init across Direct/Proxy nameservice variants.
-    macro_rules! init_ns {
-        ($ns:expr) => {
-            $ns.publish_ledger_init(&alias).await
-        };
-    }
+    let ns = state.fluree.nameservice_mode().publisher().ok_or_else(|| {
+        ServerError::internal("Write operations require a read-write nameservice")
+    })?;
 
-    let result = match &state.fluree {
-        crate::state::FlureeInstance::Direct(d) => init_ns!(d.nameservice()),
-        crate::state::FlureeInstance::Proxy(_) => {
-            // Unreachable: require_direct_mode guard above returns early.
-            return Err(ServerError::NotImplemented(
-                "Nameservice sync is not available in proxy mode".to_string(),
-            ));
-        }
-    };
-
-    match result {
+    match ns.publish_ledger_init(&alias).await {
         Ok(()) => Ok(Json(InitResponse { created: true })),
         Err(NameServiceError::LedgerAlreadyExists(_)) => Ok(Json(InitResponse { created: false })),
         Err(e) => Err(ServerError::internal(format!("Init failed: {}", e))),
@@ -224,21 +200,22 @@ pub async fn snapshot(
     State(state): State<Arc<AppState>>,
     StorageProxyBearer(principal): StorageProxyBearer,
 ) -> Result<Json<SnapshotResponse>, ServerError> {
-    require_direct_mode(&state)?;
+    require_read_write_mode(&state)?;
 
-    // Use FlureeInstance methods that already dispatch across all variants.
-    let all_ledgers = state
-        .fluree
-        .all_ns_records()
+    let fluree = &state.fluree;
+    let ns = fluree.nameservice();
+
+    let all_ledgers = ns
+        .all_records()
         .await
         .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {}", e)))?;
 
     if principal.storage_all {
         // Full access: return everything
-        let graph_sources =
-            state.fluree.all_graph_source_records().await.map_err(|e| {
-                ServerError::internal(format!("Failed to list graph sources: {}", e))
-            })?;
+        let graph_sources = ns
+            .all_graph_source_records()
+            .await
+            .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {}", e)))?;
 
         Ok(Json(SnapshotResponse {
             ledgers: all_ledgers,

@@ -50,13 +50,7 @@ fn ctx() -> JsonValue {
     })
 }
 
-async fn count_items<N>(
-    fluree: &fluree_db_api::Fluree<N>,
-    ledger: &fluree_db_api::LedgerState,
-) -> usize
-where
-    N: fluree_db_api::NameService,
-{
+async fn count_items(fluree: &fluree_db_api::Fluree, ledger: &fluree_db_api::LedgerState) -> usize {
     // SPARQL `SELECT (COUNT(*) AS ?c)` counts binding rows — each distinct
     // flake matching the pattern contributes one row, so list entries at
     // distinct positions with distinct values each get counted.

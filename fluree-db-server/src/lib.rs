@@ -104,25 +104,14 @@ impl FlureeServer {
     /// first query doesn't pay a cold-start penalty. Errors are logged but
     /// do not prevent the server from starting.
     async fn preload_all_ledgers(state: &Arc<AppState>) {
-        use fluree_db_nameservice::NameService;
-
         let start = std::time::Instant::now();
 
-        let records = match &state.fluree {
-            state::FlureeInstance::Direct(f) => match f.nameservice().all_records().await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to enumerate ledgers for preloading");
-                    return;
-                }
-            },
-            state::FlureeInstance::Proxy(p) => match p.nameservice().all_records().await {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to enumerate ledgers for preloading");
-                    return;
-                }
-            },
+        let records = match state.fluree.nameservice().all_records().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to enumerate ledgers for preloading");
+                return;
+            }
         };
 
         let active: Vec<_> = records.into_iter().filter(|r| !r.retracted).collect();
@@ -134,10 +123,7 @@ impl FlureeServer {
         let mut loaded = 0usize;
 
         for record in &active {
-            let handle = match &state.fluree {
-                state::FlureeInstance::Direct(f) => f.ledger_cached(&record.ledger_id).await,
-                state::FlureeInstance::Proxy(p) => p.ledger_cached(&record.ledger_id).await,
-            };
+            let handle = state.fluree.ledger_cached(&record.ledger_id).await;
 
             match handle {
                 Ok(handle) => {
@@ -209,13 +195,13 @@ impl FlureeServer {
                 .clone()
                 .expect("peer_state should exist in peer mode");
 
-            if self.state.fluree.is_direct() {
+            if !self.state.fluree.nameservice_mode().is_read_only() {
                 // Shared storage: PeerSyncTask persists refs into local FileNameService
                 let events_url = peer::build_peer_events_url(&self.state.config);
                 let auth_token = self.state.config.load_peer_events_token().ok().flatten();
                 let watch = fluree_db_nameservice_sync::SseRemoteWatch::new(events_url, auth_token);
                 let task = peer::PeerSyncTask::new(
-                    self.state.fluree.as_direct().clone(),
+                    Arc::clone(&self.state.fluree),
                     peer_state,
                     watch,
                     self.state.config.clone(),
@@ -226,7 +212,7 @@ impl FlureeServer {
                 let task = peer::PeerSubscriptionTask::new(
                     self.state.config.clone(),
                     peer_state,
-                    self.state.fluree.clone(),
+                    Arc::clone(&self.state.fluree),
                 );
                 Some(task.spawn())
             }
@@ -272,24 +258,13 @@ impl FlureeServer {
         &self,
         sweep_interval: std::time::Duration,
     ) -> std::result::Result<tokio::task::JoinHandle<()>, fluree_db_api::ApiError> {
-        use fluree_db_nameservice::{Publication, SubscriptionScope};
+        use fluree_db_nameservice::SubscriptionScope;
 
-        let subscription = match &self.state.fluree {
-            state::FlureeInstance::Direct(f) => {
-                let pub_ns = f.nameservice().publication().ok_or_else(|| {
-                    fluree_db_api::ApiError::internal(
-                        "Registry maintenance requires a nameservice that supports publication",
-                    )
-                })?;
-                pub_ns.subscribe(SubscriptionScope::All).await
-            }
-            state::FlureeInstance::Proxy(p) => {
-                p.nameservice().subscribe(SubscriptionScope::All).await
-            }
-        }
-        .map_err(|e| {
-            fluree_db_api::ApiError::internal(format!("Failed to subscribe for registry: {}", e))
-        })?;
+        let subscription = self
+            .state
+            .fluree
+            .event_bus()
+            .subscribe(SubscriptionScope::All);
 
         let handle = registry::LedgerRegistry::spawn_maintenance_task(
             self.state.registry.clone(),

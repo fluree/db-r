@@ -21,7 +21,6 @@ use fluree_db_core::{
 };
 use fluree_db_indexer::IndexerHandle;
 use fluree_db_ledger::{IndexConfig, LedgerState, LedgerView};
-use fluree_db_nameservice::{NameService, Publisher};
 use fluree_db_novelty::TxnMetaEntry;
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
@@ -803,10 +802,7 @@ fn convert_named_graphs_to_templates(
     Ok((templates, graph_delta))
 }
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
-{
+impl crate::Fluree {
     /// Stage a transaction against a ledger (no persistence).
     ///
     /// Respects `opts.max-fuel` in the transaction JSON for fuel limits (consistent with query behavior).
@@ -1165,11 +1161,12 @@ where
         commit_opts: CommitOpts,
     ) -> Result<(CommitReceipt, LedgerState)> {
         let content_store = self.content_store(view.db().ledger_id.as_str());
+        let publisher = self.publisher()?;
         let (receipt, ledger) = commit_txn(
             view,
             ns_registry,
             &content_store,
-            &self.nameservice,
+            publisher,
             index_config,
             commit_opts,
         )
@@ -1951,10 +1948,7 @@ where
     }
 }
 
-impl<N> crate::Fluree<N>
-where
-    N: NameService + Publisher + fluree_db_nameservice::RefPublisher,
-{
+impl crate::Fluree {
     /// Update data using a transaction that specifies the ledger ID.
     ///
     /// Transaction update helper where the transaction payload includes

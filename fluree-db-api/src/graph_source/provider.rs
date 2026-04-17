@@ -18,7 +18,6 @@
 
 use async_trait::async_trait;
 use fluree_db_core::ContentStore;
-use fluree_db_nameservice::{GraphSourcePublisher, NameService, Publisher};
 use fluree_db_query::bm25::{Bm25Index, Bm25IndexProvider, Bm25SearchProvider, Bm25SearchResult};
 use fluree_db_query::error::{QueryError, Result as QueryResult};
 use std::sync::Arc;
@@ -56,18 +55,18 @@ use fluree_db_query::vector::{VectorIndexProvider, VectorSearchHit, VectorSearch
 /// let mut ctx = ExecutionContext::new(&db, &vars);
 /// ctx.bm25_provider = Some(&provider);
 /// ```
-pub struct FlureeIndexProvider<'a, N> {
-    fluree: &'a crate::Fluree<N>,
+pub struct FlureeIndexProvider<'a> {
+    fluree: &'a crate::Fluree,
 }
 
-impl<'a, N> FlureeIndexProvider<'a, N> {
+impl<'a> FlureeIndexProvider<'a> {
     /// Create a new index provider wrapping a Fluree instance.
-    pub fn new(fluree: &'a crate::Fluree<N>) -> Self {
+    pub fn new(fluree: &'a crate::Fluree) -> Self {
         Self { fluree }
     }
 }
 
-impl<N> std::fmt::Debug for FlureeIndexProvider<'_, N> {
+impl std::fmt::Debug for FlureeIndexProvider<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlureeIndexProvider")
             .finish_non_exhaustive()
@@ -75,10 +74,7 @@ impl<N> std::fmt::Debug for FlureeIndexProvider<'_, N> {
 }
 
 #[async_trait]
-impl<N> Bm25IndexProvider for FlureeIndexProvider<'_, N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl Bm25IndexProvider for FlureeIndexProvider<'_> {
     /// Load a BM25 index for query execution with time-travel support.
     ///
     /// This method implements full time-travel semantics for BM25 queries:
@@ -209,10 +205,7 @@ where
 }
 
 #[async_trait]
-impl<N> Bm25SearchProvider for FlureeIndexProvider<'_, N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl Bm25SearchProvider for FlureeIndexProvider<'_> {
     /// Execute a BM25 search with time-travel support.
     ///
     /// This implementation routes between embedded and remote modes based on
@@ -286,10 +279,7 @@ where
     }
 }
 
-impl<'a, N> FlureeIndexProvider<'a, N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl<'a> FlureeIndexProvider<'a> {
     /// Get deployment configuration for a graph source.
     ///
     /// Looks up the graph source record from nameservice and parses the deployment
@@ -318,10 +308,7 @@ where
     }
 }
 
-impl<N> FlureeIndexProvider<'_, N>
-where
-    N: NameService + Publisher + GraphSourcePublisher,
-{
+impl FlureeIndexProvider<'_> {
     /// Selective search for v4 chunked snapshots.
     ///
     /// Handles the full lifecycle (manifest, snapshot selection, sync, selective
@@ -426,10 +413,7 @@ fn parse_deployment_from_gs_config(config_json: &str) -> QueryResult<SearchDeplo
 
 #[cfg(feature = "vector")]
 #[async_trait]
-impl<N> VectorIndexProvider for FlureeIndexProvider<'_, N>
-where
-    N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
-{
+impl VectorIndexProvider for FlureeIndexProvider<'_> {
     /// Execute a vector similarity search with deployment routing and time-travel support.
     ///
     /// This implementation routes between embedded and remote modes based on
@@ -495,10 +479,7 @@ where
 }
 
 #[cfg(feature = "vector")]
-impl<'a, N> FlureeIndexProvider<'a, N>
-where
-    N: NameService + Publisher + GraphSourcePublisher + Send + Sync,
-{
+impl<'a> FlureeIndexProvider<'a> {
     /// Embedded vector search implementation (head-only).
     ///
     /// Vector indexes do not support time-travel. Loads the head snapshot

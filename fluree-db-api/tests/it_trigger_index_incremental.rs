@@ -4,7 +4,7 @@ mod support;
 
 use async_trait::async_trait;
 use fluree_db_api::tx::IndexingMode;
-use fluree_db_api::{Fluree, IndexerConfig, TriggerIndexOptions};
+use fluree_db_api::{Fluree, IndexerConfig, NameServiceMode, TriggerIndexOptions};
 use fluree_db_connection::config::ConnectionConfig;
 use fluree_db_core::{ContentKind, ContentStore, MemoryStorage, StorageMethod};
 use fluree_db_nameservice::memory::MemoryNameService;
@@ -116,10 +116,10 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
     let storage = CountingStorage::new();
     let nameservice = MemoryNameService::new();
 
-    let mut fluree: Fluree<MemoryNameService> = Fluree::new(
+    let mut fluree: Fluree = Fluree::new(
         ConnectionConfig::memory(),
         storage.clone(),
-        nameservice.clone(),
+        NameServiceMode::ReadWrite(Arc::new(nameservice.clone())),
     );
 
     // Use tiny leaflets/leaves so we can get multi-leaf indexes with small data.
@@ -131,7 +131,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
 
     let (local, handle) = support::start_background_indexer_local(
         fluree_db_core::StorageBackend::Managed(std::sync::Arc::new(storage.clone())),
-        nameservice.clone(),
+        std::sync::Arc::new(nameservice.clone()),
         indexer_cfg,
     );
     fluree.set_indexing_mode(IndexingMode::Background(handle.clone()));

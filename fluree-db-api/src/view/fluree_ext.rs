@@ -8,8 +8,7 @@ use chrono::DateTime;
 
 use crate::view::{GraphDb, ReasoningModePrecedence};
 use crate::{
-    config_resolver, time_resolve, ApiError, Fluree, NameService, QueryConnectionOptions, Result,
-    TimeSpec,
+    config_resolver, time_resolve, ApiError, Fluree, QueryConnectionOptions, Result, TimeSpec,
 };
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ids::GraphId;
@@ -32,10 +31,7 @@ enum GraphRef {
     Named(String),
 }
 
-impl<N> Fluree<N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Split a graph reference like `ledger:main#txn-meta` into (ledger_id, graph_ref).
     ///
     /// Accepts both alias form (`mydb:main#txn-meta`) and full IRI form
@@ -305,7 +301,7 @@ where
         // takes the overlay/range path instead of the binary scan path.
         if view.snapshot.t > 0 {
             // Use nameservice record (not cached handle) to avoid stale index.
-            if let Some(record) = self.nameservice.lookup(ledger_id).await? {
+            if let Some(record) = self.nameservice().lookup(ledger_id).await? {
                 if let Some(index_cid) = record.index_head_id.as_ref() {
                     let cs = self.content_store(&record.ledger_id);
                     let bytes = cs.get(index_cid).await.map_err(|e| {
@@ -543,10 +539,7 @@ where
 // Graph Source Resolution (requires GraphSourcePublisher)
 // ============================================================================
 
-impl<N> Fluree<N>
-where
-    N: NameService + fluree_db_nameservice::GraphSourcePublisher + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Load a graph view, falling back to graph source resolution.
     ///
     /// Tries to load a ledger first. If not found, checks if the alias
@@ -585,10 +578,7 @@ where
 // Policy Wrapping
 // ============================================================================
 
-impl<N> Fluree<N>
-where
-    N: NameService + Clone + Send + Sync + 'static,
-{
+impl Fluree {
     /// Build policy from options and wrap a view.
     ///
     /// If the view has a `ResolvedConfig`, config defaults are merged with query
@@ -672,10 +662,7 @@ where
 // Reasoning Wrapping
 // ============================================================================
 
-impl<N> Fluree<N>
-where
-    N: NameService,
-{
+impl Fluree {
     /// Wrap a view with default reasoning modes.
     ///
     /// This is a pure function (no async) since it just attaches metadata.

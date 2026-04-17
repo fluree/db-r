@@ -33,15 +33,12 @@ fn ctx() -> JsonValue {
     })
 }
 
-async fn count_subjects_with_predicate<N>(
-    fluree: &fluree_db_api::Fluree<N>,
+async fn count_subjects_with_predicate(
+    fluree: &fluree_db_api::Fluree,
     ledger: &fluree_db_api::LedgerState,
     subject: &str,
     predicate: &str,
-) -> usize
-where
-    N: fluree_db_api::NameService,
-{
+) -> usize {
     let q = json!({
         "@context": ctx(),
         "select": ["?o"],

@@ -3,7 +3,6 @@ use crate::context;
 use crate::error::{CliError, CliResult};
 use comfy_table::{ContentArrangement, Table};
 use fluree_db_api::server_defaults::FlureeDir;
-use fluree_db_nameservice::GraphSourceLookup;
 
 // =============================================================================
 // fluree iceberg map

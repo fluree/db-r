@@ -84,8 +84,8 @@ impl HistoricalLedgerView {
     ///
     /// - `NotFound` if the ledger doesn't exist
     /// - `FutureTime` if `target_t` is beyond the current head
-    pub async fn load_at<N: NameService>(
-        ns: &N,
+    pub async fn load_at(
+        ns: &dyn NameService,
         alias: &str,
         backend: &StorageBackend,
         target_t: i64,

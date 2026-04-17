@@ -4,7 +4,7 @@ use crate::config::ServerRole;
 use crate::error::{Result, ServerError};
 use crate::extract::{FlureeHeaders, MaybeDataBearer};
 use crate::state::AppState;
-use crate::telemetry::{create_request_span, extract_request_id};
+use crate::telemetry::{create_request_span, extract_request_id, extract_trace_id};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -23,10 +23,12 @@ pub async fn get_context(
     bearer: MaybeDataBearer,
 ) -> Result<Response> {
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+
     let span = create_request_span(
         "context:get",
         request_id.as_deref(),
-        &headers.raw,
+        trace_id.as_deref(),
         Some(&ledger),
         None,
         None,
@@ -44,18 +46,11 @@ pub async fn get_context(
             }
         }
 
-        let ctx = match &state.fluree {
-            crate::state::FlureeInstance::Direct(f) => f
-                .get_default_context(&ledger)
-                .await
-                .map_err(ServerError::Api)?,
-            crate::state::FlureeInstance::Proxy(p) => {
-                // Proxy mode: ConfigPublisher not available, return simplified response
-                // by loading ledger and reading cached context
-                let ledger_state = p.ledger(&ledger).await.map_err(ServerError::Api)?;
-                ledger_state.default_context.clone()
-            }
-        };
+        let ctx = state
+            .fluree
+            .get_default_context(&ledger)
+            .await
+            .map_err(ServerError::Api)?;
 
         Ok(Json(serde_json::json!({ "@context": ctx })).into_response())
     }
@@ -89,10 +84,12 @@ pub async fn set_context(
     }
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
+    let trace_id = extract_trace_id(&headers.raw);
+
     let span = create_request_span(
         "context:set",
         request_id.as_deref(),
-        &headers.raw,
+        trace_id.as_deref(),
         Some(&ledger),
         None,
         None,
@@ -124,7 +121,7 @@ pub async fn set_context(
             ));
         }
 
-        let f = state.fluree.as_direct();
+        let f = &state.fluree;
         match f
             .set_default_context(&ledger, &context)
             .await
