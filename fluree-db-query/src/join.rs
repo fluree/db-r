@@ -2288,11 +2288,6 @@ impl NestedLoopJoinOperator {
             return Ok(());
         }
 
-        let Some(bound_object) = Some(&self.right_pattern.o) else {
-            self.clear_batched_state();
-            return Ok(());
-        };
-        let dict_overlay = make_dict_overlay(ctx, &store);
         let probe_matches = batched_subject_probe_binary(
             ctx,
             &store,
@@ -2303,9 +2298,9 @@ impl NestedLoopJoinOperator {
                     .expect("batched predicate set"),
                 subject_ids: &unique_s_ids,
                 object_bounds: None,
-                bound_object: Some(bound_object),
+                bound_object: Some(&self.right_pattern.o),
                 emit_object: false,
-                dict_overlay: dict_overlay.as_ref(),
+                dict_overlay: None,
             },
         )?;
 
