@@ -22,7 +22,7 @@ use crate::join::NestedLoopJoinOperator;
 use crate::minus::MinusOperator;
 use crate::operator::inline::InlineOperator;
 use crate::operator::BoxedOperator;
-use crate::optional::{OptionalOperator, PlanTreeOptionalBuilder};
+use crate::optional::{GroupedPatternOptionalBuilder, OptionalOperator, PlanTreeOptionalBuilder};
 use crate::planner::{analyze_property_join, is_property_join, reorder_patterns};
 use crate::property_join::PropertyJoinOperator;
 use crate::property_path::{PropertyPathOperator, DEFAULT_MAX_VISITED};
@@ -62,6 +62,48 @@ fn filter_not_bound_var(expr: &Expression) -> Option<VarId> {
 #[inline]
 fn pattern_list_contains_var(patterns: &[Pattern], v: VarId) -> bool {
     patterns.iter().any(|p| p.variables().contains(&v))
+}
+
+fn collect_grouped_single_triple_optionals(
+    patterns: &[Pattern],
+    start: usize,
+    required_schema: &[VarId],
+) -> (Vec<TriplePattern>, usize) {
+    let mut triples = Vec::new();
+    let mut seen_object_vars = HashSet::new();
+    let mut i = start;
+    let mut subject_var: Option<VarId> = None;
+
+    while let Some(Pattern::Optional(inner_patterns)) = patterns.get(i) {
+        if inner_patterns.len() != 1 {
+            break;
+        }
+        let Some(triple) = inner_patterns[0].as_triple().cloned() else {
+            break;
+        };
+        let Some(s_var) = triple.s.as_var() else {
+            break;
+        };
+        let Some(o_var) = triple.o.as_var() else {
+            break;
+        };
+        if triple.dtc.is_some() || !triple.p_bound() {
+            break;
+        }
+        if !required_schema.contains(&s_var) || required_schema.contains(&o_var) {
+            break;
+        }
+        if subject_var.is_none() {
+            subject_var = Some(s_var);
+        }
+        if subject_var != Some(s_var) || !seen_object_vars.insert(o_var) {
+            break;
+        }
+        triples.push(triple);
+        i += 1;
+    }
+
+    (triples, i)
 }
 
 // ============================================================================
@@ -1485,6 +1527,34 @@ pub fn build_where_operators_seeded_with_needed(
                     }
 
                     let required_schema = Arc::from(child.schema().to_vec().into_boxed_slice());
+
+                    let (grouped_optional_triples, grouped_end) =
+                        collect_grouped_single_triple_optionals(patterns, i, &required_schema);
+                    if grouped_optional_triples.len() >= 2 {
+                        tracing::debug!(
+                            grouped_optionals = grouped_optional_triples.len(),
+                            subject_var = grouped_optional_triples[0]
+                                .s
+                                .as_var()
+                                .map(|v| v.0)
+                                .unwrap_or(u16::MAX),
+                            "planned grouped single-triple optional chain"
+                        );
+                        let builder = GroupedPatternOptionalBuilder::new(
+                            required_schema.clone(),
+                            grouped_optional_triples,
+                        )?;
+                        operator = Some(Box::new(
+                            OptionalOperator::with_builder(
+                                child,
+                                required_schema,
+                                Box::new(builder),
+                            )
+                            .with_out_schema(augmented_ref),
+                        ));
+                        i = grouped_end;
+                        continue;
+                    }
 
                     // Fast path: single triple pattern
                     if inner_patterns.len() == 1 {

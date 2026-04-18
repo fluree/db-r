@@ -42,7 +42,7 @@ use crate::var_registry::VarId;
 use async_trait::async_trait;
 use fluree_db_core::StatsView;
 use lru::LruCache;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
@@ -562,6 +562,308 @@ impl OptionalBuilder for PatternOptionalBuilder {
 
     fn unify_instructions(&self) -> &[UnifyInstruction] {
         &self.unify_instructions
+    }
+}
+
+/// Builder for a grouped chain of independent single-triple OPTIONALs that all
+/// correlate on the same already-bound subject variable.
+///
+/// This preserves normal OPTIONAL semantics while allowing the optional side to
+/// probe all predicates for a batch of required rows at once.
+pub struct GroupedPatternOptionalBuilder {
+    required_schema: Arc<[VarId]>,
+    triples: Vec<TriplePattern>,
+    optional_only_vars: Vec<VarId>,
+    subject_left_col: usize,
+}
+
+impl GroupedPatternOptionalBuilder {
+    pub fn new(required_schema: Arc<[VarId]>, triples: Vec<TriplePattern>) -> Result<Self> {
+        let Some(subject_var) = triples.first().and_then(|tp| tp.s.as_var()) else {
+            return Err(QueryError::Internal(
+                "grouped optional builder requires variable subject".into(),
+            ));
+        };
+        let Some(subject_left_col) = required_schema.iter().position(|v| *v == subject_var) else {
+            return Err(QueryError::Internal(
+                "grouped optional builder requires subject bound from required schema".into(),
+            ));
+        };
+
+        let mut optional_only_vars = Vec::with_capacity(triples.len());
+        let mut seen = HashSet::new();
+        for triple in &triples {
+            let Some(obj_var) = triple.o.as_var() else {
+                return Err(QueryError::Internal(
+                    "grouped optional builder requires variable objects".into(),
+                ));
+            };
+            if required_schema.contains(&obj_var) || !seen.insert(obj_var) {
+                return Err(QueryError::Internal(
+                    "grouped optional builder requires distinct optional-only object vars".into(),
+                ));
+            }
+            optional_only_vars.push(obj_var);
+        }
+
+        Ok(Self {
+            required_schema,
+            triples,
+            optional_only_vars,
+            subject_left_col,
+        })
+    }
+
+    fn has_poisoned_subject(&self, required_batch: &Batch, row: usize) -> bool {
+        required_batch
+            .get_by_col(row, self.subject_left_col)
+            .is_poisoned()
+    }
+
+    fn resolve_subject_id(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<u64>> {
+        let binding = required_batch.get_by_col(row, self.subject_left_col);
+        let Some(store) = ctx.binary_store.as_deref() else {
+            return Ok(None);
+        };
+        match binding {
+            Binding::EncodedSid { s_id } => Ok(Some(*s_id)),
+            Binding::Sid(sid) => store
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}"))),
+            _ => Ok(None),
+        }
+    }
+
+    fn grouped_schema(&self) -> Arc<[VarId]> {
+        Arc::from(self.optional_only_vars.clone().into_boxed_slice())
+    }
+
+    fn build_fallback_chain(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<BoxedOperator>> {
+        if self.has_poisoned_subject(required_batch, row) {
+            return Ok(None);
+        }
+
+        let mut op: BoxedOperator = Box::new(SeedOperator::from_batch_row(required_batch, row));
+        let mut current_schema: Arc<[VarId]> = self.required_schema.clone();
+        for triple in &self.triples {
+            op = Box::new(OptionalOperator::new(
+                op,
+                current_schema.clone(),
+                triple.clone(),
+            ));
+            current_schema = Arc::from(op.schema().to_vec().into_boxed_slice());
+        }
+
+        let _ = ctx;
+        Ok(Some(op))
+    }
+
+    fn generate_rows(values_per_pred: &[Vec<Binding>]) -> Vec<Vec<Binding>> {
+        if values_per_pred.is_empty() {
+            return vec![Vec::new()];
+        }
+
+        let total: usize = values_per_pred.iter().fold(1usize, |acc, values| {
+            acc.saturating_mul(values.len().max(1))
+        });
+        let mut rows = Vec::with_capacity(total);
+        let mut indices = vec![0usize; values_per_pred.len()];
+
+        loop {
+            let mut row = Vec::with_capacity(values_per_pred.len());
+            for (pred_idx, values) in values_per_pred.iter().enumerate() {
+                if values.is_empty() {
+                    row.push(Binding::Poisoned);
+                } else {
+                    row.push(values[indices[pred_idx]].clone());
+                }
+            }
+            rows.push(row);
+
+            let mut carry = true;
+            for i in (0..indices.len()).rev() {
+                if !carry {
+                    break;
+                }
+                let width = values_per_pred[i].len().max(1);
+                indices[i] += 1;
+                if indices[i] >= width {
+                    indices[i] = 0;
+                } else {
+                    carry = false;
+                }
+            }
+            if carry {
+                break;
+            }
+        }
+
+        rows
+    }
+}
+
+impl OptionalBuilder for GroupedPatternOptionalBuilder {
+    fn build(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<BoxedOperator>> {
+        self.build_fallback_chain(required_batch, row, ctx)
+    }
+
+    fn build_batch(
+        &self,
+        required_batch: &Batch,
+        start_row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<Vec<(usize, Vec<Batch>)>>> {
+        if start_row >= required_batch.len() || ctx.is_multi_ledger() {
+            return Ok(None);
+        }
+        let Some(store) = ctx.binary_store.as_ref() else {
+            return Ok(None);
+        };
+        if self.triples.iter().any(|tp| tp.dtc.is_some()) {
+            return Ok(None);
+        }
+
+        let mut subject_ids = Vec::new();
+        let mut row_subject_slots: Vec<Option<u64>> =
+            Vec::with_capacity(required_batch.len().saturating_sub(start_row));
+        let mut subject_rows: HashMap<u64, Vec<usize>> = HashMap::new();
+
+        for row in start_row..required_batch.len() {
+            let slot = row - start_row;
+            if self.has_poisoned_subject(required_batch, row) {
+                row_subject_slots.push(None);
+                continue;
+            }
+            let Some(s_id) = self.resolve_subject_id(required_batch, row, ctx)? else {
+                return Ok(None);
+            };
+            row_subject_slots.push(Some(s_id));
+            subject_rows.entry(s_id).or_insert_with(|| {
+                subject_ids.push(s_id);
+                Vec::new()
+            });
+            subject_rows
+                .get_mut(&s_id)
+                .expect("entry inserted")
+                .push(slot);
+        }
+
+        let dict_overlay = crate::join::make_dict_overlay(ctx, store);
+        let mut row_values: Vec<Vec<Vec<Binding>>> =
+            vec![vec![Vec::new(); self.triples.len()]; row_subject_slots.len()];
+
+        for (pred_idx, triple) in self.triples.iter().enumerate() {
+            let Some(pred_sid) = try_normalize_pred_sid(store, &triple.p) else {
+                return Ok(None);
+            };
+            let probe_matches = batched_subject_probe_binary(
+                ctx,
+                store,
+                &SubjectProbeParams {
+                    pred_sid: &pred_sid,
+                    subject_ids: &subject_ids,
+                    object_bounds: None,
+                    bound_object: None,
+                    emit_object: true,
+                    dict_overlay: dict_overlay.as_ref(),
+                },
+            )?;
+
+            for probe_match in probe_matches {
+                let Some(slots) = subject_rows.get(&probe_match.subject_id) else {
+                    continue;
+                };
+                for &slot in slots {
+                    if let Some(object) = &probe_match.object {
+                        row_values[slot][pred_idx].push(object.clone());
+                    }
+                }
+            }
+        }
+
+        let schema = self.grouped_schema();
+        let mut pending = Vec::with_capacity(row_values.len());
+        for (slot, values_per_pred) in row_values.into_iter().enumerate() {
+            let rows = Self::generate_rows(&values_per_pred);
+            let optional_batches = if rows.is_empty() {
+                Vec::new()
+            } else {
+                let mut columns: Vec<Vec<Binding>> = (0..self.optional_only_vars.len())
+                    .map(|_| Vec::with_capacity(rows.len()))
+                    .collect();
+                for row in rows {
+                    for (col_idx, value) in row.into_iter().enumerate() {
+                        columns[col_idx].push(value);
+                    }
+                }
+                vec![Batch::new(schema.clone(), columns)?]
+            };
+            pending.push((start_row + slot, optional_batches));
+        }
+
+        Ok(Some(pending))
+    }
+
+    fn cache_key(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<Box<[u8]>>> {
+        if self.has_poisoned_subject(required_batch, row) {
+            return Ok(None);
+        }
+        let binding = required_batch.get_by_col(row, self.subject_left_col);
+        let _ = ctx;
+        match binding {
+            Binding::EncodedSid { s_id } => {
+                let mut v = Vec::with_capacity(1 + 8);
+                v.push(b'S');
+                v.extend_from_slice(&s_id.to_le_bytes());
+                Ok(Some(v.into_boxed_slice()))
+            }
+            Binding::Sid(sid) => {
+                let mut v = Vec::with_capacity(1 + 2 + sid.name_str().len());
+                v.push(b's');
+                v.extend_from_slice(&sid.namespace_code.to_le_bytes());
+                v.extend_from_slice(sid.name_str().as_bytes());
+                Ok(Some(v.into_boxed_slice()))
+            }
+            Binding::IriMatch { iri, .. } | Binding::Iri(iri) => {
+                let mut v = Vec::with_capacity(1 + iri.len());
+                v.push(b'i');
+                v.extend_from_slice(iri.as_bytes());
+                Ok(Some(v.into_boxed_slice()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn schema(&self) -> &[VarId] {
+        &self.optional_only_vars
+    }
+
+    fn optional_only_vars(&self) -> &[VarId] {
+        &self.optional_only_vars
+    }
+
+    fn unify_instructions(&self) -> &[UnifyInstruction] {
+        &[]
     }
 }
 
