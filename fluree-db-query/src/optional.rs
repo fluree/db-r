@@ -27,8 +27,12 @@ use crate::binary_scan::ScanOperator;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
+use crate::fast_path_common::try_normalize_pred_sid;
 use crate::ir::Pattern;
-use crate::join::{BindInstruction, PatternPosition, UnifyInstruction};
+use crate::join::{
+    batched_subject_probe_binary, BindInstruction, PatternPosition, SubjectProbeParams,
+    UnifyInstruction,
+};
 use crate::operator::{
     compute_trimmed_vars, effective_schema, trim_batch, BoxedOperator, Operator, OperatorState,
 };
@@ -87,6 +91,19 @@ pub trait OptionalBuilder: Send + Sync {
         row: usize,
         ctx: &ExecutionContext<'_>,
     ) -> Result<Option<BoxedOperator>>;
+
+    /// Optionally build all remaining required rows in the current batch in one pass.
+    ///
+    /// Builders can override this to implement batched probe paths for hot
+    /// correlated OPTIONAL shapes. Default: no batched execution.
+    fn build_batch(
+        &self,
+        _required_batch: &Batch,
+        _start_row: usize,
+        _ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<Vec<(usize, Vec<Batch>)>>> {
+        Ok(None)
+    }
 
     /// Optional cache key for correlated OPTIONAL evaluation.
     ///
@@ -231,6 +248,40 @@ impl PatternOptionalBuilder {
             .any(|instr| required_batch.get_by_col(row, instr.left_col).is_poisoned())
     }
 
+    fn subject_left_col(&self) -> Option<usize> {
+        self.bind_instructions
+            .iter()
+            .find(|instr| instr.position == PatternPosition::Subject)
+            .map(|instr| instr.left_col)
+    }
+
+    fn emit_object_var(&self) -> Option<VarId> {
+        match &self.pattern.o {
+            Term::Var(v) if self.optional_only_vars.contains(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    fn resolve_subject_id(
+        &self,
+        required_batch: &Batch,
+        row: usize,
+        subject_left_col: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<u64>> {
+        let binding = required_batch.get_by_col(row, subject_left_col);
+        let Some(store) = ctx.binary_store.as_deref() else {
+            return Ok(None);
+        };
+        match binding {
+            Binding::EncodedSid { s_id } => Ok(Some(*s_id)),
+            Binding::Sid(sid) => store
+                .find_subject_id_by_parts(sid.namespace_code, &sid.name)
+                .map_err(|e| QueryError::execution(format!("find_subject_id_by_parts: {e}"))),
+            _ => Ok(None),
+        }
+    }
+
     /// Substitute required bindings into pattern
     ///
     /// For IriMatch bindings in subject/predicate positions, uses `Ref::Iri` to carry
@@ -348,6 +399,102 @@ impl OptionalBuilder for PatternOptionalBuilder {
             None,
             Vec::new(),
         ))))
+    }
+
+    fn build_batch(
+        &self,
+        required_batch: &Batch,
+        start_row: usize,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Option<Vec<(usize, Vec<Batch>)>>> {
+        if start_row >= required_batch.len() || ctx.is_multi_ledger() {
+            return Ok(None);
+        }
+        let Some(store) = ctx.binary_store.as_ref() else {
+            return Ok(None);
+        };
+        let Some(subject_left_col) = self.subject_left_col() else {
+            return Ok(None);
+        };
+        let Some(pred_sid) = try_normalize_pred_sid(store, &self.pattern.p) else {
+            return Ok(None);
+        };
+        if self.pattern.dtc.is_some() {
+            return Ok(None);
+        }
+
+        let emit_object_var = self.emit_object_var();
+        let mut row_slots: Vec<Option<Vec<Binding>>> =
+            vec![None; required_batch.len().saturating_sub(start_row)];
+        let mut subject_rows: std::collections::HashMap<u64, Vec<usize>> =
+            std::collections::HashMap::new();
+        let mut subject_ids: Vec<u64> = Vec::new();
+
+        for row in start_row..required_batch.len() {
+            let slot = row - start_row;
+            if self.has_poisoned_binding(required_batch, row) {
+                continue;
+            }
+            let Some(s_id) = self.resolve_subject_id(required_batch, row, subject_left_col, ctx)?
+            else {
+                return Ok(None);
+            };
+            subject_rows.entry(s_id).or_insert_with(|| {
+                subject_ids.push(s_id);
+                Vec::new()
+            });
+            subject_rows
+                .get_mut(&s_id)
+                .expect("entry inserted")
+                .push(slot);
+        }
+
+        let probe_matches = batched_subject_probe_binary(
+            ctx,
+            store,
+            &SubjectProbeParams {
+                pred_sid: &pred_sid,
+                subject_ids: &subject_ids,
+                object_bounds: None,
+                bound_object: (!matches!(&self.pattern.o, Term::Var(_))).then_some(&self.pattern.o),
+                emit_object: emit_object_var.is_some(),
+                dict_overlay: None,
+            },
+        )?;
+
+        for probe_match in probe_matches {
+            let Some(slots) = subject_rows.get(&probe_match.subject_id) else {
+                continue;
+            };
+            for &slot in slots {
+                let values = row_slots[slot].get_or_insert_with(Vec::new);
+                if let Some(object) = &probe_match.object {
+                    values.push(object.clone());
+                } else {
+                    values.push(Binding::Unbound);
+                }
+            }
+        }
+
+        let mut pending = Vec::with_capacity(row_slots.len());
+        for (slot, maybe_values) in row_slots.into_iter().enumerate() {
+            let optional_batches = match maybe_values {
+                Some(values) if !values.is_empty() => {
+                    if let Some(object_var) = emit_object_var {
+                        vec![Batch::new(
+                            Arc::from(vec![object_var].into_boxed_slice()),
+                            vec![values],
+                        )?]
+                    } else {
+                        vec![Batch::empty_schema_with_len(values.len())]
+                    }
+                }
+                Some(_) | None => Vec::new(),
+            };
+            pending.push((start_row + slot, optional_batches));
+        }
+
+        Ok(Some(pending))
     }
 
     fn cache_key(
@@ -821,6 +968,8 @@ impl Operator for OptionalOperator {
         let mut rows_added = 0;
         let mut required_rows_seen = 0usize;
         let mut built_optionals = 0usize;
+        let mut batched_builds = 0usize;
+        let mut batched_rows = 0usize;
         let mut builder_none = 0usize;
         let mut cache_hits = 0usize;
         let mut optional_result_batches = 0usize;
@@ -968,6 +1117,33 @@ impl Operator for OptionalOperator {
 
             // Process current required row
             if self.current_required_row < required_batch.len() {
+                if self.pending_output.is_empty() {
+                    if let Some(batched_pending) = self.optional_builder.build_batch(
+                        required_batch,
+                        self.current_required_row,
+                        ctx,
+                    )? {
+                        batched_builds += 1;
+                        batched_rows += batched_pending.len();
+                        required_rows_seen += batched_pending.len();
+                        optional_result_batches += batched_pending
+                            .iter()
+                            .map(|(_, optional_batches)| optional_batches.len())
+                            .sum::<usize>();
+                        self.current_required_row = required_batch.len();
+                        self.pending_output.extend(batched_pending.into_iter().map(
+                            |(required_row, optional_batches)| PendingOptionalMatch {
+                                required_row,
+                                optional_batches,
+                                batch_idx: 0,
+                                row_idx: 0,
+                                matched: false,
+                            },
+                        ));
+                        continue;
+                    }
+                }
+
                 let required_row = self.current_required_row;
                 self.current_required_row += 1;
                 required_rows_seen += 1;
@@ -1048,6 +1224,7 @@ impl Operator for OptionalOperator {
         let elapsed_ms = (batch_start.elapsed().as_secs_f64() * 1000.0) as u64;
         let should_debug = elapsed_ms >= OPTIONAL_DEBUG_MIN_MS
             || built_optionals >= OPTIONAL_DEBUG_MIN_WORK
+            || batched_rows >= OPTIONAL_DEBUG_MIN_WORK
             || cache_hits >= OPTIONAL_DEBUG_MIN_WORK
             || optional_result_batches >= OPTIONAL_DEBUG_MIN_WORK;
         if rows_added == 0 {
@@ -1056,6 +1233,8 @@ impl Operator for OptionalOperator {
                     rows_added,
                     required_rows_seen,
                     built_optionals,
+                    batched_builds,
+                    batched_rows,
                     builder_none,
                     cache_hits,
                     optional_result_batches,
@@ -1068,6 +1247,8 @@ impl Operator for OptionalOperator {
                     rows_added,
                     required_rows_seen,
                     built_optionals,
+                    batched_builds,
+                    batched_rows,
                     builder_none,
                     cache_hits,
                     optional_result_batches,
@@ -1085,6 +1266,8 @@ impl Operator for OptionalOperator {
                 rows_added,
                 required_rows_seen,
                 built_optionals,
+                batched_builds,
+                batched_rows,
                 builder_none,
                 cache_hits,
                 optional_result_batches,
@@ -1097,6 +1280,8 @@ impl Operator for OptionalOperator {
                 rows_added,
                 required_rows_seen,
                 built_optionals,
+                batched_builds,
+                batched_rows,
                 builder_none,
                 cache_hits,
                 optional_result_batches,
