@@ -41,6 +41,12 @@ use lru::LruCache;
 use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::Instant;
+
+/// Keep OPTIONAL diagnostics concise during perf captures by surfacing only
+/// expensive batches or obvious cache/planning churn at debug level.
+const OPTIONAL_DEBUG_MIN_WORK: usize = 8;
+const OPTIONAL_DEBUG_MIN_MS: u64 = 25;
 
 /// Builder for correlated optional operators
 ///
@@ -542,7 +548,7 @@ impl OptionalBuilder for PlanTreeOptionalBuilder {
         // Create a seed operator from the required row
         let seed = SeedOperator::from_batch_row(required_batch, row);
 
-        tracing::debug!(
+        tracing::trace!(
             required_schema_cols = required_batch.schema().len(),
             optional_pattern_count = self.inner_patterns.len(),
             optional_only_vars = self.optional_only_vars.len(),
@@ -807,12 +813,15 @@ impl Operator for OptionalOperator {
             return Ok(None);
         }
 
+        let batch_start = Instant::now();
         let batch_size = ctx.batch_size;
         let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
             .map(|_| Vec::with_capacity(batch_size))
             .collect();
         let mut rows_added = 0;
+        let mut required_rows_seen = 0usize;
         let mut built_optionals = 0usize;
+        let mut builder_none = 0usize;
         let mut cache_hits = 0usize;
         let mut optional_result_batches = 0usize;
 
@@ -961,6 +970,7 @@ impl Operator for OptionalOperator {
             if self.current_required_row < required_batch.len() {
                 let required_row = self.current_required_row;
                 self.current_required_row += 1;
+                required_rows_seen += 1;
 
                 // Build optional operator for this row (propagate errors)
                 let cache_key =
@@ -987,6 +997,7 @@ impl Operator for OptionalOperator {
                     .build(required_batch, required_row, ctx)?
                 {
                     None => {
+                        builder_none += 1;
                         // Builder returned None (e.g., poisoned correlation var)
                         // Emit with Poisoned for optional-only vars
                         self.pending_output.push_back(PendingOptionalMatch {
@@ -1034,13 +1045,66 @@ impl Operator for OptionalOperator {
             }
         }
 
+        let elapsed_ms = (batch_start.elapsed().as_secs_f64() * 1000.0) as u64;
+        let should_debug = elapsed_ms >= OPTIONAL_DEBUG_MIN_MS
+            || built_optionals >= OPTIONAL_DEBUG_MIN_WORK
+            || cache_hits >= OPTIONAL_DEBUG_MIN_WORK
+            || optional_result_batches >= OPTIONAL_DEBUG_MIN_WORK;
         if rows_added == 0 {
-            let _ = (built_optionals, cache_hits, optional_result_batches);
+            if should_debug {
+                tracing::debug!(
+                    rows_added,
+                    required_rows_seen,
+                    built_optionals,
+                    builder_none,
+                    cache_hits,
+                    optional_result_batches,
+                    pending_output = self.pending_output.len(),
+                    elapsed_ms,
+                    "optional batch summary"
+                );
+            } else {
+                tracing::trace!(
+                    rows_added,
+                    required_rows_seen,
+                    built_optionals,
+                    builder_none,
+                    cache_hits,
+                    optional_result_batches,
+                    pending_output = self.pending_output.len(),
+                    elapsed_ms,
+                    "optional batch summary"
+                );
+            }
             return Ok(None);
         }
 
         let batch = Batch::new(self.combined_schema.clone(), output_columns)?;
-        let _ = (built_optionals, cache_hits, optional_result_batches);
+        if should_debug {
+            tracing::debug!(
+                rows_added,
+                required_rows_seen,
+                built_optionals,
+                builder_none,
+                cache_hits,
+                optional_result_batches,
+                pending_output = self.pending_output.len(),
+                elapsed_ms,
+                "optional batch summary"
+            );
+        } else {
+            tracing::trace!(
+                rows_added,
+                required_rows_seen,
+                built_optionals,
+                builder_none,
+                cache_hits,
+                optional_result_batches,
+                pending_output = self.pending_output.len(),
+                elapsed_ms,
+                "optional batch summary"
+            );
+        }
         Ok(trim_batch(&self.out_schema, batch))
     }
 

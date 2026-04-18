@@ -20,6 +20,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
 
+/// Keep sort diagnostics cheap by only surfacing non-trivial blocking sorts at
+/// debug level during perf captures.
+const SORT_DEBUG_MIN_ROWS: u64 = 1_000;
+const SORT_DEBUG_MIN_MS: u64 = 25;
+
 /// Materialize an encoded binding to its decoded form for sort comparison.
 ///
 /// This ensures ORDER BY uses correct term ordering (namespace/name for IRIs,
@@ -668,6 +673,36 @@ impl Operator for SortOperator {
                 span.record("sort_ms", sort_ms);
                 span.record("child_next_ms", child_next_ms);
                 span.record("build_rows_ms", build_rows_ms);
+                let total_ms = (drain_start.elapsed().as_secs_f64() * 1000.0) as u64;
+                if input_rows >= SORT_DEBUG_MIN_ROWS || total_ms >= SORT_DEBUG_MIN_MS {
+                    tracing::debug!(
+                        input_batches,
+                        input_rows,
+                        output_rows = out_rows.len(),
+                        use_streaming_topk,
+                        topk = self.topk.unwrap_or(0),
+                        total_ms,
+                        drain_ms,
+                        sort_ms,
+                        child_next_ms,
+                        build_rows_ms,
+                        "sort blocking summary"
+                    );
+                } else {
+                    tracing::trace!(
+                        input_batches,
+                        input_rows,
+                        output_rows = out_rows.len(),
+                        use_streaming_topk,
+                        topk = self.topk.unwrap_or(0),
+                        total_ms,
+                        drain_ms,
+                        sort_ms,
+                        child_next_ms,
+                        build_rows_ms,
+                        "sort blocking summary"
+                    );
+                }
 
                 Ok::<_, crate::error::QueryError>(out_rows)
             }
