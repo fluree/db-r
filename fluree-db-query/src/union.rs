@@ -40,6 +40,8 @@ pub struct UnionOperator {
     current_input_batch: Option<Batch>,
     /// Current row index in the input batch
     current_input_row: usize,
+    /// True once the child is exhausted; pending output may still need draining.
+    input_exhausted: bool,
     /// Optional stats for selectivity-based pattern reordering in branches
     stats: Option<Arc<StatsView>>,
     /// Debug counters for low-noise batch fragmentation summaries.
@@ -50,6 +52,10 @@ pub struct UnionOperator {
     output_rows_buffered: usize,
     max_input_batch_len: usize,
     max_output_batch_len: usize,
+    output_batches_emitted: usize,
+    output_rows_emitted: usize,
+    max_emitted_batch_len: usize,
+    pending_output_rows: usize,
 }
 
 impl UnionOperator {
@@ -88,6 +94,7 @@ impl UnionOperator {
             output_buffer: VecDeque::new(),
             current_input_batch: None,
             current_input_row: 0,
+            input_exhausted: false,
             stats,
             input_batches_seen: 0,
             input_rows_seen: 0,
@@ -96,6 +103,10 @@ impl UnionOperator {
             output_rows_buffered: 0,
             max_input_batch_len: 0,
             max_output_batch_len: 0,
+            output_batches_emitted: 0,
+            output_rows_emitted: 0,
+            max_emitted_batch_len: 0,
+            pending_output_rows: 0,
         }
     }
 
@@ -134,6 +145,51 @@ impl UnionOperator {
 
         Ok(Batch::new(self.effective_schema.clone(), columns)?)
     }
+
+    fn take_output_batch(&mut self, batch_size: usize) -> Result<Option<Batch>> {
+        if self.output_buffer.is_empty() {
+            return Ok(None);
+        }
+
+        let mut output_columns: Vec<Vec<Binding>> = self
+            .effective_schema
+            .iter()
+            .map(|_| Vec::with_capacity(batch_size))
+            .collect();
+        let mut rows_added = 0usize;
+
+        while rows_added < batch_size {
+            let Some(batch) = self.output_buffer.pop_front() else {
+                break;
+            };
+
+            let (schema, mut columns, batch_len) = batch.into_parts();
+            debug_assert_eq!(&*schema, &*self.effective_schema);
+
+            let rows_to_take = (batch_size - rows_added).min(batch_len);
+            for (dest, source) in output_columns.iter_mut().zip(columns.iter_mut()) {
+                dest.extend(source.drain(..rows_to_take));
+            }
+            rows_added += rows_to_take;
+            self.pending_output_rows -= rows_to_take;
+
+            if rows_to_take < batch_len {
+                let remainder = Batch::from_parts(schema, columns, batch_len - rows_to_take)?;
+                self.output_buffer.push_front(remainder);
+                break;
+            }
+        }
+
+        if rows_added == 0 {
+            return Ok(None);
+        }
+
+        let batch = Batch::from_parts(self.effective_schema.clone(), output_columns, rows_added)?;
+        self.output_batches_emitted += 1;
+        self.output_rows_emitted += batch.len();
+        self.max_emitted_batch_len = self.max_emitted_batch_len.max(batch.len());
+        Ok(Some(batch))
+    }
 }
 
 #[async_trait]
@@ -148,6 +204,7 @@ impl Operator for UnionOperator {
         self.output_buffer.clear();
         self.current_input_batch = None;
         self.current_input_row = 0;
+        self.input_exhausted = false;
         self.input_batches_seen = 0;
         self.input_rows_seen = 0;
         self.branch_execs = 0;
@@ -155,6 +212,10 @@ impl Operator for UnionOperator {
         self.output_rows_buffered = 0;
         self.max_input_batch_len = 0;
         self.max_output_batch_len = 0;
+        self.output_batches_emitted = 0;
+        self.output_rows_emitted = 0;
+        self.max_emitted_batch_len = 0;
+        self.pending_output_rows = 0;
         Ok(())
     }
 
@@ -164,9 +225,31 @@ impl Operator for UnionOperator {
         }
 
         loop {
-            // If we already have buffered output, return it.
-            if let Some(batch) = self.output_buffer.pop_front() {
+            if self.pending_output_rows >= ctx.batch_size
+                || (self.input_exhausted && self.pending_output_rows > 0)
+            {
+                let batch = self
+                    .take_output_batch(ctx.batch_size)?
+                    .expect("pending_output_rows tracks buffered union rows");
                 return Ok(Some(batch));
+            }
+
+            if self.input_exhausted {
+                tracing::debug!(
+                    input_batches_seen = self.input_batches_seen,
+                    input_rows_seen = self.input_rows_seen,
+                    branch_execs = self.branch_execs,
+                    output_batches_buffered = self.output_batches_buffered,
+                    output_rows_buffered = self.output_rows_buffered,
+                    max_input_batch_len = self.max_input_batch_len,
+                    max_output_batch_len = self.max_output_batch_len,
+                    output_batches_emitted = self.output_batches_emitted,
+                    output_rows_emitted = self.output_rows_emitted,
+                    max_emitted_batch_len = self.max_emitted_batch_len,
+                    "union execution summary"
+                );
+                self.state = OperatorState::Exhausted;
+                return Ok(None);
             }
 
             // Ensure we have an input batch to process.
@@ -183,18 +266,8 @@ impl Operator for UnionOperator {
                     Some(b) if !b.is_empty() => b,
                     Some(_) => continue,
                     None => {
-                        tracing::debug!(
-                            input_batches_seen = self.input_batches_seen,
-                            input_rows_seen = self.input_rows_seen,
-                            branch_execs = self.branch_execs,
-                            output_batches_buffered = self.output_batches_buffered,
-                            output_rows_buffered = self.output_rows_buffered,
-                            max_input_batch_len = self.max_input_batch_len,
-                            max_output_batch_len = self.max_output_batch_len,
-                            "union execution summary"
-                        );
-                        self.state = OperatorState::Exhausted;
-                        return Ok(None);
+                        self.input_exhausted = true;
+                        continue;
                     }
                 };
                 self.input_batches_seen += 1;
@@ -236,6 +309,7 @@ impl Operator for UnionOperator {
                     self.output_batches_buffered += 1;
                     self.output_rows_buffered += normalized.len();
                     self.max_output_batch_len = self.max_output_batch_len.max(normalized.len());
+                    self.pending_output_rows += normalized.len();
                     self.output_buffer.push_back(normalized);
                 }
                 branch_op.close();
@@ -247,6 +321,7 @@ impl Operator for UnionOperator {
         self.child.close();
         self.output_buffer.clear();
         self.state = OperatorState::Closed;
+        self.pending_output_rows = 0;
     }
 
     fn estimated_rows(&self) -> Option<usize> {
@@ -374,7 +449,12 @@ fn extend_schema_from_patterns(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::binding::Binding;
+    use crate::context::ExecutionContext;
     use crate::seed::EmptyOperator;
+    use crate::values::ValuesOperator;
+    use crate::var_registry::VarRegistry;
+    use fluree_db_core::FlakeValue;
     use fluree_db_core::Sid;
     use std::sync::Arc;
 
@@ -459,6 +539,54 @@ mod tests {
         let op = UnionOperator::new(child, branches, None).with_out_schema(None);
 
         assert_eq!(op.schema(), &[VarId(0), VarId(1)]);
+    }
+
+    #[tokio::test]
+    async fn test_union_coalesces_fragmented_branch_output() {
+        let snapshot = fluree_db_core::LedgerSnapshot::genesis("test/main");
+        let vars = VarRegistry::new();
+        let mut ctx = ExecutionContext::new(&snapshot, &vars);
+        ctx.batch_size = 4;
+
+        let child: BoxedOperator = Box::new(ValuesOperator::new(
+            Box::new(EmptyOperator::new()),
+            vec![VarId(0)],
+            vec![
+                vec![Binding::lit(FlakeValue::Long(1), Sid::new(2, "long"))],
+                vec![Binding::lit(FlakeValue::Long(2), Sid::new(2, "long"))],
+                vec![Binding::lit(FlakeValue::Long(3), Sid::new(2, "long"))],
+            ],
+        ));
+
+        let branches = vec![
+            vec![Pattern::Values {
+                vars: vec![VarId(1)],
+                rows: vec![
+                    vec![Binding::lit(FlakeValue::Long(10), Sid::new(2, "long"))],
+                    vec![Binding::lit(FlakeValue::Long(20), Sid::new(2, "long"))],
+                ],
+            }],
+            vec![Pattern::Values {
+                vars: vec![VarId(1)],
+                rows: vec![vec![Binding::lit(
+                    FlakeValue::Long(30),
+                    Sid::new(2, "long"),
+                )]],
+            }],
+        ];
+
+        let mut op = UnionOperator::new(child, branches, None);
+        op.open(&ctx).await.unwrap();
+
+        let batch1 = op.next_batch(&ctx).await.unwrap().unwrap();
+        let batch2 = op.next_batch(&ctx).await.unwrap().unwrap();
+        let batch3 = op.next_batch(&ctx).await.unwrap().unwrap();
+        let batch4 = op.next_batch(&ctx).await.unwrap();
+
+        assert_eq!(batch1.len(), 4);
+        assert_eq!(batch2.len(), 4);
+        assert_eq!(batch3.len(), 1);
+        assert!(batch4.is_none());
     }
 
     // Helper struct for testing
