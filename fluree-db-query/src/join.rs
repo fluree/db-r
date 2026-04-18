@@ -25,6 +25,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
 
+/// Emit a debug flush summary only when the batched existence probe did non-trivial
+/// work; the per-join success path is otherwise far too noisy for perf captures.
+const BATCHED_EXISTS_DEBUG_MIN_ACCUM: usize = 8;
+const BATCHED_EXISTS_DEBUG_MIN_MS: u64 = 10;
+
 /// Binary search for the first row in `batch.s_id[start..end]` where `s_id >= target`.
 #[inline]
 fn lower_bound_s_id(
@@ -948,7 +953,7 @@ impl Operator for NestedLoopJoinOperator {
         self.active_right_left_row = 0;
         self.logged_runtime_mode = false;
 
-        tracing::debug!(
+        tracing::trace!(
             left_schema_cols = self.left_schema.len(),
             right_new_vars = self.right_new_vars.len(),
             bind_instructions = self.bind_instructions.len(),
@@ -1007,7 +1012,7 @@ impl Operator for NestedLoopJoinOperator {
                 ActiveGraphs::Single => ("single", 1usize),
                 ActiveGraphs::Many(graphs) => ("many", graphs.len()),
             };
-            tracing::debug!(
+            tracing::trace!(
                 use_batched,
                 batched_eligible = self.batched_eligible,
                 batched_object_eligible = self.batched_object_eligible,
@@ -2304,7 +2309,8 @@ impl NestedLoopJoinOperator {
             },
         )?;
 
-        let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); self.batched_accumulator.len()];
+        let accum_len = self.batched_accumulator.len();
+        let mut scatter: Vec<Vec<Vec<Binding>>> = vec![Vec::new(); accum_len];
         let mut matched_rows: u64 = 0;
 
         for probe_match in probe_matches {
@@ -2333,11 +2339,22 @@ impl NestedLoopJoinOperator {
         }
 
         self.emit_scatter_to_output(scatter, ctx.batch_size)?;
-        tracing::debug!(
-            total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64,
-            matched_rows,
-            "join batched existence flush complete"
-        );
+        let total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64;
+        if accum_len >= BATCHED_EXISTS_DEBUG_MIN_ACCUM || total_ms >= BATCHED_EXISTS_DEBUG_MIN_MS {
+            tracing::debug!(
+                total_ms,
+                accum_len,
+                matched_rows,
+                "join batched existence flush complete"
+            );
+        } else {
+            tracing::trace!(
+                total_ms,
+                accum_len,
+                matched_rows,
+                "join batched existence flush complete"
+            );
+        }
         Ok(())
     }
 }
