@@ -235,19 +235,6 @@ impl Operator for UnionOperator {
             }
 
             if self.input_exhausted {
-                tracing::debug!(
-                    input_batches_seen = self.input_batches_seen,
-                    input_rows_seen = self.input_rows_seen,
-                    branch_execs = self.branch_execs,
-                    output_batches_buffered = self.output_batches_buffered,
-                    output_rows_buffered = self.output_rows_buffered,
-                    max_input_batch_len = self.max_input_batch_len,
-                    max_output_batch_len = self.max_output_batch_len,
-                    output_batches_emitted = self.output_batches_emitted,
-                    output_rows_emitted = self.output_rows_emitted,
-                    max_emitted_batch_len = self.max_emitted_batch_len,
-                    "union execution summary"
-                );
                 self.state = OperatorState::Exhausted;
                 return Ok(None);
             }

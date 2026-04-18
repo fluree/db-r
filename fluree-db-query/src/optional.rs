@@ -51,8 +51,6 @@ use std::time::Instant;
 /// expensive batches or obvious cache/planning churn at debug level.
 const OPTIONAL_DEBUG_MIN_WORK: usize = 8;
 const OPTIONAL_DEBUG_MIN_MS: u64 = 25;
-const GROUPED_OPTIONAL_DEBUG_MIN_MS: u64 = 10;
-
 /// Builder for correlated optional operators
 ///
 /// This trait encapsulates how to create an optional-side operator that is
@@ -729,7 +727,6 @@ impl OptionalBuilder for GroupedPatternOptionalBuilder {
         start_row: usize,
         ctx: &ExecutionContext<'_>,
     ) -> Result<Option<Vec<(usize, Vec<Batch>)>>> {
-        let batch_start = Instant::now();
         if start_row >= required_batch.len() || ctx.is_multi_ledger() {
             tracing::debug!(
                 predicate_count = self.triples.len(),
@@ -797,8 +794,6 @@ impl OptionalBuilder for GroupedPatternOptionalBuilder {
         let dict_overlay = crate::join::make_dict_overlay(ctx, store);
         let mut row_values: Vec<Vec<Vec<Binding>>> =
             vec![vec![Vec::new(); self.triples.len()]; row_subject_slots.len()];
-        let mut total_probe_matches = 0usize;
-
         for (pred_idx, triple) in self.triples.iter().enumerate() {
             let Some(pred_sid) = try_normalize_pred_sid(store, &triple.p) else {
                 tracing::debug!(
@@ -822,8 +817,6 @@ impl OptionalBuilder for GroupedPatternOptionalBuilder {
                     dict_overlay: dict_overlay.as_ref(),
                 },
             )?;
-            total_probe_matches += probe_matches.len();
-
             for probe_match in probe_matches {
                 let Some(slots) = subject_rows.get(&probe_match.subject_id) else {
                     continue;
@@ -838,13 +831,11 @@ impl OptionalBuilder for GroupedPatternOptionalBuilder {
 
         let schema = self.grouped_schema();
         let mut pending = Vec::with_capacity(row_values.len());
-        let mut emitted_rows = 0usize;
         for (slot, values_per_pred) in row_values.into_iter().enumerate() {
             let rows = Self::generate_rows(&values_per_pred);
             let optional_batches = if rows.is_empty() {
                 Vec::new()
             } else {
-                emitted_rows += rows.len();
                 let mut columns: Vec<Vec<Binding>> = (0..self.optional_only_vars.len())
                     .map(|_| Vec::with_capacity(rows.len()))
                     .collect();
@@ -856,31 +847,6 @@ impl OptionalBuilder for GroupedPatternOptionalBuilder {
                 vec![Batch::new(schema.clone(), columns)?]
             };
             pending.push((start_row + slot, optional_batches));
-        }
-
-        let elapsed_ms = (batch_start.elapsed().as_secs_f64() * 1000.0) as u64;
-        if elapsed_ms >= GROUPED_OPTIONAL_DEBUG_MIN_MS || emitted_rows > 0 {
-            tracing::debug!(
-                predicate_count = self.triples.len(),
-                start_row,
-                rows_considered = row_subject_slots.len(),
-                unique_subjects = subject_ids.len(),
-                total_probe_matches,
-                emitted_rows,
-                elapsed_ms,
-                "grouped optional builder batch complete"
-            );
-        } else {
-            tracing::trace!(
-                predicate_count = self.triples.len(),
-                start_row,
-                rows_considered = row_subject_slots.len(),
-                unique_subjects = subject_ids.len(),
-                total_probe_matches,
-                emitted_rows,
-                elapsed_ms,
-                "grouped optional builder batch complete"
-            );
         }
 
         Ok(Some(pending))

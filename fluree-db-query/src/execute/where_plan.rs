@@ -1531,15 +1531,6 @@ pub fn build_where_operators_seeded_with_needed(
                     let (grouped_optional_triples, grouped_end) =
                         collect_grouped_single_triple_optionals(patterns, i, &required_schema);
                     if grouped_optional_triples.len() >= 2 {
-                        tracing::debug!(
-                            grouped_optionals = grouped_optional_triples.len(),
-                            subject_var = grouped_optional_triples[0]
-                                .s
-                                .as_var()
-                                .map(|v| v.0)
-                                .unwrap_or(u16::MAX),
-                            "planned grouped single-triple optional chain"
-                        );
                         let builder = GroupedPatternOptionalBuilder::new(
                             required_schema.clone(),
                             grouped_optional_triples,
