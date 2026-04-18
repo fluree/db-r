@@ -42,6 +42,14 @@ pub struct UnionOperator {
     current_input_row: usize,
     /// Optional stats for selectivity-based pattern reordering in branches
     stats: Option<Arc<StatsView>>,
+    /// Debug counters for low-noise batch fragmentation summaries.
+    input_batches_seen: usize,
+    input_rows_seen: usize,
+    branch_execs: usize,
+    output_batches_buffered: usize,
+    output_rows_buffered: usize,
+    max_input_batch_len: usize,
+    max_output_batch_len: usize,
 }
 
 impl UnionOperator {
@@ -81,6 +89,13 @@ impl UnionOperator {
             current_input_batch: None,
             current_input_row: 0,
             stats,
+            input_batches_seen: 0,
+            input_rows_seen: 0,
+            branch_execs: 0,
+            output_batches_buffered: 0,
+            output_rows_buffered: 0,
+            max_input_batch_len: 0,
+            max_output_batch_len: 0,
         }
     }
 
@@ -133,6 +148,13 @@ impl Operator for UnionOperator {
         self.output_buffer.clear();
         self.current_input_batch = None;
         self.current_input_row = 0;
+        self.input_batches_seen = 0;
+        self.input_rows_seen = 0;
+        self.branch_execs = 0;
+        self.output_batches_buffered = 0;
+        self.output_rows_buffered = 0;
+        self.max_input_batch_len = 0;
+        self.max_output_batch_len = 0;
         Ok(())
     }
 
@@ -161,10 +183,22 @@ impl Operator for UnionOperator {
                     Some(b) if !b.is_empty() => b,
                     Some(_) => continue,
                     None => {
+                        tracing::debug!(
+                            input_batches_seen = self.input_batches_seen,
+                            input_rows_seen = self.input_rows_seen,
+                            branch_execs = self.branch_execs,
+                            output_batches_buffered = self.output_batches_buffered,
+                            output_rows_buffered = self.output_rows_buffered,
+                            max_input_batch_len = self.max_input_batch_len,
+                            max_output_batch_len = self.max_output_batch_len,
+                            "union execution summary"
+                        );
                         self.state = OperatorState::Exhausted;
                         return Ok(None);
                     }
                 };
+                self.input_batches_seen += 1;
+                self.max_input_batch_len = self.max_input_batch_len.max(next.len());
                 self.current_input_batch = Some(next);
                 self.current_input_row = 0;
             }
@@ -173,6 +207,7 @@ impl Operator for UnionOperator {
             let input_batch = self.current_input_batch.as_ref().unwrap().clone();
             let row_idx = self.current_input_row;
             self.current_input_row += 1;
+            self.input_rows_seen += 1;
 
             // Pass effective schema as required vars so branches trim internally
             let branch_downstream_vars: Option<&[VarId]> =
@@ -183,6 +218,7 @@ impl Operator for UnionOperator {
                 };
 
             for branch_patterns in &self.branches {
+                self.branch_execs += 1;
                 let seed = SeedOperator::from_batch_row(&input_batch, row_idx);
                 let mut branch_op = build_where_operators_seeded(
                     Some(Box::new(seed)),
@@ -196,7 +232,11 @@ impl Operator for UnionOperator {
                     if batch.is_empty() {
                         continue;
                     }
-                    self.output_buffer.push_back(self.normalize_batch(batch)?);
+                    let normalized = self.normalize_batch(batch)?;
+                    self.output_batches_buffered += 1;
+                    self.output_rows_buffered += normalized.len();
+                    self.max_output_batch_len = self.max_output_batch_len.max(normalized.len());
+                    self.output_buffer.push_back(normalized);
                 }
                 branch_op.close();
             }

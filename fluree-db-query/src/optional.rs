@@ -1331,6 +1331,7 @@ impl Operator for OptionalOperator {
 
         let batch_start = Instant::now();
         let batch_size = ctx.batch_size;
+        let mut max_required_batch_len = 0usize;
         let mut output_columns: Vec<Vec<Binding>> = (0..self.combined_schema.len())
             .map(|_| Vec::with_capacity(batch_size))
             .collect();
@@ -1483,6 +1484,7 @@ impl Operator for OptionalOperator {
             }
 
             let required_batch = self.current_required_batch.as_ref().unwrap();
+            max_required_batch_len = max_required_batch_len.max(required_batch.len());
 
             // Process current required row
             if self.current_required_row < required_batch.len() {
@@ -1601,6 +1603,7 @@ impl Operator for OptionalOperator {
                 tracing::debug!(
                     rows_added,
                     required_rows_seen,
+                    max_required_batch_len,
                     built_optionals,
                     batched_builds,
                     batched_rows,
@@ -1615,6 +1618,7 @@ impl Operator for OptionalOperator {
                 tracing::trace!(
                     rows_added,
                     required_rows_seen,
+                    max_required_batch_len,
                     built_optionals,
                     batched_builds,
                     batched_rows,
@@ -1634,6 +1638,7 @@ impl Operator for OptionalOperator {
             tracing::debug!(
                 rows_added,
                 required_rows_seen,
+                max_required_batch_len,
                 built_optionals,
                 batched_builds,
                 batched_rows,
@@ -1648,6 +1653,7 @@ impl Operator for OptionalOperator {
             tracing::trace!(
                 rows_added,
                 required_rows_seen,
+                max_required_batch_len,
                 built_optionals,
                 batched_builds,
                 batched_rows,
