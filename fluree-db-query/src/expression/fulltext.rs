@@ -32,6 +32,7 @@ use crate::ir::Expression;
 use super::helpers::check_arity;
 use super::value::ComparableValue;
 
+use fluree_db_binary_index::analyzer::Language;
 use fluree_db_binary_index::arena::fulltext::DocBoW;
 use fluree_db_binary_index::FulltextArena;
 use fluree_db_core::comparator::IndexType;
@@ -40,7 +41,9 @@ use fluree_db_core::value_id::ObjKind;
 use fluree_db_core::{FlakeValue, OverlayProvider, Sid};
 use fluree_vocab::namespaces::FLUREE_DB;
 
-/// Lazily-initialized English analyzer (reused across all fulltext calls).
+/// Lazily-initialized English analyzer (reused for the `@fulltext` datatype
+/// path which is always English — kept for backward compatibility of
+/// non-config callers; new code should prefer `Analyzer::for_language(...)`).
 static ENGLISH_ANALYZER: Lazy<Analyzer> = Lazy::new(Analyzer::english_default);
 
 /// BM25 parameters
@@ -89,6 +92,9 @@ struct NoveltyCacheKey {
     to_t: i64,
     g_id: fluree_db_core::GraphId,
     p_id: u32,
+    /// Arena bucket lang_id — deltas are built per (g_id, p_id, lang_id)
+    /// because the analyzer and overlay filter both depend on language.
+    lang_id: u16,
     analyzer_version: u8,
 }
 
@@ -99,6 +105,7 @@ impl PartialEq for NoveltyCacheKey {
             && self.to_t == other.to_t
             && self.g_id == other.g_id
             && self.p_id == other.p_id
+            && self.lang_id == other.lang_id
             && self.analyzer_version == other.analyzer_version
     }
 }
@@ -111,6 +118,7 @@ impl Hash for NoveltyCacheKey {
         self.to_t.hash(state);
         self.g_id.hash(state);
         self.p_id.hash(state);
+        self.lang_id.hash(state);
         self.analyzer_version.hash(state);
     }
 }
@@ -122,10 +130,26 @@ static NOVELTY_CACHE: Lazy<moka::sync::Cache<NoveltyCacheKey, Arc<NoveltyFulltex
 // Delta build
 // =============================================================================
 
-/// Build a novelty delta by scanning overlay flakes for a specific (g_id, p_id).
+/// Build a novelty delta by scanning overlay flakes for a specific
+/// `(g_id, p_id, lang_id)` bucket.
+///
+/// Filter semantics:
+/// - Every flake with `flake.p == target_p_sid` is a candidate.
+/// - `@fulltext`-datatype flakes are routed to the English bucket only
+///   (their arena is always keyed under the dict-assigned `"en"` lang_id,
+///   regardless of any per-row lang metadata).
+/// - Non-`@fulltext` flakes are routed to the bucket whose language matches
+///   the flake's `rdf:langString` tag. Untagged (`xsd:string`) values fall
+///   into the English bucket.
+///
+/// Analyzer selection: one analyzer per bucket, chosen from
+/// `Language::from_bcp47(bucket_lang_tag)`. The per-row analyzer choice is
+/// implicit — since all rows that survive the filter share the bucket's
+/// language, the analyzer is fixed for the whole scan.
 ///
 /// De-stales overlay ops: keeps only the latest op (by `t`) per triple
-/// `(subject, string_id)`, so re-assertions and retractions are counted correctly.
+/// `(subject, string_id, list_index)`, so re-assertions and retractions
+/// are counted correctly.
 fn build_novelty_delta(
     overlay: &dyn OverlayProvider,
     binary_store: &fluree_db_binary_index::BinaryIndexStore,
@@ -133,8 +157,11 @@ fn build_novelty_delta(
     g_id: fluree_db_core::GraphId,
     target_p_sid: &Sid,
     to_t: i64,
+    bucket_lang_tag: &str,
 ) -> NoveltyFulltextDelta {
     let fulltext_dt_sid = Sid::new(FLUREE_DB, "fullText");
+    let bucket_language = Language::from_bcp47(bucket_lang_tag);
+    let bucket_is_english = bucket_language == Language::English;
 
     // Phase 1: Scan overlay and de-stale — keep latest op per triple.
     // Triple key: (subject Sid, string_id, list_index) — collision-free.
@@ -156,10 +183,25 @@ fn build_novelty_delta(
             if flake.p != *target_p_sid {
                 return;
             }
-            // Filter by datatype
-            if flake.dt != fulltext_dt_sid {
+
+            let is_datatype_fulltext = flake.dt == fulltext_dt_sid;
+            // Compute which bucket this flake belongs to:
+            //   - @fulltext datatype → English bucket only.
+            //   - Else lang-tagged string → bucket matching the tag.
+            //   - Else untagged string → English bucket.
+            // A flake that doesn't match the caller's bucket is skipped.
+            let belongs_to_this_bucket = if is_datatype_fulltext {
+                bucket_is_english
+            } else {
+                match flake.m.as_ref().and_then(|m| m.lang.as_deref()) {
+                    Some(tag) => Language::from_bcp47(tag) == bucket_language,
+                    None => bucket_is_english,
+                }
+            };
+            if !belongs_to_this_bucket {
                 return;
             }
+
             // Extract string content
             let text = match &flake.o {
                 FlakeValue::String(s) => s.clone(),
@@ -193,7 +235,7 @@ fn build_novelty_delta(
 
     // Phase 2: Build per-doc entries from de-staled ops.
     // Group by string_id, accumulate triple_count_delta per string_id.
-    let analyzer = &*ENGLISH_ANALYZER;
+    let analyzer = Analyzer::for_language(bucket_language);
     let mut doc_entries: HashMap<u32, NoveltyDocEntry> = HashMap::new();
 
     for ((_, string_id, _), (_t, op, text)) in &latest_ops {
@@ -262,11 +304,18 @@ fn resolve_string_id(
     None
 }
 
-/// Get or build the novelty delta for (g_id, p_id), using the global cache.
+/// Get or build the novelty delta for `(g_id, p_id, lang_id)`, using the
+/// global cache.
+///
+/// `lang_id` is the arena-bucket lang_id the caller is about to score
+/// against. The delta's overlay filter and analyzer both key off the
+/// BCP-47 tag associated with that lang_id — resolved via the binary
+/// store's language dict. Missing tag falls back to `"en"`.
 fn get_or_build_delta(
     ctx: &ExecutionContext<'_>,
     g_id: fluree_db_core::GraphId,
     p_id: u32,
+    lang_id: u16,
 ) -> Option<Arc<NoveltyFulltextDelta>> {
     let overlay = ctx.overlay?;
     let epoch = overlay.epoch();
@@ -278,6 +327,17 @@ fn get_or_build_delta(
     // Resolve target predicate Sid for overlay filtering
     let pred_iri = binary_store.resolve_predicate_iri(p_id)?;
     let target_p_sid = binary_store.encode_iri(pred_iri);
+
+    // Resolve the bucket's BCP-47 tag once. `lang_id == 0` shouldn't appear
+    // as a bucket key (buckets are always keyed by real dict-assigned IDs),
+    // but if it does we default to English to mirror the arena-build path.
+    let bucket_lang_tag: String = if lang_id == 0 {
+        "en".to_string()
+    } else {
+        binary_store
+            .resolve_language_tag(lang_id)
+            .unwrap_or_else(|| "en".to_string())
+    };
 
     // Hash the ledger_id to discriminate across ledgers sharing the process cache.
     let ledger_id_hash = {
@@ -292,6 +352,7 @@ fn get_or_build_delta(
         to_t: ctx.to_t,
         g_id,
         p_id,
+        lang_id,
         analyzer_version: ANALYZER_VERSION,
     };
 
@@ -307,6 +368,7 @@ fn get_or_build_delta(
             g_id,
             &target_p_sid,
             to_t,
+            &bucket_lang_tag,
         ))
     }))
 }
@@ -419,9 +481,19 @@ fn score_bm25_novelty(
     score
 }
 
-/// Analyze query text, deduplicate stems.
+/// Analyze query text with the default English analyzer and deduplicate stems.
+///
+/// Used on the `@fulltext`-datatype path where the bucket is always English.
+/// For language-aware lookup the caller should use
+/// [`analyze_and_dedup_query_with`] with the bucket's analyzer so the query
+/// stems match the arena's indexed stems.
 fn analyze_and_dedup_query(query_text: &str) -> Vec<String> {
-    let mut terms = ENGLISH_ANALYZER.analyze_to_strings(query_text);
+    analyze_and_dedup_query_with(&ENGLISH_ANALYZER, query_text)
+}
+
+/// Analyze query text with the caller-provided analyzer and deduplicate stems.
+fn analyze_and_dedup_query_with(analyzer: &Analyzer, query_text: &str) -> Vec<String> {
+    let mut terms = analyzer.analyze_to_strings(query_text);
     terms.sort();
     terms.dedup();
     terms
@@ -476,26 +548,51 @@ pub fn eval_fulltext<R: RowAccess>(
             lang_id,
             ..
         } => {
-            // Only score @fulltext-typed values
-            if *dt_id != DatatypeDictId::FULL_TEXT.as_u16() {
-                return Ok(None);
-            }
+            // Accept either path:
+            //   1. `@fulltext`-datatype values (always English bucket), OR
+            //   2. Any other string value on a property that has a configured
+            //      BM25 arena at the resolved language bucket.
+            // Values with no matching arena fall through to the TF-saturation
+            // fallback below so we still produce some score for callers.
+            let is_fulltext_dt = *dt_id == DatatypeDictId::FULL_TEXT.as_u16();
 
             // Arena-based unified BM25 scoring.
             // Guard on LEX_ID: the arena maps string_id → BoW.
             if ObjKind::from_u8(*o_kind) == ObjKind::LEX_ID {
                 if let Some(ctx) = ctx {
                     let g_id = ctx.binary_g_id;
+                    // Resolve arena lang_id:
+                    //   1. @fulltext datatype → English bucket only.
+                    //   2. row lang_id if non-zero (rdf:langString)
+                    //   3. context english_lang_id fallback (untagged strings).
+                    // Full resolution order with explicit-arg / config-derived
+                    // language lands with the 3rd-arg fulltext() form (follow-up).
+                    let lookup_lang_id = if is_fulltext_dt {
+                        ctx.english_lang_id.unwrap_or(0)
+                    } else if *lang_id != 0 {
+                        *lang_id
+                    } else {
+                        ctx.english_lang_id.unwrap_or(0)
+                    };
                     if let Some(arena) = ctx
                         .fulltext_providers
-                        .and_then(|providers| providers.get(&(g_id, *p_id)))
+                        .and_then(|providers| providers.get(&(g_id, *p_id, lookup_lang_id)))
                     {
-                        let query_terms = analyze_and_dedup_query(&query_str);
+                        // Bucket's BCP-47 tag → analyzer; same choice that built the arena.
+                        let bucket_tag: String = ctx
+                            .binary_store
+                            .as_ref()
+                            .and_then(|s| s.resolve_language_tag(lookup_lang_id))
+                            .unwrap_or_else(|| "en".to_string());
+                        let bucket_language = Language::from_bcp47(&bucket_tag);
+                        let bucket_analyzer = Analyzer::for_language(bucket_language);
+                        let query_terms =
+                            analyze_and_dedup_query_with(&bucket_analyzer, &query_str);
                         if query_terms.is_empty() {
                             return Ok(Some(ComparableValue::Double(0.0)));
                         }
 
-                        let delta = get_or_build_delta(ctx, g_id, *p_id);
+                        let delta = get_or_build_delta(ctx, g_id, *p_id, lookup_lang_id);
 
                         if let Some(bow) = arena.doc_bow(*o_key as u32) {
                             // Indexed doc: score directly from arena BoW
@@ -510,7 +607,8 @@ pub fn eval_fulltext<R: RowAccess>(
                             if let Ok(FlakeValue::String(text)) =
                                 gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                             {
-                                let doc_term_freqs = ENGLISH_ANALYZER.analyze_to_term_freqs(&text);
+                                let doc_term_freqs =
+                                    bucket_analyzer.analyze_to_term_freqs(&text);
                                 let doc_len = doc_term_freqs.values().sum::<u32>();
                                 let score = score_bm25_novelty(
                                     &doc_term_freqs,
@@ -526,7 +624,16 @@ pub fn eval_fulltext<R: RowAccess>(
                 }
             }
 
-            // Fallback: decode string and score with TF-saturation (no arena available)
+            // Fallback: decode string and score with TF-saturation.
+            // Restricted to `@fulltext`-datatype values to preserve the
+            // pre-config behavior that `fulltext(?v, ...)` returns unbound
+            // for non-fulltext string values — otherwise every string
+            // variable would score against any query, which is surprising.
+            // Configured plain-string properties only score when their
+            // arena is available (handled by the arena branch above).
+            if !is_fulltext_dt {
+                return Ok(None);
+            }
             let gv = match ctx.and_then(|c| c.graph_view()) {
                 Some(gv) => gv,
                 None => return Ok(None),
@@ -566,16 +673,19 @@ pub fn eval_fulltext<R: RowAccess>(
             // If p_id is available (from early materialization), use unified BM25
             if let (Some(p_id), Some(ctx)) = (lit_p_id, ctx) {
                 let g_id = ctx.binary_g_id;
+                // `@fulltext`-datatype values carry no lang tag — always route
+                // through the English bucket, keyed by the dict-assigned `"en"` lang_id.
+                let lookup_lang_id = ctx.english_lang_id.unwrap_or(0);
                 if let Some(arena) = ctx
                     .fulltext_providers
-                    .and_then(|providers| providers.get(&(g_id, *p_id)))
+                    .and_then(|providers| providers.get(&(g_id, *p_id, lookup_lang_id)))
                 {
                     let query_terms = analyze_and_dedup_query(&query_str);
                     if query_terms.is_empty() {
                         return Ok(Some(ComparableValue::Double(0.0)));
                     }
 
-                    let delta = get_or_build_delta(ctx, g_id, *p_id);
+                    let delta = get_or_build_delta(ctx, g_id, *p_id, lookup_lang_id);
                     let doc_term_freqs = ENGLISH_ANALYZER.analyze_to_term_freqs(text);
                     let doc_len = doc_term_freqs.values().sum::<u32>();
                     let score = score_bm25_novelty(

@@ -494,7 +494,13 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
         ));
     }
     let version = bytes[4];
-    if version != 1 {
+    // FIR6 version 2 adds `lang_id` to each `FulltextArenaRef` so fulltext
+    // arenas can be keyed by `(g_id, p_id, lang_id)`. This helper doesn't
+    // parse arena refs — it only consumes the header bits it needs — so
+    // both versions are accepted here. The authoritative parser
+    // (`IndexRoot::decode` in `fluree-db-binary-index`) enforces version
+    // matching for the full-root deserialization path.
+    if version != 1 && version != 2 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("FIR6: unsupported version {version}"),
@@ -620,7 +626,11 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
         Ok(())
     }
 
-    fn skip_graph_arenas(bytes: &[u8], pos: &mut usize) -> std::io::Result<()> {
+    fn skip_graph_arenas(
+        bytes: &[u8],
+        pos: &mut usize,
+        version: u8,
+    ) -> std::io::Result<()> {
         // Matches `write_graph_arenas_v5` in binary-index.
         let _g_id = read_u16(bytes, pos)?;
 
@@ -652,10 +662,13 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
                 skip_cid(bytes, pos)?;
             }
         }
-        // fulltext
+        // fulltext (v2 adds `lang_id: u16` per entry)
         let ft_count = read_u16(bytes, pos)? as usize;
         for _ in 0..ft_count {
             let _p_id = read_u32(bytes, pos)?;
+            if version >= 2 {
+                let _lang_id = read_u16(bytes, pos)?;
+            }
             skip_cid(bytes, pos)?;
         }
 
@@ -705,7 +718,7 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
     // Per-graph specialty arenas (skip)
     let arena_count = read_u16(bytes, &mut pos)? as usize;
     for _ in 0..arena_count {
-        skip_graph_arenas(bytes, &mut pos)?;
+        skip_graph_arenas(bytes, &mut pos, version)?;
     }
 
     // Watermarks

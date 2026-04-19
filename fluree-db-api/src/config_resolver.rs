@@ -24,9 +24,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use fluree_db_core::ledger_config::{
-    DatalogDefaults, GraphConfig, GraphSourceRef, LedgerConfig, OverrideControl, PolicyDefaults,
-    ReasoningDefaults, ResolvedConfig, RollbackGuard, ShaclDefaults, TransactDefaults, TrustMode,
-    TrustPolicy, ValidationMode,
+    DatalogDefaults, FullTextDefaults, FullTextProperty, GraphConfig, GraphSourceRef, LedgerConfig,
+    OverrideControl, PolicyDefaults, ReasoningDefaults, ResolvedConfig, RollbackGuard,
+    ShaclDefaults, TransactDefaults, TrustMode, TrustPolicy, ValidationMode,
 };
 use fluree_db_core::{GraphDbRef, LedgerSnapshot, OverlayProvider, Sid, CONFIG_GRAPH_ID};
 use fluree_db_query::{
@@ -110,6 +110,7 @@ pub async fn resolve_ledger_config(
     let reasoning = read_reasoning_defaults(snapshot, overlay, to_t, &config_sid).await?;
     let datalog = read_datalog_defaults(snapshot, overlay, to_t, &config_sid).await?;
     let transact = read_transact_defaults(snapshot, overlay, to_t, &config_sid).await?;
+    let full_text = read_fulltext_defaults(snapshot, overlay, to_t, &config_sid).await?;
     let graph_overrides = read_graph_overrides(snapshot, overlay, to_t, &config_sid).await?;
 
     Ok(Some(LedgerConfig {
@@ -119,6 +120,7 @@ pub async fn resolve_ledger_config(
         reasoning,
         datalog,
         transact,
+        full_text,
         graph_overrides,
     }))
 }
@@ -164,6 +166,10 @@ pub fn resolve_effective_config(config: &LedgerConfig, graph_iri: Option<&str>) 
             &config.transact,
             graph_override.and_then(|gc| gc.transact.as_ref()),
         ),
+        full_text: merge_setting_group(
+            &config.full_text,
+            graph_override.and_then(|gc| gc.full_text.as_ref()),
+        ),
     }
 }
 
@@ -180,6 +186,84 @@ fn matches_graph_target(target: &str, graph_iri: Option<&str>) -> bool {
             target == iri || (target == config_iris::TXN_META_GRAPH && iri.ends_with("#txn-meta"))
         }
     }
+}
+
+/// Collect the effective configured full-text properties from a resolved
+/// [`LedgerConfig`], in the shape the indexer expects.
+///
+/// Semantics:
+/// - Ledger-wide properties (declared on `LedgerConfig.full_text.properties`)
+///   are emitted with scope `AnyGraph` — they apply to every graph in the
+///   ledger.
+/// - Per-graph overrides emit only the **delta** — properties added on top
+///   of the ledger-wide list — with a scope that mirrors the override's
+///   `f:targetGraph`: `DefaultGraph` for `f:defaultGraph`, `TxnMetaGraph`
+///   for `f:txnMetaGraph`, or `NamedGraph(iri)` otherwise. Inherited
+///   ledger-wide entries are not re-emitted per graph because `AnyGraph`
+///   already covers them.
+/// - Override blocking (`f:OverrideNone` on the ledger-wide group) is
+///   enforced by reusing the shared `merge_setting_group` helper: when
+///   blocked, the "effective" per-graph group equals the ledger-wide group,
+///   so the delta is empty and no extra entries are emitted.
+///
+/// Empty result when no full-text defaults are configured — the indexer treats
+/// this as "only the `@fulltext` datatype path contributes entries."
+pub fn configured_fulltext_properties_for_indexer(
+    config: &LedgerConfig,
+) -> Vec<fluree_db_indexer::ConfiguredFulltextProperty> {
+    use fluree_db_indexer::{ConfiguredFulltextProperty, ConfiguredFulltextScope};
+
+    let mut out: Vec<ConfiguredFulltextProperty> = Vec::new();
+
+    // Ledger-wide: applies to every graph (scope::AnyGraph).
+    let ledger_wide_iris: std::collections::HashSet<&str> = config
+        .full_text
+        .as_ref()
+        .map(|ft| ft.properties.iter().map(|p| p.target.as_str()).collect())
+        .unwrap_or_default();
+    if let Some(ref ft) = config.full_text {
+        for prop in &ft.properties {
+            out.push(ConfiguredFulltextProperty {
+                scope: ConfiguredFulltextScope::AnyGraph,
+                property_iri: prop.target.clone(),
+            });
+        }
+    }
+
+    // Per-graph overrides: emit only the DELTA (properties the override adds
+    // beyond the ledger-wide list), under a scope that matches the override's
+    // `f:targetGraph`. Sentinel IRIs `f:defaultGraph` / `f:txnMetaGraph` map
+    // to the `DefaultGraph` / `TxnMetaGraph` scope variants so the indexer
+    // can resolve them to the correct `GraphId` without treating them as
+    // literal IRIs.
+    for gc in &config.graph_overrides {
+        let effective_full_text = merge_setting_group(&config.full_text, gc.full_text.as_ref());
+        let props = match &effective_full_text {
+            Some(ft) => &ft.properties[..],
+            None => continue,
+        };
+
+        let scope = if gc.target_graph == config_iris::DEFAULT_GRAPH {
+            ConfiguredFulltextScope::DefaultGraph
+        } else if gc.target_graph == config_iris::TXN_META_GRAPH {
+            ConfiguredFulltextScope::TxnMetaGraph
+        } else {
+            ConfiguredFulltextScope::NamedGraph(gc.target_graph.clone())
+        };
+
+        for prop in props {
+            if ledger_wide_iris.contains(prop.target.as_str()) {
+                // Already covered by the ledger-wide `AnyGraph` entry.
+                continue;
+            }
+            out.push(ConfiguredFulltextProperty {
+                scope: scope.clone(),
+                property_iri: prop.target.clone(),
+            });
+        }
+    }
+
+    out
 }
 
 // ============================================================================
@@ -476,6 +560,34 @@ impl MergeableGroup for TransactDefaults {
                 sources.extend(self.constraints_sources.iter().cloned());
                 sources
             },
+            override_control: base.override_control.effective_min(&self.override_control),
+        }
+    }
+}
+
+impl MergeableGroup for FullTextDefaults {
+    fn override_control(&self) -> &OverrideControl {
+        &self.override_control
+    }
+
+    /// Additive merge for `properties`: per-graph entries append to ledger-wide.
+    /// Duplicate `target` IRIs resolve to a single entry with per-graph winning,
+    /// which leaves room for future per-property knobs (language, boost, …).
+    fn merge_over(&self, base: &Self) -> Self {
+        let mut properties = base.properties.clone();
+        for entry in &self.properties {
+            if let Some(slot) = properties.iter_mut().find(|p| p.target == entry.target) {
+                *slot = entry.clone();
+            } else {
+                properties.push(entry.clone());
+            }
+        }
+        FullTextDefaults {
+            default_language: self
+                .default_language
+                .clone()
+                .or(base.default_language.clone()),
+            properties,
             override_control: base.override_control.effective_min(&self.override_control),
         }
     }
@@ -934,6 +1046,102 @@ async fn read_transact_defaults(
     }))
 }
 
+/// Read a plain string field (e.g., BCP-47 language tag) from a subject.
+async fn read_string_field(
+    snapshot: &LedgerSnapshot,
+    overlay: &dyn OverlayProvider,
+    to_t: i64,
+    subject_sid: &Sid,
+    pred_iri: &str,
+) -> Result<Option<String>> {
+    let pred_sid = match try_encode(snapshot, pred_iri) {
+        Some(sid) => sid,
+        None => return Ok(None),
+    };
+
+    let bindings = query_config_predicate(snapshot, overlay, to_t, subject_sid, &pred_sid).await?;
+    for binding in bindings {
+        if let Some((fluree_db_core::FlakeValue::String(s), _)) = binding.as_lit() {
+            return Ok(Some(s.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Read full-text defaults from a parent subject (LedgerConfig or GraphConfig).
+///
+/// `f:fullTextDefaults` points to a group with:
+///  - `f:defaultLanguage` — optional BCP-47 string
+///  - `f:property` — 0..n refs to `f:FullTextProperty` nodes (each with `f:target`)
+///  - `f:overrideControl` — optional override control
+///
+/// Absent fields yield `None` / empty. Returns `None` if the parent has no
+/// `f:fullTextDefaults` at all (not even an empty one).
+async fn read_fulltext_defaults(
+    snapshot: &LedgerSnapshot,
+    overlay: &dyn OverlayProvider,
+    to_t: i64,
+    parent_sid: &Sid,
+) -> Result<Option<FullTextDefaults>> {
+    let group_sid = match read_ref_field(
+        snapshot,
+        overlay,
+        to_t,
+        parent_sid,
+        config_iris::FULL_TEXT_DEFAULTS,
+    )
+    .await?
+    {
+        Some(sid) => sid,
+        None => return Ok(None),
+    };
+
+    let default_language = read_string_field(
+        snapshot,
+        overlay,
+        to_t,
+        &group_sid,
+        config_iris::DEFAULT_LANGUAGE,
+    )
+    .await?;
+
+    // Read each `f:property` ref and resolve its `f:target` IRI.
+    let pred_sid = try_encode(snapshot, config_iris::FULL_TEXT_PROPERTY);
+    let mut properties = Vec::new();
+    if let Some(pred_sid) = pred_sid {
+        let bindings =
+            query_config_predicate(snapshot, overlay, to_t, &group_sid, &pred_sid).await?;
+        for binding in bindings {
+            if let Some(prop_sid) = binding.as_sid() {
+                let target = read_iri_field(
+                    snapshot,
+                    overlay,
+                    to_t,
+                    prop_sid,
+                    config_iris::FULL_TEXT_TARGET,
+                )
+                .await?;
+                match target {
+                    Some(iri) => properties.push(FullTextProperty { target: iri }),
+                    None => {
+                        tracing::warn!(
+                            "FullTextProperty node without f:target — skipping"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    let override_control = read_override_control(snapshot, overlay, to_t, &group_sid).await?;
+
+    Ok(Some(FullTextDefaults {
+        default_language,
+        properties,
+        override_control,
+    }))
+}
+
 /// Read per-graph config overrides (`f:graphOverrides`).
 async fn read_graph_overrides(
     snapshot: &LedgerSnapshot,
@@ -982,6 +1190,7 @@ async fn read_single_graph_config(
     let reasoning = read_reasoning_defaults(snapshot, overlay, to_t, gc_sid).await?;
     let datalog = read_datalog_defaults(snapshot, overlay, to_t, gc_sid).await?;
     let transact = read_transact_defaults(snapshot, overlay, to_t, gc_sid).await?;
+    let full_text = read_fulltext_defaults(snapshot, overlay, to_t, gc_sid).await?;
 
     Ok(Some(GraphConfig {
         target_graph,
@@ -990,6 +1199,7 @@ async fn read_single_graph_config(
         reasoning,
         datalog,
         transact,
+        full_text,
     }))
 }
 
@@ -1371,6 +1581,7 @@ mod tests {
                 reasoning: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1399,6 +1610,7 @@ mod tests {
                 shacl: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1426,6 +1638,7 @@ mod tests {
                 reasoning: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1454,6 +1667,7 @@ mod tests {
                 reasoning: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1483,6 +1697,7 @@ mod tests {
                 shacl: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1511,6 +1726,7 @@ mod tests {
                 reasoning: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1547,6 +1763,7 @@ mod tests {
                 shacl: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1573,6 +1790,7 @@ mod tests {
                 shacl: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };
@@ -1598,6 +1816,7 @@ mod tests {
                 shacl: None,
                 datalog: None,
                 transact: None,
+                full_text: None,
             }],
             ..Default::default()
         };

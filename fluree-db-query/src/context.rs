@@ -106,10 +106,21 @@ pub struct ExecutionContext<'a> {
     pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
     /// Optional fulltext BoW arenas for `fulltext()` function BM25 scoring.
     ///
-    /// Keys are `(g_id, p_id)` pairs. When present, `eval_fulltext` uses
-    /// arena-based BM25 scoring with corpus-wide IDF and avgdl stats.
-    /// When absent, falls back to per-document TF-saturation scoring.
-    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Keys are `(g_id, p_id, lang_id)` triples — one arena per language on
+    /// each property. `@fulltext`-datatype and configured-English content
+    /// share the same bucket under `"en"`'s dict-assigned lang_id.
+    /// When present, `eval_fulltext` uses arena-based BM25 scoring with
+    /// corpus-wide IDF and avgdl stats. When absent, falls back to
+    /// per-document TF-saturation scoring.
+    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32, u16), Arc<FulltextArena>>>,
+    /// Dict-assigned lang_id for BCP-47 `"en"`, resolved at context
+    /// construction time from the binary index's language dict.
+    ///
+    /// Used as the arena-lookup key for `@fulltext`-datatype values (which
+    /// carry no row lang tag, so `lang_id == 0`) and as the final fallback
+    /// in the language-resolution chain for configured full-text properties.
+    /// `None` means the ledger has no indexed English content.
+    pub english_lang_id: Option<u16>,
     /// Optional remote SERVICE executor for `fluree:remote:` endpoints.
     ///
     /// When present, `ServiceOperator` can execute SPARQL queries against
@@ -166,6 +177,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            english_lang_id: None,
             remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
@@ -212,6 +224,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
+            english_lang_id: None,
             remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
@@ -262,6 +275,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts,
             spatial_providers: None,
             fulltext_providers: None,
+            english_lang_id: None,
             remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
@@ -301,6 +315,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            english_lang_id: None,
             remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
@@ -345,6 +360,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            english_lang_id: None,
             remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
@@ -385,6 +401,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: None,
             fulltext_providers: None,
+            english_lang_id: None,
             remote_service: None,
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
@@ -443,7 +460,7 @@ impl<'a> ExecutionContext<'a> {
     /// Attach fulltext BoW arenas to this context (for `fulltext()` BM25 scoring).
     pub fn with_fulltext_providers(
         mut self,
-        providers: &'a HashMap<(GraphId, u32), Arc<FulltextArena>>,
+        providers: &'a HashMap<(GraphId, u32, u16), Arc<FulltextArena>>,
     ) -> Self {
         self.fulltext_providers = Some(providers);
         self
@@ -754,6 +771,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            english_lang_id: self.english_lang_id,
             remote_service: self.remote_service,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger,
@@ -803,6 +821,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: self.runtime_small_dicts,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            english_lang_id: self.english_lang_id,
             remote_service: self.remote_service,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
@@ -843,6 +862,7 @@ impl<'a> ExecutionContext<'a> {
             runtime_small_dicts: None,
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
+            english_lang_id: self.english_lang_id,
             remote_service: self.remote_service,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),

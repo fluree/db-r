@@ -92,6 +92,11 @@ pub struct IncrementalResolveConfig {
     /// If exceeded, incremental resolution aborts so the caller can fall back
     /// to a full rebuild. `None` means unlimited.
     pub max_commit_bytes: Option<usize>,
+    /// Configured full-text properties for this incremental run. Seeded into
+    /// `SharedResolverState.fulltext_hook_config` before resolution so the
+    /// hook routes configured plain-string values into BM25 arena building.
+    /// Empty = only the `@fulltext` datatype path collects entries.
+    pub fulltext_configured_properties: Vec<crate::config::ConfiguredFulltextProperty>,
 }
 
 /// Result of V6 incremental commit resolution.
@@ -223,6 +228,16 @@ pub async fn resolve_incremental_commits_v6(
     shared.spatial_hook = Some(crate::spatial_hook::SpatialHook::new());
     // Enable fulltext hook.
     shared.fulltext_hook = Some(crate::fulltext_hook::FulltextHook::new());
+
+    // Seed the configured full-text property set so the hook routes
+    // plain-string values on configured properties into BM25 arena building.
+    if !config.fulltext_configured_properties.is_empty() {
+        shared.configure_fulltext_properties(&config.fulltext_configured_properties);
+        tracing::debug!(
+            count = config.fulltext_configured_properties.len(),
+            "fulltext: seeded configured property set for incremental run"
+        );
+    }
 
     // 4a. Pre-seed numbig arenas.
     let (base_numbig_counts, base_vector_counts, t_seed_arenas_ms) = {

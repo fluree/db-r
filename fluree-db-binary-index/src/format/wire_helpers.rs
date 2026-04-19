@@ -134,10 +134,16 @@ pub struct SpatialArenaRef {
     pub leaflets: Vec<ContentId>,
 }
 
-/// Fulltext arena ref for one (graph, predicate) pair.
+/// Fulltext arena ref for one (graph, predicate, language) triple.
+///
+/// `lang_id` is the ordinary dict-assigned ID for the bucket's BCP-47 tag.
+/// `@fulltext`-datatype arenas and config-driven English content both resolve
+/// to the lang_id assigned to `"en"` and therefore share a single arena.
+/// `lang_id` is stable per ledger because the language dict is append-only.
 #[derive(Debug, Clone)]
 pub struct FulltextArenaRef {
     pub p_id: u32,
+    pub lang_id: u16,
     /// CID of the FTA1 blob.
     pub arena_cid: ContentId,
 }

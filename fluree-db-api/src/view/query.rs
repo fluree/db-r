@@ -542,7 +542,24 @@ impl Fluree {
                 .map_err(query_error_to_api_error)?;
 
         let spatial_map = db.binary_store.as_ref().map(|s| s.spatial_provider_map());
-        let fulltext_map = db.binary_store.as_ref().map(|s| s.fulltext_provider_map());
+        // Perf guardrail: skip fulltext arena map + `"en"` lang_id resolution
+        // for queries that don't actually call `fulltext(...)`. The setup
+        // cost (HashMap clone over every (graph, predicate, language) arena
+        // plus one lang dict probe) is real on wide ledgers — an unrelated
+        // query shouldn't pay it.
+        let uses_fulltext = executable.uses_fulltext();
+        let fulltext_map = if uses_fulltext {
+            db.binary_store.as_ref().map(|s| s.fulltext_provider_map())
+        } else {
+            None
+        };
+        let english_lang_id = if uses_fulltext {
+            db.binary_store
+                .as_ref()
+                .and_then(|s| s.resolve_lang_id("en"))
+        } else {
+            None
+        };
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -553,6 +570,7 @@ impl Fluree {
             dict_novelty: db.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
+            english_lang_id,
             remote_service: self.remote_service_executor(),
             strict_bind_errors: true,
             ..Default::default()
@@ -593,7 +611,24 @@ impl Fluree {
                 .await?;
 
         let spatial_map = db.binary_store.as_ref().map(|s| s.spatial_provider_map());
-        let fulltext_map = db.binary_store.as_ref().map(|s| s.fulltext_provider_map());
+        // Perf guardrail: skip fulltext arena map + `"en"` lang_id resolution
+        // for queries that don't actually call `fulltext(...)`. The setup
+        // cost (HashMap clone over every (graph, predicate, language) arena
+        // plus one lang dict probe) is real on wide ledgers — an unrelated
+        // query shouldn't pay it.
+        let uses_fulltext = executable.uses_fulltext();
+        let fulltext_map = if uses_fulltext {
+            db.binary_store.as_ref().map(|s| s.fulltext_provider_map())
+        } else {
+            None
+        };
+        let english_lang_id = if uses_fulltext {
+            db.binary_store
+                .as_ref()
+                .and_then(|s| s.resolve_lang_id("en"))
+        } else {
+            None
+        };
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -604,6 +639,7 @@ impl Fluree {
             dict_novelty: db.dict_novelty.clone(),
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
+            english_lang_id,
             remote_service: self.remote_service_executor(),
             strict_bind_errors: true,
             ..Default::default()

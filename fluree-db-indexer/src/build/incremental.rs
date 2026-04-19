@@ -312,8 +312,9 @@ pub async fn incremental_index(
         from_t,
         artifact_cache_dir: Some(cache_dir.clone()),
         max_commit_bytes: config.incremental_max_commit_bytes,
+        fulltext_configured_properties: config.fulltext_configured_properties.clone(),
     };
-    let novelty = resolve_incremental_commits_v6(content_store.clone(), resolve_config)
+    let mut novelty = resolve_incremental_commits_v6(content_store.clone(), resolve_config)
         .await
         .map_err(|e| IndexerError::StorageWrite(format!("V6 incremental resolve: {e}")))?;
 
@@ -660,13 +661,12 @@ pub async fn incremental_index(
         .collect();
     root_builder.set_datatype_iris(new_datatype_iris);
 
-    let new_language_tags: Vec<String> = novelty
-        .shared
-        .languages
-        .iter()
-        .map(|(_, tag)| tag.to_string())
-        .collect();
-    root_builder.set_language_tags(new_language_tags);
+    // NOTE: `set_language_tags` is deferred to AFTER Phase 3a so that any
+    // synthetic `lang_id`s the fulltext builder must allocate (e.g., the
+    // dict-assigned id for `"en"` used as the bucket for `@fulltext`-datatype
+    // values) are present in the persisted `language_tags` list. Otherwise
+    // the root can end up referencing `lang_id`s that never made it into the
+    // dict blob, breaking query-time arena lookup.
 
     root_builder.set_watermarks(
         novelty.updated_watermarks.clone(),
@@ -1008,6 +1008,8 @@ pub async fn incremental_index(
 
             // ---- Fulltext arena incremental update ----
             if has_new_fulltext {
+                use fluree_db_binary_index::analyzer::{Analyzer, Language};
+
                 let fulltext_entries = novelty
                     .shared
                     .fulltext_hook
@@ -1015,38 +1017,78 @@ pub async fn incremental_index(
                     .map(|h| h.entries())
                     .unwrap_or(&[]);
 
+                // Resolve the dict-assigned lang_id for `"en"` once — used as
+                // the bucket for every `DatatypeFulltext` entry and as the
+                // fallback for `Configured` entries whose row is untagged.
+                //
+                // TODO(fulltext-config): once `FullTextDefaults.default_language`
+                // is plumbed into the indexing pipeline, prefer that tag over
+                // the plain `"en"` fallback for `Configured && lang_id == 0`.
+                let en_lang_id = novelty.shared.languages.get_or_insert(Some("en"));
+
+                // Group entries by (g_id, p_id, bucket_lang_id).
                 let mut ft_grouped: BTreeMap<
-                    (u16, u32),
+                    (u16, u32, u16),
                     Vec<&crate::fulltext_hook::FulltextEntry>,
                 > = BTreeMap::new();
                 for entry in fulltext_entries {
+                    let bucket_lang_id = match entry.source {
+                        crate::fulltext_hook::FulltextSource::DatatypeFulltext => en_lang_id,
+                        crate::fulltext_hook::FulltextSource::Configured => {
+                            if entry.lang_id != 0 {
+                                entry.lang_id
+                            } else {
+                                en_lang_id
+                            }
+                        }
+                    };
                     ft_grouped
-                        .entry((entry.g_id, entry.p_id))
+                        .entry((entry.g_id, entry.p_id, bucket_lang_id))
                         .or_default()
                         .push(entry);
                 }
 
-                for ((g_id, p_id), group_entries) in ft_grouped {
-                    let ga_ref = arenas_by_gid.get(&g_id);
-                    let existing_ref =
-                        ga_ref.and_then(|a| a.fulltext.iter().find(|f| f.p_id == p_id));
+                for ((g_id, p_id, lang_id), group_entries) in ft_grouped {
+                    // Resolve the BCP-47 tag for this bucket so we can pick an
+                    // analyzer. Missing dict entry falls back to English.
+                    let lang_tag = novelty
+                        .shared
+                        .languages
+                        .resolve(lang_id)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "en".to_string());
+                    let language = Language::from_bcp47(&lang_tag);
+                    let analyzer = Analyzer::for_language(language);
 
+                    let ga_ref = arenas_by_gid.get(&g_id);
+                    let existing_ref = ga_ref.and_then(|a| {
+                        a.fulltext
+                            .iter()
+                            .find(|f| f.p_id == p_id && f.lang_id == lang_id)
+                    });
+
+                    // Fetch + decode the prior arena for this bucket. Any
+                    // failure here MUST propagate — silently "starting fresh"
+                    // would drop every previously-indexed doc in the bucket,
+                    // leaving the on-disk arena reflecting only the novelty
+                    // window. The incremental pipeline's error-handling
+                    // contract covers this: `build_index_for_ledger` falls
+                    // back to a full rebuild on incremental failure, which is
+                    // the correct recovery for a bad prior-arena blob.
                     let prior_arena = if let Some(ft_ref) = existing_ref {
-                        match content_store.get(&ft_ref.arena_cid).await {
-                            Ok(blob) => {
-                                fluree_db_binary_index::arena::fulltext::FulltextArena::decode(
-                                    &blob,
-                                )
-                                .unwrap_or_else(|e| {
-                                    tracing::warn!(p_id, error = %e, "failed to decode fulltext arena, starting fresh");
-                                    fluree_db_binary_index::arena::fulltext::FulltextArena::new()
-                                })
-                            }
-                            Err(e) => {
-                                tracing::warn!(p_id, error = %e, "failed to fetch fulltext arena, starting fresh");
-                                fluree_db_binary_index::arena::fulltext::FulltextArena::new()
-                            }
-                        }
+                        let blob = content_store.get(&ft_ref.arena_cid).await.map_err(|e| {
+                            IndexerError::StorageRead(format!(
+                                "fulltext incremental: prior arena fetch for (g_id={g_id}, p_id={p_id}, lang_id={lang_id}) cid={}: {e}",
+                                ft_ref.arena_cid
+                            ))
+                        })?;
+                        fluree_db_binary_index::arena::fulltext::FulltextArena::decode(&blob)
+                            .map_err(|e| {
+                                IndexerError::Other(format!(
+                                    "fulltext incremental: prior arena decode for (g_id={g_id}, p_id={p_id}, lang_id={lang_id}) cid={}: {e}",
+                                    ft_ref.arena_cid
+                                ))
+                            })?
                     } else {
                         fluree_db_binary_index::arena::fulltext::FulltextArena::new()
                     };
@@ -1055,11 +1097,16 @@ pub async fn incremental_index(
                         &prior_arena,
                         &group_entries,
                         &novelty.fulltext_string_bytes,
+                        &analyzer,
                     );
 
                     if arena.is_empty() {
                         if let Some(ga) = arenas_by_gid.get_mut(&g_id) {
-                            if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                            if let Some(pos) = ga
+                                .fulltext
+                                .iter()
+                                .position(|f| f.p_id == p_id && f.lang_id == lang_id)
+                            {
                                 let old = &ga.fulltext[pos];
                                 root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
                                 ga.fulltext.remove(pos);
@@ -1076,7 +1123,11 @@ pub async fn incremental_index(
                             IndexerError::StorageWrite(format!("fulltext CAS write: {e}"))
                         })?;
 
-                    let new_ref = FulltextArenaRef { p_id, arena_cid };
+                    let new_ref = FulltextArenaRef {
+                        p_id,
+                        lang_id,
+                        arena_cid,
+                    };
 
                     let ga = arenas_by_gid.entry(g_id).or_insert_with(|| GraphArenaRefs {
                         g_id,
@@ -1086,18 +1137,24 @@ pub async fn incremental_index(
                         fulltext: vec![],
                     });
 
-                    if let Some(pos) = ga.fulltext.iter().position(|f| f.p_id == p_id) {
+                    if let Some(pos) = ga
+                        .fulltext
+                        .iter()
+                        .position(|f| f.p_id == p_id && f.lang_id == lang_id)
+                    {
                         let old = &ga.fulltext[pos];
                         root_builder.add_replaced_cids(vec![old.arena_cid.clone()]);
                         ga.fulltext[pos] = new_ref;
                     } else {
                         ga.fulltext.push(new_ref);
-                        ga.fulltext.sort_by_key(|f| f.p_id);
+                        ga.fulltext.sort_by_key(|f| (f.p_id, f.lang_id));
                     }
 
                     tracing::debug!(
                         g_id,
                         p_id,
+                        lang_id,
+                        language = ?language,
                         docs = arena.doc_count(),
                         terms = arena.terms().len(),
                         "incremental V6: fulltext arena rebuilt"
@@ -1347,6 +1404,20 @@ pub async fn incremental_index(
             );
         }
     }
+
+    // ---- Snapshot language dict AFTER arena builds ----
+    //
+    // Arena building can extend the language dict (notably the fulltext
+    // builder resolves or inserts `"en"` to bucket `@fulltext`-datatype
+    // values). Snapshotting here guarantees the persisted `language_tags`
+    // includes every `lang_id` referenced by arena refs in the root.
+    let new_language_tags: Vec<String> = novelty
+        .shared
+        .languages
+        .iter()
+        .map(|(_, tag)| tag.to_string())
+        .collect();
+    root_builder.set_language_tags(new_language_tags);
 
     // ---- Phase 3b: Stats / HLL refresh ----
     // Load prior sketches, feed novelty records, upload updated sketch.

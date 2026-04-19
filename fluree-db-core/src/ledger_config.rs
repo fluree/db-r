@@ -35,6 +35,8 @@ pub struct LedgerConfig {
     pub datalog: Option<DatalogDefaults>,
     /// Transact-time constraint defaults (`f:transactDefaults`).
     pub transact: Option<TransactDefaults>,
+    /// Full-text indexing defaults (`f:fullTextDefaults`).
+    pub full_text: Option<FullTextDefaults>,
     /// Per-graph config overrides (`f:graphOverrides`).
     pub graph_overrides: Vec<GraphConfig>,
 }
@@ -57,6 +59,8 @@ pub struct ResolvedConfig {
     pub datalog: Option<DatalogDefaults>,
     /// Effective transact-time constraint defaults.
     pub transact: Option<TransactDefaults>,
+    /// Effective full-text indexing defaults.
+    pub full_text: Option<FullTextDefaults>,
 }
 
 // ============================================================================
@@ -113,6 +117,40 @@ pub struct DatalogDefaults {
     pub override_control: OverrideControl,
 }
 
+/// Full-text indexing defaults from the config graph (`f:fullTextDefaults`).
+///
+/// Declares properties whose string values should be BM25-indexed without
+/// requiring the `@fulltext` datatype per value, and sets the default analyzer
+/// language for untagged (non-`rdf:langString`) string values.
+///
+/// The `@fulltext` datatype keeps its zero-config shortcut semantics and
+/// always indexes as English regardless of this config. See
+/// `docs/indexing-and-search/fulltext.md` for the full user guide
+/// (when to use which path, language support, per-graph overrides,
+/// reindex workflow, datatype-vs-config coexistence rules).
+#[derive(Debug, Clone, Default)]
+pub struct FullTextDefaults {
+    /// `f:defaultLanguage` — BCP-47 tag (e.g. `"en"`, `"fr"`) used for untagged
+    /// plain-string values on configured properties. `None` falls back to
+    /// English at resolution time.
+    pub default_language: Option<String>,
+    /// `f:property` — one entry per property to full-text index.
+    pub properties: Vec<FullTextProperty>,
+    /// Override control for this setting group.
+    pub override_control: OverrideControl,
+}
+
+/// A configured full-text property (`f:FullTextProperty`).
+///
+/// Forward-compatible node shape: additional optional fields (per-property
+/// language, boost, tokenizer, etc.) can be added here without a breaking
+/// schema change.
+#[derive(Debug, Clone)]
+pub struct FullTextProperty {
+    /// `f:target` — IRI of the property being indexed.
+    pub target: String,
+}
+
 /// Transact-time constraint defaults from the config graph (`f:transactDefaults`).
 ///
 /// Controls enforcement of property-level constraints (e.g., `f:enforceUnique`)
@@ -140,7 +178,7 @@ pub struct TransactDefaults {
 /// Identifies a target graph by IRI and overrides specific settings.
 /// Only include settings being overridden — absent groups inherit
 /// from ledger-wide config.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GraphConfig {
     /// `f:targetGraph` — IRI of the target graph, or `f:defaultGraph` /
     /// `f:txnMetaGraph` sentinel.
@@ -155,6 +193,8 @@ pub struct GraphConfig {
     pub datalog: Option<DatalogDefaults>,
     /// Transact-time constraint overrides for this graph.
     pub transact: Option<TransactDefaults>,
+    /// Full-text indexing overrides for this graph.
+    pub full_text: Option<FullTextDefaults>,
 }
 
 // ============================================================================

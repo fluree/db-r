@@ -1876,6 +1876,28 @@ pub mod config_iris {
 
     /// `f:enforceUnique` — annotation on property IRIs requiring unique values per graph.
     pub const ENFORCE_UNIQUE: &str = "https://ns.flur.ee/db#enforceUnique";
+
+    // ---- Full-text indexing fields ----
+
+    /// `f:fullTextDefaults` — full-text indexing defaults object on LedgerConfig/GraphConfig.
+    pub const FULL_TEXT_DEFAULTS: &str = "https://ns.flur.ee/db#fullTextDefaults";
+
+    /// `f:FullTextDefaults` — class/type for the full-text defaults resource.
+    pub const FULL_TEXT_DEFAULTS_CLASS: &str = "https://ns.flur.ee/db#FullTextDefaults";
+
+    /// `f:FullTextProperty` — class/type for a configured full-text property entry.
+    pub const FULL_TEXT_PROPERTY_CLASS: &str = "https://ns.flur.ee/db#FullTextProperty";
+
+    /// `f:defaultLanguage` — BCP-47 language tag (e.g. `"en"`, `"fr"`) used as
+    /// the default analyzer language for configured properties.
+    pub const DEFAULT_LANGUAGE: &str = "https://ns.flur.ee/db#defaultLanguage";
+
+    /// `f:property` — one configured property entry on a `FullTextDefaults`
+    /// resource. Value is a `FullTextProperty` node (cardinality 0..n).
+    pub const FULL_TEXT_PROPERTY: &str = "https://ns.flur.ee/db#property";
+
+    /// `f:target` — property IRI that a `FullTextProperty` entry applies to.
+    pub const FULL_TEXT_TARGET: &str = "https://ns.flur.ee/db#target";
 }
 
 // ============================================================================

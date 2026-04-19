@@ -1,7 +1,61 @@
 //! Indexer configuration
 
 use crate::gc::{DEFAULT_MAX_OLD_INDEXES, DEFAULT_MIN_TIME_GARBAGE_MINS};
+use async_trait::async_trait;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+/// Resolves the ledger's effective configured full-text property list at
+/// index-build time.
+///
+/// Background / incremental indexing runs can't see the live `LedgerConfig`
+/// through static `IndexerConfig` alone — a caller (typically the api layer)
+/// plugs in a concrete resolver via
+/// [`IndexerConfig::with_fulltext_config_provider`] so each build refreshes
+/// the set from the current ledger state.
+///
+/// Implementations should be cheap on the happy path (one privileged read of
+/// the config graph) and return an empty list when the ledger has no
+/// `f:fullTextDefaults`. Failures should log + return empty rather than
+/// propagate — a bad config read shouldn't block the whole indexing run.
+#[async_trait]
+pub trait FulltextConfigProvider: std::fmt::Debug + Send + Sync {
+    async fn fulltext_configured_properties(
+        &self,
+        ledger_id: &str,
+    ) -> Vec<ConfiguredFulltextProperty>;
+}
+
+/// Scope of a configured full-text property entry.
+///
+/// Mirrors the `f:targetGraph` sentinels used in config graph writes:
+/// - `AnyGraph` comes from a ledger-wide `f:fullTextDefaults` — the
+///   property applies to every graph in the ledger.
+/// - `DefaultGraph` is a per-graph override whose `f:targetGraph` is
+///   `f:defaultGraph` (or omitted) — scoped to `g_id = 0` only.
+/// - `TxnMetaGraph` is a per-graph override whose `f:targetGraph` is
+///   `f:txnMetaGraph` — scoped to the ledger's txn-meta graph
+///   (`g_id = 1`, pre-reserved in the graph dict).
+/// - `NamedGraph(iri)` is a per-graph override targeting a user graph by
+///   its canonical IRI.
+///
+/// Keeping these distinct lets the indexer route scoping precisely:
+/// the hook's `any_graph` tier covers `AnyGraph`; the `per_graph` tier
+/// covers the rest with the correct `GraphId`.
+#[derive(Debug, Clone)]
+pub enum ConfiguredFulltextScope {
+    AnyGraph,
+    DefaultGraph,
+    TxnMetaGraph,
+    NamedGraph(String),
+}
+
+/// One entry in the per-indexing-run configured full-text property set.
+#[derive(Debug, Clone)]
+pub struct ConfiguredFulltextProperty {
+    pub scope: ConfiguredFulltextScope,
+    pub property_iri: String,
+}
 
 /// Configuration for index building
 #[derive(Debug, Clone)]
@@ -119,6 +173,30 @@ pub struct IndexerConfig {
     ///
     /// `None` means no limit (backwards-compatible default).
     pub incremental_max_commit_bytes: Option<usize>,
+
+    /// Configured full-text properties for this indexing run.
+    ///
+    /// Caller-computed (typically by `fluree-db-api` resolving the ledger's
+    /// `f:fullTextDefaults`) and passed in so the indexer can seed its
+    /// `FulltextHookConfig` without cross-layer config reads. Empty by
+    /// default — when empty, only the `@fulltext` datatype path contributes
+    /// entries, preserving the pre-config behavior.
+    ///
+    /// For steady-state (background / CLI incremental) indexing, prefer
+    /// [`fulltext_config_provider`](Self::fulltext_config_provider) so each
+    /// run refreshes this list from the live ledger config.
+    pub fulltext_configured_properties: Vec<ConfiguredFulltextProperty>,
+
+    /// Optional callback that re-resolves full-text configured properties
+    /// at the start of each index build. When present,
+    /// [`build_index_for_record`](crate::build_index_for_record) calls this
+    /// first and overwrites `fulltext_configured_properties` with the
+    /// result, so background/incremental runs pick up config changes that
+    /// happened after the process started.
+    ///
+    /// `None` by default. The api layer wires its own resolver via
+    /// [`IndexerConfig::with_fulltext_config_provider`].
+    pub fulltext_config_provider: Option<Arc<dyn FulltextConfigProvider>>,
 }
 
 /// Default run-sort budget: 256 MB.
@@ -147,6 +225,8 @@ impl Default for IndexerConfig {
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
             incremental_max_commit_bytes: None,
+            fulltext_configured_properties: Vec::new(),
+            fulltext_config_provider: None,
         }
     }
 }
@@ -174,6 +254,8 @@ impl IndexerConfig {
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
             incremental_max_commit_bytes: None,
+            fulltext_configured_properties: Vec::new(),
+            fulltext_config_provider: None,
         }
     }
 
@@ -194,6 +276,8 @@ impl IndexerConfig {
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
             incremental_max_commit_bytes: None,
+            fulltext_configured_properties: Vec::new(),
+            fulltext_config_provider: None,
         }
     }
 
@@ -214,7 +298,24 @@ impl IndexerConfig {
             leaflet_rows: 25_000,
             leaflets_per_leaf: 10,
             incremental_max_commit_bytes: None,
+            fulltext_configured_properties: Vec::new(),
+            fulltext_config_provider: None,
         }
+    }
+
+    /// Attach a full-text config provider so each index build re-resolves
+    /// `fulltext_configured_properties` from the live ledger state.
+    ///
+    /// Prefer this over [`fulltext_configured_properties`](Self::fulltext_configured_properties)
+    /// for long-lived indexer handles (background worker / CLI), which
+    /// otherwise carry a stale snapshot of the config across the whole
+    /// process lifetime.
+    pub fn with_fulltext_config_provider(
+        mut self,
+        provider: Arc<dyn FulltextConfigProvider>,
+    ) -> Self {
+        self.fulltext_config_provider = Some(provider);
+        self
     }
 
     pub fn with_leaflet_rows(mut self, rows: usize) -> Self {

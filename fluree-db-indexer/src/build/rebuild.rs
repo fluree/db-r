@@ -167,11 +167,30 @@ where
             // works from the very first commit.
             let rdf_type_p_id = shared.predicates.get_or_insert(fluree_vocab::rdf::TYPE);
 
+            // Pre-insert `"en"` into the language dictionary so the fulltext
+            // arena builder's English bucket (and `resolve_lang_id("en")` at
+            // query time) get a stable lang_id. Inserting here — before
+            // `languages.dict` is persisted — ensures the `"en"` tag ends up
+            // in the uploaded language dict too.
+            let _ = shared.languages.get_or_insert(Some("en"));
+
             // Enable spatial geometry collection during resolution.
             shared.spatial_hook = Some(crate::spatial_hook::SpatialHook::new());
 
             // Enable fulltext collection during resolution.
             shared.fulltext_hook = Some(crate::fulltext_hook::FulltextHook::new());
+
+            // Seed the configured full-text property set for this run.
+            // Pre-registers each configured graph/property IRI in the global
+            // dicts so `(GraphId, p_id)` lookups in `FulltextHook::on_op` are
+            // stable even if no triple in this commit window touches them.
+            if !config.fulltext_configured_properties.is_empty() {
+                shared.configure_fulltext_properties(&config.fulltext_configured_properties);
+                tracing::debug!(
+                    count = config.fulltext_configured_properties.len(),
+                    "fulltext: seeded configured property set for rebuild"
+                );
+            }
 
             // Enable schema hierarchy extraction during resolution.
             shared.schema_hook = Some(crate::stats::SchemaExtractor::new());
@@ -340,7 +359,7 @@ where
             // Remap fulltext entries' chunk-local string IDs → global string IDs.
             // The fulltext hook accumulated entries with chunk-local string_id values;
             // fulltext_chunk_ranges[ci] = (start, end) into entries for chunk ci.
-            let _fulltext_entries: Vec<crate::fulltext_hook::FulltextEntry> = {
+            let fulltext_entries: Vec<crate::fulltext_hook::FulltextEntry> = {
                 let mut all_entries = shared
                     .fulltext_hook
                     .take()
@@ -903,11 +922,44 @@ where
                 })
                 .collect();
 
-            // Datatype and language tag lists for the root.
-            let datatype_iris = uploaded_dicts.datatype_iris.clone();
-            let language_tags = uploaded_dicts.language_tags.clone();
+            // Build + upload fulltext arenas from collected hook entries.
+            // Groups by (g_id, p_id, bucket_lang_id). `DatatypeFulltext`
+            // entries resolve to the dict-assigned id for `"en"`; configured
+            // entries use the row's tag or fall back to English. May mutate
+            // `shared.languages` by inserting `"en"` on first use.
+            let fulltext_by_graph: std::collections::BTreeMap<
+                fluree_db_core::GraphId,
+                Vec<fluree_db_binary_index::FulltextArenaRef>,
+            > = {
+                let per_graph = super::fulltext::build_and_upload_fulltext_arenas(
+                    &fulltext_entries,
+                    &string_merge,
+                    &mut shared.languages,
+                    &ledger_id,
+                    &content_store,
+                )
+                .await?;
+                per_graph.into_iter().collect()
+            };
 
-            // Graph arenas (numbig, vectors) — build from uploaded_dicts CIDs.
+            // Datatype and language tag lists for the root. Re-snapshot
+            // `language_tags` AFTER the fulltext build so any lang_id
+            // allocated by the builder (notably `"en"`) is persisted.
+            //
+            // `LanguageTagDict` is 1-based: `resolve(0)` is `None` (the "no
+            // literal lang tag" sentinel), real tags start at id 1.
+            let datatype_iris = uploaded_dicts.datatype_iris.clone();
+            let language_tags: Vec<String> = {
+                let mut tags: Vec<(u16, String)> = shared
+                    .languages
+                    .iter()
+                    .map(|(id, tag)| (id, tag.to_string()))
+                    .collect();
+                tags.sort_by_key(|(id, _)| *id);
+                tags.into_iter().map(|(_, tag)| tag).collect()
+            };
+
+            // Graph arenas (numbig, vectors, fulltext) — build from uploaded_dicts CIDs.
             let graph_arenas: Vec<GraphArenaRefs> = {
                 let mut graph_ids = std::collections::BTreeSet::new();
                 for g_id_str in uploaded_dicts.numbig.keys() {
@@ -919,6 +971,9 @@ where
                     if let Ok(g_id) = g_id_str.parse::<u16>() {
                         graph_ids.insert(g_id);
                     }
+                }
+                for g_id in fulltext_by_graph.keys() {
+                    graph_ids.insert(*g_id);
                 }
                 graph_ids
                     .into_iter()
@@ -938,12 +993,13 @@ where
                             .get(&g_id_str)
                             .map(|m| m.values().cloned().collect())
                             .unwrap_or_default();
+                        let fulltext = fulltext_by_graph.get(&g_id).cloned().unwrap_or_default();
                         GraphArenaRefs {
                             g_id,
                             numbig,
                             vectors,
                             spatial: Vec::new(),
-                            fulltext: vec![],
+                            fulltext,
                         }
                     })
                     .collect()

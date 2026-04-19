@@ -553,24 +553,42 @@ impl Fluree {
                 .values()
                 .all(|v| v.ledger_id.as_ref() == primary_ledger_id);
 
-        let (binary_store, dict_novelty, spatial_map, fulltext_map) = if is_single_ledger_dataset {
-            let spatial_map = primary
-                .binary_store
-                .as_ref()
-                .map(|s| s.spatial_provider_map());
-            let fulltext_map = primary
-                .binary_store
-                .as_ref()
-                .map(|s| s.fulltext_provider_map());
-            (
-                primary.binary_store.clone(),
-                primary.dict_novelty.clone(),
-                spatial_map,
-                fulltext_map,
-            )
-        } else {
-            (None, None, None, None)
-        };
+        // Perf guardrail: skip fulltext arena map + `"en"` lang_id resolution
+        // for queries that don't actually call `fulltext(...)`. Spatial
+        // providers keep their current eager-build semantics.
+        let uses_fulltext = executable.uses_fulltext();
+        let (binary_store, dict_novelty, spatial_map, fulltext_map, english_lang_id) =
+            if is_single_ledger_dataset {
+                let spatial_map = primary
+                    .binary_store
+                    .as_ref()
+                    .map(|s| s.spatial_provider_map());
+                let fulltext_map = if uses_fulltext {
+                    primary
+                        .binary_store
+                        .as_ref()
+                        .map(|s| s.fulltext_provider_map())
+                } else {
+                    None
+                };
+                let english_lang_id = if uses_fulltext {
+                    primary
+                        .binary_store
+                        .as_ref()
+                        .and_then(|s| s.resolve_lang_id("en"))
+                } else {
+                    None
+                };
+                (
+                    primary.binary_store.clone(),
+                    primary.dict_novelty.clone(),
+                    spatial_map,
+                    fulltext_map,
+                    english_lang_id,
+                )
+            } else {
+                (None, None, None, None, None)
+            };
 
         let config = ContextConfig {
             tracker: if tracker.is_enabled() {
@@ -586,6 +604,7 @@ impl Fluree {
             dict_novelty,
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
+            english_lang_id,
             remote_service: self.remote_service_executor(),
             history_mode,
             from_t,
@@ -650,24 +669,42 @@ impl Fluree {
                 .values()
                 .all(|v| v.ledger_id.as_ref() == primary_ledger_id);
 
-        let (binary_store, dict_novelty, spatial_map, fulltext_map) = if is_single_ledger_dataset {
-            let spatial_map = primary
-                .binary_store
-                .as_ref()
-                .map(|s| s.spatial_provider_map());
-            let fulltext_map = primary
-                .binary_store
-                .as_ref()
-                .map(|s| s.fulltext_provider_map());
-            (
-                primary.binary_store.clone(),
-                primary.dict_novelty.clone(),
-                spatial_map,
-                fulltext_map,
-            )
-        } else {
-            (None, None, None, None)
-        };
+        // Perf guardrail: skip fulltext arena map + `"en"` lang_id resolution
+        // for queries that don't actually call `fulltext(...)`. Spatial
+        // providers keep their current eager-build semantics.
+        let uses_fulltext = executable.uses_fulltext();
+        let (binary_store, dict_novelty, spatial_map, fulltext_map, english_lang_id) =
+            if is_single_ledger_dataset {
+                let spatial_map = primary
+                    .binary_store
+                    .as_ref()
+                    .map(|s| s.spatial_provider_map());
+                let fulltext_map = if uses_fulltext {
+                    primary
+                        .binary_store
+                        .as_ref()
+                        .map(|s| s.fulltext_provider_map())
+                } else {
+                    None
+                };
+                let english_lang_id = if uses_fulltext {
+                    primary
+                        .binary_store
+                        .as_ref()
+                        .and_then(|s| s.resolve_lang_id("en"))
+                } else {
+                    None
+                };
+                (
+                    primary.binary_store.clone(),
+                    primary.dict_novelty.clone(),
+                    spatial_map,
+                    fulltext_map,
+                    english_lang_id,
+                )
+            } else {
+                (None, None, None, None, None)
+            };
 
         let config = ContextConfig {
             tracker: Some(tracker),
@@ -679,6 +716,7 @@ impl Fluree {
             dict_novelty,
             spatial_providers: spatial_map.as_ref(),
             fulltext_providers: fulltext_map.as_ref(),
+            english_lang_id,
             remote_service: self.remote_service_executor(),
             history_mode,
             from_t,

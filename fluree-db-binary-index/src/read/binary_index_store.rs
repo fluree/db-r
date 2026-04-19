@@ -143,7 +143,10 @@ struct GraphIndex {
     numbig: HashMap<u32, crate::arena::numbig::NumBigArena>,
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
-    fulltext: HashMap<u32, Arc<crate::arena::fulltext::FulltextArena>>,
+    /// Fulltext arenas keyed by `(p_id, lang_id)` — one arena per language
+    /// on each property. `@fulltext`-datatype and configured-English content
+    /// both resolve to the dict-assigned id for `"en"` and share a bucket.
+    fulltext: HashMap<(u32, u16), Arc<crate::arena::fulltext::FulltextArena>>,
 }
 
 // ============================================================================
@@ -1235,6 +1238,16 @@ impl BinaryIndexStore {
         self.dicts.language_tags.find(tag)
     }
 
+    /// Look up the BCP-47 tag string for a 1-based `lang_id`. Returns
+    /// `None` for `lang_id == 0` (sentinel "no literal lang tag") and
+    /// for IDs beyond the persisted dictionary.
+    pub fn resolve_language_tag(&self, lang_id: u16) -> Option<String> {
+        self.dicts
+            .language_tags
+            .resolve(lang_id)
+            .map(|s| s.to_string())
+    }
+
     /// Augment namespace codes with entries from novelty commits.
     ///
     /// Validates namespace bimap uniqueness: a delta entry is rejected
@@ -1319,15 +1332,18 @@ impl BinaryIndexStore {
 
     /// Fulltext provider map for query context configuration.
     ///
-    /// Returns a map keyed by `(g_id, p_id)` tuple, matching the
-    /// `ContextConfig::fulltext_providers` expected type.
+    /// Returns a map keyed by `(g_id, p_id, lang_id)` triple, matching the
+    /// `ContextConfig::fulltext_providers` expected type. Each arena is a
+    /// language-specific BoW bucket — `@fulltext`-datatype and configured
+    /// English content share the same bucket under `"en"`'s dict-assigned
+    /// lang_id.
     pub fn fulltext_provider_map(
         &self,
-    ) -> HashMap<(GraphId, u32), Arc<crate::arena::fulltext::FulltextArena>> {
+    ) -> HashMap<(GraphId, u32, u16), Arc<crate::arena::fulltext::FulltextArena>> {
         let mut map = HashMap::new();
         for (g_id, gi) in &self.graph_indexes {
-            for (p_id, arena) in &gi.fulltext {
-                map.insert((*g_id, *p_id), Arc::clone(arena));
+            for (&(p_id, lang_id), arena) in &gi.fulltext {
+                map.insert((*g_id, p_id, lang_id), Arc::clone(arena));
             }
         }
         map
@@ -2039,7 +2055,8 @@ struct LoadedArenas {
     numbig: HashMap<u32, crate::arena::numbig::NumBigArena>,
     vectors: HashMap<u32, crate::arena::vector::LazyVectorArena>,
     spatial: HashMap<u32, Arc<dyn fluree_db_spatial::SpatialIndexProvider>>,
-    fulltext: HashMap<u32, Arc<crate::arena::fulltext::FulltextArena>>,
+    /// Keyed by `(p_id, lang_id)` — one bucket per language on each property.
+    fulltext: HashMap<(u32, u16), Arc<crate::arena::fulltext::FulltextArena>>,
 }
 
 /// Load per-graph specialty arenas from GraphArenaRefs.
@@ -2144,7 +2161,7 @@ async fn load_per_graph_arenas(
             let bytes =
                 fetch_cached_bytes(cs.as_ref(), &ft_ref.arena_cid, cache_dir, "fta").await?;
             let arena = crate::arena::fulltext::FulltextArena::decode(&bytes)?;
-            fulltext.insert(ft_ref.p_id, Arc::new(arena));
+            fulltext.insert((ft_ref.p_id, ft_ref.lang_id), Arc::new(arena));
         }
 
         result.insert(

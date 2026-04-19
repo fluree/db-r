@@ -1794,3 +1794,374 @@ async fn failed_upsert_does_not_corrupt_in_memory_state() {
         "alice's properties should be intact after failed upsert + subsequent commit"
     );
 }
+
+// =============================================================================
+// Full-text config (`f:fullTextDefaults`) tests
+// =============================================================================
+
+/// Minimal `f:fullTextDefaults` round-trip:
+/// - `f:defaultLanguage` reads back verbatim.
+/// - `f:property` list round-trips all configured `f:target` IRIs.
+#[tokio::test]
+async fn fulltext_defaults_round_trip() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/fulltext-config-rt:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:fullTextDefaults <urn:config:ft> .
+            <urn:config:ft> rdf:type f:FullTextDefaults .
+            <urn:config:ft> f:defaultLanguage "fr" .
+            <urn:config:ft> f:property <urn:config:ft:title> .
+            <urn:config:ft> f:property <urn:config:ft:body> .
+            <urn:config:ft:title> rdf:type f:FullTextProperty .
+            <urn:config:ft:title> f:target ex:title .
+            <urn:config:ft:body> rdf:type f:FullTextProperty .
+            <urn:config:ft:body> f:target ex:body .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let config = view
+        .ledger_config()
+        .expect("config should be attached after writing to config graph");
+    let ft = config
+        .full_text
+        .as_ref()
+        .expect("full_text defaults should be read from config");
+
+    assert_eq!(
+        ft.default_language.as_deref(),
+        Some("fr"),
+        "defaultLanguage should round-trip verbatim"
+    );
+    let targets: std::collections::HashSet<&str> =
+        ft.properties.iter().map(|p| p.target.as_str()).collect();
+    assert!(
+        targets.contains("http://example.org/title"),
+        "ex:title should be in the configured property list: {targets:?}"
+    );
+    assert!(
+        targets.contains("http://example.org/body"),
+        "ex:body should be in the configured property list: {targets:?}"
+    );
+    assert_eq!(
+        ft.properties.len(),
+        2,
+        "exactly two properties were configured: {targets:?}"
+    );
+}
+
+/// `f:fullTextDefaults` per-graph override is additive: the override's
+/// `f:property` list is appended to the ledger-wide list (deduping by
+/// target IRI; per-graph wins), and the override's `f:defaultLanguage`
+/// shadows the ledger-wide one.
+#[tokio::test]
+async fn fulltext_defaults_per_graph_override_additive() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/fulltext-config-override:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let config_iri = config_graph_iri(ledger_id);
+    let target_graph = "urn:test:productCatalog";
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:fullTextDefaults <urn:config:ft> .
+            <urn:config:ft> rdf:type f:FullTextDefaults .
+            <urn:config:ft> f:defaultLanguage "en" .
+            <urn:config:ft> f:property <urn:config:ft:title> .
+            <urn:config:ft:title> rdf:type f:FullTextProperty .
+            <urn:config:ft:title> f:target ex:title .
+
+            <urn:config:main> f:graphOverrides <urn:config:gc:catalog> .
+            <urn:config:gc:catalog> rdf:type f:GraphConfig .
+            <urn:config:gc:catalog> f:targetGraph <{target_graph}> .
+            <urn:config:gc:catalog> f:fullTextDefaults <urn:config:ft-catalog> .
+            <urn:config:ft-catalog> rdf:type f:FullTextDefaults .
+            <urn:config:ft-catalog> f:defaultLanguage "es" .
+            <urn:config:ft-catalog> f:property <urn:config:ft-catalog:name> .
+            <urn:config:ft-catalog:name> rdf:type f:FullTextProperty .
+            <urn:config:ft-catalog:name> f:target ex:productName .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let config = view.ledger_config().expect("config attached");
+
+    // Ledger-wide: one property, language "en".
+    let ft = config.full_text.as_ref().expect("ledger-wide full_text");
+    assert_eq!(ft.default_language.as_deref(), Some("en"));
+    assert_eq!(ft.properties.len(), 1);
+    assert_eq!(ft.properties[0].target, "http://example.org/title");
+
+    // Effective for the catalog graph: additive merge.
+    let effective =
+        config_resolver::resolve_effective_config(&config, Some(target_graph));
+    let effective_ft = effective
+        .full_text
+        .as_ref()
+        .expect("merged full_text defaults for catalog graph");
+    assert_eq!(
+        effective_ft.default_language.as_deref(),
+        Some("es"),
+        "per-graph defaultLanguage 'es' should shadow ledger-wide 'en'"
+    );
+    let targets: std::collections::HashSet<&str> = effective_ft
+        .properties
+        .iter()
+        .map(|p| p.target.as_str())
+        .collect();
+    assert!(
+        targets.contains("http://example.org/title"),
+        "additive merge keeps ledger-wide ex:title: {targets:?}"
+    );
+    assert!(
+        targets.contains("http://example.org/productName"),
+        "per-graph ex:productName should be added: {targets:?}"
+    );
+    assert_eq!(
+        effective_ft.properties.len(),
+        2,
+        "additive merge produces exactly two entries: {targets:?}"
+    );
+}
+
+/// Ledger-wide `f:OverrideNone` on `f:fullTextDefaults` blocks any per-graph
+/// override from taking effect — the effective config is the ledger-wide
+/// group unchanged.
+#[tokio::test]
+async fn fulltext_defaults_override_none_blocks_per_graph() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/fulltext-config-override-none:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let config_iri = config_graph_iri(ledger_id);
+    let target_graph = "urn:test:productCatalog";
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:fullTextDefaults <urn:config:ft> .
+            <urn:config:ft> rdf:type f:FullTextDefaults .
+            <urn:config:ft> f:defaultLanguage "en" .
+            <urn:config:ft> f:overrideControl f:OverrideNone .
+            <urn:config:ft> f:property <urn:config:ft:title> .
+            <urn:config:ft:title> rdf:type f:FullTextProperty .
+            <urn:config:ft:title> f:target ex:title .
+
+            <urn:config:main> f:graphOverrides <urn:config:gc:catalog> .
+            <urn:config:gc:catalog> rdf:type f:GraphConfig .
+            <urn:config:gc:catalog> f:targetGraph <{target_graph}> .
+            <urn:config:gc:catalog> f:fullTextDefaults <urn:config:ft-catalog> .
+            <urn:config:ft-catalog> rdf:type f:FullTextDefaults .
+            <urn:config:ft-catalog> f:defaultLanguage "es" .
+            <urn:config:ft-catalog> f:property <urn:config:ft-catalog:name> .
+            <urn:config:ft-catalog:name> rdf:type f:FullTextProperty .
+            <urn:config:ft-catalog:name> f:target ex:productName .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let config = view.ledger_config().expect("config attached");
+
+    let effective =
+        config_resolver::resolve_effective_config(&config, Some(target_graph));
+    let effective_ft = effective
+        .full_text
+        .as_ref()
+        .expect("effective full_text when ledger-wide is Some");
+
+    assert_eq!(
+        effective_ft.default_language.as_deref(),
+        Some("en"),
+        "OverrideNone should keep ledger-wide language, rejecting per-graph 'es'"
+    );
+    assert_eq!(
+        effective_ft.properties.len(),
+        1,
+        "per-graph property should NOT be added under OverrideNone"
+    );
+    assert_eq!(
+        effective_ft.properties[0].target,
+        "http://example.org/title",
+        "ledger-wide property is the only entry"
+    );
+}
+
+/// `configured_fulltext_properties_for_indexer` produces the flat list the
+/// indexer expects: ledger-wide entries as `AnyGraph`, named-graph overrides
+/// as `NamedGraph(iri)`, and `f:defaultGraph` / `f:txnMetaGraph` sentinel
+/// overrides mapped to their dedicated scope variants so the indexer can
+/// route them to the correct `GraphId` without treating the sentinel IRI
+/// as a literal graph.
+#[tokio::test]
+async fn configured_fulltext_properties_for_indexer_shape() {
+    use fluree_db_indexer::ConfiguredFulltextScope;
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/fulltext-config-indexer-shape:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    let config_iri = config_graph_iri(ledger_id);
+    let target_graph = "urn:test:productCatalog";
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:fullTextDefaults <urn:config:ft> .
+            <urn:config:ft> rdf:type f:FullTextDefaults .
+            <urn:config:ft> f:defaultLanguage "en" .
+            <urn:config:ft> f:property <urn:config:ft:title> .
+            <urn:config:ft:title> rdf:type f:FullTextProperty .
+            <urn:config:ft:title> f:target ex:title .
+
+            <urn:config:main> f:graphOverrides <urn:config:gc:catalog> ,
+                                                <urn:config:gc:default> ,
+                                                <urn:config:gc:txn> .
+
+            <urn:config:gc:catalog> rdf:type f:GraphConfig .
+            <urn:config:gc:catalog> f:targetGraph <{target_graph}> .
+            <urn:config:gc:catalog> f:fullTextDefaults <urn:config:ft-catalog> .
+            <urn:config:ft-catalog> rdf:type f:FullTextDefaults .
+            <urn:config:ft-catalog> f:property <urn:config:ft-catalog:name> .
+            <urn:config:ft-catalog:name> rdf:type f:FullTextProperty .
+            <urn:config:ft-catalog:name> f:target ex:productName .
+
+            <urn:config:gc:default> rdf:type f:GraphConfig .
+            <urn:config:gc:default> f:targetGraph f:defaultGraph .
+            <urn:config:gc:default> f:fullTextDefaults <urn:config:ft-default> .
+            <urn:config:ft-default> rdf:type f:FullTextDefaults .
+            <urn:config:ft-default> f:property <urn:config:ft-default:note> .
+            <urn:config:ft-default:note> rdf:type f:FullTextProperty .
+            <urn:config:ft-default:note> f:target ex:note .
+
+            <urn:config:gc:txn> rdf:type f:GraphConfig .
+            <urn:config:gc:txn> f:targetGraph f:txnMetaGraph .
+            <urn:config:gc:txn> f:fullTextDefaults <urn:config:ft-txn> .
+            <urn:config:ft-txn> rdf:type f:FullTextDefaults .
+            <urn:config:ft-txn> f:property <urn:config:ft-txn:memo> .
+            <urn:config:ft-txn:memo> rdf:type f:FullTextProperty .
+            <urn:config:ft-txn:memo> f:target ex:memo .
+        }}
+    "#
+    );
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+
+    let view = fluree.db(ledger_id).await.unwrap();
+    let config = view.ledger_config().expect("config attached");
+    let props = config_resolver::configured_fulltext_properties_for_indexer(&config);
+
+    // Ledger-wide → AnyGraph.
+    let any_graph: Vec<&str> = props
+        .iter()
+        .filter(|p| matches!(p.scope, ConfiguredFulltextScope::AnyGraph))
+        .map(|p| p.property_iri.as_str())
+        .collect();
+    assert!(
+        any_graph.contains(&"http://example.org/title"),
+        "ledger-wide entry must land under AnyGraph: {any_graph:?}"
+    );
+
+    // Named-graph override → NamedGraph(target_graph).
+    let named_graph: Vec<&str> = props
+        .iter()
+        .filter(|p| matches!(&p.scope, ConfiguredFulltextScope::NamedGraph(iri) if iri == target_graph))
+        .map(|p| p.property_iri.as_str())
+        .collect();
+    assert_eq!(
+        named_graph,
+        vec!["http://example.org/productName"],
+        "named-graph override must be scoped to its target IRI"
+    );
+
+    // `f:defaultGraph` sentinel → DefaultGraph (not AnyGraph!).
+    let default_graph: Vec<&str> = props
+        .iter()
+        .filter(|p| matches!(p.scope, ConfiguredFulltextScope::DefaultGraph))
+        .map(|p| p.property_iri.as_str())
+        .collect();
+    assert_eq!(
+        default_graph,
+        vec!["http://example.org/note"],
+        "`f:defaultGraph` override must land under DefaultGraph, distinct from AnyGraph"
+    );
+
+    // `f:txnMetaGraph` sentinel → TxnMetaGraph (NOT NamedGraph(sentinel_iri)).
+    let txn_meta: Vec<&str> = props
+        .iter()
+        .filter(|p| matches!(p.scope, ConfiguredFulltextScope::TxnMetaGraph))
+        .map(|p| p.property_iri.as_str())
+        .collect();
+    assert_eq!(
+        txn_meta,
+        vec!["http://example.org/memo"],
+        "`f:txnMetaGraph` override must land under TxnMetaGraph, not a named graph"
+    );
+
+    // And critically: no entry should carry the literal sentinel IRI in a
+    // `NamedGraph` scope — that was the bug we're guarding against.
+    for prop in &props {
+        if let ConfiguredFulltextScope::NamedGraph(iri) = &prop.scope {
+            assert_ne!(
+                iri, "https://ns.flur.ee/db#defaultGraph",
+                "f:defaultGraph sentinel leaked into NamedGraph variant"
+            );
+            assert_ne!(
+                iri, "https://ns.flur.ee/db#txnMetaGraph",
+                "f:txnMetaGraph sentinel leaked into NamedGraph variant"
+            );
+        }
+    }
+}

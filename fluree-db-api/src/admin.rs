@@ -987,9 +987,51 @@ impl crate::Fluree {
         }
 
         // 3. Build binary index from commit chain
-        let indexer_config = opts.indexer_config.clone().unwrap_or_default();
+        let mut indexer_config = opts.indexer_config.clone().unwrap_or_default();
         let gc_max_old_indexes = indexer_config.gc_max_old_indexes;
         let gc_min_time_mins = indexer_config.gc_min_time_mins;
+
+        // Read the current ledger's `f:fullTextDefaults` so the reindex routes
+        // configured plain-string values into BM25 arena building. Best-effort:
+        // if the existing index can't be loaded (e.g. first-ever reindex of a
+        // commits-only ledger) we fall back to empty — only the `@fulltext`
+        // datatype path will contribute entries, which matches pre-config
+        // behavior.
+        match self.ledger(&ledger_id).await {
+            Ok(state) => {
+                let snapshot = &state.snapshot;
+                let overlay: &dyn fluree_db_core::OverlayProvider = &*state.novelty;
+                match crate::config_resolver::resolve_ledger_config(
+                    snapshot,
+                    overlay,
+                    snapshot.t,
+                )
+                .await
+                {
+                    Ok(Some(cfg)) => {
+                        indexer_config.fulltext_configured_properties =
+                            crate::config_resolver::configured_fulltext_properties_for_indexer(
+                                &cfg,
+                            );
+                    }
+                    Ok(None) => {
+                        // No LedgerConfig — nothing to seed.
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "reindex: failed to read LedgerConfig; configured fulltext properties will be skipped"
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    "reindex: no loadable ledger state for config read; proceeding without fulltext config"
+                );
+            }
+        }
 
         let index_result = rebuild_index_from_commits(
             self.content_store(&ledger_id),

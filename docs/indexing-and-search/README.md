@@ -24,10 +24,11 @@ Manual index rebuilding for recovery and maintenance:
 
 ### [Inline Fulltext Search](fulltext.md)
 
-Inline BM25-ranked text scoring using the `@fulltext` datatype:
-- `@fulltext` datatype annotation (analogous to `@vector`)
-- `fulltext(?var, "query")` scoring function in `bind` expressions
-- Automatic per-predicate fulltext arena construction during background indexing
+Inline BM25-ranked text scoring. Two entry points, same query surface:
+- **`@fulltext` datatype** — per-value annotation (analogous to `@vector`), always English, zero config
+- **`f:fullTextDefaults` config** — declare properties + language once at the ledger level; supports 18 languages with Snowball stemming and per-graph overrides for multilingual setups
+- `fulltext(?var, "query")` scoring function in `bind` expressions (same for both paths)
+- Automatic per-(graph, property, language) fulltext arena construction during background indexing
 - Unified scoring across indexed and novelty documents
 - Works immediately (no-index fallback) with optimal performance after indexing
 

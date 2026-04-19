@@ -1411,6 +1411,52 @@ pub enum Expression {
     },
 }
 
+impl Expression {
+    /// True if this expression (or any sub-expression / sub-pattern it
+    /// contains) calls the given built-in function.
+    ///
+    /// Used by the query-context setup code as a perf guardrail: queries
+    /// that don't call `fulltext(...)` skip building the per-graph fulltext
+    /// arena map.
+    pub fn contains_function(&self, target: &Function) -> bool {
+        match self {
+            Expression::Var(_) | Expression::Const(_) => false,
+            Expression::Call { func, args } => {
+                func == target || args.iter().any(|a| a.contains_function(target))
+            }
+            Expression::Exists { patterns, .. } => patterns
+                .iter()
+                .any(|p| pattern_contains_function(p, target)),
+        }
+    }
+}
+
+/// True if any expression inside `pattern` (recursively) calls `target`.
+pub fn pattern_contains_function(pattern: &Pattern, target: &Function) -> bool {
+    match pattern {
+        Pattern::Filter(expr) => expr.contains_function(target),
+        Pattern::Bind { expr, .. } => expr.contains_function(target),
+        Pattern::Exists(inner) | Pattern::NotExists(inner) | Pattern::Minus(inner) => {
+            inner.iter().any(|p| pattern_contains_function(p, target))
+        }
+        Pattern::Optional(inner) => {
+            inner.iter().any(|p| pattern_contains_function(p, target))
+        }
+        Pattern::Union(branches) => branches
+            .iter()
+            .any(|branch: &Vec<Pattern>| branch.iter().any(|p| pattern_contains_function(p, target))),
+        Pattern::Graph { patterns, .. } => patterns
+            .iter()
+            .any(|p| pattern_contains_function(p, target)),
+        Pattern::Subquery(sq) => sq
+            .patterns
+            .iter()
+            .any(|p| pattern_contains_function(p, target)),
+        // Other pattern variants cannot contain general expressions.
+        _ => false,
+    }
+}
+
 // Manual PartialEq: Pattern doesn't implement PartialEq, so we can't derive.
 // EXISTS subqueries are evaluated at runtime, never structurally compared.
 impl PartialEq for Expression {

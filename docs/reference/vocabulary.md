@@ -138,6 +138,19 @@ Values annotated with `@fulltext` are analyzed (tokenized, stemmed) and indexed 
 
 See [Inline Fulltext Search](../indexing-and-search/fulltext.md) for details.
 
+### Fulltext configuration predicates
+
+These predicates live in the ledger's `#config` named graph and declare which properties to full-text index (no per-value `@fulltext` annotation needed). See [Configured full-text properties](../indexing-and-search/fulltext.md#configured-full-text-properties-ffulltextdefaults) for the end-user guide and [Setting groups](../ledger-config/setting-groups.md#full-text-defaults) for the full schema reference.
+
+| Term | IRI | Description |
+|------|-----|-------------|
+| `f:fullTextDefaults` | `https://ns.flur.ee/db#fullTextDefaults` | Setting group on `f:LedgerConfig` / `f:GraphConfig` |
+| `f:FullTextDefaults` | `https://ns.flur.ee/db#FullTextDefaults` | Class (type) of the setting-group node |
+| `f:defaultLanguage` | `https://ns.flur.ee/db#defaultLanguage` | BCP-47 tag used for untagged plain strings on configured properties |
+| `f:property` | `https://ns.flur.ee/db#property` | One entry per full-text-indexed property (cardinality 0..n) |
+| `f:FullTextProperty` | `https://ns.flur.ee/db#FullTextProperty` | Class of each `f:property` entry |
+| `f:target` | `https://ns.flur.ee/db#target` | IRI of the property being indexed (on `f:FullTextProperty`) |
+
 ---
 
 ## Search query vocabulary

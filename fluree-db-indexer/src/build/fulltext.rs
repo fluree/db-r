@@ -1,19 +1,21 @@
 //! Fulltext arena building (per-predicate BoW + BM25 stats).
 //!
-//! Groups fulltext entries by `(g_id, p_id)`, builds one `FulltextArena` per
-//! group using the BM25 text analyzer, and uploads FTA1 blobs to CAS.
+//! Groups fulltext entries by `(g_id, p_id, lang_id)`, builds one
+//! `FulltextArena` per bucket using the appropriate per-language analyzer,
+//! and uploads FTA1 blobs to CAS.
 //!
 //! Text analysis uses the shared pipeline from `fluree_db_binary_index::analyzer`
 //! to ensure scoring consistency between index-time and query-time.
 
-use fluree_db_binary_index::analyzer::analyze_to_term_freqs;
+use fluree_db_binary_index::analyzer::{Analyzer, Language};
 use fluree_db_binary_index::arena::fulltext::FulltextArena;
 use fluree_db_binary_index::FulltextArenaRef;
-use fluree_db_core::{ContentId, ContentKind, GraphId, Storage};
+use fluree_db_core::{ContentKind, ContentStore, GraphId};
 use std::collections::HashMap;
 
 use crate::error::{IndexerError, Result};
-use crate::fulltext_hook::FulltextEntry;
+use crate::fulltext_hook::{FulltextEntry, FulltextSource};
+use crate::run_index::resolve::global_dict::LanguageTagDict;
 
 // ============================================================================
 // Build + upload pipeline
@@ -21,35 +23,69 @@ use crate::fulltext_hook::FulltextEntry;
 
 /// Build fulltext arenas from collected entries and upload to CAS.
 ///
-/// Groups entries by `(g_id, p_id)`, builds one `FulltextArena` per group
-/// (resolving string text from the string dict for analysis), and uploads
-/// FTA1 blobs to CAS.
+/// Groups entries by `(g_id, p_id, bucket_lang_id)`, builds one
+/// `FulltextArena` per bucket using the appropriate per-language analyzer,
+/// and uploads FTA1 blobs to CAS.
+///
+/// Bucket assignment:
+/// - `FulltextSource::DatatypeFulltext` → English bucket, keyed by the
+///   dict-assigned `lang_id` for `"en"` (inserted on demand).
+/// - `FulltextSource::Configured` with `entry.lang_id != 0` → the row's tag.
+/// - `FulltextSource::Configured` with `entry.lang_id == 0` (untagged) →
+///   English bucket (fallback until per-config `default_language` is wired
+///   through to the indexing pipeline).
 ///
 /// Returns per-graph fulltext arena refs for inclusion in `IndexRoot`.
-// Kept for: full-rebuild fulltext upload pipeline (rebuild.rs collects entries
-// but does not yet call this; wiring deferred to rebuild-fulltext milestone).
-// Use when: rebuild.rs is extended to upload fulltext arenas after Phase C remap.
-#[expect(dead_code)]
-pub(crate) async fn build_and_upload_fulltext_arenas<S: Storage>(
+pub(crate) async fn build_and_upload_fulltext_arenas<C: ContentStore + ?Sized>(
     entries: &[FulltextEntry],
     string_dict: &dyn StringLookup,
-    ledger_id: &str,
-    storage: &S,
+    languages: &mut LanguageTagDict,
+    _ledger_id: &str,
+    content_store: &C,
 ) -> Result<Vec<(GraphId, Vec<FulltextArenaRef>)>> {
     use std::collections::BTreeMap;
 
-    // Group entries by (g_id, p_id).
-    let mut grouped: BTreeMap<(GraphId, u32), Vec<&FulltextEntry>> = BTreeMap::new();
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Resolve/insert `"en"` to get the English bucket's stable lang_id.
+    let en_lang_id = languages.get_or_insert(Some("en"));
+
+    // Group entries by (g_id, p_id, bucket_lang_id), mirroring the incremental
+    // path's routing rules.
+    let mut grouped: BTreeMap<(GraphId, u32, u16), Vec<&FulltextEntry>> = BTreeMap::new();
     for entry in entries {
+        let bucket_lang_id = match entry.source {
+            FulltextSource::DatatypeFulltext => en_lang_id,
+            FulltextSource::Configured => {
+                if entry.lang_id != 0 {
+                    entry.lang_id
+                } else {
+                    en_lang_id
+                }
+            }
+        };
         grouped
-            .entry((entry.g_id, entry.p_id))
+            .entry((entry.g_id, entry.p_id, bucket_lang_id))
             .or_default()
             .push(entry);
     }
 
     let mut per_graph: BTreeMap<GraphId, Vec<FulltextArenaRef>> = BTreeMap::new();
 
-    for ((g_id, p_id), group_entries) in grouped {
+    for ((g_id, p_id, lang_id), group_entries) in grouped {
+        // Per-bucket analyzer: resolve the bucket's BCP-47 tag from the lang
+        // dict and pick the matching language. Missing tag falls back to
+        // English so the arena side matches the query side's `english_lang_id`
+        // fallback for untagged values.
+        let bucket_tag = languages
+            .resolve(lang_id)
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "en".to_string());
+        let bucket_language = Language::from_bcp47(&bucket_tag);
+        let analyzer = Analyzer::for_language(bucket_language);
+
         // Two-pass build to avoid term_id shifting.
         //
         // Pass 1: Analyze all assertion texts, collect the union of all terms,
@@ -79,7 +115,7 @@ pub(crate) async fn build_and_upload_fulltext_arenas<S: Storage>(
                     continue;
                 }
             };
-            let term_freqs = analyze_to_term_freqs(&text);
+            let term_freqs = analyzer.analyze_to_term_freqs(&text);
             for term in term_freqs.keys() {
                 all_terms.insert(term.clone());
             }
@@ -122,32 +158,28 @@ pub(crate) async fn build_and_upload_fulltext_arenas<S: Storage>(
 
         // Encode FTA1 and upload to CAS.
         let blob = arena.encode();
-        let cas_result = storage
-            .content_write_bytes(ContentKind::IndexLeaf, ledger_id, &blob)
+        let arena_cid = content_store
+            .put(ContentKind::IndexLeaf, &blob)
             .await
-            .map_err(|e| IndexerError::StorageWrite(format!("fulltext CAS write: {}", e)))?;
-
-        let codec = ContentKind::IndexLeaf.to_codec();
-        let arena_cid =
-            ContentId::from_hex_digest(codec, &cas_result.content_hash).ok_or_else(|| {
-                IndexerError::Other(format!(
-                    "invalid fulltext arena hash: {}",
-                    cas_result.content_hash
-                ))
-            })?;
+            .map_err(|e| IndexerError::StorageWrite(format!("fulltext CAS write: {e}")))?;
 
         per_graph
             .entry(g_id)
             .or_default()
-            .push(FulltextArenaRef { p_id, arena_cid });
+            .push(FulltextArenaRef {
+                p_id,
+                lang_id,
+                arena_cid,
+            });
 
         tracing::info!(
             g_id,
             p_id,
+            lang_id,
             docs = arena.doc_count(),
             terms = arena.terms().len(),
             bytes = blob.len(),
-            "fulltext arena built for (graph, predicate)"
+            "fulltext arena built for (graph, predicate, language)"
         );
     }
 
@@ -183,6 +215,11 @@ impl StringLookup for HashMap<u32, Vec<u8>> {
 
 /// Build an incremental fulltext arena by merging a prior FTA1 arena with novelty entries.
 ///
+/// The caller is responsible for selecting the appropriate `analyzer` for
+/// the bucket's language (via `Analyzer::for_language(Language::from_bcp47(tag))`).
+/// All `entries` passed here must share the same language — the caller is
+/// expected to group by `(g_id, p_id, lang_id)` upstream.
+///
 /// Steps:
 /// 1. Collect all terms (old + new from novelty) into a merged sorted list
 /// 2. Build term_id remap for old arena's term_ids → merged term_ids
@@ -193,6 +230,7 @@ pub(crate) fn build_incremental_fulltext_arena(
     prior: &FulltextArena,
     entries: &[&FulltextEntry],
     string_lookup: &dyn StringLookup,
+    analyzer: &Analyzer,
 ) -> FulltextArena {
     use std::collections::BTreeSet;
 
@@ -206,7 +244,7 @@ pub(crate) fn build_incremental_fulltext_arena(
             continue;
         }
         if let Some(text) = string_lookup.lookup_string(entry.string_id) {
-            let term_freqs = analyze_to_term_freqs(&text);
+            let term_freqs = analyzer.analyze_to_term_freqs(&text);
             for term in term_freqs.keys() {
                 all_terms.insert(term.clone());
             }
@@ -250,7 +288,7 @@ pub(crate) fn build_incremental_fulltext_arena(
     for entry in entries {
         if entry.is_assert {
             if let Some(text) = string_lookup.lookup_string(entry.string_id) {
-                let term_freqs = analyze_to_term_freqs(&text);
+                let term_freqs = analyzer.analyze_to_term_freqs(&text);
                 let mut bow: Vec<(u32, u16)> = term_freqs
                     .into_iter()
                     .map(|(term, tf)| {
@@ -282,9 +320,13 @@ pub(crate) fn build_incremental_fulltext_arena(
 mod tests {
     use super::*;
 
+    fn english() -> Analyzer {
+        Analyzer::english_default()
+    }
+
     #[test]
     fn test_analyze_basic() {
-        let freqs = analyze_to_term_freqs("The quick brown fox jumps over the lazy dog");
+        let freqs = english().analyze_to_term_freqs("The quick brown fox jumps over the lazy dog");
         // "the" and "over" are stopwords
         assert!(!freqs.contains_key("the"));
         assert!(!freqs.contains_key("over"));
@@ -297,7 +339,7 @@ mod tests {
 
     #[test]
     fn test_analyze_stemming() {
-        let freqs = analyze_to_term_freqs("indexing indexed indexes");
+        let freqs = english().analyze_to_term_freqs("indexing indexed indexes");
         // All should stem to "index"
         assert_eq!(freqs.len(), 1);
         assert_eq!(freqs["index"], 3);
@@ -305,11 +347,11 @@ mod tests {
 
     #[test]
     fn test_analyze_empty() {
-        let freqs = analyze_to_term_freqs("");
+        let freqs = english().analyze_to_term_freqs("");
         assert!(freqs.is_empty());
 
         // All stopwords
-        let freqs = analyze_to_term_freqs("the a an is are was");
+        let freqs = english().analyze_to_term_freqs("the a an is are was");
         assert!(freqs.is_empty());
     }
 
@@ -329,6 +371,8 @@ mod tests {
             g_id,
             p_id,
             string_id,
+            lang_id: 0,
+            source: crate::fulltext_hook::FulltextSource::DatatypeFulltext,
             t,
             is_assert,
         }
@@ -341,7 +385,7 @@ mod tests {
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(10, "hello world rust"), (20, "rust programming")]);
 
-        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings);
+        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings, &english());
 
         assert_eq!(arena.doc_count(), 2);
         assert!(arena.doc_bow(10).is_some());
@@ -364,7 +408,7 @@ mod tests {
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(20, "hello rust")]);
 
-        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings);
+        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings, &english());
 
         assert_eq!(arena.doc_count(), 2);
         assert_eq!(arena.stats().n, 2);
@@ -396,7 +440,7 @@ mod tests {
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings: HashMap<u32, Vec<u8>> = HashMap::new();
 
-        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings);
+        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings, &english());
 
         assert_eq!(arena.doc_count(), 1);
         assert_eq!(arena.stats().n, 1);
@@ -417,7 +461,7 @@ mod tests {
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(10, "hello")]);
 
-        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings);
+        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings, &english());
 
         assert_eq!(arena.doc_count(), 1);
         let doc = arena.doc_bow(10).unwrap();
@@ -440,7 +484,7 @@ mod tests {
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(20, "banana cherry")]);
 
-        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings);
+        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings, &english());
 
         // Verify old doc's terms still resolve correctly after remap.
         let doc10 = arena.doc_bow(10).unwrap();
@@ -472,7 +516,7 @@ mod tests {
         let entry_refs: Vec<&FulltextEntry> = entries.iter().collect();
         let strings = make_string_map(&[(20, "world")]);
 
-        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings);
+        let arena = build_incremental_fulltext_arena(&prior, &entry_refs, &strings, &english());
 
         // Encode and decode should roundtrip.
         let bytes = arena.encode();

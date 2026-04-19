@@ -21,7 +21,12 @@ pub async fn run_index(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> 
 
     eprintln!("  {} indexing {}...", "index:".cyan().bold(), alias);
 
-    let config = fluree_db_indexer::IndexerConfig::default();
+    // Attach the api-side full-text config provider so each incremental
+    // build picks up `f:fullTextDefaults` changes — otherwise configured
+    // plain-string values written since the last reindex wouldn't flow
+    // into BM25 arenas.
+    let config = fluree_db_indexer::IndexerConfig::default()
+        .with_fulltext_config_provider(fluree.fulltext_config_provider());
 
     let result = fluree_db_indexer::build_index_for_ledger(
         fluree.content_store(&ledger_id),

@@ -551,7 +551,21 @@ impl crate::Fluree {
             .await?
             .ok_or_else(|| ApiError::NotFound(branch_id.to_string()))?;
 
-        let indexer_config = crate::build_indexer_config(self.config());
+        let mut indexer_config = crate::build_indexer_config(self.config());
+
+        // Seed configured full-text properties from the branch's current
+        // `f:fullTextDefaults`. Best-effort: failures leave the set empty and
+        // fall back to the `@fulltext`-datatype-only path for this rebuild.
+        if let Ok(state) = self.ledger(branch_id).await {
+            let snapshot = &state.snapshot;
+            let overlay: &dyn fluree_db_core::OverlayProvider = &*state.novelty;
+            if let Ok(Some(cfg)) =
+                crate::config_resolver::resolve_ledger_config(snapshot, overlay, snapshot.t).await
+            {
+                indexer_config.fulltext_configured_properties =
+                    crate::config_resolver::configured_fulltext_properties_for_indexer(&cfg);
+            }
+        }
 
         let index_result = fluree_db_indexer::rebuild_index_from_commits_with_store(
             branch_store,

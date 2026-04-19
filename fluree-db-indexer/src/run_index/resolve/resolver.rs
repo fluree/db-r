@@ -71,8 +71,15 @@ pub struct CommitResolver {
     /// called for every resolved user-data op to collect non-POINT WKT geometries.
     spatial_hook: Option<crate::spatial_hook::SpatialHook>,
     /// Optional fulltext collection hook. When set, `on_op()` is called for
-    /// every resolved user-data op to collect `@fulltext`-typed string entries.
+    /// every resolved user-data op to route `@fulltext`-typed string values
+    /// and values on configured full-text properties into BM25 arena building.
     fulltext_hook: Option<crate::fulltext_hook::FulltextHook>,
+    /// Per-indexing-run configured full-text property set. Built once from
+    /// the effective per-graph `ResolvedConfig.full_text.properties` and
+    /// consulted on every op to decide whether a plain-string value should
+    /// be collected. Empty by default so the `@fulltext`-datatype path keeps
+    /// working without any config setup.
+    fulltext_hook_config: crate::fulltext_hook::FulltextHookConfig,
 }
 
 impl CommitResolver {
@@ -84,6 +91,7 @@ impl CommitResolver {
             stats_hook: None,
             spatial_hook: None,
             fulltext_hook: None,
+            fulltext_hook_config: crate::fulltext_hook::FulltextHookConfig::default(),
         }
     }
 
@@ -110,6 +118,14 @@ impl CommitResolver {
     /// Set the fulltext collection hook for `@fulltext`-typed literals.
     pub fn set_fulltext_hook(&mut self, hook: crate::fulltext_hook::FulltextHook) {
         self.fulltext_hook = Some(hook);
+    }
+
+    /// Set the configured full-text property set for this indexing run.
+    pub fn set_fulltext_hook_config(
+        &mut self,
+        config: crate::fulltext_hook::FulltextHookConfig,
+    ) {
+        self.fulltext_hook_config = config;
     }
 
     /// Take the fulltext hook out of the resolver (for finalization).
@@ -181,17 +197,21 @@ impl CommitResolver {
                 );
             }
 
-            // Feed resolved record to fulltext hook (collects @fulltext-typed strings)
+            // Feed resolved record to fulltext hook — routes `@fulltext`-datatype
+            // values (always English) and configured-property values (language
+            // from lang_id / default_language) into BM25 arena building.
             if let Some(ref mut ft) = self.fulltext_hook {
-                ft.on_op(
-                    record.g_id,
-                    record.p_id,
-                    record.dt,
-                    record.o_kind,
-                    record.o_key,
-                    t as i64,
-                    record.op != 0,
-                );
+                ft.on_op(crate::fulltext_hook::FulltextOpInput {
+                    g_id: record.g_id,
+                    p_id: record.p_id,
+                    dt_id: record.dt,
+                    o_kind: record.o_kind,
+                    o_key: record.o_key,
+                    lang_id: record.lang_id,
+                    t: t as i64,
+                    is_assert: record.op != 0,
+                    config: &self.fulltext_hook_config,
+                });
             }
 
             writer
@@ -986,8 +1006,13 @@ pub struct SharedResolverState {
     /// Subject IDs in entries are chunk-local and must be remapped after dict merge.
     pub spatial_hook: Option<crate::spatial_hook::SpatialHook>,
     /// Optional fulltext collection hook. When set, `on_op()` is called for
-    /// every resolved user-data op to collect `@fulltext`-typed string entries.
+    /// every resolved user-data op to route `@fulltext`-typed string values
+    /// and values on configured full-text properties into BM25 arena building.
     pub fulltext_hook: Option<crate::fulltext_hook::FulltextHook>,
+    /// Per-indexing-run configured full-text property set (ledger-wide union
+    /// of per-graph effective `full_text.properties`). Empty by default; the
+    /// `@fulltext`-datatype path still works without any config setup.
+    pub fulltext_hook_config: crate::fulltext_hook::FulltextHookConfig,
     /// Optional schema hierarchy extractor hook. When set, `on_flake()` is called
     /// for every `rdfs:subClassOf` / `rdfs:subPropertyOf` user-data op so rebuild
     /// can populate `IndexSchema` in the FIR6 root.
@@ -1035,6 +1060,7 @@ impl SharedResolverState {
             dt_tags,
             spatial_hook: None,
             fulltext_hook: None,
+            fulltext_hook_config: crate::fulltext_hook::FulltextHookConfig::default(),
             schema_hook: None,
         }
     }
@@ -1157,6 +1183,7 @@ impl SharedResolverState {
             dt_tags,
             spatial_hook: None,
             fulltext_hook: None,
+            fulltext_hook_config: crate::fulltext_hook::FulltextHookConfig::default(),
             schema_hook: None,
         })
     }
@@ -1190,6 +1217,62 @@ impl SharedResolverState {
                 .entry(code)
                 .or_insert_with(|| prefix.clone());
         }
+    }
+
+    /// Seed [`fulltext_hook_config`](Self::fulltext_hook_config) from the
+    /// caller-provided configured full-text properties.
+    ///
+    /// For each entry:
+    /// - Resolve `graph_iri` to a `GraphId`, pre-registering named graphs
+    ///   in `self.graphs` so the assigned ID is stable for the rest of the
+    ///   run. `None` resolves to `g_id = 0` (default graph).
+    /// - Pre-register `property_iri` in `self.predicates` to get a stable
+    ///   `p_id`, even if no triple in the current commit window uses it.
+    ///
+    /// The resulting `(GraphId, p_id)` set is loaded into
+    /// `self.fulltext_hook_config` and consulted by
+    /// [`FulltextHook::on_op`](crate::fulltext_hook::FulltextHook::on_op)
+    /// on every record.
+    pub fn configure_fulltext_properties(
+        &mut self,
+        properties: &[crate::config::ConfiguredFulltextProperty],
+    ) {
+        use crate::config::ConfiguredFulltextScope;
+
+        let mut config = crate::fulltext_hook::FulltextHookConfig::default();
+        for entry in properties {
+            let p_id = self.predicates.get_or_insert(&entry.property_iri);
+            match &entry.scope {
+                ConfiguredFulltextScope::AnyGraph => {
+                    config.add_any_graph(p_id);
+                }
+                ConfiguredFulltextScope::DefaultGraph => {
+                    // Default graph is always `g_id = 0` — not in the graph dict.
+                    config.add_per_graph(0, p_id);
+                }
+                ConfiguredFulltextScope::TxnMetaGraph => {
+                    // `new_for_ledger` pre-reserves txn-meta at graph-dict slot 0
+                    // (→ `g_id = 1`). No need to hit the dict here — the ID is
+                    // structurally fixed, and `get_or_insert(sentinel_iri)`
+                    // would allocate an unrelated entry for the literal
+                    // sentinel string, which is the bug we're avoiding.
+                    config.add_per_graph(1, p_id);
+                }
+                ConfiguredFulltextScope::NamedGraph(iri) => {
+                    let raw = self.graphs.get_or_insert(iri) + 1;
+                    if raw > u16::MAX as u32 {
+                        tracing::warn!(
+                            graph_iri = %iri,
+                            raw,
+                            "configure_fulltext_properties: graph count exceeds u16::MAX — skipping"
+                        );
+                        continue;
+                    }
+                    config.add_per_graph(raw as u16, p_id);
+                }
+            }
+        }
+        self.fulltext_hook_config = config;
     }
 
     /// Resolve a single commit's ops into chunk-local RunRecords, appending to
@@ -1255,19 +1338,23 @@ impl SharedResolverState {
                 );
             }
 
-            // Feed resolved record to fulltext hook (collects @fulltext-typed strings).
+            // Feed resolved record to fulltext hook — routes `@fulltext`-datatype
+            // values (always English) and configured-property values (language
+            // from lang_id / default_language) into BM25 arena building.
             // Note: string_id (o_key) is chunk-local here; entries must be remapped
             // to global IDs after dict reconciliation (see incremental_resolve.rs step 7).
             if let Some(ref mut ft) = self.fulltext_hook {
-                ft.on_op(
-                    record.g_id,
-                    record.p_id,
-                    record.dt,
-                    record.o_kind,
-                    record.o_key,
-                    t as i64,
-                    record.op != 0,
-                );
+                ft.on_op(crate::fulltext_hook::FulltextOpInput {
+                    g_id: record.g_id,
+                    p_id: record.p_id,
+                    dt_id: record.dt,
+                    o_kind: record.o_kind,
+                    o_key: record.o_key,
+                    lang_id: record.lang_id,
+                    t: t as i64,
+                    is_assert: record.op != 0,
+                    config: &self.fulltext_hook_config,
+                });
             }
 
             chunk.records.push(record);

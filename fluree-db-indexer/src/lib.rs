@@ -41,7 +41,9 @@ pub mod spatial_hook;
 pub mod stats;
 
 // Re-export main types
-pub use config::IndexerConfig;
+pub use config::{
+    ConfiguredFulltextProperty, ConfiguredFulltextScope, FulltextConfigProvider, IndexerConfig,
+};
 pub use drop::collect_ledger_cids;
 pub use error::{IndexerError, Result};
 pub use gc::{
@@ -110,9 +112,18 @@ pub const CURRENT_INDEX_VERSION: i32 = 2;
 pub async fn build_index_for_record(
     content_store: std::sync::Arc<dyn ContentStore>,
     record: &fluree_db_nameservice::NsRecord,
-    config: IndexerConfig,
+    mut config: IndexerConfig,
 ) -> Result<IndexResult> {
     let ledger_id = record.ledger_id.as_str();
+
+    // If a config provider is attached, let it refresh the per-run
+    // `fulltext_configured_properties` from the live ledger state. This is
+    // the hook that keeps background / incremental indexing in sync with
+    // `f:fullTextDefaults` changes committed after process start.
+    if let Some(provider) = config.fulltext_config_provider.clone() {
+        config.fulltext_configured_properties =
+            provider.fulltext_configured_properties(ledger_id).await;
+    }
     let correlation = crate::orchestrator::current_index_request_correlation();
     let span = tracing::debug_span!(
         "index_build",

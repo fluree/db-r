@@ -99,6 +99,18 @@ impl ExecutableQuery {
         let options = query.options.clone();
         Self { query, options }
     }
+
+    /// True if any pattern in this query calls `fulltext(...)`.
+    ///
+    /// The query-context setup code checks this before allocating the
+    /// per-graph fulltext arena map and resolving the English `lang_id`,
+    /// skipping that work for queries that don't use full-text scoring.
+    pub fn uses_fulltext(&self) -> bool {
+        self.query
+            .patterns
+            .iter()
+            .any(|p| crate::ir::pattern_contains_function(p, &crate::ir::Function::Fulltext))
+    }
 }
 
 /// Prepared execution environment
@@ -486,8 +498,13 @@ pub struct ContextConfig<'a, 'b> {
     /// Keys are graph-scoped: `"g{g_id}:{predicate_iri}"`.
     pub spatial_providers: Option<&'a HashMap<String, Arc<dyn SpatialIndexProvider>>>,
     /// Fulltext BoW arenas for `fulltext()` BM25 scoring.
-    /// Keys are `(g_id, p_id)` pairs.
-    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32), Arc<FulltextArena>>>,
+    /// Keys are `(g_id, p_id, lang_id)` triples — one arena per language on
+    /// each property.
+    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32, u16), Arc<FulltextArena>>>,
+    /// Dict-assigned lang_id for BCP-47 `"en"`, used as the arena-lookup
+    /// key for `@fulltext`-datatype values and as the final fallback in
+    /// the language-resolution chain for configured full-text properties.
+    pub english_lang_id: Option<u16>,
     /// Remote SERVICE executor for `fluree:remote:` endpoints.
     pub remote_service: Option<&'b dyn crate::remote_service::RemoteServiceExecutor>,
 }
@@ -614,6 +631,7 @@ pub async fn execute_prepared<'a, 'b>(
     if let Some(providers) = config.fulltext_providers {
         ctx = ctx.with_fulltext_providers(providers);
     }
+    ctx.english_lang_id = config.english_lang_id;
     if let Some(executor) = config.remote_service {
         ctx = ctx.with_remote_service(executor);
     }

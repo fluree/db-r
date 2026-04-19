@@ -237,6 +237,108 @@ See [Unique constraints](unique-constraints.md) for full details on `f:enforceUn
 
 ---
 
+## Full-text defaults
+
+**Group predicate**: `f:fullTextDefaults`
+
+Declares properties whose string values should be indexed for BM25 full-text
+scoring without requiring the `@fulltext` datatype per value, and sets the
+default analyzer language for untagged plain strings.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `f:defaultLanguage` | BCP-47 string | `"en"` | Analyzer language for plain (`xsd:string`) values on configured properties |
+| `f:property` | `f:FullTextProperty` list | empty | One node per property to full-text index |
+| `f:overrideControl` | IRI or object | `f:OverrideAll` | Override gating |
+
+Each `f:property` entry is an `f:FullTextProperty` node carrying `f:target` —
+the IRI of the property being indexed. Additional optional knobs (per-property
+language, tokenizer, etc.) can be added to `f:FullTextProperty` in the future
+without breaking the schema.
+
+The `@fulltext` datatype retains its zero-config shortcut semantics: any value
+tagged `@fulltext` always indexes as English, regardless of what
+`f:fullTextDefaults` declares. Configured plain-string paths and
+`@fulltext`-datatype English content share the same per-property English
+arena — no duplication.
+
+`rdf:langString` values auto-route to per-language arenas by their tag. An
+unrecognized BCP-47 tag tokenizes + lowercases only (no stopwords, no
+stemming) — consistent on both indexing and query sides.
+
+### Additive merge semantics
+
+Like `f:transactDefaults`, `f:fullTextDefaults` uses additive merge. Per-graph
+`f:property` entries are appended to the ledger-wide list (deduping by
+target IRI — per-graph wins on a collision). Per-graph `f:defaultLanguage`
+shadows the ledger-wide value. Ledger-wide `f:OverrideNone` blocks per-graph
+overrides entirely.
+
+### Config changes require a manual reindex
+
+Editing `f:fullTextDefaults` never triggers any indexing automatically. Arenas
+reflect the config that was in effect at their build time; to pick up a
+changed property list or default language, run a full reindex (`fluree
+reindex …` or equivalent). Until then, existing arenas stay authoritative and
+novelty written after the config change is scored with whatever language the
+current effective config resolves to — which may produce temporarily
+mismatched scoring until the reindex completes.
+
+An in-flight reindex operates on a point-in-time snapshot and will not see a
+config change committed during its run. Wait for the reindex to finish, then
+trigger a new one against the post-change state.
+
+### Example
+
+```trig
+@prefix f: <https://ns.flur.ee/db#> .
+@prefix ex: <http://example.org/ns/> .
+
+GRAPH <urn:fluree:mydb:main#config> {
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
+    f:fullTextDefaults [
+      a f:FullTextDefaults ;
+      f:defaultLanguage "en" ;
+      f:property [ a f:FullTextProperty ; f:target ex:title ] ,
+                 [ a f:FullTextProperty ; f:target ex:body ]
+    ] .
+}
+```
+
+### Per-graph override example
+
+```trig
+GRAPH <urn:fluree:mydb:main#config> {
+  <urn:fluree:mydb:main:config:ledger> a f:LedgerConfig ;
+    f:fullTextDefaults [
+      a f:FullTextDefaults ;
+      f:defaultLanguage "en" ;
+      f:property [ a f:FullTextProperty ; f:target ex:title ]
+    ] ;
+    f:graphOverrides [
+      a f:GraphConfig ;
+      f:targetGraph <urn:example:productCatalog> ;
+      f:fullTextDefaults [
+        a f:FullTextDefaults ;
+        f:defaultLanguage "es" ;
+        f:property [ a f:FullTextProperty ; f:target ex:productName ]
+      ]
+    ] .
+}
+```
+
+Under this config, queries touching the `productCatalog` graph analyze
+untagged plain strings as Spanish (`"es"`); other graphs keep English.
+`ex:title` is full-text indexed everywhere (ledger-wide); `ex:productName`
+is indexed only in the `productCatalog` graph.
+
+See [Inline fulltext search](../indexing-and-search/fulltext.md) for the
+end-user guide — when to pick this path over the `@fulltext` datatype,
+supported languages, per-graph multilingual setups, the reindex workflow,
+and how configured properties interact with `@fulltext`-datatype values.
+
+---
+
 ## Ledger-scoped settings
 
 Some settings are structurally tied to the ledger as a whole and are **not meaningful per-graph**. They live exclusively on `f:LedgerConfig` and are ignored if present on `f:GraphConfig`.

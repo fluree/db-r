@@ -1,11 +1,18 @@
-//! Text analyzer (default English)
+//! Text analyzer (multi-language).
 //!
-//! Implements the default English text analysis pipeline used for BM25 scoring
-//! and fulltext arena building:
+//! Implements the text analysis pipeline used for BM25 scoring and fulltext
+//! arena building:
 //! 1. Lowercase (in tokenizer)
 //! 2. Split on `[^\w]+` (regex word split)
-//! 3. Stopword filtering
-//! 4. Snowball stemming
+//! 3. Stopword filtering (language-specific)
+//! 4. Snowball stemming (language-specific)
+//!
+//! The tokenizer is language-agnostic (Unicode `\w` semantics). Stopword
+//! filtering and stemming are driven by [`Language`], which maps BCP-47
+//! language tags to stopword lists + Snowball stemmer algorithms. The
+//! `Unknown` language variant tokenizes + lowercases only (no stopwords,
+//! no stemming) so unrecognized tags still produce consistent scoring
+//! between index-time and query-time.
 //!
 //! This module is the single source of truth for text analysis. Both the
 //! query-time BM25 scorer (`fluree-db-query`) and the index-time fulltext
@@ -18,6 +25,120 @@ use std::collections::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use rust_stemmers::{Algorithm, Stemmer};
+
+// ============================================================================
+// Language
+// ============================================================================
+
+/// Supported languages for text analysis.
+///
+/// Each variant corresponds to a Snowball stemmer algorithm plus a bundled
+/// stopword list. `Unknown` is a safe default for BCP-47 tags we do not
+/// recognize — the analyzer tokenizes + lowercases the input but does not
+/// remove stopwords or stem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    Arabic,
+    Danish,
+    Dutch,
+    English,
+    Finnish,
+    French,
+    German,
+    Greek,
+    Hungarian,
+    Italian,
+    Norwegian,
+    Portuguese,
+    Romanian,
+    Russian,
+    Spanish,
+    Swedish,
+    Tamil,
+    Turkish,
+    Unknown,
+}
+
+impl Language {
+    /// Map a BCP-47 tag (e.g. `"en"`, `"en-US"`, `"fr-CA"`) to a `Language`.
+    ///
+    /// Only the primary subtag is inspected; regional subtags are ignored.
+    /// Unrecognized primary subtags return `Unknown`.
+    pub fn from_bcp47(tag: &str) -> Self {
+        let primary = tag.split('-').next().unwrap_or("");
+        let lower = primary.to_ascii_lowercase();
+        match lower.as_str() {
+            "ar" => Self::Arabic,
+            "da" => Self::Danish,
+            "nl" => Self::Dutch,
+            "en" => Self::English,
+            "fi" => Self::Finnish,
+            "fr" => Self::French,
+            "de" => Self::German,
+            "el" => Self::Greek,
+            "hu" => Self::Hungarian,
+            "it" => Self::Italian,
+            // Norwegian: Bokmål / Nynorsk / macrolanguage all stem via Norwegian.
+            "no" | "nb" | "nn" => Self::Norwegian,
+            "pt" => Self::Portuguese,
+            "ro" => Self::Romanian,
+            "ru" => Self::Russian,
+            "es" => Self::Spanish,
+            "sv" => Self::Swedish,
+            "ta" => Self::Tamil,
+            "tr" => Self::Turkish,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn snowball_algorithm(self) -> Option<Algorithm> {
+        match self {
+            Language::Arabic => Some(Algorithm::Arabic),
+            Language::Danish => Some(Algorithm::Danish),
+            Language::Dutch => Some(Algorithm::Dutch),
+            Language::English => Some(Algorithm::English),
+            Language::Finnish => Some(Algorithm::Finnish),
+            Language::French => Some(Algorithm::French),
+            Language::German => Some(Algorithm::German),
+            Language::Greek => Some(Algorithm::Greek),
+            Language::Hungarian => Some(Algorithm::Hungarian),
+            Language::Italian => Some(Algorithm::Italian),
+            Language::Norwegian => Some(Algorithm::Norwegian),
+            Language::Portuguese => Some(Algorithm::Portuguese),
+            Language::Romanian => Some(Algorithm::Romanian),
+            Language::Russian => Some(Algorithm::Russian),
+            Language::Spanish => Some(Algorithm::Spanish),
+            Language::Swedish => Some(Algorithm::Swedish),
+            Language::Tamil => Some(Algorithm::Tamil),
+            Language::Turkish => Some(Algorithm::Turkish),
+            Language::Unknown => None,
+        }
+    }
+
+    fn stopwords(self) -> Option<&'static HashSet<String>> {
+        match self {
+            Language::Arabic => Some(&ARABIC_STOPWORDS),
+            Language::Danish => Some(&DANISH_STOPWORDS),
+            Language::Dutch => Some(&DUTCH_STOPWORDS),
+            Language::English => Some(&ENGLISH_STOPWORDS),
+            Language::Finnish => Some(&FINNISH_STOPWORDS),
+            Language::French => Some(&FRENCH_STOPWORDS),
+            Language::German => Some(&GERMAN_STOPWORDS),
+            Language::Greek => Some(&GREEK_STOPWORDS),
+            Language::Hungarian => Some(&HUNGARIAN_STOPWORDS),
+            Language::Italian => Some(&ITALIAN_STOPWORDS),
+            Language::Norwegian => Some(&NORWEGIAN_STOPWORDS),
+            Language::Portuguese => Some(&PORTUGUESE_STOPWORDS),
+            Language::Romanian => Some(&ROMANIAN_STOPWORDS),
+            Language::Russian => Some(&RUSSIAN_STOPWORDS),
+            Language::Spanish => Some(&SPANISH_STOPWORDS),
+            Language::Swedish => Some(&SWEDISH_STOPWORDS),
+            Language::Tamil => Some(&TAMIL_STOPWORDS),
+            Language::Turkish => Some(&TURKISH_STOPWORDS),
+            Language::Unknown => None,
+        }
+    }
+}
 
 // ============================================================================
 // Token
@@ -51,13 +172,12 @@ static WORD_SPLIT: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"[^\w]+").expect("Invalid regex")
 });
 
-/// Default English tokenizer.
+/// Default Unicode-aware tokenizer: lowercase, then split on `[^\w]+`.
 ///
-/// Performs:
-/// 1. Lowercase the input text
-/// 2. Split on `[^\w]+` (non-word characters)
-///
-/// Note: Lowercase is done in the tokenizer (not as a separate filter).
+/// The tokenizer is language-agnostic — it relies only on Unicode word
+/// boundaries and is reused across every supported [`Language`]. Language-
+/// specific behavior lives in the stopword filter and stemmer further down
+/// the pipeline.
 #[derive(Debug, Default, Clone)]
 pub struct DefaultEnglishTokenizer;
 
@@ -187,18 +307,36 @@ impl Analyzer {
     /// Create the default English analyzer.
     ///
     /// Pipeline:
-    /// 1. DefaultEnglishTokenizer (lowercase + word split)
+    /// 1. Default tokenizer (lowercase + word split)
     /// 2. StopwordFilter (English stopwords)
     /// 3. SnowballStemmerFilter (English stemmer)
+    ///
+    /// This is the path used by the `@fulltext` datatype shortcut, which is
+    /// always English regardless of configuration.
     pub fn english_default() -> Self {
-        Self {
-            tokenizer: Box::new(DefaultEnglishTokenizer),
-            // NO LowercaseFilter - already done in tokenizer
-            filters: vec![
-                Box::new(StopwordFilter::english()),
-                Box::new(SnowballStemmerFilter::english()),
-            ],
+        Self::for_language(Language::English)
+    }
+
+    /// Create an analyzer for the given language.
+    ///
+    /// Pipeline:
+    /// 1. Default tokenizer (lowercase + word split) — language-agnostic.
+    /// 2. Stopword filter — if the language has a bundled stopword list.
+    /// 3. Snowball stemmer — if the language has a Snowball algorithm.
+    ///
+    /// [`Language::Unknown`] builds an analyzer with just the tokenizer —
+    /// no stopword removal, no stemming. This guarantees consistent behavior
+    /// on the index and query sides for unrecognized BCP-47 tags.
+    pub fn for_language(lang: Language) -> Self {
+        let tokenizer: Box<dyn Tokenizer> = Box::new(DefaultEnglishTokenizer);
+        let mut filters: Vec<Box<dyn TokenFilter>> = Vec::new();
+        if let Some(stopwords) = lang.stopwords() {
+            filters.push(Box::new(StopwordFilter::new(stopwords.clone())));
         }
+        if let Some(algorithm) = lang.snowball_algorithm() {
+            filters.push(Box::new(SnowballStemmerFilter::new(algorithm)));
+        }
+        Self { tokenizer, filters }
     }
 
     /// Analyze text into tokens.
@@ -262,24 +400,61 @@ pub fn analyze_to_term_freqs(text: &str) -> HashMap<String, u32> {
 }
 
 // ============================================================================
-// English Stopwords
+// Stopword resource files
 // ============================================================================
+//
+// Each language's stopword file is compile-time-included so the analyzer has
+// no runtime filesystem dependency. Files live under
+// `fluree-db-binary-index/resources/stopwords/{code}.txt` (one word per line,
+// `#` starts a comment, blank lines allowed). Adding a language means:
+//   1. Create the resource file.
+//   2. Add an include_str! + Lazy static below.
+//   3. Wire it into `Language::stopwords()`.
 
-/// English stopwords for the default analyzer.
-///
-/// This list is loaded at compile time from the resources directory for
-/// deterministic behavior across builds.
-static ENGLISH_STOPWORDS: Lazy<HashSet<String>> = Lazy::new(|| {
-    // Load the stopwords file at compile time
-    const STOPWORDS_FILE: &str = include_str!("../resources/stopwords/en.txt");
-
-    STOPWORDS_FILE
-        .lines()
+fn parse_stopwords(file: &str) -> HashSet<String> {
+    file.lines()
         .map(|line| line.trim())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|s| s.to_lowercase())
         .collect()
-});
+}
+
+static ENGLISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/en.txt")));
+static ARABIC_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ar.txt")));
+static DANISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/da.txt")));
+static DUTCH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/nl.txt")));
+static FINNISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/fi.txt")));
+static FRENCH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/fr.txt")));
+static GERMAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/de.txt")));
+static GREEK_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/el.txt")));
+static HUNGARIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/hu.txt")));
+static ITALIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/it.txt")));
+static NORWEGIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/no.txt")));
+static PORTUGUESE_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/pt.txt")));
+static ROMANIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ro.txt")));
+static RUSSIAN_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ru.txt")));
+static SPANISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/es.txt")));
+static SWEDISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/sv.txt")));
+static TAMIL_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/ta.txt")));
+static TURKISH_STOPWORDS: Lazy<HashSet<String>> =
+    Lazy::new(|| parse_stopwords(include_str!("../resources/stopwords/tr.txt")));
 
 #[cfg(test)]
 mod tests {
@@ -393,6 +568,84 @@ mod tests {
 
         let terms = analyzer.analyze_to_strings("the a an is are");
         assert!(terms.is_empty());
+    }
+
+    // ========================================================================
+    // Multi-language support
+    // ========================================================================
+
+    #[test]
+    fn test_language_from_bcp47_primary() {
+        assert_eq!(Language::from_bcp47("en"), Language::English);
+        assert_eq!(Language::from_bcp47("fr"), Language::French);
+        assert_eq!(Language::from_bcp47("de"), Language::German);
+        assert_eq!(Language::from_bcp47("es"), Language::Spanish);
+        assert_eq!(Language::from_bcp47("ta"), Language::Tamil);
+    }
+
+    #[test]
+    fn test_language_from_bcp47_region_subtag_ignored() {
+        assert_eq!(Language::from_bcp47("en-US"), Language::English);
+        assert_eq!(Language::from_bcp47("fr-CA"), Language::French);
+        assert_eq!(Language::from_bcp47("pt-BR"), Language::Portuguese);
+    }
+
+    #[test]
+    fn test_language_from_bcp47_norwegian_variants() {
+        assert_eq!(Language::from_bcp47("no"), Language::Norwegian);
+        assert_eq!(Language::from_bcp47("nb"), Language::Norwegian);
+        assert_eq!(Language::from_bcp47("nn"), Language::Norwegian);
+    }
+
+    #[test]
+    fn test_language_from_bcp47_case_insensitive() {
+        assert_eq!(Language::from_bcp47("EN"), Language::English);
+        assert_eq!(Language::from_bcp47("Fr-CA"), Language::French);
+    }
+
+    #[test]
+    fn test_language_from_bcp47_unknown() {
+        assert_eq!(Language::from_bcp47("zz"), Language::Unknown);
+        assert_eq!(Language::from_bcp47(""), Language::Unknown);
+        assert_eq!(Language::from_bcp47("jp"), Language::Unknown); // "ja" is correct for Japanese
+        assert_eq!(Language::from_bcp47("ja"), Language::Unknown); // no Snowball algo for Japanese
+    }
+
+    #[test]
+    fn test_analyzer_for_unknown_tokenizes_only() {
+        // Unknown language: tokenize + lowercase, no stopwords, no stemming.
+        let analyzer = Analyzer::for_language(Language::Unknown);
+        let terms = analyzer.analyze_to_strings("The Running Foxes");
+        assert_eq!(terms, vec!["the", "running", "foxes"]);
+    }
+
+    #[test]
+    fn test_analyzer_for_french_applies_stopwords_and_stemmer() {
+        let analyzer = Analyzer::for_language(Language::French);
+        // "de", "la", "les" are French stopwords — must be removed.
+        // "grandes" should stem to the same form as "grand".
+        let freqs = analyzer.analyze_to_term_freqs("de la maison les grandes grand");
+        assert!(!freqs.contains_key("de"));
+        assert!(!freqs.contains_key("la"));
+        assert!(!freqs.contains_key("les"));
+        // "maison" survives as a content word.
+        assert!(freqs.keys().any(|k| k.starts_with("maison")));
+        // "grand" and "grandes" stem to the same form (French stemmer removes -es).
+        let grand_stems: Vec<&String> = freqs.keys().filter(|k| k.starts_with("grand")).collect();
+        assert_eq!(
+            grand_stems.len(),
+            1,
+            "grand/grandes should share a stem, got: {grand_stems:?}"
+        );
+        assert_eq!(freqs[grand_stems[0]], 2);
+    }
+
+    #[test]
+    fn test_analyzer_english_equivalent_to_english_default() {
+        let a = Analyzer::english_default();
+        let b = Analyzer::for_language(Language::English);
+        let text = "The quick brown foxes are running!";
+        assert_eq!(a.analyze_to_term_freqs(text), b.analyze_to_term_freqs(text));
     }
 
     // ========================================================================

@@ -536,3 +536,326 @@ async fn fulltext_multiple_predicates_independent_arenas() {
         })
         .await;
 }
+
+// =============================================================================
+// Configured-property path (`f:fullTextDefaults`)
+// =============================================================================
+//
+// These tests exercise the non-`@fulltext` path: plain-string values on a
+// property declared in `f:fullTextDefaults` flow through the BM25 arena
+// after a reindex that reads the config.
+
+/// Helper: score a plain-string property via `fulltext(?title, "query")`.
+async fn query_fulltext_plain(
+    fluree: &support::MemoryFluree,
+    ledger: &support::MemoryLedger,
+    query_text: &str,
+) -> Vec<(String, f64)> {
+    let bind_expr = format!("(fulltext ?title \"{}\")", query_text);
+    let query = json!({
+        "@context": fulltext_context(),
+        "select": ["?id", "?score"],
+        "where": [
+            { "@id": "?id", "ex:title": "?title" },
+            ["bind", "?score", bind_expr],
+            ["filter", "(> ?score 0)"]
+        ],
+        "orderBy": [["desc", "?score"]]
+    });
+
+    let result = support::query_jsonld(fluree, ledger, &query).await;
+    match result {
+        Ok(r) => {
+            let json_rows = r.to_jsonld(&ledger.snapshot).expect("jsonld");
+            json_rows
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|row| {
+                            let arr = row.as_array()?;
+                            let id = arr.first()?.as_str()?.to_string();
+                            let score = arr.get(1)?.as_f64()?;
+                            Some((id, score))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        Err(e) => panic!("Fulltext query failed: {e}"),
+    }
+}
+
+/// A plain-string `ex:title` property isn't scored by `fulltext(...)` by
+/// default. Once `f:fullTextDefaults` adds `ex:title` and a reindex happens,
+/// the same query returns positive scores. This covers the full round-trip
+/// of the config path: api resolves config → indexer pre-registers IRIs →
+/// `FulltextHook` collects plain-string values → arena built → query side
+/// finds the arena under the bucket's `lang_id`.
+#[tokio::test]
+async fn fulltext_configured_property_indexed_after_reindex() {
+    use fluree_db_api::ReindexOptions;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/fulltext-config-reindex:main";
+    let mut ledger = support::genesis_ledger_for_fluree(&fluree, ledger_id);
+
+    // Suppress auto-reindex so we can control when indexing happens.
+    let no_auto = fluree_db_api::IndexConfig {
+        reindex_min_bytes: 1_000_000_000,
+        reindex_max_bytes: 1_000_000_000,
+    };
+
+    // 1) Write `f:fullTextDefaults` enabling `ex:title` FIRST, while we
+    //    still have a live LedgerState to stage against. Then insert the
+    //    documents. This ordering mirrors a realistic flow where config
+    //    lives alongside the data rather than being bolted on after.
+    let config_iri = format!("urn:fluree:{ledger_id}#config");
+    let config_trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:fullTextDefaults <urn:config:ft> .
+            <urn:config:ft> rdf:type f:FullTextDefaults .
+            <urn:config:ft> f:property <urn:config:ft:title> .
+            <urn:config:ft:title> rdf:type f:FullTextProperty .
+            <urn:config:ft:title> f:target ex:title .
+        }}
+    "#
+    );
+    ledger = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&config_trig)
+        .execute()
+        .await
+        .expect("write fulltext config")
+        .ledger;
+
+    // 2) Initial reindex so the config graph itself is indexed + queryable.
+    //    At this point the reindex also pre-registers `ex:title` via the
+    //    config helper, so the fulltext arena is built in this pass.
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("initial reindex to index the config graph");
+
+    // 3) Insert plain-string titles on ex:title (no @fulltext tag). Using
+    //    `no_auto` so the incremental path doesn't kick in — we'll force a
+    //    final reindex below that picks up everything in one shot.
+    let tx_docs = json!({
+        "@context": fulltext_context(),
+        "@graph": [
+            { "@id": "ex:doc1", "ex:title": "Rust programming language guide" },
+            { "@id": "ex:doc2", "ex:title": "Cooking recipes for pasta" },
+            { "@id": "ex:doc3", "ex:title": "Advanced Rust macros and traits" },
+        ]
+    });
+    let mut ledger = fluree.ledger(ledger_id).await.expect("reload after reindex");
+    ledger = fluree
+        .insert_with_opts(
+            ledger,
+            &tx_docs,
+            TxnOpts::default(),
+            CommitOpts::default(),
+            &no_auto,
+        )
+        .await
+        .expect("insert docs")
+        .ledger;
+    let _ = ledger;
+
+    // 4) Reindex — full rebuild now walks every commit (config + docs) and
+    //    the admin path reads `f:fullTextDefaults` from the existing index
+    //    to seed `IndexerConfig.fulltext_configured_properties` before
+    //    building the new one.
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex after config + docs");
+
+    let loaded = fluree.ledger(ledger_id).await.expect("load after reindex");
+
+    // 4) Query — plain strings on ex:title should now be scored via BM25.
+    let results = query_fulltext_plain(&fluree, &loaded, "Rust").await;
+    let hits: std::collections::HashSet<&str> =
+        results.iter().map(|(id, _)| id.as_str()).collect();
+    assert!(
+        hits.contains("ex:doc1"),
+        "doc1 (mentions 'Rust') should be returned: {results:?}"
+    );
+    assert!(
+        hits.contains("ex:doc3"),
+        "doc3 (mentions 'Rust') should be returned: {results:?}"
+    );
+    assert!(
+        !hits.contains("ex:doc2"),
+        "doc2 (no Rust) should NOT be returned: {results:?}"
+    );
+    assert!(
+        results.iter().all(|(_, score)| *score > 0.0),
+        "all configured-property hits should have positive scores: {results:?}"
+    );
+}
+
+/// When `f:fullTextDefaults` is NOT configured, plain-string values on
+/// `ex:title` do not score — `fulltext(?title, ...)` returns unbound and
+/// the `> 0` filter drops every row. This is the pre-config baseline;
+/// the test above asserts that enabling config flips this behavior.
+#[tokio::test]
+async fn fulltext_unconfigured_plain_string_returns_empty() {
+    use fluree_db_api::ReindexOptions;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/fulltext-unconfigured:main";
+    let mut ledger = support::genesis_ledger_for_fluree(&fluree, ledger_id);
+    let no_auto = fluree_db_api::IndexConfig {
+        reindex_min_bytes: 1_000_000_000,
+        reindex_max_bytes: 1_000_000_000,
+    };
+    ledger = fluree
+        .insert_with_opts(
+            ledger,
+            &json!({
+                "@context": fulltext_context(),
+                "@graph": [
+                    { "@id": "ex:doc1", "ex:title": "Rust programming language guide" },
+                ]
+            }),
+            TxnOpts::default(),
+            CommitOpts::default(),
+            &no_auto,
+        )
+        .await
+        .expect("insert")
+        .ledger;
+    let _ = ledger;
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("reindex without config");
+
+    let loaded = fluree.ledger(ledger_id).await.expect("load");
+    let results = query_fulltext_plain(&fluree, &loaded, "Rust").await;
+    assert!(
+        results.is_empty(),
+        "plain-string ex:title must not score without `f:fullTextDefaults`: {results:?}"
+    );
+}
+
+/// Regression for Finding 2: after a reindex picks up `f:fullTextDefaults`,
+/// subsequent non-reindex index builds (the path used by the background
+/// indexer and CLI `fluree index`) must continue to collect configured
+/// plain-string values. Previously, only `reindex()` and the rebase helper
+/// refreshed the configured-property set — follow-up incremental runs would
+/// silently stop routing new commits' values into BM25 arenas.
+///
+/// This test exercises `build_index_for_ledger` directly, which is what the
+/// CLI and background worker use, with the api-side
+/// `FulltextConfigProvider` attached.
+#[tokio::test]
+async fn fulltext_configured_property_picked_up_by_build_index_for_ledger() {
+    use fluree_db_api::ReindexOptions;
+    use fluree_db_transact::{CommitOpts, TxnOpts};
+
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/fulltext-config-steady-state:main";
+    let mut ledger = support::genesis_ledger_for_fluree(&fluree, ledger_id);
+    let no_auto = fluree_db_api::IndexConfig {
+        reindex_min_bytes: 1_000_000_000,
+        reindex_max_bytes: 1_000_000_000,
+    };
+
+    // 1) Write config + trigger the initial indexing pass via reindex.
+    let config_iri = format!("urn:fluree:{ledger_id}#config");
+    let config_trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:fullTextDefaults <urn:config:ft> .
+            <urn:config:ft> rdf:type f:FullTextDefaults .
+            <urn:config:ft> f:property <urn:config:ft:title> .
+            <urn:config:ft:title> rdf:type f:FullTextProperty .
+            <urn:config:ft:title> f:target ex:title .
+        }}
+    "#
+    );
+    ledger = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&config_trig)
+        .execute()
+        .await
+        .expect("write config")
+        .ledger;
+    let _ = ledger;
+    fluree
+        .reindex(ledger_id, ReindexOptions::default())
+        .await
+        .expect("initial reindex");
+
+    // 2) Add NEW docs AFTER the initial reindex. Without the provider the
+    //    configured-property set would still be empty for this build.
+    let mut ledger = fluree.ledger(ledger_id).await.expect("load after reindex");
+    ledger = fluree
+        .insert_with_opts(
+            ledger,
+            &json!({
+                "@context": fulltext_context(),
+                "@graph": [
+                    { "@id": "ex:new1", "ex:title": "Advanced Rust systems" },
+                    { "@id": "ex:new2", "ex:title": "Cooking pasta recipes" },
+                ]
+            }),
+            TxnOpts::default(),
+            CommitOpts::default(),
+            &no_auto,
+        )
+        .await
+        .expect("insert new docs")
+        .ledger;
+    let _ = ledger;
+
+    // 3) Invoke the same indexing entry point the CLI / background worker
+    //    use — `build_index_for_ledger` — with a provider-attached config.
+    let idx_config = fluree_db_indexer::IndexerConfig::default()
+        .with_fulltext_config_provider(fluree.fulltext_config_provider());
+    let result = fluree_db_indexer::build_index_for_ledger(
+        fluree.content_store(ledger_id),
+        fluree.nameservice(),
+        ledger_id,
+        idx_config,
+    )
+    .await
+    .expect("build_index_for_ledger");
+
+    // Publish the new index so `fluree.ledger()` can load it.
+    fluree
+        .nameservice_mode()
+        .publisher()
+        .expect("read-write nameservice")
+        .publish_index_allow_equal(ledger_id, result.index_t, &result.root_id)
+        .await
+        .expect("publish index");
+
+    // 4) Query — the new docs on `ex:title` should be scored even though
+    //    the run that indexed them was NOT `reindex()`.
+    let loaded = fluree.ledger(ledger_id).await.expect("load after incremental");
+    let results = query_fulltext_plain(&fluree, &loaded, "Rust").await;
+    let hits: std::collections::HashSet<&str> =
+        results.iter().map(|(id, _)| id.as_str()).collect();
+    assert!(
+        hits.contains("ex:new1"),
+        "steady-state build_index_for_ledger must pick up configured properties: {results:?}"
+    );
+    assert!(
+        !hits.contains("ex:new2"),
+        "non-matching title should not score: {results:?}"
+    );
+}
