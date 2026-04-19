@@ -134,9 +134,8 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
     // No `fluree.identity` / `sub` claim: this test exercises the bearer-scope
     // write path, not identity-based policy. Setting `fluree.identity` would
     // inject that identity into `opts.identity` on every request, which in turn
-    // causes the server to build a PolicyContext — and unresolvable identities
-    // fail closed. See `tests/policy_integration.rs` for the identity + policy
-    // path and its impersonation semantics.
+    // causes the server to build a PolicyContext. See `tests/policy_integration.rs`
+    // for the identity + policy path and its impersonation semantics.
     let secret = [7u8; 32];
     let signing_key = SigningKey::from_bytes(&secret);
 

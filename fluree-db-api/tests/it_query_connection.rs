@@ -418,9 +418,10 @@ async fn query_connection_policy_identity_not_found_returns_empty() {
     let _ledger = seed_people_ledger(&fluree, "people:main").await;
 
     // Use an identity that doesn't exist in the database.
-    // Per bug #106 fix: unknown identity → no policies → fail-closed with default-allow: false
-    // → empty results rather than an error. This is the correct behavior: an unrecognized
-    // identity should not expose any data, and should not reveal internal errors to the caller.
+    // With no inline default-allow, QueryConnectionOptions defaults to `default_allow: false`.
+    // Unknown identity → empty restrictions → default-allow:false denies every row → 0 results.
+    // The point of this test is that an unresolvable identity IRI does not surface as a 500;
+    // it produces a clean empty result set.
     let query = json!({
         "@context": context_ex_schema(),
         "from": "people:main",

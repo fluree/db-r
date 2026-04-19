@@ -422,17 +422,18 @@ async fn identity_without_policy_class_default_allow_false_denies_all() {
     );
 }
 
-/// An identity with no subject node in the ledger must be denied even when
+/// An identity with no subject node in the ledger must be allowed when
 /// `default-allow: true` is set.
 ///
-/// Rationale: `default-allow` governs access for *known* identities that happen
-/// to have no policy restrictions attached. An identity that is completely unknown
-/// to the ledger cannot be vouched for by any policy, so exposing data via a
-/// permissive default would silently bypass the intent of identity-scoped access
-/// control — a footgun for DB admins who rely on "data defends itself" in open
-/// deployments. Callers who want open access can simply omit `opts.identity`.
+/// Rationale: `default-allow: true` is an explicit admin opt-in that applies to
+/// every requester not specifically restricted by a policy — including unknown
+/// identities. A common pattern is an application layer in front of the DB that
+/// handles authorization itself and uses credential-signed writes only so that
+/// Fluree records *who* transacted for provenance. In that setup a first-time DID
+/// must be able to transact without being pre-provisioned, and reads must follow
+/// the same opt-in. Callers who want fail-closed behavior set `default-allow: false`.
 #[tokio::test]
-async fn unknown_identity_denied_even_with_default_allow_true() {
+async fn unknown_identity_allowed_with_default_allow_true() {
     let (_tmp, state) = policy_test_state().await;
     let app = setup_policy_ledger(build_router(state), "policy5:main").await;
 
@@ -447,9 +448,10 @@ async fn unknown_identity_denied_even_with_default_allow_true() {
     assert_eq!(status, StatusCode::OK);
 
     let names = names_from_results(&json);
-    assert!(
-        names.is_empty(),
-        "unknown identity must be denied even with default-allow:true; got: {:?}",
+    assert_eq!(
+        names.len(),
+        3,
+        "unknown identity + default-allow:true must see all documents; got: {:?}",
         names
     );
 }
@@ -599,8 +601,10 @@ async fn property_level_deny_hides_ex_content_field() {
 /// ledger (so it is not `NotFound`), but it carries no policy class binding. With no
 /// restrictions and `default_allow = true`, access is granted to everything.
 ///
-/// Contrast with `unknown_identity_denied_even_with_default_allow_true` which uses an
-/// identity that has NO subject node at all (`NotFound` → always fail-closed).
+/// Contrast with `unknown_identity_allowed_with_default_allow_true` which uses an
+/// identity that has NO subject node at all (`NotFound`) — that path also now honors
+/// `default_allow`, so both tests succeed for the same reason: empty restrictions +
+/// permissive default.
 #[tokio::test]
 async fn known_identity_no_policy_class_default_allow_true_allows_all() {
     let (_tmp, state) = policy_test_state().await;

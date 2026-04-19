@@ -356,7 +356,7 @@ For development only:
 
 All access allowed unless explicitly denied.
 
-> **Note:** When `opts.identity` is provided, `default-allow` is ignored if the identity IRI has no subject node in the ledger. Unknown identities always fail-closed regardless of this setting. See the [Policy Combining Algorithm](programmatic-policy.md#policy-combining-algorithm) for the three-state identity resolution.
+> **Note:** `default-allow` governs access for any requester — including unknown identities — once no matching policy restrictions apply. This is intentional for deployments where an application layer handles authorization and Fluree stores signed transactions for provenance. Set `default-allow: false` for fail-closed behavior when an identity is unknown or has no matching policy. See the [Policy Combining Algorithm](programmatic-policy.md#policy-combining-algorithm) for the three-state identity resolution.
 
 ## Policy Priority
 

@@ -265,11 +265,10 @@ When multiple policies match a flake, they are combined using **Deny Overrides**
 1. If **any** matching policy explicitly denies (`f:allow: false`), access is **denied**
 2. If a targeted policy's `f:query` returns false, access is **denied** (doesn't fall through to Default policies)
 3. If any policy allows (`f:allow: true` or `f:query` returns true), access is **granted**
-4. If no policies match, `default_allow` is true, and either no identity was asserted or the asserted identity is a **known subject** in the ledger → access is **granted**
-5. If no policies match and the asserted identity has **no subject node** in the ledger → access is **denied** (fail-closed, regardless of `default_allow`)
-6. Otherwise, access is **denied**
+4. If no policies match and `default_allow` is `true` → access is **granted**
+5. Otherwise, access is **denied**
 
-> **Identity resolution is three-state:** `FoundWithPolicies` (restrictions apply) → `FoundNoPolicies` (subject exists, `default_allow` governs) → `NotFound` (subject absent, always fail-closed). This prevents an unknown identity from gaining access via a permissive `default_allow` setting.
+> **Identity resolution is three-state:** `FoundWithPolicies` (restrictions apply) → `FoundNoPolicies` (subject exists, no restrictions) → `NotFound` (subject absent, no restrictions). The three-state split determines whether a concrete identity SID is available to bind `?$identity` in policy queries; it does not gate `default_allow`. An unknown identity with `default_allow: true` is granted access — this is the intended behavior for deployments where an application layer handles authorization and Fluree records signed transactions for provenance. Set `default_allow: false` for fail-closed behavior.
 
 **Important:** Inline policies must use full IRIs (e.g., `"http://schema.org/ssn"`), not compact IRIs (e.g., `"schema:ssn"`). Compact IRIs in inline policies are not expanded.
 

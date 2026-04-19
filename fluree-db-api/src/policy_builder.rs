@@ -147,33 +147,32 @@ pub async fn build_policy_context_from_opts(
 
     // Load policies and resolve identity SID.
     //
-    // When opts.identity is set, load_policies_by_identity handles both the f:policyClass
-    // lookup and the subject-existence check in a single code path, returning an enum that
-    // distinguishes three cases: identity not in ledger, identity exists with no policies,
-    // identity exists with policies.  This avoids encoding the IRI twice (once here and once
-    // inside load_policies_by_identity) and makes the "not found" vs "found-no-policy" split
-    // explicit at the type level rather than inferred from an empty Vec.
+    // When opts.identity is set, load_policies_by_identity returns a three-state enum
+    // distinguishing identity-not-in-ledger, identity-exists-with-no-policies, and
+    // identity-exists-with-policies. The distinction matters for binding `?$identity`
+    // in policy_values (only possible when we have a concrete SID), not for gating
+    // access — `opts.default_allow` governs in all three cases.
     //
     // Priority: identity > policy_class > policy > policy_values["?$identity"]
-    let (identity_sid, restrictions, identity_found) = if let Some(identity_iri) = &opts.identity {
+    let (identity_sid, restrictions) = if let Some(identity_iri) = &opts.identity {
         match load_policies_by_identity(snapshot, overlay, to_t, identity_iri, policy_graphs)
             .await?
         {
             IdentityLookupResult::NotFound => {
-                // IRI unresolvable or no subject node in this ledger. Fail-closed: the
-                // system cannot vouch for this requester, so no data should be exposed.
-                (None, vec![], false)
+                // IRI unresolvable or no subject node in this ledger. No SID to bind
+                // and no restrictions to apply; default_allow governs as configured.
+                (None, vec![])
             }
             IdentityLookupResult::FoundNoPolicies { identity_sid } => {
                 policy_values.insert("?$identity".to_string(), identity_sid.clone());
-                (Some(identity_sid), vec![], true)
+                (Some(identity_sid), vec![])
             }
             IdentityLookupResult::FoundWithPolicies {
                 identity_sid,
                 restrictions,
             } => {
                 policy_values.insert("?$identity".to_string(), identity_sid.clone());
-                (Some(identity_sid), restrictions, true)
+                (Some(identity_sid), restrictions)
             }
         }
     } else {
@@ -200,9 +199,7 @@ pub async fn build_policy_context_from_opts(
             vec![]
         };
 
-        // identity_found is only meaningful for the opts.identity path; use true here
-        // so effective_default_allow is unchanged for non-identity queries.
-        (identity_sid, restrictions, true)
+        (identity_sid, restrictions)
     };
 
     // Build policy sets (view and modify)
@@ -235,7 +232,7 @@ pub async fn build_policy_context_from_opts(
     //
     // is_root = true ONLY when no explicit policy inputs (identity / policy-class / policy)
     // were provided. When an identity IS specified but has no matching policies, is_root must
-    // be false so that effective_default_allow (not a blanket bypass) governs access.
+    // be false so that `default_allow` (not a blanket bypass) governs access.
     let has_explicit_policy_input = opts.identity.is_some()
         || opts.policy_class.as_ref().is_some_and(|v| !v.is_empty())
         || opts.policy.is_some();
@@ -243,26 +240,17 @@ pub async fn build_policy_context_from_opts(
         && view_set.restrictions.is_empty()
         && modify_set.restrictions.is_empty();
 
-    // When an identity was asserted but the subject is not in this ledger, force
-    // default_allow to false regardless of what the caller requested. An unrecognized
-    // identity cannot be vouched for by any policy, so exposing data via a permissive
-    // default would silently bypass the intent of identity-scoped access control.
-    //
-    // This does NOT affect identities that ARE in the ledger but simply have no
-    // f:policyClass — those are known subjects with no restrictions, and default_allow
-    // governs them as expected by the policy combining algorithm.
-    let effective_default_allow = if opts.identity.is_some() && !identity_found {
-        false
-    } else {
-        opts.default_allow
-    };
-
-    // Create wrapper
+    // `default_allow` is honored as the caller set it, including for unknown identities.
+    // An identity IRI that has no subject node in the ledger yields empty restrictions,
+    // and a permissive `default_allow: true` is an explicit admin opt-in — typically
+    // when an application layer in front of the DB handles authorization and Fluree
+    // just records the signed transaction for provenance. Callers who want fail-closed
+    // behavior set `default_allow: false`.
     let wrapper = PolicyWrapper::new(
         view_set,
         modify_set,
         is_root,
-        effective_default_allow,
+        opts.default_allow,
         policy_values,
     );
 
@@ -313,14 +301,17 @@ pub async fn identity_has_no_policies(
 
 /// Outcome of looking up an identity's policies in the ledger.
 ///
-/// The three-way split is intentional: callers need to distinguish "subject not in
-/// ledger" from "subject exists but has no f:policyClass", because `default_allow`
-/// should only apply to the latter.  Collapsing both into an empty Vec would allow
-/// an unrecognized identity to gain access when `default_allow: true` is set,
-/// which violates the intent of identity-scoped access control.
+/// The three-way split lets callers distinguish whether a concrete identity SID is
+/// available for binding `?$identity` in `policy_values`, and whether the identity
+/// carries restrictions. `default_allow` governs access in all three cases — the
+/// "not found" / "found-no-policies" distinction is about SID availability, not gating.
+///
+/// A separate predicate, [`identity_has_no_policies`], uses this enum to gate
+/// impersonation (only `FoundNoPolicies` qualifies); that gate is orthogonal to
+/// `default_allow`.
 enum IdentityLookupResult {
     /// The identity IRI cannot be resolved (unregistered namespace) or has no subject
-    /// node in this ledger. Access must be denied regardless of `default_allow`.
+    /// node in this ledger. No identity SID is available to bind `?$identity`.
     NotFound,
     /// The identity IRI exists as a subject in the ledger but has no `f:policyClass`
     /// property. No restrictions apply; `default_allow` governs access.
@@ -335,8 +326,7 @@ enum IdentityLookupResult {
 /// Look up the policies for `identity_iri` via its `f:policyClass` property.
 ///
 /// Returns an [`IdentityLookupResult`] that distinguishes whether the identity
-/// subject exists in the ledger, which determines how `default_allow` is applied
-/// by the caller.
+/// subject exists in the ledger and whether it carries any restrictions.
 ///
 /// Legacy equivalent: `wrap-identity-policy`
 ///
