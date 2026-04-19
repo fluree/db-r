@@ -19,9 +19,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::ContentStore;
-use fluree_db_indexer::{
-    ConfiguredFulltextProperty, FulltextConfigProvider,
-};
+use fluree_db_indexer::{ConfiguredFulltextProperty, FulltextConfigProvider};
 use fluree_db_ledger::LedgerState;
 use fluree_db_nameservice::NameService;
 
@@ -46,10 +44,9 @@ impl std::fmt::Debug for ApiFulltextConfigProvider {
 impl ApiFulltextConfigProvider {
     async fn resolve(&self, ledger_id: &str) -> Result<Vec<ConfiguredFulltextProperty>, String> {
         // 1. Load ledger state (snapshot + novelty).
-        let mut state =
-            LedgerState::load(self.nameservice.as_ref(), ledger_id, &self.backend)
-                .await
-                .map_err(|e| format!("LedgerState::load: {e}"))?;
+        let mut state = LedgerState::load(self.nameservice.as_ref(), ledger_id, &self.backend)
+            .await
+            .map_err(|e| format!("LedgerState::load: {e}"))?;
 
         // 2. If an index exists, load the binary store so the config graph
         //    can be read via the indexed side too. Without this, only

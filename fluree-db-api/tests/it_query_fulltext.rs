@@ -654,7 +654,10 @@ async fn fulltext_configured_property_indexed_after_reindex() {
             { "@id": "ex:doc3", "ex:title": "Advanced Rust macros and traits" },
         ]
     });
-    let mut ledger = fluree.ledger(ledger_id).await.expect("reload after reindex");
+    let mut ledger = fluree
+        .ledger(ledger_id)
+        .await
+        .expect("reload after reindex");
     ledger = fluree
         .insert_with_opts(
             ledger,
@@ -681,8 +684,7 @@ async fn fulltext_configured_property_indexed_after_reindex() {
 
     // 4) Query — plain strings on ex:title should now be scored via BM25.
     let results = query_fulltext_plain(&fluree, &loaded, "Rust").await;
-    let hits: std::collections::HashSet<&str> =
-        results.iter().map(|(id, _)| id.as_str()).collect();
+    let hits: std::collections::HashSet<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
     assert!(
         hits.contains("ex:doc1"),
         "doc1 (mentions 'Rust') should be returned: {results:?}"
@@ -846,10 +848,12 @@ async fn fulltext_configured_property_picked_up_by_build_index_for_ledger() {
 
     // 4) Query — the new docs on `ex:title` should be scored even though
     //    the run that indexed them was NOT `reindex()`.
-    let loaded = fluree.ledger(ledger_id).await.expect("load after incremental");
+    let loaded = fluree
+        .ledger(ledger_id)
+        .await
+        .expect("load after incremental");
     let results = query_fulltext_plain(&fluree, &loaded, "Rust").await;
-    let hits: std::collections::HashSet<&str> =
-        results.iter().map(|(id, _)| id.as_str()).collect();
+    let hits: std::collections::HashSet<&str> = results.iter().map(|(id, _)| id.as_str()).collect();
     assert!(
         hits.contains("ex:new1"),
         "steady-state build_index_for_ledger must pick up configured properties: {results:?}"

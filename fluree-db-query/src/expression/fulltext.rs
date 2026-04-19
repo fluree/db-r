@@ -607,8 +607,7 @@ pub fn eval_fulltext<R: RowAccess>(
                             if let Ok(FlakeValue::String(text)) =
                                 gv.decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                             {
-                                let doc_term_freqs =
-                                    bucket_analyzer.analyze_to_term_freqs(&text);
+                                let doc_term_freqs = bucket_analyzer.analyze_to_term_freqs(&text);
                                 let doc_len = doc_term_freqs.values().sum::<u32>();
                                 let score = score_bm25_novelty(
                                     &doc_term_freqs,
