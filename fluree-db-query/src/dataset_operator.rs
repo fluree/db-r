@@ -182,10 +182,11 @@ fn stamp_provenance(
     ledger_id: &Arc<str>,
     ctx: &ExecutionContext<'_>,
 ) -> Result<Batch> {
-    let (schema, columns) = batch.into_parts();
-
-    if columns.is_empty() {
-        return Batch::empty(schema).map_err(|e| QueryError::Internal(e.to_string()));
+    // Empty-schema batches (e.g. existence checks from count-only scans)
+    // carry only a row count with no bindings to stamp. Return unchanged
+    // so the row count is preserved.
+    if batch.schema().is_empty() {
+        return Ok(batch);
     }
 
     let stamped_columns: Vec<Vec<Binding>> = columns
