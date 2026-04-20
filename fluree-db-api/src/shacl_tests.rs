@@ -792,6 +792,456 @@ async fn shacl_equals_constraint() {
 }
 
 // =============================================================================
+// sh:disjoint constraint tests
+// =============================================================================
+
+#[tokio::test]
+async fn shacl_disjoint_constraint() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    // primaryEmail values must not overlap with secondaryEmail values.
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:UserEmailShape",
+        "@type": "sh:NodeShape",
+        "sh:targetClass": {"@id": "ex:User"},
+        "sh:property": [{
+            "@id": "ex:pshape_disjoint",
+            "sh:path": {"@id": "ex:primaryEmail"},
+            "sh:disjoint": {"@id": "ex:secondaryEmail"}
+        }]
+    });
+
+    // Valid: primary and secondary emails are different.
+    let ledger_ok = fluree
+        .create_ledger("shacl/disjoint-ok:main")
+        .await
+        .unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    fluree
+        .upsert(
+            ledger_ok,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:alice",
+                "@type": "ex:User",
+                "ex:primaryEmail": "alice@example.org",
+                "ex:secondaryEmail": "alice-alt@example.org"
+            }),
+        )
+        .await
+        .expect("disjoint email sets should pass");
+
+    // Invalid: overlapping emails.
+    let ledger_bad = fluree
+        .create_ledger("shacl/disjoint-bad:main")
+        .await
+        .unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:bob",
+                "@type": "ex:User",
+                "ex:primaryEmail": "bob@example.org",
+                "ex:secondaryEmail": "bob@example.org"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "disjoint");
+}
+
+// =============================================================================
+// sh:lessThan constraint tests
+// =============================================================================
+
+#[tokio::test]
+async fn shacl_less_than_constraint() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    // startYear must be strictly less than endYear.
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:EventRangeShape",
+        "@type": "sh:NodeShape",
+        "sh:targetClass": {"@id": "ex:Event"},
+        "sh:property": [{
+            "@id": "ex:pshape_lt",
+            "sh:path": {"@id": "ex:startYear"},
+            "sh:lessThan": {"@id": "ex:endYear"}
+        }]
+    });
+
+    // Valid: 2020 < 2024.
+    let ledger_ok = fluree.create_ledger("shacl/lt-ok:main").await.unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    fluree
+        .upsert(
+            ledger_ok,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:conf1",
+                "@type": "ex:Event",
+                "ex:startYear": 2020,
+                "ex:endYear": 2024
+            }),
+        )
+        .await
+        .expect("startYear strictly less than endYear should pass");
+
+    // Invalid: 2025 >= 2024.
+    let ledger_bad = fluree.create_ledger("shacl/lt-bad:main").await.unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:conf2",
+                "@type": "ex:Event",
+                "ex:startYear": 2025,
+                "ex:endYear": 2024
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "not less than");
+
+    // Invalid: equal is also a violation of strict sh:lessThan.
+    let ledger_eq = fluree.create_ledger("shacl/lt-eq:main").await.unwrap();
+    let ledger_eq = fluree.upsert(ledger_eq, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_eq,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:conf3",
+                "@type": "ex:Event",
+                "ex:startYear": 2024,
+                "ex:endYear": 2024
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "not less than");
+}
+
+// =============================================================================
+// sh:lessThanOrEquals constraint tests
+// =============================================================================
+
+#[tokio::test]
+async fn shacl_less_than_or_equals_constraint() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:BudgetShape",
+        "@type": "sh:NodeShape",
+        "sh:targetClass": {"@id": "ex:Budget"},
+        "sh:property": [{
+            "@id": "ex:pshape_lte",
+            "sh:path": {"@id": "ex:spent"},
+            "sh:lessThanOrEquals": {"@id": "ex:cap"}
+        }]
+    });
+
+    // Valid: spent <= cap (including equal).
+    let ledger_ok = fluree.create_ledger("shacl/lte-ok:main").await.unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    fluree
+        .upsert(
+            ledger_ok,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:b1",
+                "@type": "ex:Budget",
+                "ex:spent": 100,
+                "ex:cap": 100
+            }),
+        )
+        .await
+        .expect("spent == cap should pass under sh:lessThanOrEquals");
+
+    // Invalid: spent > cap.
+    let ledger_bad = fluree.create_ledger("shacl/lte-bad:main").await.unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:b2",
+                "@type": "ex:Budget",
+                "ex:spent": 150,
+                "ex:cap": 100
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "not less than or equal");
+}
+
+// =============================================================================
+// sh:class constraint tests
+// =============================================================================
+
+#[tokio::test]
+async fn shacl_class_constraint_direct_type() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    // Each ex:author value must be an instance of ex:Person.
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:BookShape",
+        "@type": "sh:NodeShape",
+        "sh:targetClass": {"@id": "ex:Book"},
+        "sh:property": [{
+            "@id": "ex:pshape_class",
+            "sh:path": {"@id": "ex:author"},
+            "sh:class": {"@id": "ex:Person"}
+        }]
+    });
+
+    // Valid: author is declared as ex:Person.
+    let ledger_ok = fluree.create_ledger("shacl/class-ok:main").await.unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    fluree
+        .upsert(
+            ledger_ok,
+            &json!([
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:alice",
+                    "@type": "ex:Person"
+                },
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:book1",
+                    "@type": "ex:Book",
+                    "ex:author": {"@id": "ex:alice"}
+                }
+            ]),
+        )
+        .await
+        .expect("author of type ex:Person should pass");
+
+    // Invalid: author has no rdf:type at all.
+    let ledger_untyped = fluree
+        .create_ledger("shacl/class-untyped:main")
+        .await
+        .unwrap();
+    let ledger_untyped = fluree
+        .upsert(ledger_untyped, &shape_txn)
+        .await
+        .unwrap()
+        .ledger;
+    let err = fluree
+        .upsert(
+            ledger_untyped,
+            &json!([
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:ghost"
+                },
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:book2",
+                    "@type": "ex:Book",
+                    "ex:author": {"@id": "ex:ghost"}
+                }
+            ]),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "not an instance of class");
+
+    // Invalid: author is typed, but as the wrong class.
+    let ledger_wrong = fluree
+        .create_ledger("shacl/class-wrong:main")
+        .await
+        .unwrap();
+    let ledger_wrong = fluree
+        .upsert(ledger_wrong, &shape_txn)
+        .await
+        .unwrap()
+        .ledger;
+    let err = fluree
+        .upsert(
+            ledger_wrong,
+            &json!([
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:acme",
+                    "@type": "ex:Organization"
+                },
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:book3",
+                    "@type": "ex:Book",
+                    "ex:author": {"@id": "ex:acme"}
+                }
+            ]),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "not an instance of class");
+
+    // Invalid: literal value cannot be an instance of any class.
+    let ledger_literal = fluree
+        .create_ledger("shacl/class-literal:main")
+        .await
+        .unwrap();
+    let ledger_literal = fluree
+        .upsert(ledger_literal, &shape_txn)
+        .await
+        .unwrap()
+        .ledger;
+    let err = fluree
+        .upsert(
+            ledger_literal,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:book4",
+                "@type": "ex:Book",
+                "ex:author": "just a string"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "literal");
+}
+
+#[tokio::test]
+async fn shacl_class_constraint_subclass_reasoning() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    // Seed: Novelist rdfs:subClassOf Person, and ex:pratchett is a Novelist.
+    // Shape requires ex:author to be ex:Person. Instance of subclass should pass.
+    let seed = json!([
+        {
+            "@context": context.clone(),
+            "@id": "ex:Novelist",
+            "@type": "rdfs:Class",
+            "rdfs:subClassOf": {"@id": "ex:Person"}
+        },
+        {
+            "@context": context.clone(),
+            "@id": "ex:pratchett",
+            "@type": "ex:Novelist"
+        },
+        {
+            "@context": context.clone(),
+            "@id": "ex:BookShape",
+            "@type": "sh:NodeShape",
+            "sh:targetClass": {"@id": "ex:Book"},
+            "sh:property": [{
+                "@id": "ex:pshape_class_sub",
+                "sh:path": {"@id": "ex:author"},
+                "sh:class": {"@id": "ex:Person"}
+            }]
+        }
+    ]);
+
+    let ledger = fluree
+        .create_ledger("shacl/class-subclass:main")
+        .await
+        .unwrap();
+    let ledger = fluree.upsert(ledger, &seed).await.unwrap().ledger;
+
+    // Valid: Novelist is a subclass of Person, so the constraint is satisfied
+    // via RDFS subclass reasoning (cached on the snapshot's SchemaHierarchy).
+    fluree
+        .upsert(
+            ledger,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:disc_world",
+                "@type": "ex:Book",
+                "ex:author": {"@id": "ex:pratchett"}
+            }),
+        )
+        .await
+        .expect("author of subclass (Novelist ⊑ Person) should pass sh:class ex:Person");
+}
+
+/// Regression: `sh:class` subclass reasoning must work when the subject under
+/// validation lives in a named graph but the `rdfs:subClassOf` edge lives in
+/// the schema (default) graph.
+///
+/// `validate_staged_nodes` partitions subjects by graph and builds a
+/// `GraphDbRef` scoped to each subject's graph. Before this fix, the subclass
+/// BFS walked via that same graph-scoped ref, so a schema-graph subClassOf
+/// edge was invisible when validating a subject in a named graph —
+/// silently producing a violation. The walk now always queries the default
+/// graph for `rdfs:subClassOf`, which matches how `SchemaHierarchy` is built.
+#[tokio::test]
+async fn shacl_class_constraint_subclass_reasoning_cross_graph() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    // Schema + shape in the default graph. Data (including the value's
+    // rdf:type) will go in a named graph below.
+    let seed = json!([
+        {
+            "@context": context.clone(),
+            "@id": "ex:Novelist",
+            "@type": "rdfs:Class",
+            "rdfs:subClassOf": {"@id": "ex:Person"}
+        },
+        {
+            "@context": context.clone(),
+            "@id": "ex:BookShape",
+            "@type": "sh:NodeShape",
+            "sh:targetClass": {"@id": "ex:Book"},
+            "sh:property": [{
+                "@id": "ex:pshape_class_xgraph",
+                "sh:path": {"@id": "ex:author"},
+                "sh:class": {"@id": "ex:Person"}
+            }]
+        }
+    ]);
+    let ledger = fluree
+        .create_ledger("shacl/class-subclass-xgraph:main")
+        .await
+        .unwrap();
+    let ledger = fluree.upsert(ledger, &seed).await.unwrap().ledger;
+
+    // Data in a named graph. `ex:pratchett` is typed `ex:Novelist` here;
+    // the `Novelist ⊑ Person` edge remains in the default graph.
+    let trig = r#"
+        @prefix ex: <http://example.org/ns/> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <http://example.org/ns/data> {
+            ex:pratchett rdf:type ex:Novelist .
+            ex:disc_world rdf:type ex:Book ;
+                          ex:author ex:pratchett .
+        }
+    "#;
+
+    // Route via the builder so TriG `GRAPH` blocks are parsed (the top-level
+    // `upsert_turtle` uses the plain-Turtle parser which rejects `GRAPH`).
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(trig)
+        .execute()
+        .await
+        .expect(
+            "sh:class subclass reasoning must cross graph boundaries: \
+             subject in named graph, subClassOf edge in schema graph",
+        );
+}
+
+// =============================================================================
 // Logical constraint tests (sh:not, sh:and, sh:or, sh:xone)
 // =============================================================================
 

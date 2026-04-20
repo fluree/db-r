@@ -820,10 +820,13 @@ async fn validate_property_shape<'a>(
 
     // Validate each constraint
     for constraint in &prop_shape.constraints {
-        // Handle pair constraints separately since they need snapshot access
+        // Constraints that need DB access (pair constraints, sh:class) are
+        // handled here; the rest delegate to the pure-values helper below.
         match constraint {
-            Constraint::Equals(target_prop) => {
-                // Get values for the target property
+            Constraint::Equals(target_prop)
+            | Constraint::Disjoint(target_prop)
+            | Constraint::LessThan(target_prop)
+            | Constraint::LessThanOrEquals(target_prop) => {
                 let target_flakes = db
                     .range(
                         IndexType::Spot,
@@ -831,23 +834,39 @@ async fn validate_property_shape<'a>(
                         RangeMatch::subject_predicate(focus_node.clone(), target_prop.clone()),
                     )
                     .await?;
-                let target_values: std::collections::HashSet<_> =
-                    target_flakes.iter().map(|f| &f.o).collect();
-                let source_values: std::collections::HashSet<_> = values.iter().collect();
+                let target_values: Vec<FlakeValue> =
+                    target_flakes.iter().map(|f| f.o.clone()).collect();
 
-                // sh:equals requires the value sets to be identical
-                if source_values != target_values {
+                let violations = validate_pair_constraint(
+                    constraint,
+                    &values,
+                    &target_values,
+                    &target_prop.name,
+                );
+                for violation in violations {
                     results.push(ValidationResult {
                         focus_node: focus_node.clone(),
                         result_path: Some(prop_shape.path.clone()),
                         source_shape: parent_shape.id.clone(),
                         source_constraint: Some(prop_shape.id.clone()),
                         severity: prop_shape.severity,
-                        message: format!(
-                            "Value set for {} does not equal value set for {}",
-                            prop_shape.path.name, target_prop.name
-                        ),
-                        value: None,
+                        message: violation.message,
+                        value: violation.value,
+                    });
+                }
+            }
+            Constraint::Class(expected_class) => {
+                let class_violations =
+                    validate_class_constraint(db, &values, expected_class).await?;
+                for violation in class_violations {
+                    results.push(ValidationResult {
+                        focus_node: focus_node.clone(),
+                        result_path: Some(prop_shape.path.clone()),
+                        source_shape: parent_shape.id.clone(),
+                        source_constraint: Some(prop_shape.id.clone()),
+                        severity: prop_shape.severity,
+                        message: violation.message,
+                        value: violation.value,
                     });
                 }
             }
@@ -1182,8 +1201,9 @@ fn validate_constraint(
             }
         }
         Constraint::Class(_class) => {
-            // TODO: Check rdf:type for each value
-            // This requires querying the database for each value's types
+            // `sh:class` requires DB access to check `rdf:type` of each value.
+            // Handled in `validate_property_shape` (this function is the
+            // pure-values path without a snapshot).
         }
         Constraint::MinInclusive(min) => {
             for value in values {
@@ -1242,14 +1262,13 @@ fn validate_constraint(
             }
         }
 
-        // Pair constraints - these require access to another property's values
-        // They are validated separately in validate_property_shape_with_context
+        // Pair constraints need access to another property's values, so they
+        // can't be evaluated from a plain `(values, datatypes)` pair.
+        // Handled in `validate_property_shape` via `validate_pair_constraint`.
         Constraint::Equals(_)
         | Constraint::Disjoint(_)
         | Constraint::LessThan(_)
-        | Constraint::LessThanOrEquals(_) => {
-            // Handled in validate_property_shape where we have access to the snapshot
-        }
+        | Constraint::LessThanOrEquals(_) => {}
 
         // Language constraints
         // Note: Language tags are stored in the flake's datatype field (rdf:langString)
@@ -1272,6 +1291,222 @@ fn validate_constraint(
     }
 
     Ok(violations)
+}
+
+/// Validate a pair constraint (`sh:disjoint`, `sh:lessThan`, `sh:lessThanOrEquals`,
+/// or `sh:equals`) given already-loaded values from both properties.
+///
+/// Returns every violation produced by the underlying per-value helpers so the
+/// caller can decorate each with focus-node / source-shape metadata. For the
+/// set-level constraints (`equals`, `disjoint`) at most one violation is ever
+/// produced; for the pairwise constraints (`lessThan*`) up to one violation
+/// per source value is produced.
+fn validate_pair_constraint(
+    constraint: &Constraint,
+    values: &[FlakeValue],
+    other_values: &[FlakeValue],
+    other_path: &str,
+) -> Vec<ConstraintViolation> {
+    use crate::constraints::pair::{
+        validate_disjoint, validate_equals, validate_less_than, validate_less_than_or_equals,
+    };
+
+    let mut out = Vec::new();
+    match constraint {
+        Constraint::Equals(_) => {
+            if let Some(v) = validate_equals(values, other_values, other_path) {
+                out.push(v);
+            }
+        }
+        Constraint::Disjoint(_) => {
+            if let Some(v) = validate_disjoint(values, other_values, other_path) {
+                out.push(v);
+            }
+        }
+        Constraint::LessThan(_) => {
+            for value in values {
+                if let Some(v) = validate_less_than(value, other_values, other_path) {
+                    out.push(v);
+                }
+            }
+        }
+        Constraint::LessThanOrEquals(_) => {
+            for value in values {
+                if let Some(v) = validate_less_than_or_equals(value, other_values, other_path) {
+                    out.push(v);
+                }
+            }
+        }
+        // Caller is responsible for only passing pair-constraint variants.
+        _ => {}
+    }
+    out
+}
+
+/// Validate `sh:class` for a set of property values.
+///
+/// For each value (which must be a `Ref` — a literal can never be an instance
+/// of a class), look up `rdf:type` flakes and check conformance via:
+/// 1. Direct match: value's type == `expected_class`
+/// 2. Indexed-schema hierarchy: type is a descendant of `expected_class` per
+///    the `SchemaHierarchy` cached on the snapshot (fast, but only reflects
+///    already-indexed subclass relations)
+/// 3. Live subclass walk: BFS upward over `rdfs:subClassOf` via `db.range()`,
+///    which sees novelty-added relations that aren't yet in the hierarchy
+///
+/// A value with no conforming `rdf:type` is a violation.
+async fn validate_class_constraint(
+    db: GraphDbRef<'_>,
+    values: &[FlakeValue],
+    expected_class: &Sid,
+) -> Result<Vec<ConstraintViolation>> {
+    let mut out = Vec::new();
+    if values.is_empty() {
+        return Ok(out);
+    }
+
+    // Fast-path acceptable set: expected_class + its descendants per the
+    // indexed-schema hierarchy. Misses novelty-added subclass relations;
+    // we fall through to `is_subclass_of` (a db walk) for those.
+    let hierarchy = db.snapshot.schema_hierarchy();
+    let mut hierarchy_accepted: HashSet<Sid> = HashSet::new();
+    hierarchy_accepted.insert(expected_class.clone());
+    if let Some(h) = &hierarchy {
+        for sub in h.subclasses_of(expected_class) {
+            hierarchy_accepted.insert(sub.clone());
+        }
+    }
+
+    let rdf_type = Sid::new(RDF, rdf_names::TYPE);
+    for value in values {
+        let value_ref = match value {
+            FlakeValue::Ref(r) => r,
+            other => {
+                out.push(ConstraintViolation {
+                    constraint: Constraint::Class(expected_class.clone()),
+                    value: Some(other.clone()),
+                    message: format!(
+                        "Value {:?} is a literal and cannot be an instance of class {}",
+                        other, expected_class.name
+                    ),
+                });
+                continue;
+            }
+        };
+
+        let type_flakes = db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch::subject_predicate(value_ref.clone(), rdf_type.clone()),
+            )
+            .await?;
+
+        let value_types: Vec<Sid> = type_flakes
+            .iter()
+            .filter_map(|f| match &f.o {
+                FlakeValue::Ref(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // Fast path: any indexed-hierarchy match.
+        let mut conforms = value_types.iter().any(|t| hierarchy_accepted.contains(t));
+
+        // Slow path: walk the live `rdfs:subClassOf` graph (covers novelty-added
+        // subclass relations that haven't made it into the hierarchy yet).
+        if !conforms {
+            for t in &value_types {
+                if is_subclass_of(db, t, expected_class).await? {
+                    conforms = true;
+                    break;
+                }
+            }
+        }
+
+        if !conforms {
+            out.push(ConstraintViolation {
+                constraint: Constraint::Class(expected_class.clone()),
+                value: Some(value.clone()),
+                message: format!(
+                    "Value {} is not an instance of class {}",
+                    value_ref.name, expected_class.name
+                ),
+            });
+        }
+    }
+
+    Ok(out)
+}
+
+/// Rescope a `GraphDbRef` to the default (schema) graph while preserving
+/// every other field — tracker, runtime_small_dicts, eager, overlay,
+/// snapshot, and t.
+///
+/// **Do not replace this with `GraphDbRef::new(db.snapshot, 0, db.overlay, db.t)`.**
+/// That constructor resets `tracker` (and `runtime_small_dicts`, `eager`) to
+/// their defaults, which silently disables fuel accounting on any schema
+/// walks a tracked validation is running. The copy-and-mutate-`g_id` pattern
+/// below leans on `GraphDbRef: Copy` to carry every field through unchanged.
+fn rescope_to_schema_graph(db: GraphDbRef<'_>) -> GraphDbRef<'_> {
+    let mut schema_db = db;
+    schema_db.g_id = 0;
+    schema_db
+}
+
+/// BFS upward from `start` over `rdfs:subClassOf`, returning true if `target`
+/// is reachable.
+///
+/// The walk is scoped to the **default graph** (`g_id = 0`), not the caller's
+/// graph. Rationale: `rdfs:subClassOf` is schema-level data — the indexed
+/// `SchemaHierarchy` is built exclusively from the default graph, and this
+/// fallback walk must match that semantic. Otherwise a subject being validated
+/// in graph `G` would not see a subclass edge asserted in the schema graph.
+///
+/// Uses `db.range()` via a rebuilt `GraphDbRef` so novelty-added subclass
+/// relations are visible — the indexed `SchemaHierarchy` can lag behind.
+///
+/// Returns `Ok(true)` immediately when `start == target` (every class is a
+/// subclass of itself for the purposes of `sh:class`). Cycle-guarded via a
+/// `visited` set, since `rdfs:subClassOf` graphs in user data can be malformed.
+async fn is_subclass_of(db: GraphDbRef<'_>, start: &Sid, target: &Sid) -> Result<bool> {
+    use std::collections::VecDeque;
+
+    if start == target {
+        return Ok(true);
+    }
+
+    // Schema relations live in g_id=0. Use `rescope_to_schema_graph` so the
+    // caller's tracker and other per-validation context survive — see the
+    // function's docstring for why `GraphDbRef::new(..)` must NOT be used.
+    let schema_db = rescope_to_schema_graph(db);
+
+    let sub_class_of = Sid::new(fluree_vocab::namespaces::RDFS, "subClassOf");
+    let mut visited: HashSet<Sid> = HashSet::new();
+    visited.insert(start.clone());
+    let mut queue: VecDeque<Sid> = VecDeque::new();
+    queue.push_back(start.clone());
+
+    while let Some(current) = queue.pop_front() {
+        let flakes = schema_db
+            .range(
+                IndexType::Spot,
+                RangeTest::Eq,
+                RangeMatch::subject_predicate(current, sub_class_of.clone()),
+            )
+            .await?;
+        for f in flakes {
+            if let FlakeValue::Ref(parent) = &f.o {
+                if parent == target {
+                    return Ok(true);
+                }
+                if visited.insert(parent.clone()) {
+                    queue.push_back(parent.clone());
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// SHACL validation report
@@ -1333,6 +1568,51 @@ mod tests {
     use super::*;
     use crate::cache::ShaclCacheKey;
     use fluree_db_core::GraphDbRef;
+
+    /// Regression: `rescope_to_schema_graph` — used by the `sh:class` fallback
+    /// subclass walk — must preserve the caller's tracker (and other
+    /// per-validation context). A naive rebuild via `GraphDbRef::new(..)`
+    /// would silently drop `tracker`, disabling fuel accounting on tracked
+    /// validations. This pins the invariant.
+    #[test]
+    fn rescope_to_schema_graph_preserves_tracker_and_other_fields() {
+        use fluree_db_core::tracking::TrackingOptions;
+        use fluree_db_core::{LedgerSnapshot, NoOverlay, Tracker};
+
+        let snapshot = LedgerSnapshot::genesis("test:schema-rescope");
+        let tracker = Tracker::new(TrackingOptions {
+            track_time: false,
+            track_fuel: true,
+            track_policy: false,
+            max_fuel: Some(1000),
+        });
+        assert!(tracker.is_enabled(), "tracker must be enabled for the test");
+
+        let db = GraphDbRef::new(&snapshot, 7, &NoOverlay, snapshot.t)
+            .with_tracker(&tracker)
+            .eager();
+        assert_eq!(db.g_id, 7, "precondition: caller is in a non-default graph");
+        assert!(
+            db.tracker.is_some(),
+            "precondition: caller's db has tracker attached"
+        );
+        assert!(db.eager, "precondition: caller's db is eager");
+
+        let schema_db = super::rescope_to_schema_graph(db);
+
+        assert_eq!(schema_db.g_id, 0, "schema walk must run in default graph");
+        assert!(
+            schema_db.tracker.is_some(),
+            "tracker must survive rescope — otherwise fuel accounting is lost on \
+             the fallback subClassOf walk"
+        );
+        assert!(schema_db.eager, "eager flag must survive rescope");
+        assert_eq!(schema_db.t, db.t, "as-of time must be preserved");
+        assert!(
+            std::ptr::eq(schema_db.overlay, db.overlay),
+            "overlay reference must be preserved"
+        );
+    }
 
     #[test]
     fn test_engine_no_shapes_optimization() {

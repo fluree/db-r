@@ -14,7 +14,7 @@ use crate::restrictions::{
     ClassRef, ParsedRestriction, RestrictionIndex, RestrictionType, RestrictionValue,
 };
 use crate::same_as::SameAsTracker;
-use crate::types::PropertyExpression;
+use crate::types::{ChainElement, PropertyExpression};
 use fluree_vocab::namespaces::{OWL, RDF};
 use fluree_vocab::predicates::RDF_TYPE;
 
@@ -287,6 +287,127 @@ fn test_all_values_from_rule() {
     }
 
     assert_eq!(diagnostics.rules_fired.get("cls-avf"), Some(&1));
+}
+
+#[test]
+fn test_all_values_from_rule_with_chain_property() {
+    // Create an allValuesFrom restriction over a property chain: P10 o P20
+    let mut index = RestrictionIndex::new();
+    index.add_restriction_for_test(ParsedRestriction {
+        restriction_id: sid(100),
+        restriction_type: RestrictionType::AllValuesFrom {
+            property: PropertyExpression::Chain(vec![
+                ChainElement::direct(sid(10)),
+                ChainElement::direct(sid(20)),
+            ]),
+            target_class: ClassRef::Named(sid(200)),
+        },
+    });
+
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
+
+    // Delta has type(1, C), P10(1, 2), P20(2, 3)
+    let mut delta = DeltaSet::new();
+    delta.push(Flake::new(
+        sid(1),
+        rdf_type_sid.clone(),
+        FlakeValue::Ref(sid(100)),
+        sid(0),
+        1,
+        true,
+        None,
+    ));
+    delta.push(make_ref_flake(1, 10, 2, 1));
+    delta.push(make_ref_flake(2, 20, 3, 1));
+
+    let derived = DerivedSet::new();
+    let mut new_delta = DeltaSet::new();
+    let same_as = SameAsTracker::new();
+    let mut diagnostics = ReasoningDiagnostics::default();
+
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_all_values_from_rule(&index, &mut ctx);
+
+    // Should derive type(3, D) by following the chain from 1 -> 2 -> 3
+    assert_eq!(new_delta.len(), 1);
+    let derived_flake = new_delta.iter().next().unwrap();
+    assert_eq!(derived_flake.s, sid(3));
+    if let FlakeValue::Ref(c) = &derived_flake.o {
+        assert_eq!(*c, sid(200));
+    } else {
+        panic!("Expected Ref object");
+    }
+
+    assert_eq!(diagnostics.rules_fired.get("cls-avf"), Some(&1));
+}
+
+#[test]
+fn test_all_values_from_rule_with_chain_across_delta_and_derived() {
+    // Create an allValuesFrom restriction over a property chain: P10 o P20
+    let mut index = RestrictionIndex::new();
+    index.add_restriction_for_test(ParsedRestriction {
+        restriction_id: sid(100),
+        restriction_type: RestrictionType::AllValuesFrom {
+            property: PropertyExpression::Chain(vec![
+                ChainElement::direct(sid(10)),
+                ChainElement::direct(sid(20)),
+            ]),
+            target_class: ClassRef::Named(sid(200)),
+        },
+    });
+
+    let rdf_type_sid = Sid::new(RDF, RDF_TYPE);
+
+    // The new type and first hop are in delta, while the second hop already exists in derived.
+    // Chain-aware restriction evaluation must traverse the union of both sets.
+    let mut delta = DeltaSet::new();
+    delta.push(Flake::new(
+        sid(1),
+        rdf_type_sid.clone(),
+        FlakeValue::Ref(sid(100)),
+        sid(0),
+        1,
+        true,
+        None,
+    ));
+    delta.push(make_ref_flake(1, 10, 2, 1));
+
+    let mut derived = DerivedSet::new();
+    derived.try_add(make_ref_flake(2, 20, 3, 0));
+
+    let mut new_delta = DeltaSet::new();
+    let same_as = SameAsTracker::new();
+    let mut diagnostics = ReasoningDiagnostics::default();
+
+    let mut ctx = RuleContext {
+        delta: &delta,
+        derived: &derived,
+        new_delta: &mut new_delta,
+        same_as: &same_as,
+        rdf_type_sid: &rdf_type_sid,
+        t: 1,
+        diagnostics: &mut diagnostics,
+    };
+
+    apply_all_values_from_rule(&index, &mut ctx);
+
+    assert_eq!(new_delta.len(), 1);
+    let derived_flake = new_delta.iter().next().unwrap();
+    assert_eq!(derived_flake.s, sid(3));
+    if let FlakeValue::Ref(c) = &derived_flake.o {
+        assert_eq!(*c, sid(200));
+    } else {
+        panic!("Expected Ref object");
+    }
 }
 
 // ============================================================================

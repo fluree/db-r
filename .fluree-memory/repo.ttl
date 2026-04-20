@@ -1352,6 +1352,22 @@ mem:decision-01kp938r33m9e5fzksf47hcfgc a mem:Decision ;
     mem:createdAt "2026-04-15T17:33:19.331308+00:00"^^xsd:dateTime ;
     mem:rationale "Captures the preferred semantics for batch query design so future API work does not overfit SQL-style transactions or overpromise cross-ledger consistency." .
 
+mem:decision-01kpkj2j3jyq7742agn0yfhpsy a mem:Decision ;
+    mem:content "For planned fulltext config support, unrelated traffic should stay cheap: precompute `FulltextHookConfig` once per indexing run, keep `FulltextHook::on_op` scalar-only for reject paths, and only build/attach fulltext provider/config maps for queries whose compiled IR actually contains `fulltext(...)`." ;
+    mem:tag "config" ;
+    mem:tag "fulltext" ;
+    mem:tag "indexer" ;
+    mem:tag "performance" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "FULLTEXT_CONFIG.md" ;
+    mem:artifactRef "fluree-db-api/src/view/dataset_query.rs" ;
+    mem:artifactRef "fluree-db-api/src/view/query.rs" ;
+    mem:artifactRef "fluree-db-indexer/src/fulltext_hook.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-19T19:04:29.554332+00:00"^^xsd:dateTime ;
+    mem:rationale "This isolates the feature's cost to fulltext-relevant writes and queries, avoiding accidental overhead on unrelated transactions and query setup." .
+
 mem:fact-01kp4rwg9hcyj1ypqmfmygdxym a mem:Fact ;
     mem:content "Strict compact-IRI policy: as of commit 170bccc9, JSON-LD transactions default `strict_compact_iri=true`. Any compact IRI (e.g. `rdf:JSON`, `xsd:string`, `ex:name`) used in data/query/update must have its prefix declared in `@context`, otherwise parsing returns `UnresolvedCompactIri`. The former PR #148 \"Layer 2 fallback\" for well-known prefixes (rdf:, xsd:) is gone. When tests fail with `UnresolvedCompactIri`, fix is to add the prefix to the test's explicit `@context` (per user preference: never rely on default/implicit context in tests). Override via `opts.strict_compact_iri = false` or JSON `opts: {strictCompactIri: false}` if legacy behavior required." ;
     mem:tag "json-ld" ;
@@ -1473,3 +1489,163 @@ mem:fact-01kpepmqtapmksm216fde5jv75 a mem:Fact ;
     mem:branch "misc/fixes" ;
     mem:createdAt "2026-04-17T21:48:07.370571+00:00"^^xsd:dateTime ;
     mem:rationale "This planner gotcha is subtle and directly affects Lambda perf investigations for same-subject COUNT(DISTINCT) queries." .
+
+mem:fact-01kpery4cg5x0sz1w9b3dzbdnp a mem:Fact ;
+    mem:content "`NestedLoopJoinOperator` can batch subject-bound fixed-object existence probes like `(?s, fixed_p, fixed_o)` by reusing `batched_subject_probe_binary` with `bound_object` and `emit_object=false`; the prior slowdown came from this shape missing `batched_eligible`, not from `active_graph_mode=many`." ;
+    mem:tag "batched-probe" ;
+    mem:tag "existence" ;
+    mem:tag "join" ;
+    mem:tag "performance" ;
+    mem:tag "query" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-17T22:28:12.304782+00:00"^^xsd:dateTime ;
+    mem:rationale "This is a non-obvious planner/operator capability gap that explains repeated NLJ opens on warm runs and is worth recalling before future query-perf debugging." .
+
+mem:fact-01kpf4qqbhbwvve54zr565y379 a mem:Fact ;
+    mem:content "`fluree-db-query/src/join.rs` now keeps per-join path-selection logs (`opened nested loop join`, `nested loop join runtime path`) at `trace`, while `join batched existence flush complete` only stays at `debug` for slow flushes (>=10ms) or non-trivial batches (accum_len >= 8). This avoids CloudWatch floods during Lambda perf captures." ;
+    mem:tag "join" ;
+    mem:tag "lambda" ;
+    mem:tag "logging" ;
+    mem:tag "query-perf" ;
+    mem:tag "tracing" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-18T01:54:25.265596+00:00"^^xsd:dateTime ;
+    mem:rationale "The previous debug-level join diagnostics produced hundreds of MB of logs and obscured the useful bottleneck signals." .
+
+mem:fact-01kpg3c19kb0nmez28863spr69 a mem:Fact ;
+    mem:content "Low-noise Q2 perf diagnostics now live in `fluree-db-query/src/optional.rs` and `fluree-db-query/src/sort.rs`: `optional batch summary` logs at debug only for expensive batches (>=25ms or >=8 builds/cache hits/result batches), and `sort blocking summary` logs at debug only for non-trivial blocking sorts (>=25ms or >=1000 input rows). The old per-row correlated-OPTIONAL planning log is now trace-level." ;
+    mem:tag "logging" ;
+    mem:tag "optional" ;
+    mem:tag "query-perf" ;
+    mem:tag "sort" ;
+    mem:tag "tracing" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/optional.rs" ;
+    mem:artifactRef "fluree-db-query/src/sort.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-18T10:49:48.083428+00:00"^^xsd:dateTime ;
+    mem:rationale "This keeps CloudWatch captures small while still surfacing the likely remaining Q2 hotspots." .
+
+mem:fact-01kpg6gdmx8k7zcqyh5byw88dn a mem:Fact ;
+    mem:content "`PatternOptionalBuilder` now has a batched execution path for single-triple correlated OPTIONALs with a subject bound from the left, a fixed predicate, no datatype constraint, and single-ledger binary execution. `OptionalOperator` asks builders for a batch result first, so queries with repeated `OPTIONAL { ?s <p> ?o }` clauses can probe many left-side subjects at once instead of opening one scan per row." ;
+    mem:tag "batched-probe" ;
+    mem:tag "optional" ;
+    mem:tag "planner" ;
+    mem:tag "query-perf" ;
+    mem:tag "tracing" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/join.rs" ;
+    mem:artifactRef "fluree-db-query/src/optional.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-18T11:44:37.533439+00:00"^^xsd:dateTime ;
+    mem:rationale "This is a generic executor optimization for a common OPTIONAL shape, not a dataset-specific fast path." .
+
+mem:fact-01kpg89x3hs343017xzq1cgbj0 a mem:Fact ;
+    mem:content "`build_where_operators_seeded_with_needed` can now coalesce consecutive single-triple OPTIONALs into one `GroupedPatternOptionalBuilder` when they share the same already-bound subject var, use bound predicates, have no datatype constraint, and introduce distinct optional-only object vars. The grouped builder batches all predicates for the current required batch via `batched_subject_probe_binary`, removing left-deep OPTIONAL drain without tying the optimization to any specific query or dataset." ;
+    mem:tag "batched-probe" ;
+    mem:tag "optional" ;
+    mem:tag "planner" ;
+    mem:tag "property-join" ;
+    mem:tag "query-perf" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/execute/where_plan.rs" ;
+    mem:artifactRef "fluree-db-query/src/optional.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-18T12:16:01.137157+00:00"^^xsd:dateTime ;
+    mem:rationale "This is the generic follow-on to the batched single-triple OPTIONAL work and explains why consecutive OPTIONAL chains can speed up substantially." .
+
+mem:fact-01kpga78m373fmr7hmsy4a7a0t a mem:Fact ;
+    mem:content "`UnionOperator` preserves correlated UNION semantics by executing each branch per input row and buffering branch output batches row-by-row, so downstream operators can see severe batch fragmentation even when the union's child produced large batches. For Q2-style reasoning-expanded unions, this can starve `GroupedPatternOptionalBuilder` and make its batched path observe `rows_considered = 1` repeatedly." ;
+    mem:tag "batching" ;
+    mem:tag "optional" ;
+    mem:tag "query-perf" ;
+    mem:tag "reasoning" ;
+    mem:tag "union" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/optional.rs" ;
+    mem:artifactRef "fluree-db-query/src/union.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-18T12:49:31.779188+00:00"^^xsd:dateTime ;
+    mem:rationale "This is a non-obvious executor interaction that matters for future batching fixes upstream of grouped OPTIONALs." .
+
+mem:fact-01kpgbv82fg78tjqhhptx05tvz a mem:Fact ;
+    mem:content "`UnionOperator` now buffers correlated branch results until it can emit a full downstream batch (or true exhaustion), rather than returning after the first per-row fragment. That preserves UNION semantics but prevents reasoning-expanded unions from starving downstream operators like grouped OPTIONAL and sort with one-row batches." ;
+    mem:tag "batching" ;
+    mem:tag "optional" ;
+    mem:tag "query-perf" ;
+    mem:tag "sort" ;
+    mem:tag "union" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-query/src/union.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-18T13:17:55.151538+00:00"^^xsd:dateTime ;
+    mem:rationale "This batching invariant is non-obvious and directly explains why the generic fix speeds up UNION-heavy queries without being dataset-specific." .
+
+mem:fact-01kpkzmffzgmf6h67prn8j3hd3 a mem:Fact ;
+    mem:content "SHACL config currently parses `f:shapesSource` into `ShaclDefaults`, but transaction-time engine construction ignores it and always compiles shapes from `ledger.as_graph_db_ref(0)` / `g_id=0`. Docs that describe named-graph shapes sources are ahead of the implementation today." ;
+    mem:tag "config-graph" ;
+    mem:tag "docs-gap" ;
+    mem:tag "shacl" ;
+    mem:tag "shapessource" ;
+    mem:tag "validation" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "docs/guides/cookbook-shacl.md" ;
+    mem:artifactRef "docs/ledger-config/setting-groups.md" ;
+    mem:artifactRef "fluree-db-api/src/config_resolver.rs" ;
+    mem:artifactRef "fluree-db-api/src/tx.rs" ;
+    mem:artifactRef "fluree-db-shacl/src/compile.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-19T23:01:28.191644+00:00"^^xsd:dateTime ;
+    mem:rationale "Future SHACL or config work needs this recalled up front because it creates a silent mismatch between documented configuration and actual validation behavior." .
+
+mem:fact-01kpkzmkq2abxas9h48h6k21p6 a mem:Fact ;
+    mem:content "Transaction-time SHACL validation only discovers applicable shapes through the cache indexes for `sh:targetNode` and `sh:targetClass`; `sh:targetSubjectsOf` and `sh:targetObjectsOf` are compiled but not indexed, so staged-subject validation can silently skip those shapes even though full `validate_all()` handles them." ;
+    mem:tag "cache" ;
+    mem:tag "correctness" ;
+    mem:tag "shacl" ;
+    mem:tag "targets" ;
+    mem:tag "transaction-validation" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-shacl/src/cache.rs" ;
+    mem:artifactRef "fluree-db-shacl/src/compile.rs" ;
+    mem:artifactRef "fluree-db-shacl/src/validate.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-19T23:01:32.514812+00:00"^^xsd:dateTime ;
+    mem:rationale "This is an easy-to-miss correctness bug because the target predicates look implemented in the compiler but do not actually fire in the main transact path." .
+
+mem:fact-01kpm204vw7pj6e9hbag009d2d a mem:Fact ;
+    mem:content "Ledger config parses `f:schemaSource` and `f:rulesSource`, but query-time reasoning currently ignores them: OWL2 RL ontology scans and `f:rule` extraction run against the queried `GraphDbRef`'s `g_id`. In `compute_derived_facts`, OWL-derived overlay flakes are also emitted only under graph id 0." ;
+    mem:tag "config-graph" ;
+    mem:tag "datalog" ;
+    mem:tag "named-graph" ;
+    mem:tag "owl2rl" ;
+    mem:tag "reasoning" ;
+    mem:tag "rulessource" ;
+    mem:tag "schemasource" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-api/src/config_resolver.rs" ;
+    mem:artifactRef "fluree-db-core/src/graph_db_ref.rs" ;
+    mem:artifactRef "fluree-db-core/src/ledger_config.rs" ;
+    mem:artifactRef "fluree-db-query/src/datalog_rules.rs" ;
+    mem:artifactRef "fluree-db-query/src/execute/reasoning_prep.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-19T23:42:47.676059+00:00"^^xsd:dateTime ;
+    mem:rationale "Future reasoning/config work could otherwise assume named-graph schema/rule sources are already honored, because docs and config structs expose those fields even though runtime still scopes to the query graph/default derived overlay." .
+
+mem:fact-01kpm3sz8pxzakzcj4r8xx687v a mem:Fact ;
+    mem:content "OWL restriction evaluation for chain-valued `owl:onProperty` must traverse the union of the current delta and accumulated derived facts. Evaluating chain hops against delta and derived separately misses mixed paths like `delta(P1)` followed by `derived(P2)` in the same fixpoint iteration." ;
+    mem:tag "fixpoint" ;
+    mem:tag "owl2rl" ;
+    mem:tag "property-chain" ;
+    mem:tag "reasoner" ;
+    mem:tag "restrictions" ;
+    mem:scope mem:repo ;
+    mem:artifactRef "fluree-db-reasoner/src/execute/restriction_rules.rs" ;
+    mem:artifactRef "fluree-db-reasoner/src/execute/tests/restriction_rule_tests.rs" ;
+    mem:branch "misc/fixes" ;
+    mem:createdAt "2026-04-20T00:14:22.486023+00:00"^^xsd:dateTime ;
+    mem:rationale "This is a subtle semi-naive reasoning invariant; future restriction or chain work could easily reintroduce the bug by splitting lookups across delta and derived." .

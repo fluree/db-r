@@ -43,7 +43,7 @@ pub fn validate_equals(
             }),
             value: None,
             message: format!(
-                "Values do not equal {}: {}",
+                "Value set does not equal value set for {}: {}",
                 other_path,
                 msg_parts.join("; ")
             ),

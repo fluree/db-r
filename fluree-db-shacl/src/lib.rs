@@ -16,13 +16,29 @@
 //!
 //! Currently supported constraint types:
 //! - Cardinality: `sh:minCount`, `sh:maxCount`
-//! - Value type: `sh:datatype`, `sh:nodeKind`, `sh:class`
+//! - Value type: `sh:datatype`, `sh:nodeKind`, `sh:class` (with RDFS subclass reasoning)
 //! - Value range: `sh:minInclusive`, `sh:maxInclusive`, `sh:minExclusive`, `sh:maxExclusive`
 //! - String: `sh:pattern`, `sh:minLength`, `sh:maxLength`
 //! - Value: `sh:hasValue`, `sh:in`
 //! - Closed: `sh:closed`, `sh:ignoredProperties`
 //! - Pair: `sh:equals`, `sh:disjoint`, `sh:lessThan`, `sh:lessThanOrEquals`
 //! - Logical: `sh:not`, `sh:and`, `sh:or`, `sh:xone`
+//!
+//! # Not Yet Supported
+//!
+//! The following constraints are parsed/compiled but are **not enforced** at
+//! validation time. Shapes using these will load without error but their
+//! constraints will silently pass. Plan to fix under the SHACL compliance
+//! effort tracked in the repo.
+//!
+//! - `sh:uniqueLang`, `sh:languageIn` — require access to language-tag metadata
+//!   on flakes, which is not yet threaded through the validation path.
+//! - `sh:qualifiedValueShape` (+ `sh:qualifiedMinCount` / `sh:qualifiedMaxCount`)
+//!   — requires recursive nested-shape validation counting.
+//! - `sh:targetSubjectsOf`, `sh:targetObjectsOf` — compiled but not indexed in
+//!   the cache, so staged-path transaction validation may miss shapes using
+//!   only these target types. Full-graph validation (`validate_all`) handles
+//!   them correctly.
 //!
 //! # Example
 //!

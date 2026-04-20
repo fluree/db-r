@@ -17,7 +17,7 @@ use hashbrown::HashSet;
 
 use crate::restrictions::{ClassRef, RestrictionIndex, RestrictionType, RestrictionValue};
 use crate::same_as::SameAsTracker;
-use crate::types::PropertyExpression;
+use crate::types::{ChainElement, PropertyExpression};
 
 use super::delta::DeltaSet;
 use super::derived::DerivedSet;
@@ -27,81 +27,136 @@ use super::util::{ref_dt, IdentityRuleContext, RuleContext};
 // Property value collection helpers
 // ============================================================================
 
-/// Collect all property values for a subject given a PropertyExpression from delta.
+/// Convert a property expression into a traversal path.
 ///
-/// For Named(P): returns all y where P(subject, y) exists
-/// For Inverse(Named(P)): returns all y where P(y, subject) exists (y is in subject position)
-/// For Chain: not yet supported (returns empty)
-fn collect_property_values_delta(
+/// This normalizes:
+/// - `Named(P)` -> `[P]`
+/// - `Inverse(P)` -> `[P^-1]`
+/// - `Chain([P1, P2])` -> `[P1, P2]`
+/// - `Inverse(Chain([P1, P2]))` -> `[P2^-1, P1^-1]`
+fn property_expression_path(
+    property: &PropertyExpression,
+    invert: bool,
+) -> Option<Vec<ChainElement>> {
+    match property {
+        PropertyExpression::Named(prop_sid) => Some(vec![if invert {
+            ChainElement::inverse(prop_sid.clone())
+        } else {
+            ChainElement::direct(prop_sid.clone())
+        }]),
+        PropertyExpression::Inverse(inner) => property_expression_path(inner, !invert),
+        PropertyExpression::Chain(elements) => {
+            let path: Vec<ChainElement> = if invert {
+                elements
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .map(ChainElement::with_inverse_toggle)
+                    .collect()
+            } else {
+                elements.clone()
+            };
+            Some(path)
+        }
+    }
+}
+
+/// Get all objects for facts with (predicate, subject) in delta ∪ derived.
+fn get_all_objects_for_subject(
+    predicate: &Sid,
+    subject: &Sid,
+    delta: &DeltaSet,
+    derived: &DerivedSet,
+    same_as: &SameAsTracker,
+) -> HashSet<Sid> {
+    let mut objects = HashSet::new();
+
+    for flake in delta.get_by_ps(predicate, subject) {
+        if let FlakeValue::Ref(obj) = &flake.o {
+            objects.insert(same_as.canonical(obj));
+        }
+    }
+
+    for flake in derived.get_by_ps(predicate, subject) {
+        if let FlakeValue::Ref(obj) = &flake.o {
+            objects.insert(same_as.canonical(obj));
+        }
+    }
+
+    objects
+}
+
+/// Get all subjects for facts with (predicate, object) in delta ∪ derived.
+fn get_all_subjects_for_object(
+    predicate: &Sid,
+    object: &Sid,
+    delta: &DeltaSet,
+    derived: &DerivedSet,
+    same_as: &SameAsTracker,
+) -> HashSet<Sid> {
+    let mut subjects = HashSet::new();
+
+    for flake in delta.get_by_po(predicate, object) {
+        subjects.insert(same_as.canonical(&flake.s));
+    }
+
+    for flake in derived.get_by_po(predicate, object) {
+        subjects.insert(same_as.canonical(&flake.s));
+    }
+
+    subjects
+}
+
+/// Collect all property values for a subject given a PropertyExpression from delta ∪ derived.
+///
+/// Chain expressions must traverse the union of delta and derived facts; otherwise
+/// mixed paths such as `delta(P1) + derived(P2)` would be missed.
+fn collect_property_values(
     property: &PropertyExpression,
     subject: &Sid,
     delta: &DeltaSet,
-    same_as: &SameAsTracker,
-) -> Vec<Sid> {
-    let mut values = Vec::new();
-
-    match property {
-        PropertyExpression::Named(prop_sid) => {
-            // Direct property: P(subject, y)
-            for flake in delta.get_by_ps(prop_sid, subject) {
-                if let FlakeValue::Ref(y) = &flake.o {
-                    values.push(same_as.canonical(y));
-                }
-            }
-        }
-        PropertyExpression::Inverse(inner) => {
-            // Inverse property: looking for P(y, subject) means y is the "value"
-            // We need to find facts where subject is the object
-            if let PropertyExpression::Named(prop_sid) = inner.as_ref() {
-                for flake in delta.get_by_po(prop_sid, subject) {
-                    // subject is in object position, so flake.s is our "value"
-                    values.push(same_as.canonical(&flake.s));
-                }
-            }
-            // Complex inverse (chain inside inverse) not yet supported
-        }
-        PropertyExpression::Chain(_elements) => {
-            // Chain property expressions require following the full chain
-            // This is complex and not yet implemented for restriction rules
-            // TODO: implement chain property evaluation
-        }
-    }
-
-    values
-}
-
-/// Collect all property values for a subject from the derived set.
-fn collect_property_values_derived(
-    property: &PropertyExpression,
-    subject: &Sid,
     derived: &DerivedSet,
     same_as: &SameAsTracker,
 ) -> Vec<Sid> {
-    let mut values = Vec::new();
+    let Some(path) = property_expression_path(property, false) else {
+        return Vec::new();
+    };
 
-    match property {
-        PropertyExpression::Named(prop_sid) => {
-            // Direct property: P(subject, y)
-            for flake in derived.get_by_ps(prop_sid, subject) {
-                if let FlakeValue::Ref(y) = &flake.o {
-                    values.push(same_as.canonical(y));
-                }
+    let mut current_nodes = HashSet::new();
+    current_nodes.insert(subject.clone());
+    current_nodes.insert(same_as.canonical(subject));
+
+    for element in path {
+        let mut next_nodes = HashSet::new();
+
+        for node in &current_nodes {
+            if element.is_inverse {
+                next_nodes.extend(get_all_subjects_for_object(
+                    &element.property,
+                    node,
+                    delta,
+                    derived,
+                    same_as,
+                ));
+            } else {
+                next_nodes.extend(get_all_objects_for_subject(
+                    &element.property,
+                    node,
+                    delta,
+                    derived,
+                    same_as,
+                ));
             }
         }
-        PropertyExpression::Inverse(inner) => {
-            // Inverse property: looking for P(y, subject)
-            if let PropertyExpression::Named(prop_sid) = inner.as_ref() {
-                for flake in derived.get_by_po(prop_sid, subject) {
-                    values.push(same_as.canonical(&flake.s));
-                }
-            }
+
+        if next_nodes.is_empty() {
+            return Vec::new();
         }
-        PropertyExpression::Chain(_) => {
-            // Not yet implemented
-        }
+
+        current_nodes = next_nodes;
     }
 
-    values
+    current_nodes.into_iter().collect()
 }
 
 // ============================================================================
@@ -590,35 +645,20 @@ pub fn apply_all_values_from_rule(restrictions: &RestrictionIndex, ctx: &mut Rul
                     target_class,
                 } = &restriction.restriction_type
                 {
-                    let x_canonical = ctx.same_as.canonical(&flake.s);
                     let target_sid = target_class.sid();
 
                     // Track what we've derived to avoid duplicates
                     let mut seen: HashSet<(Sid, Sid)> = HashSet::new();
 
-                    // Collect property values using the helper function
-                    // Check both canonical and original subject for delta
-                    let mut all_values = collect_property_values_delta(
+                    // Collect values over the union of delta and derived so chain
+                    // expressions can span both sets within the current iteration.
+                    let all_values = collect_property_values(
                         property,
-                        &x_canonical,
+                        &flake.s,
                         ctx.delta,
-                        ctx.same_as,
-                    );
-                    if x_canonical != flake.s {
-                        all_values.extend(collect_property_values_delta(
-                            property,
-                            &flake.s,
-                            ctx.delta,
-                            ctx.same_as,
-                        ));
-                    }
-                    // Also check derived
-                    all_values.extend(collect_property_values_derived(
-                        property,
-                        &x_canonical,
                         ctx.derived,
                         ctx.same_as,
-                    ));
+                    );
 
                     for y_canonical in all_values {
                         // Skip if we've already derived this
