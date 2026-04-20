@@ -598,7 +598,7 @@ async fn fulltext_configured_property_indexed_after_reindex() {
 
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger_id = "it/fulltext-config-reindex:main";
-    let mut ledger = support::genesis_ledger_for_fluree(&fluree, ledger_id);
+    let ledger = support::genesis_ledger_for_fluree(&fluree, ledger_id);
 
     // Suppress auto-reindex so we can control when indexing happens.
     let no_auto = fluree_db_api::IndexConfig {
@@ -627,13 +627,12 @@ async fn fulltext_configured_property_indexed_after_reindex() {
         }}
     "#
     );
-    ledger = fluree
+    fluree
         .stage_owned(ledger)
         .upsert_turtle(&config_trig)
         .execute()
         .await
-        .expect("write fulltext config")
-        .ledger;
+        .expect("write fulltext config");
 
     // 2) Initial reindex so the config graph itself is indexed + queryable.
     //    At this point the reindex also pre-registers `ex:title` via the

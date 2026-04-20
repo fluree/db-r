@@ -1039,6 +1039,369 @@ async fn shacl_config_warn_mode() {
 }
 
 // =============================================================================
+// Test 15b: f:shapesSource points shape compilation at a named graph
+// =============================================================================
+
+/// Shapes stored in a named graph (referenced by `f:shapesSource`) are
+/// enforced. Shapes in the default graph are NOT — the source config
+/// scopes which graph(s) shapes are compiled from.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_shapes_source_points_to_named_graph() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-shapes-source:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Write the shape into a named graph (ex:shapes), NOT the default graph.
+    // Same transaction also writes config pointing `f:shapesSource` at that
+    // named graph and enabling SHACL.
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix sh: <http://www.w3.org/ns/shacl#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <http://example.org/shapes> {{
+            ex:PersonShape rdf:type sh:NodeShape ;
+                           sh:targetClass ex:Person ;
+                           sh:property ex:pshape_name .
+            ex:pshape_name sh:path ex:name ;
+                           sh:minCount 1 ;
+                           sh:datatype xsd:string .
+        }}
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled true .
+            <urn:config:shacl> f:shapesSource <urn:config:shapes-ref> .
+            <urn:config:shapes-ref> rdf:type f:GraphRef ;
+                                    f:graphSource <urn:config:shapes-source> .
+            <urn:config:shapes-source> f:graphSelector <http://example.org/shapes> .
+        }}
+    "#
+    );
+
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config + shape write should succeed");
+    let ledger = result.ledger;
+
+    // Inserting a violating ex:Person (no ex:name) must be rejected — the
+    // named-graph shape is discovered via f:shapesSource. Pre-fix, the
+    // engine only compiled from the default graph, so the shape was
+    // invisible and this txn would have passed.
+    let err = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:charlie",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(fluree_db_transact::TransactError::ShaclViolation(_))
+        ),
+        "shape in named graph referenced by f:shapesSource must be enforced: {err:?}"
+    );
+}
+
+/// When `f:shapesSource` points at a named graph, shapes in the **default
+/// graph** are NOT compiled — only the configured source graph contributes.
+/// This is the other half of the `f:shapesSource` contract: the source is
+/// authoritative, not additive.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_shapes_source_excludes_default_graph() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-shapes-source-exclusive:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Stash a shape in the DEFAULT graph that would fail the violating data.
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "sh": "http://www.w3.org/ns/shacl#",
+                    "ex": "http://example.org/",
+                    "xsd": "http://www.w3.org/2001/XMLSchema#"
+                },
+                "@id": "ex:PersonShape",
+                "@type": "sh:NodeShape",
+                "sh:targetClass": {"@id": "ex:Person"},
+                "sh:property": [{
+                    "sh:path": {"@id": "ex:name"},
+                    "sh:minCount": 1
+                }]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Write config pointing `f:shapesSource` at a DIFFERENT named graph
+    // (which has no SHACL shapes). SHACL is enabled.
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix ex: <http://example.org/> .
+
+        GRAPH <http://example.org/shapes> {{
+            ex:someMarker ex:unrelated "value" .
+        }}
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled true .
+            <urn:config:shacl> f:shapesSource <urn:config:shapes-ref> .
+            <urn:config:shapes-ref> rdf:type f:GraphRef ;
+                                    f:graphSource <urn:config:shapes-source> .
+            <urn:config:shapes-source> f:graphSelector <http://example.org/shapes> .
+        }}
+    "#
+    );
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+    let ledger = result.ledger;
+
+    // Violating ex:Person must PASS — the default-graph shape is no longer
+    // the source of truth. f:shapesSource explicitly directed compilation to
+    // a graph that has no shapes.
+    fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:dan",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .expect(
+            "f:shapesSource is authoritative — default-graph shapes must NOT \
+             leak in when the source is an unrelated named graph",
+        );
+}
+
+// =============================================================================
+// Test 15d: Per-graph SHACL enable/disable
+// =============================================================================
+
+/// A per-graph `f:shaclEnabled false` override must disable SHACL for that
+/// graph only — while ledger-wide SHACL remains enabled for every other
+/// graph. Pre-fix, `resolve_txn_shacl_config` ORed enablement across all
+/// graphs, so any graph's `enabled: true` (including the ledger-wide
+/// baseline) forced SHACL on for every participating graph. That broke the
+/// documented semantic in `docs/ledger-config/override-control.md`.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_per_graph_disable_honored() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-pergraph-disable:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Seed a shape + enable SHACL ledger-wide, AND disable SHACL for a
+    // specific named graph (ex:scratch). Writes that land in ex:scratch
+    // must pass even if they would violate the shape; writes in the
+    // default graph must still fail.
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix sh: <http://www.w3.org/ns/shacl#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/> .
+
+        ex:PersonShape rdf:type sh:NodeShape ;
+                       sh:targetClass ex:Person ;
+                       sh:property ex:pshape_name .
+        ex:pshape_name sh:path ex:name ;
+                       sh:minCount 1 ;
+                       sh:datatype xsd:string .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled true .
+
+            <urn:config:main> f:graphOverrides <urn:config:scratch-override> .
+            <urn:config:scratch-override> rdf:type f:GraphConfig ;
+                                          f:targetGraph <http://example.org/scratch> ;
+                                          f:shaclDefaults <urn:config:scratch-shacl> .
+            <urn:config:scratch-shacl> f:shaclEnabled false .
+        }}
+    "#
+    );
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config + shape write should succeed");
+    let ledger = result.ledger;
+
+    // Violating ex:Person written into ex:scratch MUST pass — that graph
+    // has SHACL disabled via per-graph override.
+    let scratch_trig = r#"
+        @prefix ex: <http://example.org/> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <http://example.org/scratch> {
+            ex:temp_person rdf:type ex:Person .
+        }
+    "#;
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(scratch_trig)
+        .execute()
+        .await
+        .expect(
+            "violating ex:Person in ex:scratch must pass — per-graph \
+             shaclEnabled=false disables SHACL for that graph only",
+        );
+    let ledger = result.ledger;
+
+    // Same violating payload written to the DEFAULT graph must fail —
+    // ledger-wide SHACL is still enabled and there's no per-graph override
+    // disabling the default graph.
+    let err = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:other_person",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(fluree_db_transact::TransactError::ShaclViolation(_))
+        ),
+        "default-graph violation must still be rejected: {err:?}"
+    );
+}
+
+/// Per-graph SHACL mode: a `Warn`-mode graph with violations must NOT
+/// reject the transaction even when other graphs are in `Reject` mode.
+/// Conversely, violations in a `Reject` graph still fail the transaction.
+///
+/// Pre-fix, modes were merged "strictest wins" at the txn level, so any
+/// graph in `Reject` forced every graph's violations to fail the txn.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_per_graph_mode_warn_vs_reject() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-pergraph-mode:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Ledger-wide SHACL enabled in Reject mode. Named graph ex:scratch
+    // overridden to Warn mode. Shape applies to both.
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+        @prefix sh: <http://www.w3.org/ns/shacl#> .
+        @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+        @prefix ex: <http://example.org/> .
+
+        ex:PersonShape rdf:type sh:NodeShape ;
+                       sh:targetClass ex:Person ;
+                       sh:property ex:pshape_name .
+        ex:pshape_name sh:path ex:name ;
+                       sh:minCount 1 ;
+                       sh:datatype xsd:string .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled true ;
+                               f:validationMode f:ValidationReject .
+
+            <urn:config:main> f:graphOverrides <urn:config:scratch-override> .
+            <urn:config:scratch-override> rdf:type f:GraphConfig ;
+                                          f:targetGraph <http://example.org/scratch> ;
+                                          f:shaclDefaults <urn:config:scratch-shacl> .
+            <urn:config:scratch-shacl> f:shaclEnabled true ;
+                                       f:validationMode f:ValidationWarn .
+        }}
+    "#
+    );
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config + shape write should succeed");
+    let ledger = result.ledger;
+
+    // Violating ex:Person in ex:scratch (warn mode) must pass — even though
+    // the ledger-wide mode is Reject. Pre-fix, "strictest wins" would have
+    // promoted this to Reject and failed the txn.
+    let scratch_trig = r#"
+        @prefix ex: <http://example.org/> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <http://example.org/scratch> {
+            ex:temp_person rdf:type ex:Person .
+        }
+    "#;
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(scratch_trig)
+        .execute()
+        .await
+        .expect(
+            "violating ex:Person in ex:scratch (warn mode) must pass — \
+             per-graph mode must not be overridden by ledger-wide Reject",
+        );
+    let ledger = result.ledger;
+
+    // Same violating payload in the default graph (reject mode) must fail.
+    let err = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/"},
+                "@id": "ex:default_person",
+                "@type": "ex:Person"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(fluree_db_transact::TransactError::ShaclViolation(_))
+        ),
+        "default-graph violation under Reject mode must fail: {err:?}"
+    );
+}
+
+// =============================================================================
 // Test 16: SHACL shapes-exist heuristic (no config)
 // =============================================================================
 
@@ -2055,7 +2418,7 @@ async fn fulltext_defaults_per_graph_override_additive() {
     assert_eq!(ft.properties[0].target, "http://example.org/title");
 
     // Effective for the catalog graph: additive merge.
-    let effective = config_resolver::resolve_effective_config(&config, Some(target_graph));
+    let effective = config_resolver::resolve_effective_config(config, Some(target_graph));
     let effective_ft = effective
         .full_text
         .as_ref()
@@ -2135,7 +2498,7 @@ async fn fulltext_defaults_override_none_blocks_per_graph() {
     let view = fluree.db(ledger_id).await.unwrap();
     let config = view.ledger_config().expect("config attached");
 
-    let effective = config_resolver::resolve_effective_config(&config, Some(target_graph));
+    let effective = config_resolver::resolve_effective_config(config, Some(target_graph));
     let effective_ft = effective
         .full_text
         .as_ref()
@@ -2228,7 +2591,7 @@ async fn configured_fulltext_properties_for_indexer_shape() {
 
     let view = fluree.db(ledger_id).await.unwrap();
     let config = view.ledger_config().expect("config attached");
-    let props = config_resolver::configured_fulltext_properties_for_indexer(&config);
+    let props = config_resolver::configured_fulltext_properties_for_indexer(config);
 
     // Ledger-wide → AnyGraph.
     let any_graph: Vec<&str> = props

@@ -161,12 +161,28 @@ impl ShapeCompiler {
         }
     }
 
-    /// Compile shapes from a database with optional novelty overlay
+    /// Compile shapes from a single graph (convenience over
+    /// [`Self::compile_from_dbs`]).
     ///
-    /// This function queries both the indexed database and any uncommitted
-    /// novelty flakes to find SHACL shapes. This is important because shapes
-    /// may be defined in the same transaction as the data they validate.
+    /// Queries both the indexed database and any novelty overlay attached to
+    /// `db` — important because shapes may be defined in the same transaction
+    /// as the data they validate.
     pub async fn compile_from_db(db: GraphDbRef<'_>) -> Result<Vec<CompiledShape>> {
+        Self::compile_from_dbs(std::slice::from_ref(&db)).await
+    }
+
+    /// Compile shapes from multiple graphs into a single shape set.
+    ///
+    /// Used when `f:shapesSource` resolves to a non-default graph (or when
+    /// the operator wants to split schema across multiple graphs and merge
+    /// them at validation time). Each `GraphDbRef` is scanned for SHACL
+    /// predicates; results are accumulated into one `ShapeCompiler` so that
+    /// cross-graph shape references (e.g. `sh:and` of a shape defined in
+    /// another graph) and RDF list expansion still resolve correctly.
+    ///
+    /// Each `GraphDbRef` carries its own snapshot + overlay, so novelty
+    /// visibility is preserved per input graph.
+    pub async fn compile_from_dbs(dbs: &[GraphDbRef<'_>]) -> Result<Vec<CompiledShape>> {
         let mut compiler = Self::new();
 
         // Query for all SHACL predicates to find shapes
@@ -222,20 +238,27 @@ impl ShapeCompiler {
             predicates::NAME,
         ];
 
-        // Query for all SHACL predicates through the db ref
-        for pred_name in &shacl_predicates {
-            let pred = Sid::new(SHACL, pred_name);
-            let flakes = db
-                .range(IndexType::Psot, RangeTest::Eq, RangeMatch::predicate(pred))
-                .await?;
+        // Query each input graph for all SHACL predicates, accumulating into
+        // one compiler so cross-graph sh:and/or/xone/sh:in references resolve.
+        for db in dbs {
+            for pred_name in &shacl_predicates {
+                let pred = Sid::new(SHACL, pred_name);
+                let flakes = db
+                    .range(IndexType::Psot, RangeTest::Eq, RangeMatch::predicate(pred))
+                    .await?;
 
-            for flake in flakes {
-                compiler.process_flake(&flake)?;
+                for flake in flakes {
+                    compiler.process_flake(&flake)?;
+                }
             }
-        }
 
-        // Also query for rdf:first/rdf:rest to handle RDF lists (for sh:in, sh:ignoredProperties)
-        compiler.expand_rdf_lists(db).await?;
+            // Expand rdf:first/rdf:rest lists referenced by sh:in / sh:and /
+            // sh:or / sh:xone / sh:ignoredProperties. Run after each graph so
+            // that lists whose head lives in this graph can resolve — a list
+            // spanning multiple graphs will still resolve on a later pass
+            // because `expand_rdf_lists` walks transitively via `db.range`.
+            compiler.expand_rdf_lists(*db).await?;
+        }
 
         compiler.finalize()
     }

@@ -1549,9 +1549,10 @@ pub async fn stage_with_shacl(
     // Create SHACL engine from cache
     let engine = ShaclEngine::new(shacl_cache.clone());
 
-    // Validate staged flakes against shapes (per graph). The tracker (if any)
-    // is attached to GraphDbRef so SHACL's db.range calls charge fuel.
-    let report = validate_staged_nodes(&view, &engine, Some(&graph_sids), tracker).await?;
+    // Validate staged flakes against shapes (per graph). `None` for
+    // `enabled_graphs` means "validate every graph with staged flakes" —
+    // this legacy path doesn't consult per-graph config.
+    let report = validate_staged_nodes(&view, &engine, Some(&graph_sids), tracker, None).await?;
 
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
@@ -1560,35 +1561,97 @@ pub async fn stage_with_shacl(
     Ok((view, ns_registry))
 }
 
+/// Per-graph SHACL policy — how a specific graph's violations should be
+/// treated at transaction time.
+///
+/// Absence from the policy map passed to [`validate_view_with_shacl`] means
+/// the graph is **disabled** (shapes do not fire for subjects in that graph).
+/// Presence with `mode = Reject` means violations cause the transaction to
+/// fail; `mode = Warn` means violations are returned for the caller to log.
+#[cfg(feature = "shacl")]
+#[derive(Debug, Clone, Copy)]
+pub struct ShaclGraphPolicy {
+    pub mode: fluree_db_core::ledger_config::ValidationMode,
+}
+
+/// Outcome of a staged SHACL validation, split by mode so the caller can
+/// apply warn (log-and-continue) vs reject (propagate as error) per graph.
+#[cfg(feature = "shacl")]
+#[derive(Debug, Default)]
+pub struct ShaclValidationOutcome {
+    /// Violations from graphs in `Reject` mode. Non-empty → transaction fails.
+    pub reject_violations: Vec<fluree_db_shacl::ValidationResult>,
+    /// Violations from graphs in `Warn` mode. The caller should log these.
+    pub warn_violations: Vec<fluree_db_shacl::ValidationResult>,
+}
+
+#[cfg(feature = "shacl")]
+impl ShaclValidationOutcome {
+    pub fn conforms(&self) -> bool {
+        self.reject_violations.is_empty() && self.warn_violations.is_empty()
+    }
+}
+
 /// Validate a staged [`LedgerView`] against SHACL shapes.
 ///
-/// This is a helper for callers that already have pre-built flakes and stage them
-/// via [`stage_flakes`], but still want SHACL validation parity with [`stage_with_shacl`].
-///
 /// `graph_sids` provides the `GraphId → Sid` mapping for per-graph validation.
-/// Pass `None` when the mapping is unavailable (e.g., commit-transfer path) —
-/// validation will fall back to the default graph (g_id=0).
+/// Pass `None` when the mapping is unavailable (e.g., commit-transfer path
+/// with no per-graph routing yet) — validation falls back to the default
+/// graph (g_id=0).
 ///
-/// Returns `Ok(())` when conforming, or `TransactError::ShaclViolation` when any
-/// violations are present.
+/// `per_graph_policy`:
+/// - `None` = treat every graph containing staged flakes as `Reject` mode
+///   (legacy / unconditional reject — matches commit-transfer's previous
+///   behavior and shapes-exist heuristic).
+/// - `Some(map)` = only graphs in the map are validated; their mode comes
+///   from the map. Graphs absent from the map are skipped (disabled).
+///
+/// Returns a [`ShaclValidationOutcome`] split into reject / warn buckets.
+/// The caller decides whether to propagate an error, log warnings, or both.
 #[cfg(feature = "shacl")]
 pub async fn validate_view_with_shacl(
     view: &LedgerView,
     shacl_cache: &ShaclCache,
     graph_sids: Option<&HashMap<GraphId, Sid>>,
     tracker: Option<&fluree_db_core::Tracker>,
-) -> Result<()> {
+    per_graph_policy: Option<&HashMap<GraphId, ShaclGraphPolicy>>,
+) -> Result<ShaclValidationOutcome> {
     // Fast path: if there are no SHACL shapes, elide validation entirely.
     if shacl_cache.is_empty() {
-        return Ok(());
+        return Ok(ShaclValidationOutcome::default());
     }
 
     let engine = ShaclEngine::new(shacl_cache.clone());
-    let report = validate_staged_nodes(view, &engine, graph_sids, tracker).await?;
-    if !report.conforms {
-        return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
+    let enabled_graphs: Option<HashSet<GraphId>> =
+        per_graph_policy.map(|m| m.keys().copied().collect());
+    let report =
+        validate_staged_nodes(view, &engine, graph_sids, tracker, enabled_graphs.as_ref()).await?;
+
+    // Split violations by the graph's configured mode. `graph_id` on each
+    // result was tagged during the per-graph loop in validate_staged_nodes.
+    // When per_graph_policy is None, every violation defaults to Reject.
+    let mut outcome = ShaclValidationOutcome::default();
+    for r in report.results {
+        if r.severity != fluree_db_shacl::Severity::Violation {
+            continue;
+        }
+        let mode = match (per_graph_policy, r.graph_id) {
+            (Some(m), Some(g_id)) => m
+                .get(&g_id)
+                .map(|p| p.mode)
+                .unwrap_or(fluree_db_core::ledger_config::ValidationMode::Reject),
+            _ => fluree_db_core::ledger_config::ValidationMode::Reject,
+        };
+        match mode {
+            fluree_db_core::ledger_config::ValidationMode::Reject => {
+                outcome.reject_violations.push(r);
+            }
+            fluree_db_core::ledger_config::ValidationMode::Warn => {
+                outcome.warn_violations.push(r);
+            }
+        }
     }
-    Ok(())
+    Ok(outcome)
 }
 
 /// Validate staged nodes against SHACL shapes, per graph.
@@ -1606,6 +1669,7 @@ async fn validate_staged_nodes(
     engine: &ShaclEngine,
     graph_sids: Option<&HashMap<GraphId, Sid>>,
     tracker: Option<&fluree_db_core::Tracker>,
+    enabled_graphs: Option<&HashSet<GraphId>>,
 ) -> Result<ValidationReport> {
     use fluree_vocab::namespaces::RDF;
     use fluree_vocab::rdf_names;
@@ -1669,6 +1733,17 @@ async fn validate_staged_nodes(
     let mut all_results = Vec::new();
 
     for (g_id, subjects) in &subjects_by_graph {
+        // Per-graph enable/disable: when the caller supplies an explicit
+        // enabled set, graphs not in the set are skipped. Subjects staged in
+        // a disabled graph therefore receive no shape validation from this
+        // transaction, which matches the documented `shacl.enabled: false`
+        // semantics for that graph (`override-control.md`).
+        if let Some(enabled) = enabled_graphs {
+            if !enabled.contains(g_id) {
+                continue;
+            }
+        }
+
         // Build GraphDbRef for this graph.
         // Use staged_t so GraphDbRef sees staged flakes (which have t > snapshot.t).
         let mut db = fluree_db_core::GraphDbRef::new(snapshot, *g_id, view, view.staged_t());
@@ -1703,7 +1778,13 @@ async fn validate_staged_nodes(
             // SubjectsOf/ObjectsOf handling there for why hints can't be
             // reliably built from staged flakes alone.
             let report = engine.validate_node(db, subject, &node_types).await?;
-            all_results.extend(report.results);
+            // Tag each result with the graph it was validated under so the
+            // caller can route warn vs reject per-graph (see
+            // `ShaclValidationOutcome`).
+            all_results.extend(report.results.into_iter().map(|mut r| {
+                r.graph_id = Some(*g_id);
+                r
+            }));
         }
     }
 

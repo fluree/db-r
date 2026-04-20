@@ -57,23 +57,43 @@ impl ShaclEngine {
         }
     }
 
-    /// Build an engine by compiling shapes from a database with optional overlay
+    /// Build an engine by compiling shapes from a single-graph database with
+    /// optional overlay (convenience over [`Self::from_dbs_with_overlay`]).
     ///
     /// The overlay (typically novelty) allows compiling shapes that were
     /// transacted in previous commits but haven't been indexed yet.
-    /// This is important because SHACL shapes need to be available
-    /// immediately after they are committed.
-    ///
     /// Automatically extracts the schema hierarchy for RDFS reasoning.
     pub async fn from_db_with_overlay(
         db: GraphDbRef<'_>,
         ledger_id: impl Into<String>,
     ) -> Result<Self> {
-        let shapes = ShapeCompiler::compile_from_db(db).await?;
-        let key = ShaclCacheKey::new(ledger_id, db.snapshot.t as u64);
+        Self::from_dbs_with_overlay(std::slice::from_ref(&db), ledger_id).await
+    }
 
-        // Get hierarchy for RDFS reasoning (class expansion in cache indexing)
-        let hierarchy = db.snapshot.schema_hierarchy();
+    /// Build an engine by compiling shapes from multiple graphs.
+    ///
+    /// Used when `f:shapesSource` resolves to a non-default graph (or when
+    /// shapes are split across several graphs). The engine will hold the
+    /// union of all shapes found across the input graphs.
+    ///
+    /// The schema hierarchy for RDFS reasoning is taken from the first
+    /// graph's snapshot (hierarchy is a schema-level property and not
+    /// graph-scoped — all `GraphDbRef`s share the same underlying snapshot
+    /// in practice).
+    pub async fn from_dbs_with_overlay(
+        dbs: &[GraphDbRef<'_>],
+        ledger_id: impl Into<String>,
+    ) -> Result<Self> {
+        let shapes = ShapeCompiler::compile_from_dbs(dbs).await?;
+
+        // Cache key pins the latest-seen `t` across all input snapshots.
+        // In practice all dbs share one snapshot, but we take the max to be
+        // conservative if callers ever pass differently-timed refs.
+        let max_t = dbs.iter().map(|d| d.snapshot.t).max().unwrap_or(0);
+        let key = ShaclCacheKey::new(ledger_id, max_t as u64);
+
+        // Hierarchy is schema-level — pick the first db's snapshot.
+        let hierarchy = dbs.first().and_then(|d| d.snapshot.schema_hierarchy());
         let cache = ShaclCache::new(key, shapes, hierarchy.as_ref());
 
         Ok(Self { cache, hierarchy })
@@ -557,6 +577,7 @@ fn validate_structural_constraint<'a>(
                                     prop.name
                                 ),
                                 value: Some(flake.o.clone()),
+                                graph_id: None,
                             });
                         }
                     }
@@ -591,6 +612,7 @@ fn validate_structural_constraint<'a>(
                             nested_shape.id.name
                         ),
                         value: None,
+                        graph_id: None,
                     });
                 }
             }
@@ -617,6 +639,7 @@ fn validate_structural_constraint<'a>(
                                 severity: Severity::Violation,
                                 message: format!("sh:and constraint - {}", r.message),
                                 value: r.value,
+                                graph_id: None,
                             });
                         }
                     }
@@ -665,6 +688,7 @@ fn validate_structural_constraint<'a>(
                             all_messages.join("; ")
                         ),
                         value: None,
+                        graph_id: None,
                     });
                 }
             }
@@ -701,6 +725,7 @@ fn validate_structural_constraint<'a>(
                         severity: Severity::Violation,
                         message: "Node does not conform to any shape in sh:xone".to_string(),
                         value: None,
+                        graph_id: None,
                     });
                 } else if conforming_count > 1 {
                     results.push(ValidationResult {
@@ -715,6 +740,7 @@ fn validate_structural_constraint<'a>(
                             conforming_shapes.join(", ")
                         ),
                         value: None,
+                        graph_id: None,
                     });
                 }
             }
@@ -756,6 +782,7 @@ fn validate_nested_shape<'a>(
                 severity: Severity::Violation,
                 message: format!("Referenced shape {} could not be resolved", nested.id.name),
                 value: None,
+                graph_id: None,
             }]);
         }
 
@@ -807,6 +834,7 @@ fn validate_nested_shape<'a>(
                                     path.name, target_prop.name
                                 ),
                                 value: None,
+                                graph_id: None,
                             });
                         }
                     }
@@ -821,6 +849,7 @@ fn validate_nested_shape<'a>(
                                 severity: Severity::Violation,
                                 message: violation.message,
                                 value: violation.value,
+                                graph_id: None,
                             });
                         }
                     }
@@ -901,6 +930,7 @@ async fn validate_property_shape<'a>(
                         severity: prop_shape.severity,
                         message: violation.message,
                         value: violation.value,
+                        graph_id: None,
                     });
                 }
             }
@@ -916,6 +946,7 @@ async fn validate_property_shape<'a>(
                         severity: prop_shape.severity,
                         message: violation.message,
                         value: violation.value,
+                        graph_id: None,
                     });
                 }
             }
@@ -932,6 +963,7 @@ async fn validate_property_shape<'a>(
                         severity: prop_shape.severity,
                         message: violation.message,
                         value: violation.value,
+                        graph_id: None,
                     });
                 }
             }
@@ -1015,6 +1047,7 @@ async fn validate_property_value_structural_constraint<'a>(
                             all_messages.join(", ")
                         ),
                         value: Some(value.clone()),
+                        graph_id: None,
                     });
                 }
             }
@@ -1046,6 +1079,7 @@ async fn validate_property_value_structural_constraint<'a>(
                                 value, nested.id.name
                             ),
                             value: Some(value.clone()),
+                            graph_id: None,
                         });
                     }
                 }
@@ -1085,6 +1119,7 @@ async fn validate_property_value_structural_constraint<'a>(
                             value
                         ),
                         value: Some(value.clone()),
+                        graph_id: None,
                     });
                 } else if conforming_count > 1 {
                     results.push(ValidationResult {
@@ -1098,6 +1133,7 @@ async fn validate_property_value_structural_constraint<'a>(
                             value, conforming_count
                         ),
                         value: Some(value.clone()),
+                        graph_id: None,
                     });
                 }
             }
@@ -1128,6 +1164,7 @@ async fn validate_property_value_structural_constraint<'a>(
                             value, nested.id.name
                         ),
                         value: Some(value.clone()),
+                        graph_id: None,
                     });
                 }
             }
@@ -1610,6 +1647,11 @@ pub struct ValidationResult {
     pub message: String,
     /// The value that caused the violation (if applicable)
     pub value: Option<FlakeValue>,
+    /// The graph where the focus node was being validated. Populated by the
+    /// staged-validation path (`validate_staged_nodes`) so that callers can
+    /// apply per-graph SHACL policy (e.g. warn vs reject, enable/disable).
+    /// `None` for non-staged paths (e.g. `validate_all`).
+    pub graph_id: Option<GraphId>,
 }
 
 #[cfg(test)]

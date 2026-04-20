@@ -200,5 +200,6 @@
   - [Dev setup](contributing/dev-setup.md)
   - [Tests](contributing/tests.md)
   - [W3C SPARQL compliance suite](contributing/sparql-compliance.md)
+  - [SHACL implementation](contributing/shacl-implementation.md)
   - [Adding tracing spans](contributing/tracing-guide.md)
   - [Graph identities and naming](reference/graph-identities.md)

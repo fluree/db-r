@@ -23,6 +23,7 @@ The `docs/` directory is the canonical source of truth. **Before inventing an ap
 | Index format internals             | `docs/design/index-format.md`               |
 | Nameservice v2 schema              | `docs/design/nameservice-v2.md`             |
 | How to add a query feature         | `docs/contributing/dev-setup.md`            |
+| How SHACL validation works         | `docs/contributing/shacl-implementation.md` |
 | Test organization & patterns       | `docs/contributing/tests.md`                |
 | PR workflow & code style           | `docs/contributing/README.md`               |
 | HTTP API endpoints                 | `docs/api/endpoints.md`                     |

@@ -70,6 +70,8 @@ pub use raw_txn_upload::PendingRawTxnUpload;
 pub use stage::{generate_txn_id, stage, stage_flakes, StageOptions};
 
 #[cfg(feature = "shacl")]
-pub use stage::{stage_with_shacl, validate_view_with_shacl};
+pub use stage::{
+    stage_with_shacl, validate_view_with_shacl, ShaclGraphPolicy, ShaclValidationOutcome,
+};
 
 pub mod commit_v2;
