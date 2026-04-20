@@ -1961,9 +1961,7 @@ async fn build_dictionary_set(
         let cs = Arc::clone(&cs);
         let refs = root.dict_refs.forward_packs.string_fwd_packs.clone();
         let cache_dir = cache_dir.to_path_buf();
-        async move {
-            ForwardPackReader::from_pack_refs(cs, &cache_dir, &refs, KIND_STRING_FWD, 0).await
-        }
+        async move { ForwardPackReader::from_pack_refs(cs, &cache_dir, &refs, KIND_STRING_FWD, 0).await }
     };
 
     let string_reverse_fut = {
@@ -1987,7 +1985,9 @@ async fn build_dictionary_set(
     }
     use futures::future::FutureExt;
     let phase_futs: Vec<futures::future::BoxFuture<'_, io::Result<DictPhase>>> = vec![
-        subject_fwd_fut.map(|r| r.map(DictPhase::SubjectFwd)).boxed(),
+        subject_fwd_fut
+            .map(|r| r.map(DictPhase::SubjectFwd))
+            .boxed(),
         subject_reverse_fut
             .map(|r| r.map(DictPhase::SubjectReverse))
             .boxed(),
@@ -2222,10 +2222,7 @@ async fn load_per_graph_arenas(
                             .await?;
                     let spatial_root: fluree_db_spatial::SpatialIndexRoot =
                         serde_json::from_slice(&root_bytes).map_err(|e| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                format!("spatial root: {e}"),
-                            )
+                            io::Error::new(io::ErrorKind::InvalidData, format!("spatial root: {e}"))
                         })?;
 
                     // Fetch the manifest + arena + all leaflet blobs
