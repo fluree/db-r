@@ -105,8 +105,7 @@ impl PredicateGroupCountFirstsOperator {
 
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         use crate::aggregate::AggregateFn;
-        use crate::binary_scan::EmitMask;
-        use crate::dataset_operator::{DatasetOperator, ScanDatasetBuilder};
+        use crate::dataset_operator::DatasetOperator;
         use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
         use crate::limit::LimitOperator;
         use crate::sort::{SortDirection, SortOperator, SortSpec};
@@ -121,8 +120,13 @@ impl PredicateGroupCountFirstsOperator {
         // Note: EmitMask pruning is only effective on the binary scan path.
         // RangeScanOperator (used in memory / pre-index fallback) ignores EmitMask,
         // so we use the default (ALL) to avoid a schema mismatch.
-        let builder = ScanDatasetBuilder::new(tp, None, Vec::new(), EmitMask::ALL, None);
-        let scan: BoxedOperator = Box::new(DatasetOperator::new(Box::new(builder)));
+        let scan: BoxedOperator = Box::new(DatasetOperator::scan(
+            tp,
+            None,
+            Vec::new(),
+            crate::binary_scan::EmitMask::ALL,
+            None,
+        ));
 
         let agg_specs = vec![StreamingAggSpec {
             function: AggregateFn::CountAll,
@@ -343,8 +347,7 @@ impl PredicateObjectCountFirstsOperator {
 
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         use crate::aggregate::AggregateFn;
-        use crate::binary_scan::EmitMask;
-        use crate::dataset_operator::{DatasetOperator, ScanDatasetBuilder};
+        use crate::dataset_operator::DatasetOperator;
         use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
         use crate::triple::{Ref, TriplePattern};
 
@@ -357,8 +360,13 @@ impl PredicateObjectCountFirstsOperator {
         // Note: EmitMask pruning is only effective on the binary scan path.
         // RangeScanOperator (used in memory / pre-index fallback) ignores EmitMask,
         // so we use the default (ALL) to avoid a schema mismatch.
-        let builder = ScanDatasetBuilder::new(tp, None, Vec::new(), EmitMask::ALL, None);
-        let scan: BoxedOperator = Box::new(DatasetOperator::new(Box::new(builder)));
+        let scan: BoxedOperator = Box::new(DatasetOperator::scan(
+            tp,
+            None,
+            Vec::new(),
+            crate::binary_scan::EmitMask::ALL,
+            None,
+        ));
 
         let agg_specs = vec![StreamingAggSpec {
             function: AggregateFn::CountAll,

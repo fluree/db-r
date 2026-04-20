@@ -1733,16 +1733,13 @@ fn make_first_scan(
 ) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
     let index_hint = scan_index_hint_for_triple(tp, group_by, &inline_ops);
-    let builder = crate::dataset_operator::ScanDatasetBuilder::new(
+    Box::new(crate::dataset_operator::DatasetOperator::scan(
         tp.clone(),
         obj_bounds,
         inline_ops,
         emit,
         index_hint,
-    );
-    Box::new(crate::dataset_operator::DatasetOperator::new(Box::new(
-        builder,
-    )))
+    ))
 }
 
 /// Build a single scan or join operator for a triple pattern

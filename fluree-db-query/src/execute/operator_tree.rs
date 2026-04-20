@@ -2298,10 +2298,8 @@ fn build_operator_tree_inner(
                 p: false,
                 o: false,
             };
-            let builder =
-                crate::dataset_operator::ScanDatasetBuilder::new(tp, None, inline_ops, emit, None);
-            let scan: BoxedOperator = Box::new(crate::dataset_operator::DatasetOperator::new(
-                Box::new(builder),
+            let scan: BoxedOperator = Box::new(crate::dataset_operator::DatasetOperator::scan(
+                tp, None, inline_ops, emit, None,
             ));
             return Ok(Box::new(CountRowsOperator::new(
                 scan,

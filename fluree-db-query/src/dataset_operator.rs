@@ -152,6 +152,19 @@ impl DatasetOperator {
             needs_provenance: false,
         }
     }
+
+    /// Convenience constructor for a triple-pattern scan wrapped in a
+    /// dataset operator.
+    pub fn scan(
+        pattern: TriplePattern,
+        object_bounds: Option<ObjectBounds>,
+        inline_ops: Vec<InlineOperator>,
+        emit: EmitMask,
+        index_hint: Option<IndexType>,
+    ) -> Self {
+        let builder = ScanDatasetBuilder::new(pattern, object_bounds, inline_ops, emit, index_hint);
+        Self::new(Box::new(builder))
+    }
 }
 
 /// Convert `Binding::Sid` values in a batch to `Binding::IriMatch` for

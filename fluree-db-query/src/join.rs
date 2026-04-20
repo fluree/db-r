@@ -113,16 +113,13 @@ fn make_right_scan(
     index_hint: Option<IndexType>,
     _ctx: &ExecutionContext<'_>,
 ) -> Box<dyn Operator> {
-    let builder = crate::dataset_operator::ScanDatasetBuilder::new(
+    Box::new(crate::dataset_operator::DatasetOperator::scan(
         pattern,
         object_bounds,
         inline_ops,
         emit,
         index_hint,
-    );
-    Box::new(crate::dataset_operator::DatasetOperator::new(Box::new(
-        builder,
-    )))
+    ))
 }
 
 /// Position in a triple pattern (subject, predicate, object)

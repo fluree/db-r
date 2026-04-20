@@ -65,11 +65,13 @@ fn make_property_join_scan(
     bounds: Option<ObjectBounds>,
     emit: EmitMask,
 ) -> BoxedOperator {
-    let builder =
-        crate::dataset_operator::ScanDatasetBuilder::new(pattern, bounds, Vec::new(), emit, None);
-    Box::new(crate::dataset_operator::DatasetOperator::new(Box::new(
-        builder,
-    )))
+    Box::new(crate::dataset_operator::DatasetOperator::scan(
+        pattern,
+        bounds,
+        Vec::new(),
+        emit,
+        None,
+    ))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns

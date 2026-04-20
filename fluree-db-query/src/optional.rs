@@ -336,15 +336,14 @@ impl OptionalBuilder for PatternOptionalBuilder {
 
         // Substitute bindings into pattern and create scan operator
         let bound_pattern = self.substitute_pattern(required_batch, row, ctx)?;
-        let builder = crate::dataset_operator::ScanDatasetBuilder::new(
-            bound_pattern,
-            None,
-            Vec::new(),
-            crate::binary_scan::EmitMask::ALL,
-            None,
-        );
         Ok(Some(Box::new(
-            crate::dataset_operator::DatasetOperator::new(Box::new(builder)),
+            crate::dataset_operator::DatasetOperator::scan(
+                bound_pattern,
+                None,
+                Vec::new(),
+                crate::binary_scan::EmitMask::ALL,
+                None,
+            ),
         )))
     }
 
