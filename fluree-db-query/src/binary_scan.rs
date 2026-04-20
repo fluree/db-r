@@ -742,41 +742,33 @@ impl BinaryScanOperator {
         let mut out: Vec<RangeFlake> = Vec::new();
 
         // Single-graph range fallback. Multi-graph fanout is handled by
-        // the DatasetOperator delegate (created in open() above).
-        {
-            let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
-            let match_val = build_match_val_for_snapshot(ctx, ctx.snapshot, &self.pattern)?;
-            let opts = RangeOptions {
-                to_t: Some(ctx.to_t),
-                from_t: ctx.from_t,
-                object_bounds: self.object_bounds.clone(),
-                history_mode: ctx.history_mode,
-                ..Default::default()
-            };
-            let mut flakes = range_with_overlay(
-                ctx.snapshot,
-                self.g_id,
-                overlay,
-                self.index,
-                RangeTest::Eq,
-                match_val,
-                opts,
-            )
-            .await
-            .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
+        // DatasetOperator which wraps this operator at all scan sites.
+        let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
+        let match_val = build_match_val_for_snapshot(ctx, ctx.snapshot, &self.pattern)?;
+        let opts = RangeOptions {
+            to_t: Some(ctx.to_t),
+            from_t: ctx.from_t,
+            object_bounds: self.object_bounds.clone(),
+            history_mode: ctx.history_mode,
+            ..Default::default()
+        };
+        let mut flakes = range_with_overlay(
+            ctx.snapshot,
+            self.g_id,
+            overlay,
+            self.index,
+            RangeTest::Eq,
+            match_val,
+            opts,
+        )
+        .await
+        .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
 
-            // Apply policy filtering (including f:query) when present.
-            flakes = Self::filter_flakes_by_policy(
-                ctx,
-                ctx.snapshot,
-                overlay,
-                ctx.to_t,
-                self.g_id,
-                flakes,
-            )
-            .await?;
-            out.extend(flakes.into_iter().map(|flake| RangeFlake { flake }));
-        }
+        // Apply policy filtering (including f:query) when present.
+        flakes =
+            Self::filter_flakes_by_policy(ctx, ctx.snapshot, overlay, ctx.to_t, self.g_id, flakes)
+                .await?;
+        out.extend(flakes.into_iter().map(|flake| RangeFlake { flake }));
 
         self.range_iter = Some(out.into_iter());
         self.cursor = None;
