@@ -320,7 +320,7 @@ impl ActiveGraph {
 /// Active graphs for scanning - avoids "empty vec means single" footgun
 ///
 /// This enum explicitly distinguishes between:
-/// - Single-db mode (no dataset) where callers should use `ctx.snapshot`
+/// - Single-db mode (no dataset) where callers should use `ctx.active_snapshot`
 /// - Dataset mode where callers should use the provided `GraphRef`s
 ///
 /// NOTE: `Many(Vec<...>)` allocates on each call. Future optimization:
@@ -328,7 +328,7 @@ impl ActiveGraph {
 /// Fine for MVP.
 #[derive(Debug)]
 pub enum ActiveGraphs<'a, 'b> {
-    /// Single-db mode (no dataset) - use `ctx.snapshot`/`ctx.overlay()`/`ctx.to_t`
+    /// Single-db mode (no dataset) - use `ctx.active_snapshot`/`ctx.overlay()`/`ctx.to_t`
     Single,
     /// Multiple graphs from dataset
     Many(Vec<&'b GraphRef<'a>>),

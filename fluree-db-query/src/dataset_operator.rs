@@ -189,6 +189,8 @@ fn stamp_provenance(
         return Ok(batch);
     }
 
+    let (schema, columns) = batch.into_parts();
+
     let stamped_columns: Vec<Vec<Binding>> = columns
         .into_iter()
         .map(|col| {
@@ -328,21 +330,23 @@ impl Operator for DatasetOperator {
         );
 
         while self.current_member < self.members.len() {
-            let member = &mut self.members[self.current_member];
-
-            let batch = match &graphs {
-                ActiveGraphs::Many(g) => {
-                    let graph_ctx = ctx.with_graph_ref(g[self.current_member]);
-                    member.operator.next_batch(&graph_ctx).await?
+            let batch = {
+                let member = &mut self.members[self.current_member];
+                match &graphs {
+                    ActiveGraphs::Many(g) => {
+                        let graph_ctx = ctx.with_graph_ref(g[self.current_member]);
+                        member.operator.next_batch(&graph_ctx).await?
+                    }
+                    ActiveGraphs::Single => member.operator.next_batch(ctx).await?,
                 }
-                ActiveGraphs::Single => member.operator.next_batch(ctx).await?,
             };
 
             match batch {
-                Some(batch) if batch.is_empty() => continue,
+                Some(ref b) if b.is_empty() => continue,
                 Some(batch) => {
                     let result = if self.needs_provenance {
-                        stamp_provenance(batch, &member.ledger_id, ctx)?
+                        let ledger_id = &self.members[self.current_member].ledger_id;
+                        stamp_provenance(batch, ledger_id, ctx)?
                     } else {
                         batch
                     };

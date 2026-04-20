@@ -153,7 +153,7 @@ impl GraphOperator {
         let patterns_to_execute: std::borrow::Cow<'_, [Pattern]> = if is_r2rml_gs {
             // Rewrite triple patterns to R2RML patterns
             let rewrite_result =
-                rewrite_patterns_for_r2rml(&self.inner_patterns, &graph_iri, ctx.snapshot);
+                rewrite_patterns_for_r2rml(&self.inner_patterns, &graph_iri, ctx.active_snapshot);
 
             // If there are unconverted patterns in an R2RML graph source, return an error.
             // R2RML graph sources don't have ledger-backed indexes, so unconverted patterns
@@ -327,7 +327,7 @@ impl Operator for GraphOperator {
                             };
 
                             // Execute if R2RML graph source or if graph name matches db's alias
-                            if is_r2rml_gs || iri.as_ref() == ctx.snapshot.ledger_id {
+                            if is_r2rml_gs || iri.as_ref() == ctx.active_snapshot.ledger_id {
                                 self.execute_in_graph(
                                     ctx,
                                     &parent_batch,
@@ -369,7 +369,9 @@ impl Operator for GraphOperator {
                                         };
 
                                     // Execute if R2RML graph source or alias match
-                                    if is_r2rml_gs || bound_iri.as_ref() == ctx.snapshot.ledger_id {
+                                    if is_r2rml_gs
+                                        || bound_iri.as_ref() == ctx.active_snapshot.ledger_id
+                                    {
                                         self.execute_in_graph(
                                             ctx,
                                             &parent_batch,
@@ -400,7 +402,7 @@ impl Operator for GraphOperator {
                                 // No dataset - single-db mode:
                                 // Bind ?g to db's alias and execute
                                 let alias_iri: Arc<str> =
-                                    Arc::from(ctx.snapshot.ledger_id.as_str());
+                                    Arc::from(ctx.active_snapshot.ledger_id.as_str());
                                 self.execute_in_graph(
                                     ctx,
                                     &parent_batch,

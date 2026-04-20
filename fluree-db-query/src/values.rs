@@ -251,7 +251,7 @@ fn bindings_compatible_for_values(ctx: &ExecutionContext<'_>, a: &Binding, b: &B
         | (Binding::Sid(sid), Binding::IriMatch { iri, .. })
         | (Binding::Iri(iri), Binding::Sid(sid))
         | (Binding::IriMatch { iri, .. }, Binding::Sid(sid)) => ctx
-            .snapshot
+            .active_snapshot
             .decode_sid(sid)
             .map(|decoded| decoded == iri.as_ref())
             .unwrap_or(false),

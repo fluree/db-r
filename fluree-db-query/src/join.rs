@@ -1281,7 +1281,7 @@ impl NestedLoopJoinOperator {
     }
     /// Flush batched accumulator using the appropriate snapshot/overlay/to_t for the current context.
     ///
-    /// - Single-db mode: uses ctx.snapshot/ctx.overlay()/ctx.to_t
+    /// - Single-db mode: uses ctx.active_snapshot/ctx.overlay()/ctx.to_t
     /// - Dataset mode with exactly one graph: uses that graph's snapshot/overlay/to_t
     async fn flush_batched_accumulator_for_ctx(
         &mut self,

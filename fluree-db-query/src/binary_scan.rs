@@ -638,7 +638,7 @@ impl BinaryScanOperator {
 
             if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
                 let subject_iri = ctx
-                    .snapshot
+                    .active_snapshot
                     .decode_sid(&flake.s)
                     .unwrap_or_else(|| flake.s.to_string());
                 if subject_iri != target_iri.as_ref() {
@@ -735,7 +735,7 @@ impl BinaryScanOperator {
         // Single-graph range fallback. Multi-graph fanout is handled by
         // DatasetOperator which wraps this operator at all scan sites.
         let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
-        let match_val = build_match_val_for_snapshot(ctx, ctx.snapshot, &self.pattern)?;
+        let match_val = build_match_val_for_snapshot(ctx, ctx.active_snapshot, &self.pattern)?;
         let opts = RangeOptions {
             to_t: Some(ctx.to_t),
             from_t: ctx.from_t,
@@ -744,7 +744,7 @@ impl BinaryScanOperator {
             ..Default::default()
         };
         let mut flakes = range_with_overlay(
-            ctx.snapshot,
+            ctx.active_snapshot,
             self.g_id,
             overlay,
             self.index,
@@ -756,9 +756,15 @@ impl BinaryScanOperator {
         .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
 
         // Apply policy filtering (including f:query) when present.
-        flakes =
-            Self::filter_flakes_by_policy(ctx, ctx.snapshot, overlay, ctx.to_t, self.g_id, flakes)
-                .await?;
+        flakes = Self::filter_flakes_by_policy(
+            ctx,
+            ctx.active_snapshot,
+            overlay,
+            ctx.to_t,
+            self.g_id,
+            flakes,
+        )
+        .await?;
         out.extend(flakes);
 
         self.range_iter = Some(out.into_iter());
@@ -1347,7 +1353,9 @@ fn build_match_val_for_snapshot(
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
-        if let Some(iri) = ctx.snapshot.decode_sid(sid) {
+        // Use `original_snapshot` (the primary) rather than `snapshot`
+        // (which may be a per-graph snapshot with different namespace codes).
+        if let Some(iri) = ctx.original_snapshot.decode_sid(sid) {
             if let Some(store) = ctx.binary_store.as_deref() {
                 if let Ok(Some(persisted_sid)) = store.find_subject_sid(&iri) {
                     return Some(persisted_sid);
@@ -1460,10 +1468,11 @@ impl Operator for BinaryScanOperator {
 
         // Extract bound terms in snapshot namespace space and build the persisted-ID filter
         // by translating through full IRIs into store namespace space.
-        let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
+        let (s_sid, p_sid, o_val) =
+            Self::extract_bound_terms_snapshot(ctx.active_snapshot, &self.pattern);
         self.bound_o = o_val;
         let mut filter = Self::build_filter_from_snapshot_sids(
-            ctx.snapshot,
+            ctx.active_snapshot,
             &self.pattern,
             store_ref,
             &s_sid,
@@ -1482,7 +1491,7 @@ impl Operator for BinaryScanOperator {
         self.unresolved_bound_subject_iri = if s_sid.is_some() && filter.s_id.is_none() {
             match &self.pattern.s {
                 Ref::Iri(iri) => Some(Arc::clone(iri)),
-                Ref::Sid(sid) => ctx.snapshot.decode_sid(sid).map(Arc::from),
+                Ref::Sid(sid) => ctx.original_snapshot.decode_sid(sid).map(Arc::from),
                 Ref::Var(_) => None,
             }
         } else {
@@ -1503,8 +1512,13 @@ impl Operator for BinaryScanOperator {
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
             let stats_view = cached_stats_view_for_db(
-                fluree_db_core::GraphDbRef::new(ctx.snapshot, self.g_id, ctx.overlay(), ctx.to_t)
-                    .with_runtime_small_dicts_opt(ctx.runtime_small_dicts),
+                fluree_db_core::GraphDbRef::new(
+                    ctx.active_snapshot,
+                    self.g_id,
+                    ctx.overlay(),
+                    ctx.to_t,
+                )
+                .with_runtime_small_dicts_opt(ctx.runtime_small_dicts),
                 self.store.as_ref(),
             );
             let inferred_dt_sid = if dt_sid.is_none() && lang.is_none() {

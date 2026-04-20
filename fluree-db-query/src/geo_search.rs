@@ -418,7 +418,7 @@ impl Operator for GeoSearchOperator {
         self.p_id = match self.dict_overlay.as_mut() {
             Some(dict_ov) => {
                 let iri = ctx
-                    .snapshot
+                    .active_snapshot
                     .decode_sid(&self.pattern.predicate)
                     .ok_or_else(|| {
                         QueryError::Internal(
