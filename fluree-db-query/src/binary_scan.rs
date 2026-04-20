@@ -193,9 +193,6 @@ pub struct BinaryScanOperator {
 #[derive(Clone, Debug)]
 struct RangeFlake {
     flake: Flake,
-    /// When present (dataset mode), identifies the originating ledger for SID decoding
-    /// and provenance-carrying bindings (`Binding::IriMatch`).
-    ledger_alias: Option<Arc<str>>,
 }
 
 /// A filter that can be evaluated on encoded index columns (no term decoding).
@@ -647,13 +644,11 @@ impl BinaryScanOperator {
                 break;
             };
             let flake = rf.flake;
-            let ledger_alias = rf.ledger_alias;
 
             if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
-                let subject_iri = ledger_alias
-                    .as_ref()
-                    .and_then(|alias| ctx.decode_sid_in_ledger(&flake.s, alias.as_ref()))
-                    .or_else(|| ctx.snapshot.decode_sid(&flake.s))
+                let subject_iri = ctx
+                    .snapshot
+                    .decode_sid(&flake.s)
                     .unwrap_or_else(|| flake.s.to_string());
                 if subject_iri != target_iri.as_ref() {
                     continue;
@@ -693,14 +688,14 @@ impl BinaryScanOperator {
             let mut bindings: Vec<Binding> = vec![Binding::Unbound; base_len];
 
             if let Some(pos) = self.s_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = sid_binding(ctx, &flake.s, ledger_alias.as_ref());
+                bindings[pos] = sid_binding(&flake.s);
             }
             if let Some(pos) = self.p_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = sid_binding(ctx, &flake.p, ledger_alias.as_ref());
+                bindings[pos] = sid_binding(&flake.p);
             }
             if let Some(pos) = self.o_var_pos.filter(|p| *p < base_len) {
                 bindings[pos] = match &flake.o {
-                    FlakeValue::Ref(r) => sid_binding(ctx, r, ledger_alias.as_ref()),
+                    FlakeValue::Ref(r) => sid_binding(r),
                     v => {
                         let dtc = match flake
                             .m
@@ -780,10 +775,7 @@ impl BinaryScanOperator {
                 flakes,
             )
             .await?;
-            out.extend(flakes.into_iter().map(|flake| RangeFlake {
-                flake,
-                ledger_alias: None,
-            }));
+            out.extend(flakes.into_iter().map(|flake| RangeFlake { flake }));
         }
 
         self.range_iter = Some(out.into_iter());
@@ -1295,10 +1287,7 @@ impl BinaryScanOperator {
         self.range_iter = Some(
             flakes
                 .into_iter()
-                .map(|flake| RangeFlake {
-                    flake,
-                    ledger_alias: None,
-                })
+                .map(|flake| RangeFlake { flake })
                 .collect::<Vec<_>>()
                 .into_iter(),
         );
@@ -1360,18 +1349,7 @@ fn resolve_overlay_retractions(flakes: Vec<Flake>) -> Vec<Flake> {
 }
 
 #[inline]
-fn sid_binding(ctx: &ExecutionContext<'_>, sid: &Sid, ledger_alias: Option<&Arc<str>>) -> Binding {
-    if ctx.is_multi_ledger() {
-        if let Some(alias) = ledger_alias {
-            if let Some(iri) = ctx.decode_sid_in_ledger(sid, alias.as_ref()) {
-                return Binding::iri_match(
-                    Arc::<str>::from(iri.as_str()),
-                    sid.clone(),
-                    alias.clone(),
-                );
-            }
-        }
-    }
+fn sid_binding(sid: &Sid) -> Binding {
     Binding::Sid(sid.clone())
 }
 
@@ -1830,10 +1808,7 @@ impl Operator for BinaryScanOperator {
                     self.range_iter = Some(
                         untranslated
                             .into_iter()
-                            .map(|flake| RangeFlake {
-                                flake,
-                                ledger_alias: None,
-                            })
+                            .map(|flake| RangeFlake { flake })
                             .collect::<Vec<_>>()
                             .into_iter(),
                     );

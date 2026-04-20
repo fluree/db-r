@@ -18,12 +18,11 @@ flowchart TD
   GraphDb -->|single-ledger| QueryRunner
   GraphDb -->|member_of| DataSetDb
   DataSetDb -->|federated| QueryRunner
-  QueryRunner -->|scan index + merge overlay| ScanOperator
-  ScanOperator -->|fast path| BinaryScanOperator
-  ScanOperator -->|fallback| RangeScanOperator
-  BinaryScanOperator --> BinaryCursor
+  QueryRunner -->|scan index + merge overlay| DatasetOperator
+  DatasetOperator -->|per-graph| BinaryScanOperator
+  BinaryScanOperator -->|fast path| BinaryCursor
+  BinaryScanOperator -->|fallback| range_with_overlay
   BinaryCursor -->|graph-scoped decode| BinaryGraphView
-  RangeScanOperator -->|delegates| range_with_overlay
   range_with_overlay -->|delegates| RangeProvider
 ```
 
@@ -38,11 +37,15 @@ flowchart TD
     - `prepare_execution(db: GraphDbRef<'_>, query: &ExecutableQuery)` builds derived facts/ontology (if enabled), rewrites patterns, and builds the operator tree.
     - `execute_prepared(...)` runs the operator tree using an `ExecutionContext`.
 
+- **Dataset operator**
+  - `fluree-db-query/src/dataset_operator.rs`
+    - `DatasetOperator` wraps every triple-pattern scan. In single-graph mode (the common case) it passes through to one inner `BinaryScanOperator` with negligible overhead. In multi-graph mode (FROM/FROM NAMED datasets) it fans out one inner operator per active graph, drives their lifecycles, and stamps ledger provenance (`Binding::IriMatch`) on results that span multiple ledgers.
+    - `DatasetBuilder` trait (factory pattern): the planner constructs a `ScanDatasetBuilder` at plan time; `DatasetOperator` calls `build()` at execution time during `open()` to produce per-graph `BinaryScanOperator`s.
+    - Nested composition: inner operators can themselves be `DatasetOperator`s — provenance stamping passes `IriMatch` through unchanged.
+
 - **Scan operators**
   - `fluree-db-query/src/binary_scan.rs`
-    - `ScanOperator` selects the execution mode at `open()` time:
-      - `BinaryScanOperator` (streaming cursor, integer-ID pipeline) when a `BinaryIndexStore` is available and the query mode is compatible
-      - `RangeScanOperator` fallback that calls `fluree-db-core::range_with_overlay(...)`
+    - `BinaryScanOperator` handles single-graph scanning only. Selects between binary cursor (streaming, integer-ID pipeline) and range fallback at `open()` time based on the `ExecutionContext`.
 
 - **Range fallback**
   - `fluree-db-core/src/range.rs`: `range_with_overlay(snapshot, g_id, overlay, ...)`
