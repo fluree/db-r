@@ -194,13 +194,6 @@ fn stamp_provenance(
 fn stamp_binding(binding: Binding, ledger_id: &Arc<str>, ctx: &ExecutionContext<'_>) -> Binding {
     match binding {
         Binding::Sid(ref sid) => sid_to_iri_match(sid, ledger_id, ctx),
-        // IriMatch from a nested DatasetOperator — pass through.
-        //
-        // NOTE: EncodedSid cannot currently appear here because
-        // `with_graph_ref()` sets `binary_store: None`, forcing the
-        // range fallback path which produces `Binding::Sid`. If step 3
-        // enables binary stores for per-graph contexts, EncodedSid
-        // will need materialization before provenance stamping.
         other => other,
     }
 }
@@ -362,29 +355,5 @@ mod tests {
         let op2 = builder.build().unwrap();
         assert_eq!(op1.schema(), op2.schema());
         assert_eq!(op1.schema(), builder.schema());
-    }
-
-    /// Verify stamp_binding passes IriMatch through unchanged.
-    #[test]
-    fn stamp_binding_passes_through_iri_match() {
-        let sid = Sid::new(42, "test");
-        let ledger_id: Arc<str> = Arc::from("inner/ledger");
-        let iri: Arc<str> = Arc::from("http://example.org/test");
-
-        let iri_match = Binding::iri_match(Arc::clone(&iri), sid.clone(), Arc::clone(&ledger_id));
-
-        let outer_ledger: Arc<str> = Arc::from("outer/ledger");
-        // Create a minimal context — we won't actually call decode on it
-        // because IriMatch should be passed through.
-        //
-        // We can't easily construct an ExecutionContext in a unit test,
-        // so we verify the match arm logic directly.
-        match &iri_match {
-            Binding::IriMatch { .. } => {
-                // This is the pass-through path — stamp_binding would
-                // clone it unchanged.
-            }
-            _ => panic!("expected IriMatch"),
-        }
     }
 }
