@@ -211,6 +211,25 @@ impl Clone for LedgerHandle {
     }
 }
 
+/// Single-flight coordination for `apply_index_v2` on a handle.
+///
+/// When a leader is in flight, concurrent callers register as followers
+/// (push a oneshot::Sender onto `waiters`) and await the leader's result
+/// rather than kicking off duplicate `load_from_root_bytes` I/O. Same
+/// single-flight model the manager already uses for `reload()` via
+/// `LoadState::Reloading::waiters`.
+struct ApplyIndexInFlight {
+    /// Target index CID being applied. Retained for debug logs; followers
+    /// trust the leader's result regardless of whether their own target
+    /// matches (the nameservice moves forward, so a newer leader subsumes
+    /// an older follower's target; a rare older-leader case can be re-driven
+    /// by the caller on the next pass).
+    target: ContentId,
+    /// Oneshot senders waiting for the leader's result.
+    /// `ApiError` is not `Clone`, so errors are shared via `Arc<ApiError>`.
+    waiters: Vec<oneshot::Sender<std::result::Result<(), Arc<ApiError>>>>,
+}
+
 /// Lock ordering invariant: always acquire `state` before `binary_store`.
 /// All paths that touch both locks (snapshot, apply_index_v2, reload)
 /// follow this order to prevent deadlock and ensure coherence.
@@ -226,6 +245,9 @@ struct LedgerHandleInner {
     /// Always coherent with `state.snapshot.range_provider` — writers hold
     /// the `state` lock while updating this.
     binary_store: Mutex<Option<Arc<BinaryIndexStore>>>,
+    /// Single-flight registration for `apply_index_v2`. Briefly-held
+    /// `std::sync::Mutex` — never held across `.await`.
+    apply_index_in_flight: std::sync::Mutex<Option<ApplyIndexInFlight>>,
 }
 
 impl LedgerHandle {
@@ -241,6 +263,7 @@ impl LedgerHandle {
                 ledger_id,
                 last_access: AtomicU64::new(monotonic_secs()),
                 binary_store: Mutex::new(binary_store),
+                apply_index_in_flight: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -367,7 +390,105 @@ impl LedgerHandle {
     /// The state lock is held for the brief atomic swap of both `state` and
     /// `binary_store`, ensuring coherence between `db.range_provider` and
     /// `binary_store` (lock ordering: state → binary_store).
+    ///
+    /// Single-flight: concurrent callers against the same handle do not each
+    /// kick off their own `load_from_root_bytes`. The first caller becomes
+    /// the leader and performs the load; followers register via a oneshot
+    /// channel and receive the leader's result when it completes. This
+    /// prevents a burst of peer queries against a stale SSE watermark from
+    /// amplifying S3 load by N× (fluree/db-r#155).
     pub async fn apply_index_v2(
+        &self,
+        index_id: &ContentId,
+        backend: &StorageBackend,
+        cache_dir: &std::path::Path,
+        leaflet_cache: Option<Arc<LeafletCache>>,
+    ) -> Result<()> {
+        // ── Single-flight registration ────────────────────────────────
+        enum Registration {
+            Leader,
+            Follower(oneshot::Receiver<std::result::Result<(), Arc<ApiError>>>),
+        }
+        let registration = {
+            let mut slot = self
+                .inner
+                .apply_index_in_flight
+                .lock()
+                .expect("apply_index_in_flight mutex poisoned");
+            if let Some(in_flight) = slot.as_mut() {
+                let (tx, rx) = oneshot::channel();
+                in_flight.waiters.push(tx);
+                tracing::debug!(
+                    follower_target = %index_id,
+                    leader_target = %in_flight.target,
+                    "apply_index_v2: joining in-flight leader as follower"
+                );
+                Registration::Follower(rx)
+            } else {
+                *slot = Some(ApplyIndexInFlight {
+                    target: index_id.clone(),
+                    waiters: Vec::new(),
+                });
+                Registration::Leader
+            }
+        };
+
+        match registration {
+            Registration::Follower(rx) => {
+                // Wait for leader's result. If the leader was cancelled
+                // (dropped mid-await), the channel closes and we return
+                // Internal.
+                return match rx.await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(shared)) => {
+                        Err(ApiError::http(shared.status_code(), shared.to_string()))
+                    }
+                    Err(_) => Err(ApiError::internal(
+                        "apply_index_v2 leader was cancelled before completing",
+                    )),
+                };
+            }
+            Registration::Leader => {
+                // Fall through to do the work.
+            }
+        }
+
+        // ── Leader path: do the actual work ──────────────────────────
+        let result = self
+            .apply_index_v2_exclusive(index_id, backend, cache_dir, leaflet_cache)
+            .await;
+
+        // ── Publish result to waiters ────────────────────────────────
+        let in_flight = self
+            .inner
+            .apply_index_in_flight
+            .lock()
+            .expect("apply_index_in_flight mutex poisoned")
+            .take();
+        if let Some(in_flight) = in_flight {
+            match &result {
+                Ok(()) => {
+                    for tx in in_flight.waiters {
+                        let _ = tx.send(Ok(()));
+                    }
+                }
+                Err(e) => {
+                    // Share the error across waiters via Arc — ApiError isn't Clone.
+                    let shared = Arc::new(ApiError::http(e.status_code(), e.to_string()));
+                    for tx in in_flight.waiters {
+                        let _ = tx.send(Err(Arc::clone(&shared)));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Exclusive body of `apply_index_v2`. Assumes the caller has already
+    /// won the single-flight race and is the sole in-flight leader; all
+    /// post-completion waiter notification happens in `apply_index_v2`.
+    async fn apply_index_v2_exclusive(
         &self,
         index_id: &ContentId,
         backend: &StorageBackend,

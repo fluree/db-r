@@ -336,3 +336,116 @@ async fn notify_with_no_record_matches_server_query_path_contract() {
         "small advances must not trigger the blocking reload path"
     );
 }
+
+/// Single-flight regression (fluree/db-r#155 follow-up):
+/// A burst of concurrent `notify()` calls against the same cached ledger
+/// — the shape we see in production when SSE pushes a stale watermark to
+/// a peer and several queries arrive before the background refresh
+/// settles — must all succeed without each kicking off their own
+/// `apply_index_v2` / `load_from_root_bytes` I/O against the same index
+/// root. Followers join the in-flight leader and return its result.
+///
+/// This only asserts concurrent correctness (all Ok, final state correct).
+/// The dedup itself is visible by code review in `LedgerHandleInner::
+/// apply_index_in_flight`; this test would still pass without dedup but
+/// would redundantly load the index N times, which is the behavior we
+/// explicitly want to avoid.
+#[tokio::test]
+async fn concurrent_notify_shares_apply_index_v2_single_flight() {
+    let fluree = FlureeBuilder::memory()
+        .with_ledger_cache_config(LedgerManagerConfig::default())
+        .build_memory();
+    let ledger_id = "it/notify-single-flight:main";
+    let manager = fluree
+        .ledger_manager()
+        .expect("ledger_manager should be present");
+
+    let (local, indexer_handle) = start_background_indexer_local(
+        fluree.backend().clone(),
+        fluree.nameservice_mode().clone(),
+        fluree_db_indexer::IndexerConfig::small(),
+    );
+
+    local
+        .run_until(async {
+            // Seed committed novelty on the ledger.
+            let ledger0 = genesis_ledger_for_fluree(&fluree, ledger_id);
+            let mut graph = Vec::new();
+            for i in 0..25u32 {
+                graph.push(json!({
+                    "@id": format!("ex:s{i}"),
+                    "ex:n": i
+                }));
+            }
+            let txn = json!({
+                "@context": { "ex": "http://example.org/" },
+                "@graph": graph
+            });
+            let ledger1 = fluree
+                .insert_with_opts(
+                    ledger0,
+                    &txn,
+                    TxnOpts::default(),
+                    CommitOpts::default(),
+                    &IndexConfig {
+                        reindex_min_bytes: 1_000_000_000,
+                        reindex_max_bytes: 1_000_000_000,
+                    },
+                )
+                .await
+                .expect("insert");
+            let commit_t = ledger1.ledger.t();
+
+            // Cache the ledger BEFORE indexing so that each notify() will
+            // take the IndexOnly branch (which exercises apply_index_v2).
+            let _ = manager.get_or_load(ledger_id).await.expect("load");
+
+            // Publish an index root — nameservice now advertises an index
+            // that the cached handle hasn't applied yet.
+            trigger_index_and_wait(&indexer_handle, ledger_id, commit_t).await;
+
+            // Fire N concurrent notify()s. Without single-flight dedup each
+            // would independently run apply_index_v2 (including the full
+            // load_from_root_bytes I/O); with dedup, followers wait on the
+            // leader's result.
+            const N: usize = 8;
+            let mut handles = Vec::with_capacity(N);
+            for _ in 0..N {
+                let mgr = manager.clone();
+                let ledger_id = ledger_id.to_string();
+                handles.push(tokio::task::spawn_local(async move {
+                    mgr.notify(NsNotify {
+                        ledger_id,
+                        record: None,
+                    })
+                    .await
+                }));
+            }
+
+            let mut results = Vec::with_capacity(N);
+            for h in handles {
+                results.push(h.await.expect("task did not panic"));
+            }
+
+            // All must succeed.
+            for (i, r) in results.iter().enumerate() {
+                let ok = r.as_ref().expect("notify should succeed");
+                assert!(
+                    matches!(ok, NotifyResult::IndexUpdated | NotifyResult::Current),
+                    "task {i} got unexpected notify result: {ok:?}"
+                );
+            }
+
+            // Exactly one task should have advanced the state; the rest
+            // are followers or came in after the state was already fresh.
+            // We verify the observable final state instead of counting
+            // leaders (which is an internal implementation detail).
+            let handle_after = manager.get_or_load(ledger_id).await.expect("re-load");
+            let state_after = handle_after.snapshot().await;
+            assert_eq!(
+                state_after.snapshot.t, commit_t,
+                "after concurrent notify(), index_t must match the advertised commit_t"
+            );
+        })
+        .await;
+}
