@@ -890,6 +890,23 @@ struct SelectionSpecs {
     has_wildcard: bool,
 }
 
+/// If `key` uses the inline `@reverse:...` form, return the target predicate IRI
+/// (vocab-expanded). Returns `Ok(None)` for any other key so callers can fall
+/// through to the regular context-lookup path.
+///
+/// Supports `@reverse:@type` / `@reverse:type` (and the context's configured
+/// type key) as shorthand for the reverse of rdf:type, matching node_map.rs.
+fn parse_inline_reverse_key(key: &str, ctx: &JsonLdParseCtx) -> Result<Option<String>> {
+    let Some(rest) = key.strip_prefix("@reverse:") else {
+        return Ok(None);
+    };
+    if rest == "@type" || rest == "type" || rest == ctx.context.type_key.as_str() {
+        return Ok(Some(node_map::RDF_TYPE.to_string()));
+    }
+    let (expanded, _) = ctx.expand_vocab(rest)?;
+    Ok(Some(expanded))
+}
+
 /// Parse selection specs array, separating forward and reverse properties.
 fn parse_selection_specs(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<SelectionSpecs> {
     let mut forward = Vec::new();
@@ -908,13 +925,15 @@ fn parse_selection_specs(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<Sele
             JsonValue::String(s) if s == "@id" || s == "id" || s == ctx.context.id_key.as_str() => {
                 forward.push(UnresolvedSelectionSpec::Id);
             }
-            // Property name: "ex:name"
+            // Property name: "ex:name" or inline "@reverse:ex:friend"
             JsonValue::String(s) => {
-                let (expanded, entry) = ctx.expand_vocab(s)?;
-                // Check if this is a reverse property from @context
-                // (reverse field is Option<String> with the reversed property IRI)
-                if let Some(e) = entry {
-                    if let Some(rev_iri) = e.reverse {
+                if let Some(rev_iri) = parse_inline_reverse_key(s, ctx)? {
+                    reverse.insert(rev_iri, None);
+                } else {
+                    let (expanded, entry) = ctx.expand_vocab(s)?;
+                    // Check if this is a reverse property from @context
+                    // (reverse field is Option<String> with the reversed property IRI)
+                    if let Some(rev_iri) = entry.and_then(|e| e.reverse) {
                         // Reverse property - key by the *actual* predicate IRI to reverse on.
                         reverse.insert(rev_iri, None);
                     } else {
@@ -923,14 +942,9 @@ fn parse_selection_specs(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<Sele
                             sub_spec: None,
                         });
                     }
-                } else {
-                    forward.push(UnresolvedSelectionSpec::Property {
-                        predicate: expanded,
-                        sub_spec: None,
-                    });
                 }
             }
-            // Nested selection: {"ex:friend": ["*"]}
+            // Nested selection: {"ex:friend": ["*"]} or inline {"@reverse:ex:friend": ["*"]}
             JsonValue::Object(map) => {
                 if map.len() != 1 {
                     return Err(ParseError::InvalidSelect(
@@ -939,7 +953,6 @@ fn parse_selection_specs(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<Sele
                 }
 
                 let (pred_str, sub_specs_val) = map.iter().next().unwrap();
-                let (expanded, entry) = ctx.expand_vocab(pred_str)?;
 
                 let sub_arr = sub_specs_val.as_array().ok_or_else(|| {
                     ParseError::InvalidSelect("nested selection value must be an array".to_string())
@@ -951,14 +964,19 @@ fn parse_selection_specs(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<Sele
                 let nested_spec =
                     make_nested_spec(sub_specs.forward, sub_specs.reverse, sub_specs.has_wildcard);
 
-                let is_reverse = entry.as_ref().and_then(|e| e.reverse.as_ref());
-                if let Some(rev_iri) = is_reverse {
-                    reverse.insert(rev_iri.clone(), nested_spec);
+                if let Some(rev_iri) = parse_inline_reverse_key(pred_str, ctx)? {
+                    reverse.insert(rev_iri, nested_spec);
                 } else {
-                    forward.push(UnresolvedSelectionSpec::Property {
-                        predicate: expanded,
-                        sub_spec: nested_spec,
-                    });
+                    let (expanded, entry) = ctx.expand_vocab(pred_str)?;
+                    let context_reverse = entry.as_ref().and_then(|e| e.reverse.as_ref());
+                    if let Some(rev_iri) = context_reverse {
+                        reverse.insert(rev_iri.clone(), nested_spec);
+                    } else {
+                        forward.push(UnresolvedSelectionSpec::Property {
+                            predicate: expanded,
+                            sub_spec: nested_spec,
+                        });
+                    }
                 }
             }
             _ => {

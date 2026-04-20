@@ -317,3 +317,102 @@ async fn type_reverse_and_forward_agree_on_classes() {
         normalize_rows(&json!(["ex:Person", "ex:Organization"]))
     );
 }
+
+#[tokio::test]
+async fn inline_reverse_key_in_graph_crawl_top_level() {
+    // The AST documents {"@reverse:friended": ["*"]} as inline reverse-in-select
+    // syntax. Verify it works without needing a context alias.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_reverse_friends(&fluree, "reverse-friends-inline:top").await;
+
+    let q = json!({
+        "@context": {"schema":"http://schema.org/","ex":"http://example.org/ns/"},
+        "select": {"ex:brian": ["schema:name", {"@reverse:ex:friend": ["@id"]}]}
+    });
+
+    let r = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        r,
+        json!([{
+            "schema:name":"Brian",
+            "ex:friend": {"@id":"ex:cam"}
+        }])
+    );
+}
+
+#[tokio::test]
+async fn inline_reverse_key_nested_inside_forward_property() {
+    // Nested inline @reverse under a forward property: expand cam's friends,
+    // then from each friend follow the inline reverse edge back to its friender.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_reverse_friends(&fluree, "reverse-friends-inline:nested").await;
+
+    let q = json!({
+        "@context": {"schema":"http://schema.org/","ex":"http://example.org/ns/"},
+        "select": {"ex:cam": [
+            "schema:name",
+            {"ex:friend": ["schema:name", {"@reverse:ex:friend": ["@id"]}]}
+        ]}
+    });
+
+    let r = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    // Brian has one friender (Cam); Alice has two frienders (Brian, Cam).
+    // Nested crawl objects carry @id automatically.
+    assert_eq!(
+        r,
+        json!([{
+            "schema:name":"Cam",
+            "ex:friend": [
+                {"@id":"ex:alice","schema:name":"Alice","ex:friend": [{"@id":"ex:brian"},{"@id":"ex:cam"}]},
+                {"@id":"ex:brian","schema:name":"Brian","ex:friend": {"@id":"ex:cam"}}
+            ]
+        }])
+    );
+}
+
+#[tokio::test]
+async fn reverse_alias_does_not_rewrite_forward_predicate() {
+    // Bug: when the context defines `friendOf: {"@reverse": "ex:friend"}` and a node
+    // has a FORWARD ex:friend edge, the forward predicate must stay as its own
+    // compact form (ex:friend) — not be rewritten to the reverse alias.
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger = seed_reverse_friends(&fluree, "reverse-friends-noleak:main").await;
+
+    // Brian has a forward ex:friend -> alice and is friended by cam.
+    let q = json!({
+        "@context": [
+            {"schema":"http://schema.org/","ex":"http://example.org/ns/"},
+            {"friendOf": {"@reverse": "ex:friend"}}
+        ],
+        "select": {"ex:brian": ["schema:name", "ex:friend", "friendOf"]}
+    });
+
+    let r = support::query_jsonld(&fluree, &ledger, &q)
+        .await
+        .unwrap()
+        .to_jsonld_async(ledger.as_graph_db_ref(0))
+        .await
+        .unwrap();
+
+    let obj = r.as_array().and_then(|a| a.first()).unwrap();
+    let map = obj.as_object().unwrap();
+    assert!(
+        map.contains_key("ex:friend"),
+        "forward ex:friend predicate must keep its own name, got: {}",
+        obj
+    );
+    assert_eq!(map.get("ex:friend"), Some(&json!({"@id":"ex:alice"})));
+    assert_eq!(map.get("friendOf"), Some(&json!({"@id":"ex:cam"})));
+}

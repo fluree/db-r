@@ -100,20 +100,20 @@ impl IriCompactor {
         Ok(format!("{}{}", prefix, sid.name))
     }
 
-    /// Compact an IRI using the @context (vocab rules).
+    /// Compact a **forward** predicate / @type IRI using the @context (vocab rules).
     ///
     /// Handles:
-    /// - @reverse term definitions (checked first)
     /// - Exact term matches (e.g., `"Person"` ← `"http://schema.org/Person"`)
     /// - Prefix matches (e.g., `"schema:xyz"` ← `"http://schema.org/xyz"`)
     /// - @vocab handling (bare terms for vocab-prefixed IRIs)
     ///
+    /// Does NOT consult `@reverse` term definitions — those are direction-specific
+    /// and would corrupt output when a forward predicate's IRI matches a reverse
+    /// alias's target. Use [`compact_reverse_iri`](Self::compact_reverse_iri) when
+    /// formatting an edge in the reverse direction.
+    ///
     /// Returns the compacted form or the full IRI if no match.
     pub fn compact_vocab_iri(&self, iri: &str) -> String {
-        // Prefer @reverse term definitions
-        if let Some(term) = self.reverse_terms.get(iri) {
-            return term.clone();
-        }
         self.compactor.compact_vocab(iri)
     }
 
@@ -133,9 +133,6 @@ impl IriCompactor {
     /// in structured formats (JSON-LD, SPARQL JSON) where consumers need to
     /// know the prefix mappings.
     pub fn compact_for_display(&self, iri: &str) -> String {
-        if let Some(term) = self.reverse_terms.get(iri) {
-            return term.clone();
-        }
         let result = self.compactor.compact_vocab(iri);
         if result == iri {
             if let Some(compacted) = self.try_fallback(iri) {
@@ -145,7 +142,7 @@ impl IriCompactor {
         result
     }
 
-    /// Decode a Sid and compact in one step.
+    /// Decode a Sid and compact as a forward predicate / @type value.
     ///
     /// This is the most common operation for formatting.
     pub fn compact_sid(&self, sid: &Sid) -> Result<String> {
@@ -153,11 +150,29 @@ impl IriCompactor {
         Ok(self.compact_vocab_iri(&iri))
     }
 
-    /// Compact an IRI string (already decoded).
+    /// Compact an IRI string (already decoded) as a forward predicate.
     ///
     /// Used for IriMatch bindings where the canonical IRI is already available.
     pub fn compact_iri(&self, iri: &str) -> Result<String> {
         Ok(self.compact_vocab_iri(iri))
+    }
+
+    /// Compact an IRI for a **reverse-direction** edge key.
+    ///
+    /// Prefers `@reverse` aliases from the context. Falls back to forward
+    /// vocab compaction if no reverse alias exists (producing the bare
+    /// predicate IRI — the caller should still treat it as reverse).
+    pub fn compact_reverse_iri(&self, iri: &str) -> String {
+        if let Some(term) = self.reverse_terms.get(iri) {
+            return term.clone();
+        }
+        self.compactor.compact_vocab(iri)
+    }
+
+    /// Decode a Sid and compact as a reverse-direction edge key.
+    pub fn compact_reverse_sid(&self, sid: &Sid) -> Result<String> {
+        let iri = self.decode_sid(sid)?;
+        Ok(self.compact_reverse_iri(&iri))
     }
 
     /// Decode a Sid and compact for display (with fallback prefixes).

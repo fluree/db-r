@@ -455,7 +455,7 @@ impl<'a> GraphCrawlFormatter<'a> {
                         )
                         .await?;
                     if !values.is_empty() {
-                        let key = self.compactor.compact_sid(rev_pred)?;
+                        let key = self.compactor.compact_reverse_sid(rev_pred)?;
                         if values.len() == 1
                             && !self.normalize_arrays
                             && !self.force_array_for_key(&key)
