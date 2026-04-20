@@ -130,8 +130,7 @@ pub struct GraphDb {
     // ========================================================================
     /// Binary columnar index store for `BinaryScanOperator`.
     ///
-    /// When set, `ScanOperator` uses this for direct columnar scans
-    /// via `BinaryScanOperator`.
+    /// When set, `BinaryScanOperator` uses this for direct columnar scans.
     pub(crate) binary_store: Option<Arc<BinaryIndexStore>>,
 
     /// Dictionary novelty layer for binary scan subject/string lookups.

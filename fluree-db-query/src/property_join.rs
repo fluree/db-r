@@ -794,8 +794,9 @@ impl Operator for PropertyJoinOperator {
 
                 // Create scan with optional bounds pushdown for this object variable.
                 //
-                // `ScanOperator` selects between binary cursor and range fallback
-                // at open() time based on the execution context.
+                // `DatasetOperator` wraps the scan for multi-graph fanout;
+                // inner `BinaryScanOperator` selects between binary cursor
+                // and range fallback at open() time.
                 let emit = if predicate.emit_object {
                     // Subject + object (no predicate column) for emitted predicates.
                     EmitMask {

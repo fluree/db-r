@@ -871,8 +871,8 @@ impl<'a> ExecutionContext<'a> {
 
     /// Attach a binary columnar index store for fast local-file scans.
     ///
-    /// When set, scan operators will use `BinaryScanOperator` instead of
-    /// `ScanOperator` for reading from the binary columnar indexes.
+    /// When set, `BinaryScanOperator` uses the binary cursor path instead of
+    /// the `range_with_overlay` fallback for reading from binary columnar indexes.
     pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
         self.binary_store = Some(store);
         self.binary_g_id = g_id;
@@ -900,7 +900,7 @@ impl<'a> ExecutionContext<'a> {
     /// Set the graph ID for range queries.
     ///
     /// This sets `binary_g_id` independently of `binary_store`, which is needed
-    /// for the `range_with_overlay()` fallback path (RangeScanOperator) where
+    /// for the `range_with_overlay()` fallback path in `BinaryScanOperator` where
     /// the graph ID must reach the range provider even without a local binary store.
     pub fn with_graph_id(mut self, g_id: GraphId) -> Self {
         self.binary_g_id = g_id;

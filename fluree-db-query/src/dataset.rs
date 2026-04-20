@@ -279,7 +279,7 @@ impl<'a> Default for DataSet<'a> {
 /// Currently active graph for scanning
 ///
 /// Stored in `ExecutionContext`, not `DataSet`. This enum indicates
-/// which graph(s) should be used when `ScanOperator` fetches data.
+/// which graph(s) should be used when `DatasetOperator` fetches data.
 ///
 /// - `Default`: Use all default graphs (union their results)
 /// - `Named(iri)`: Use only the specified named graph

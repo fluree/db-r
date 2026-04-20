@@ -138,8 +138,6 @@ fn inline_ops_need_t(ops: &[InlineOperator]) -> bool {
 
 // `translate_overlay_flakes` lives below, after BinaryScanOperator.
 
-/// Public type alias — `ScanOperator` is the sole scan implementation.
-pub type ScanOperator = BinaryScanOperator;
 
 // ============================================================================
 // BinaryScanOperator

@@ -5,7 +5,8 @@
 //! This crate provides:
 //! - Columnar batch-based execution model
 //! - Operator trait with `open/next_batch/close` lifecycle
-//! - ScanOperator for triple-pattern evaluation (binary cursor + range fallback)
+//! - DatasetOperator for dataset-aware triple-pattern evaluation (multi-graph fanout)
+//! - BinaryScanOperator for single-graph scanning (binary cursor + range fallback)
 //! - Variable registry for compact binding indices
 //!
 //! ## Quick Start
@@ -92,7 +93,7 @@ pub mod vector;
 // Re-exports
 pub use aggregate::{apply_aggregate, AggregateFn, AggregateOperator, AggregateSpec};
 pub use binary_range::BinaryRangeProvider;
-pub use binary_scan::{BinaryScanOperator, ScanOperator};
+pub use binary_scan::BinaryScanOperator;
 pub use bind::BindOperator;
 pub use binding::{Batch, BatchError, BatchView, Binding, RowAccess, RowView};
 pub use context::{ExecutionContext, WellKnownDatatypes};
@@ -184,7 +185,7 @@ pub async fn execute_pattern(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::from_graph_db_ref(db, vars);
-    let mut scan = ScanOperator::new(pattern, None, Vec::new());
+    let mut scan = BinaryScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -244,7 +245,7 @@ pub async fn execute_pattern_at(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t);
-    let mut scan = ScanOperator::new(pattern, None, Vec::new());
+    let mut scan = BinaryScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -268,7 +269,7 @@ pub async fn execute_pattern_with_overlay(
     pattern: TriplePattern,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::from_graph_db_ref(db, vars);
-    let mut scan = ScanOperator::new(pattern, None, Vec::new());
+    let mut scan = BinaryScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 
@@ -291,7 +292,7 @@ pub async fn execute_pattern_with_overlay_at(
     from_t: Option<i64>,
 ) -> Result<Vec<Batch>> {
     let ctx = ExecutionContext::from_graph_db_ref_with_from_t(db, vars, from_t);
-    let mut scan = ScanOperator::new(pattern, None, Vec::new());
+    let mut scan = BinaryScanOperator::new(pattern, None, Vec::new());
 
     scan.open(&ctx).await?;
 

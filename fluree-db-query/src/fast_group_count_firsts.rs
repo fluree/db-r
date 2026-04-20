@@ -118,7 +118,7 @@ impl PredicateGroupCountFirstsOperator {
         );
 
         // Note: EmitMask pruning is only effective on the binary scan path.
-        // RangeScanOperator (used in memory / pre-index fallback) ignores EmitMask,
+        // The range fallback path (used in memory / pre-index fallback) ignores EmitMask,
         // so we use the default (ALL) to avoid a schema mismatch.
         let scan: BoxedOperator = Box::new(DatasetOperator::scan(
             tp,
@@ -358,7 +358,7 @@ impl PredicateObjectCountFirstsOperator {
         );
 
         // Note: EmitMask pruning is only effective on the binary scan path.
-        // RangeScanOperator (used in memory / pre-index fallback) ignores EmitMask,
+        // The range fallback path (used in memory / pre-index fallback) ignores EmitMask,
         // so we use the default (ALL) to avoid a schema mismatch.
         let scan: BoxedOperator = Box::new(DatasetOperator::scan(
             tp,
