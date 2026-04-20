@@ -138,7 +138,6 @@ fn inline_ops_need_t(ops: &[InlineOperator]) -> bool {
 
 // `translate_overlay_flakes` lives below, after BinaryScanOperator.
 
-
 // ============================================================================
 // BinaryScanOperator
 // ============================================================================
