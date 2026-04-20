@@ -254,14 +254,14 @@ impl PrefixMap {
             }
         }
         // Sort by IRI length descending for longest-prefix-first matching
-        entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
         PrefixMap { entries }
     }
 
     /// Build from an explicit map of prefix → IRI.
     pub fn from_map(map: BTreeMap<String, String>) -> Self {
         let mut entries: Vec<(String, String)> = map.into_iter().collect();
-        entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
         PrefixMap { entries }
     }
 

@@ -1877,8 +1877,8 @@ impl FlureeBuilder {
         let timeout_ms = s3_cfg
             .read_timeout_ms
             .into_iter()
-            .chain(s3_cfg.write_timeout_ms.into_iter())
-            .chain(s3_cfg.list_timeout_ms.into_iter())
+            .chain(s3_cfg.write_timeout_ms)
+            .chain(s3_cfg.list_timeout_ms)
             .max();
 
         let sdk_config = aws::get_or_init_sdk_config().await?;
@@ -1947,8 +1947,8 @@ impl FlureeBuilder {
         let timeout_ms = s3_cfg
             .read_timeout_ms
             .into_iter()
-            .chain(s3_cfg.write_timeout_ms.into_iter())
-            .chain(s3_cfg.list_timeout_ms.into_iter())
+            .chain(s3_cfg.write_timeout_ms)
+            .chain(s3_cfg.list_timeout_ms)
             .max();
 
         let sdk_config = aws::get_or_init_sdk_config().await?;

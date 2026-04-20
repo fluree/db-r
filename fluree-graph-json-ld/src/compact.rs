@@ -192,7 +192,7 @@ fn sorted_prefix_iris(flipped: &HashMap<String, String>) -> Vec<(String, String)
         .filter(|(iri, _)| iri.ends_with('/') || iri.ends_with('#'))
         .map(|(iri, prefix)| (iri.clone(), prefix.clone()))
         .collect();
-    pairs.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    pairs.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
     pairs
 }
 
