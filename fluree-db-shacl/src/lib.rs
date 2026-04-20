@@ -24,6 +24,19 @@
 //! - Pair: `sh:equals`, `sh:disjoint`, `sh:lessThan`, `sh:lessThanOrEquals`
 //! - Logical: `sh:not`, `sh:and`, `sh:or`, `sh:xone`
 //!
+//! # Target Selection
+//!
+//! All five SHACL target types select focus nodes:
+//! - `sh:targetNode`, `sh:targetClass`, `sh:targetClass` (implicit) — resolved
+//!   from the cache's hashmap indexes built at [`ShaclCache::new`] time.
+//! - `sh:targetSubjectsOf(p)`, `sh:targetObjectsOf(p)` — resolved inside
+//!   [`validate::ShaclEngine::validate_node`] by a bounded post-state
+//!   existence check against `db` (SPOT for subjects-of, OPST for
+//!   objects-of). This is correct for both base-state edges and the
+//!   retraction/cross-graph cases that a staged-flakes-only hint pass
+//!   cannot cover. Cost scales with the number of predicate-targeted
+//!   shapes in the cache, not with data size.
+//!
 //! # Not Yet Supported
 //!
 //! The following constraints are parsed/compiled but are **not enforced** at
@@ -35,10 +48,6 @@
 //!   on flakes, which is not yet threaded through the validation path.
 //! - `sh:qualifiedValueShape` (+ `sh:qualifiedMinCount` / `sh:qualifiedMaxCount`)
 //!   — requires recursive nested-shape validation counting.
-//! - `sh:targetSubjectsOf`, `sh:targetObjectsOf` — compiled but not indexed in
-//!   the cache, so staged-path transaction validation may miss shapes using
-//!   only these target types. Full-graph validation (`validate_all`) handles
-//!   them correctly.
 //!
 //! # Example
 //!

@@ -381,7 +381,11 @@ pub fn merge_shacl_opts(
 ) -> Option<EffectiveShaclConfig> {
     let shacl = resolved.shacl.as_ref()?;
     Some(EffectiveShaclConfig {
-        enabled: shacl.enabled.unwrap_or(true), // present section → default enabled
+        // Default `false` per docs/ledger-config/setting-groups.md — opt-in is
+        // the safer posture. Prior code defaulted to `true`, silently enabling
+        // SHACL for any config that declared an `f:shaclDefaults` section
+        // without setting `f:shaclEnabled`, diverging from documented behavior.
+        enabled: shacl.enabled.unwrap_or(false),
         validation_mode: shacl.validation_mode.unwrap_or(ValidationMode::Reject),
     })
 }

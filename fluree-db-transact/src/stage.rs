@@ -1619,7 +1619,21 @@ async fn validate_staged_nodes(
         return Ok(ValidationReport::conforming());
     }
 
-    // Group staged (subject, g_id) pairs. A subject may appear in multiple graphs.
+    // Group staged focus nodes by graph. A subject may appear in multiple
+    // graphs.
+    //
+    // Ref-objects of assert flakes are pulled in as focus nodes too, so
+    // `sh:targetObjectsOf` shapes targeting a newly-referenced node get
+    // evaluated on the write path. Retractions do NOT expand the focus set
+    // via their object — removing an inbound edge doesn't introduce
+    // validation work at the target.
+    //
+    // Predicate-target applicability (`sh:targetSubjectsOf` / `ObjectsOf`)
+    // is resolved inside `ShaclEngine::validate_node` by querying the
+    // post-transaction view directly. We don't pre-compute hints here
+    // because hints derived from staged flakes miss the "base edge persists,
+    // node touched for an unrelated reason" case — e.g., alice already has
+    // `ex:ssn` in the base DB, and this txn retracts `ex:name`.
     let reverse_graph = graph_sids.map(build_reverse_graph_lookup);
     let mut subjects_by_graph: HashMap<GraphId, HashSet<Sid>> = HashMap::new();
     for flake in view.staged_flakes() {
@@ -1628,10 +1642,27 @@ async fn validate_staged_nodes(
             // No reverse map (commit-transfer path): fall back to default graph
             None => 0,
         };
+        // Subject is always a focus (including for retractions — validators
+        // must still see retracted-on subjects so class/node-targeted shapes
+        // can re-check cardinality, and so the engine's post-state check can
+        // notice that a predicate-target no longer applies).
         subjects_by_graph
             .entry(g_id)
             .or_default()
             .insert(flake.s.clone());
+
+        // Ref-objects of assert flakes become focus nodes in the flake's
+        // graph. This is the only way a node that wasn't otherwise touched
+        // by the transaction gets pulled in to be validated against
+        // `sh:targetObjectsOf` shapes targeting the newly-introduced edge.
+        if flake.op {
+            if let fluree_db_core::FlakeValue::Ref(obj) = &flake.o {
+                subjects_by_graph
+                    .entry(g_id)
+                    .or_default()
+                    .insert(obj.clone());
+            }
+        }
     }
 
     let snapshot = view.db();
@@ -1667,7 +1698,10 @@ async fn validate_staged_nodes(
                 })
                 .collect();
 
-            // Validate this node (view implements OverlayProvider)
+            // Validate this node. Predicate-target applicability is resolved
+            // inside `validate_node` via post-state range queries — see the
+            // SubjectsOf/ObjectsOf handling there for why hints can't be
+            // reliably built from staged flakes alone.
             let report = engine.validate_node(db, subject, &node_types).await?;
             all_results.extend(report.results);
         }

@@ -94,12 +94,26 @@ impl ShaclEngine {
         Self::from_db_with_overlay(db, ledger_id).await
     }
 
-    /// Validate a focus node against applicable shapes
+    /// Validate a focus node against all applicable shapes.
     ///
-    /// This is the main entry point for validation. It:
-    /// 1. Finds all shapes that target the focus node
-    /// 2. Validates the node against each shape's constraints
-    /// 3. Returns a validation report
+    /// Target-type discovery:
+    /// - `sh:targetNode` / `sh:targetClass`: resolved from the cache against
+    ///   `focus_node` and `node_types`.
+    /// - `sh:targetSubjectsOf(p)` / `sh:targetObjectsOf(p)`: checked against
+    ///   the **post-transaction view** via `db.range()`. A shape applies iff
+    ///   the focus actually participates in the predicate in post-state.
+    ///
+    /// The post-state check is necessary because predicate-target
+    /// applicability cannot be determined from staged flakes alone:
+    /// - A base-state edge may make the shape apply even though nothing
+    ///   about that predicate was staged (e.g., alice already has `ex:ssn`
+    ///   and this txn only retracts `ex:name`).
+    /// - A retraction can remove the only edge that connected the focus to
+    ///   the predicate, so the shape should no longer apply.
+    ///
+    /// `db.range()` returns only assertions (retractions are suppressed by
+    /// the overlay/snapshot composition), so the existence check is exactly
+    /// the post-state answer.
     pub async fn validate_node(
         &self,
         db: GraphDbRef<'_>,
@@ -117,6 +131,41 @@ impl ShaclEngine {
         // By class targeting
         for class in node_types {
             applicable_shapes.extend(self.cache.shapes_for_class(class));
+        }
+
+        // By `sh:targetSubjectsOf(p)`: focus must currently have `p` as
+        // outbound predicate (SPOT existence check). Only predicates that
+        // are actually used as `SubjectsOf` targets are probed, so this is
+        // bounded by the shape-set size, not the data size.
+        for predicate in self.cache.by_target_subjects_of.keys() {
+            let flakes = db
+                .range(
+                    IndexType::Spot,
+                    RangeTest::Eq,
+                    RangeMatch::subject_predicate(focus_node.clone(), predicate.clone()),
+                )
+                .await?;
+            if !flakes.is_empty() {
+                applicable_shapes.extend(self.cache.shapes_for_subjects_of(predicate));
+            }
+        }
+
+        // By `sh:targetObjectsOf(p)`: focus must currently appear as the
+        // object of `p` (OPST existence check). Same bounded-cost argument.
+        for predicate in self.cache.by_target_objects_of.keys() {
+            let flakes = db
+                .range(
+                    IndexType::Opst,
+                    RangeTest::Eq,
+                    RangeMatch::predicate_object(
+                        predicate.clone(),
+                        FlakeValue::Ref(focus_node.clone()),
+                    ),
+                )
+                .await?;
+            if !flakes.is_empty() {
+                applicable_shapes.extend(self.cache.shapes_for_objects_of(predicate));
+            }
         }
 
         // Remove duplicates

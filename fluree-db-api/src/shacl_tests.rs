@@ -1242,6 +1242,372 @@ async fn shacl_class_constraint_subclass_reasoning_cross_graph() {
 }
 
 // =============================================================================
+// sh:targetSubjectsOf tests (staged write path)
+// =============================================================================
+
+/// Shape targets subjects-of(ex:ssn) — any node that has an ex:ssn value
+/// must also have an ex:name. Pre-fix, the cache didn't index `SubjectsOf`,
+/// so staged-path validation missed this target entirely.
+#[tokio::test]
+async fn shacl_target_subjects_of() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:HasSsnShape",
+        "@type": "sh:NodeShape",
+        "sh:targetSubjectsOf": {"@id": "ex:ssn"},
+        "sh:property": [{
+            "@id": "ex:pshape_ssn",
+            "sh:path": {"@id": "ex:name"},
+            "sh:minCount": 1
+        }]
+    });
+
+    // Valid: subject has ex:ssn AND ex:name.
+    let ledger_ok = fluree.create_ledger("shacl/tso-ok:main").await.unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    fluree
+        .upsert(
+            ledger_ok,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:alice",
+                "ex:ssn": "123-45-6789",
+                "ex:name": "Alice"
+            }),
+        )
+        .await
+        .expect("subject with ex:ssn and ex:name should pass");
+
+    // Invalid: subject has ex:ssn but no ex:name — must still be a focus.
+    let ledger_bad = fluree.create_ledger("shacl/tso-bad:main").await.unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:bob",
+                "ex:ssn": "987-65-4321"
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "at least 1");
+}
+
+/// Regression: `sh:targetSubjectsOf` hints must be built from ASSERT flakes
+/// only. Retractions shouldn't trigger the target — the predicate is being
+/// removed from the post-transaction view, so the shape no longer applies.
+///
+/// Pre-fix, the staged validator recorded every flake's predicate into the
+/// outbound-hints map regardless of `flake.op`. A retraction of
+/// `(alice, ex:ssn, ..)` would make alice look like a `targetSubjectsOf(ex:ssn)`
+/// focus, fire the shape, and (because retractions also removed `ex:name`)
+/// produce a spurious `minCount` violation.
+#[tokio::test]
+async fn shacl_target_subjects_of_ignores_retractions() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    // Shape: subjects of ex:ssn must have at least one ex:name.
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:HasSsnShape",
+        "@type": "sh:NodeShape",
+        "sh:targetSubjectsOf": {"@id": "ex:ssn"},
+        "sh:property": [{
+            "@id": "ex:pshape_ssn_retract",
+            "sh:path": {"@id": "ex:name"},
+            "sh:minCount": 1
+        }]
+    });
+
+    let ledger = fluree
+        .create_ledger("shacl/tso-retract:main")
+        .await
+        .unwrap();
+    let ledger = fluree.upsert(ledger, &shape_txn).await.unwrap().ledger;
+
+    // Seed: alice has ex:ssn AND ex:name (shape initially satisfied).
+    let ledger = fluree
+        .upsert(
+            ledger,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:alice",
+                "ex:ssn": "123-45-6789",
+                "ex:name": "Alice"
+            }),
+        )
+        .await
+        .expect("seed must succeed — shape is satisfied")
+        .ledger;
+
+    // Retract both ex:ssn and ex:name in a single transaction.
+    // Post-state: alice has nothing. Shape's SubjectsOf(ex:ssn) should NOT
+    // fire on alice for this transaction — ssn is being removed, not added.
+    fluree
+        .update(
+            ledger,
+            &json!({
+                "@context": context.clone(),
+                "delete": {
+                    "@id": "ex:alice",
+                    "ex:ssn": "123-45-6789",
+                    "ex:name": "Alice"
+                }
+            }),
+        )
+        .await
+        .expect(
+            "retraction-only transaction must not trigger sh:targetSubjectsOf \
+             on the retracting subject — the post-state has no ex:ssn",
+        );
+}
+
+// =============================================================================
+// sh:targetObjectsOf tests (staged write path)
+// =============================================================================
+
+/// Shape targets objects-of(ex:employer) — any node referenced as an
+/// ex:employer must have an ex:name. Pre-fix, the staged path didn't add
+/// ref-objects as focus nodes, so the referenced company was never validated.
+#[tokio::test]
+async fn shacl_target_objects_of() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:EmployerShape",
+        "@type": "sh:NodeShape",
+        "sh:targetObjectsOf": {"@id": "ex:employer"},
+        "sh:property": [{
+            "@id": "ex:pshape_employer",
+            "sh:path": {"@id": "ex:name"},
+            "sh:minCount": 1
+        }]
+    });
+
+    // Valid: referenced company has ex:name.
+    let ledger_ok = fluree.create_ledger("shacl/too-ok:main").await.unwrap();
+    let ledger_ok = fluree.upsert(ledger_ok, &shape_txn).await.unwrap().ledger;
+    fluree
+        .upsert(
+            ledger_ok,
+            &json!([
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:acme",
+                    "ex:name": "Acme Corp"
+                },
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:alice",
+                    "ex:employer": {"@id": "ex:acme"}
+                }
+            ]),
+        )
+        .await
+        .expect("referenced employer with ex:name should pass");
+
+    // Invalid: referenced company has no ex:name. The object-ref (ex:opaque)
+    // must be pulled in as a focus node by the staged validator.
+    let ledger_bad = fluree.create_ledger("shacl/too-bad:main").await.unwrap();
+    let ledger_bad = fluree.upsert(ledger_bad, &shape_txn).await.unwrap().ledger;
+    let err = fluree
+        .upsert(
+            ledger_bad,
+            &json!([
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:opaque"
+                },
+                {
+                    "@context": context.clone(),
+                    "@id": "ex:bob",
+                    "ex:employer": {"@id": "ex:opaque"}
+                }
+            ]),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "at least 1");
+}
+
+/// Regression: `sh:targetSubjectsOf` must fire on a focus when the
+/// triggering edge exists in the **base state** and this txn only edits
+/// another property. Pre-fix, the validator built target hints from staged
+/// assert flakes only, so a txn that retracted `ex:name` on a subject
+/// whose `ex:ssn` was already present in the base DB would miss the
+/// `targetSubjectsOf(ex:ssn)` shape — a false negative.
+#[tokio::test]
+async fn shacl_target_subjects_of_fires_on_base_state_edge() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:HasSsnShapeBase",
+        "@type": "sh:NodeShape",
+        "sh:targetSubjectsOf": {"@id": "ex:ssn"},
+        "sh:property": [{
+            "@id": "ex:pshape_ssn_base",
+            "sh:path": {"@id": "ex:name"},
+            "sh:minCount": 1
+        }]
+    });
+
+    let ledger = fluree.create_ledger("shacl/tso-base:main").await.unwrap();
+    let ledger = fluree.upsert(ledger, &shape_txn).await.unwrap().ledger;
+
+    // Seed: alice has ex:ssn AND ex:name — shape satisfied.
+    let ledger = fluree
+        .upsert(
+            ledger,
+            &json!({
+                "@context": context.clone(),
+                "@id": "ex:alice",
+                "ex:ssn": "123-45-6789",
+                "ex:name": "Alice"
+            }),
+        )
+        .await
+        .expect("seed: shape initially satisfied")
+        .ledger;
+
+    // Retract ONLY ex:name. ex:ssn persists in the base state, so alice
+    // must still be treated as a targetSubjectsOf(ex:ssn) focus.
+    let err = fluree
+        .update(
+            ledger,
+            &json!({
+                "@context": context.clone(),
+                "delete": {"@id": "ex:alice", "ex:name": "Alice"}
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "at least 1");
+}
+
+/// Regression: `sh:targetObjectsOf` must fire on a focus when the inbound
+/// edge exists in the **base state** and this txn only edits another
+/// property on the target. Pre-fix, the Ref-object-as-focus expansion
+/// relied on the txn asserting the inbound edge, so a txn that only
+/// retracted `ex:name` on an already-referenced node would miss the
+/// `targetObjectsOf(ex:employer)` shape.
+#[tokio::test]
+async fn shacl_target_objects_of_fires_on_base_state_edge() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:EmployerShapeBase",
+        "@type": "sh:NodeShape",
+        "sh:targetObjectsOf": {"@id": "ex:employer"},
+        "sh:property": [{
+            "@id": "ex:pshape_employer_base",
+            "sh:path": {"@id": "ex:name"},
+            "sh:minCount": 1
+        }]
+    });
+
+    let ledger = fluree.create_ledger("shacl/too-base:main").await.unwrap();
+    let ledger = fluree.upsert(ledger, &shape_txn).await.unwrap().ledger;
+
+    // Seed: acme has ex:name AND is referenced as bob's employer.
+    let ledger = fluree
+        .upsert(
+            ledger,
+            &json!([
+                {"@context": context.clone(), "@id": "ex:acme", "ex:name": "Acme Corp"},
+                {"@context": context.clone(), "@id": "ex:bob",
+                 "ex:employer": {"@id": "ex:acme"}}
+            ]),
+        )
+        .await
+        .expect("seed: shape initially satisfied")
+        .ledger;
+
+    // Retract ONLY acme's ex:name. The (bob, ex:employer, acme) edge
+    // persists in the base state, so acme is still a
+    // targetObjectsOf(ex:employer) focus in the post-txn view.
+    let err = fluree
+        .update(
+            ledger,
+            &json!({
+                "@context": context.clone(),
+                "delete": {"@id": "ex:acme", "ex:name": "Acme Corp"}
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert_shacl_violation(err, "at least 1");
+}
+
+/// Regression: `sh:targetSubjectsOf` / `sh:targetObjectsOf` applicability
+/// must be determined against the **per-graph** view of the post-txn state.
+/// If a subject has different predicates in different graphs, matching in
+/// graph A must not leak into graph B.
+///
+/// Pre-fix, hints were keyed by focus `Sid` alone. In a multi-graph
+/// transaction that wrote `ex:alice ex:ssn` in graph A and only
+/// `ex:alice ex:hobby` in graph B, the validator would fire
+/// `sh:targetSubjectsOf(ex:ssn)` on alice in graph B — where she has no
+/// `ex:ssn` — producing a spurious `minCount` violation on `ex:name`.
+#[tokio::test]
+async fn shacl_target_subjects_of_does_not_leak_across_graphs() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let context = shacl_context();
+
+    let shape_txn = json!({
+        "@context": context.clone(),
+        "@id": "ex:HasSsnShapeXG",
+        "@type": "sh:NodeShape",
+        "sh:targetSubjectsOf": {"@id": "ex:ssn"},
+        "sh:property": [{
+            "@id": "ex:pshape_ssn_xgraph",
+            "sh:path": {"@id": "ex:name"},
+            "sh:minCount": 1
+        }]
+    });
+
+    let ledger = fluree.create_ledger("shacl/tso-xgraph:main").await.unwrap();
+    let ledger = fluree.upsert(ledger, &shape_txn).await.unwrap().ledger;
+
+    // TriG: alice gets ex:ssn AND ex:name in graph A (shape satisfied there).
+    // In graph B, alice has only ex:hobby — no ex:ssn, so SubjectsOf(ex:ssn)
+    // must NOT fire on alice in graph B. Keying hints by (GraphId, Sid)
+    // ensures the graph-B hint set is {ex:hobby}, not {ex:ssn, ex:name, ex:hobby}.
+    let trig = r#"
+        @prefix ex: <http://example.org/ns/> .
+
+        GRAPH <http://example.org/ns/graphA> {
+            ex:alice ex:ssn "123" ;
+                     ex:name "Alice" .
+        }
+        GRAPH <http://example.org/ns/graphB> {
+            ex:alice ex:hobby "reading" .
+        }
+    "#;
+
+    fluree
+        .stage_owned(ledger)
+        .upsert_turtle(trig)
+        .execute()
+        .await
+        .expect(
+            "cross-graph write must not leak sh:targetSubjectsOf hints: \
+             alice in graph B has no ex:ssn, so the shape must not fire there",
+        );
+}
+
+// =============================================================================
 // Logical constraint tests (sh:not, sh:and, sh:or, sh:xone)
 // =============================================================================
 

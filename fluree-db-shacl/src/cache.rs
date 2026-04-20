@@ -43,6 +43,16 @@ pub struct ShaclCache {
     pub by_target_class: HashMap<Sid, Vec<usize>>,
     /// Index: target node -> shape indices
     pub by_target_node: HashMap<Sid, Vec<usize>>,
+    /// Index: predicate used in `sh:targetSubjectsOf` -> shape indices.
+    ///
+    /// Used on the staged write path to discover shapes applicable to a
+    /// focus node based on the *outbound* predicates it carries.
+    pub by_target_subjects_of: HashMap<Sid, Vec<usize>>,
+    /// Index: predicate used in `sh:targetObjectsOf` -> shape indices.
+    ///
+    /// Used on the staged write path to discover shapes applicable to a
+    /// focus node based on the *inbound* predicates pointing at it.
+    pub by_target_objects_of: HashMap<Sid, Vec<usize>>,
 }
 
 impl ShaclCache {
@@ -57,6 +67,8 @@ impl ShaclCache {
     ) -> Self {
         let mut by_target_class: HashMap<Sid, Vec<usize>> = HashMap::new();
         let mut by_target_node: HashMap<Sid, Vec<usize>> = HashMap::new();
+        let mut by_target_subjects_of: HashMap<Sid, Vec<usize>> = HashMap::new();
+        let mut by_target_objects_of: HashMap<Sid, Vec<usize>> = HashMap::new();
 
         for (idx, shape) in shapes.iter().enumerate() {
             for target in &shape.targets {
@@ -83,7 +95,18 @@ impl ShaclCache {
                             by_target_node.entry(node.clone()).or_default().push(idx);
                         }
                     }
-                    _ => {}
+                    crate::compile::TargetType::SubjectsOf(pred) => {
+                        by_target_subjects_of
+                            .entry(pred.clone())
+                            .or_default()
+                            .push(idx);
+                    }
+                    crate::compile::TargetType::ObjectsOf(pred) => {
+                        by_target_objects_of
+                            .entry(pred.clone())
+                            .or_default()
+                            .push(idx);
+                    }
                 }
             }
         }
@@ -93,6 +116,8 @@ impl ShaclCache {
             shapes: shapes.into(),
             by_target_class,
             by_target_node,
+            by_target_subjects_of,
+            by_target_objects_of,
         }
     }
 
@@ -108,6 +133,32 @@ impl ShaclCache {
     pub fn shapes_for_node(&self, node: &Sid) -> Vec<&CompiledShape> {
         self.by_target_node
             .get(node)
+            .map(|indices| indices.iter().map(|&i| &self.shapes[i]).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get shapes targeting subjects of `predicate` (`sh:targetSubjectsOf`).
+    ///
+    /// Returns shapes whose `TargetType::SubjectsOf(p)` matches `predicate`.
+    /// The caller is responsible for determining that the focus node actually
+    /// carries `predicate` as an outbound property — the cache only indexes
+    /// which shapes *could* apply.
+    pub fn shapes_for_subjects_of(&self, predicate: &Sid) -> Vec<&CompiledShape> {
+        self.by_target_subjects_of
+            .get(predicate)
+            .map(|indices| indices.iter().map(|&i| &self.shapes[i]).collect())
+            .unwrap_or_default()
+    }
+
+    /// Get shapes targeting objects of `predicate` (`sh:targetObjectsOf`).
+    ///
+    /// Returns shapes whose `TargetType::ObjectsOf(p)` matches `predicate`.
+    /// The caller is responsible for determining that the focus node actually
+    /// appears as the object of `predicate` — the cache only indexes which
+    /// shapes *could* apply.
+    pub fn shapes_for_objects_of(&self, predicate: &Sid) -> Vec<&CompiledShape> {
+        self.by_target_objects_of
+            .get(predicate)
             .map(|indices| indices.iter().map(|&i| &self.shapes[i]).collect())
             .unwrap_or_default()
     }
