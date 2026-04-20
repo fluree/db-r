@@ -204,9 +204,26 @@ fn stamp_provenance(
 ///
 /// `Binding::Sid` is converted to `IriMatch`; all other variants are moved
 /// through unchanged (no cloning).
+///
+/// # Panics
+///
+/// Panics on `Binding::EncodedSid` or `Binding::EncodedPid` in debug
+/// builds. These late-materialized binary-cursor IDs cannot be decoded
+/// without the store, so they must never reach provenance stamping — the
+/// `open()` loop disables binary stores for multi-ledger datasets.
 fn stamp_binding(binding: Binding, ledger_id: &Arc<str>, ctx: &ExecutionContext<'_>) -> Binding {
     match binding {
         Binding::Sid(ref sid) => sid_to_iri_match(sid, ledger_id, ctx),
+        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
+            debug_assert!(
+                false,
+                "EncodedSid/EncodedPid reached stamp_provenance — binary store should have \
+                 been disabled for multi-ledger datasets"
+            );
+            // In release builds, pass through unchanged rather than panicking.
+            // The binding won't carry provenance, but won't corrupt data.
+            binding
+        }
         other => other,
     }
 }
