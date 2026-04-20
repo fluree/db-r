@@ -6,10 +6,10 @@
 //! stamps ledger provenance (`Binding::IriMatch`) when results span multiple
 //! ledgers.
 //!
-//! A [`DatasetBuilder`] trait (factory pattern, option C) separates *how* to
-//! build per-graph operators from *when* they are built. The planner
-//! constructs a builder at plan time; `DatasetOperator` calls it at execution
-//! time during [`Operator::open`].
+//! A [`DatasetBuilder`] trait (factory pattern) separates *how* to build
+//! per-graph operators from *when* they are built. The planner constructs a
+//! builder at plan time; `DatasetOperator` calls it at execution time during
+//! [`Operator::open`].
 //!
 //! # Nested composition
 //!
@@ -258,7 +258,20 @@ impl Operator for DatasetOperator {
 
                 for graph in &graphs {
                     let mut inner = self.builder.build()?;
-                    let per_graph_ctx = ctx.with_graph_ref(graph);
+                    let mut per_graph_ctx = ctx.with_graph_ref(graph);
+
+                    // When provenance stamping is needed (multi-ledger),
+                    // force the range fallback path so inner scans produce
+                    // `Binding::Sid` rather than `Binding::EncodedSid`.
+                    // EncodedSid is a late-materialized binary-cursor ID
+                    // that cannot be decoded to an IRI without the store,
+                    // which is not available at stamp_provenance time.
+                    if !all_same_ledger {
+                        per_graph_ctx.binary_store = None;
+                        per_graph_ctx.dict_novelty = None;
+                        per_graph_ctx.runtime_small_dicts = None;
+                    }
+
                     inner.open(&per_graph_ctx).await?;
 
                     if all_same_ledger {
