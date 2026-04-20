@@ -820,11 +820,11 @@ impl<'a> ExecutionContext<'a> {
             tracker: self.tracker.clone(),
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
-            binary_store: None, // GraphRef doesn't have binary store
+            binary_store: Self::extract_binary_store(graph.snapshot),
             binary_g_id: graph.g_id,
-            dict_novelty: None, // GraphRef doesn't have dict novelty
+            dict_novelty: Self::extract_dict_novelty(graph.snapshot),
             namespace_codes_fallback: None,
-            runtime_small_dicts: None,
+            runtime_small_dicts: Self::extract_runtime_small_dicts(graph.snapshot),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
