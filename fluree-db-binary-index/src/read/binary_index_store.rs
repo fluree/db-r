@@ -1909,51 +1909,113 @@ async fn build_dictionary_set(
         (dict, rev)
     };
 
-    // Subject forward packs.
-    let mut subject_forward_packs = std::collections::BTreeMap::new();
-    for (ns_code, ns_refs) in &root.dict_refs.forward_packs.subject_fwd_ns_packs {
-        let reader = ForwardPackReader::from_pack_refs(
-            Arc::clone(&cs),
-            cache_dir,
-            ns_refs,
-            KIND_SUBJECT_FWD,
-            *ns_code,
-        )
-        .await?;
-        subject_forward_packs.insert(*ns_code, reader);
+    // Fan out the four I/O-bound phases concurrently. Each phase owns its
+    // inputs so the combined future has no lifetime ties to the caller's
+    // stack frame, matching the pattern established in
+    // `fetch_named_graph_branches` (fluree/db-r#155). `buffer_unordered`
+    // and `tokio::try_join!` are intentionally avoided here — they
+    // triggered a Rust trait-inference cascade that surfaced as `Send`
+    // bound failures elsewhere; see the commit message for 16326e72.
+    let subject_fwd_fut = {
+        let cs = Arc::clone(&cs);
+        let cache_dir = cache_dir.to_path_buf();
+        // One fetch per (ns_code, pack refs) entry; typically 1-few. Each
+        // owns its inputs so try_join_all drives them concurrently.
+        let per_ns_fetches: Vec<_> = root
+            .dict_refs
+            .forward_packs
+            .subject_fwd_ns_packs
+            .iter()
+            .map(|(ns_code, ns_refs)| {
+                let cs = Arc::clone(&cs);
+                let ns_refs = ns_refs.clone();
+                let cache_dir = cache_dir.clone();
+                let ns_code = *ns_code;
+                async move {
+                    let reader = ForwardPackReader::from_pack_refs(
+                        cs,
+                        &cache_dir,
+                        &ns_refs,
+                        KIND_SUBJECT_FWD,
+                        ns_code,
+                    )
+                    .await?;
+                    Ok::<_, io::Error>((ns_code, reader))
+                }
+            })
+            .collect();
+        async move { futures::future::try_join_all(per_ns_fetches).await }
+    };
+
+    let subject_reverse_fut = {
+        let cs = Arc::clone(&cs);
+        let refs = root.dict_refs.subject_reverse.clone();
+        let cache_dir = cache_dir.to_path_buf();
+        let leaflet_cache = leaflet_cache.cloned();
+        async move {
+            DictTreeReader::from_refs(&cs, &refs, leaflet_cache.as_ref(), Some(&cache_dir)).await
+        }
+    };
+
+    let string_fwd_fut = {
+        let cs = Arc::clone(&cs);
+        let refs = root.dict_refs.forward_packs.string_fwd_packs.clone();
+        let cache_dir = cache_dir.to_path_buf();
+        async move {
+            ForwardPackReader::from_pack_refs(cs, &cache_dir, &refs, KIND_STRING_FWD, 0).await
+        }
+    };
+
+    let string_reverse_fut = {
+        let cs = Arc::clone(&cs);
+        let refs = root.dict_refs.string_reverse.clone();
+        let cache_dir = cache_dir.to_path_buf();
+        let leaflet_cache = leaflet_cache.cloned();
+        async move {
+            DictTreeReader::from_refs(&cs, &refs, leaflet_cache.as_ref(), Some(&cache_dir)).await
+        }
+    };
+
+    // `try_join_all` over a Vec of BoxFuture<...Result<Phase>...> gives the
+    // four phases uniform types; the enum discriminant carries the phase
+    // identity back out.
+    enum DictPhase {
+        SubjectFwd(Vec<(u16, ForwardPackReader)>),
+        SubjectReverse(DictTreeReader),
+        StringFwd(ForwardPackReader),
+        StringReverse(DictTreeReader),
     }
+    use futures::future::FutureExt;
+    let phase_futs: Vec<futures::future::BoxFuture<'_, io::Result<DictPhase>>> = vec![
+        subject_fwd_fut.map(|r| r.map(DictPhase::SubjectFwd)).boxed(),
+        subject_reverse_fut
+            .map(|r| r.map(DictPhase::SubjectReverse))
+            .boxed(),
+        string_fwd_fut.map(|r| r.map(DictPhase::StringFwd)).boxed(),
+        string_reverse_fut
+            .map(|r| r.map(DictPhase::StringReverse))
+            .boxed(),
+    ];
+    let phases = futures::future::try_join_all(phase_futs).await?;
 
-    // Subject reverse tree.
-    let subject_reverse_tree = Some(
-        DictTreeReader::from_refs(
-            &cs,
-            &root.dict_refs.subject_reverse,
-            leaflet_cache,
-            Some(cache_dir),
-        )
-        .await?,
-    );
-
-    // String forward packs.
-    let string_forward_packs = ForwardPackReader::from_pack_refs(
-        Arc::clone(&cs),
-        cache_dir,
-        &root.dict_refs.forward_packs.string_fwd_packs,
-        KIND_STRING_FWD,
-        0,
-    )
-    .await?;
-
-    // String reverse tree.
-    let string_reverse_tree = Some(
-        DictTreeReader::from_refs(
-            &cs,
-            &root.dict_refs.string_reverse,
-            leaflet_cache,
-            Some(cache_dir),
-        )
-        .await?,
-    );
+    let mut subject_forward_packs = std::collections::BTreeMap::new();
+    let mut subject_reverse_tree: Option<DictTreeReader> = None;
+    let mut string_forward_packs: Option<ForwardPackReader> = None;
+    let mut string_reverse_tree: Option<DictTreeReader> = None;
+    for phase in phases {
+        match phase {
+            DictPhase::SubjectFwd(pairs) => {
+                for (ns_code, reader) in pairs {
+                    subject_forward_packs.insert(ns_code, reader);
+                }
+            }
+            DictPhase::SubjectReverse(reader) => subject_reverse_tree = Some(reader),
+            DictPhase::StringFwd(reader) => string_forward_packs = Some(reader),
+            DictPhase::StringReverse(reader) => string_reverse_tree = Some(reader),
+        }
+    }
+    let string_forward_packs =
+        string_forward_packs.expect("StringFwd phase must have populated string_forward_packs");
 
     // Namespace codes.
     let namespace_codes: HashMap<u16, String> = root
@@ -2042,119 +2104,241 @@ struct LoadedArenas {
 }
 
 /// Load per-graph specialty arenas from GraphArenaRefs.
+///
+/// All arena blob fetches — numbig, vector manifests, spatial roots +
+/// their per-spatial-index blob sets, fulltext arenas — are independent
+/// content-addressed reads. Running them serially dominates the index-load
+/// wall clock for ledgers with many arena entries (fluree/db-r#155
+/// follow-up). Flatten every fetch into one `try_join_all` over
+/// fully-owned futures so wall time drops from `sum(GETs)` to roughly
+/// `max(GETs)`.
+///
+/// `try_join_all` on an owned `Vec<BoxFuture>` is used rather than
+/// `buffer_unordered` or `tokio::try_join!` — the commit message for
+/// 16326e72 documents the Rust trait-inference cascade those alternatives
+/// trigger with async-trait methods on `ContentStore`.
 async fn load_per_graph_arenas(
     cs: Arc<dyn ContentStore>,
     graph_arenas: &[crate::format::wire_helpers::GraphArenaRefs],
     cache_dir: &Path,
     leaflet_cache: Option<&Arc<LeafletCache>>,
 ) -> io::Result<HashMap<GraphId, LoadedArenas>> {
-    let mut result = HashMap::new();
+    /// Per-future return type — carries the (graph, kind, key) identity so
+    /// results can be reassembled into `HashMap<GraphId, LoadedArenas>`
+    /// after the concurrent joins complete.
+    enum ArenaLoaded {
+        NumBig(GraphId, u32, crate::arena::numbig::NumBigArena),
+        Vector(GraphId, u32, crate::arena::vector::LazyVectorArena),
+        Spatial(
+            GraphId,
+            u32,
+            Arc<dyn fluree_db_spatial::SpatialIndexProvider>,
+        ),
+        Fulltext(GraphId, u32, Arc<crate::arena::fulltext::FulltextArena>),
+    }
+
+    use futures::future::{BoxFuture, FutureExt};
+    let mut fetches: Vec<BoxFuture<'_, io::Result<ArenaLoaded>>> = Vec::new();
 
     for ga in graph_arenas {
-        let mut numbig = HashMap::new();
+        let g_id = ga.g_id;
+
+        // numbig: one owned fetch per predicate.
         for (p_id, cid) in &ga.numbig {
-            let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "nba").await?;
-            let arena = crate::arena::numbig::read_numbig_arena_from_bytes(&bytes)?;
-            numbig.insert(*p_id, arena);
-        }
-
-        let mut vectors = HashMap::new();
-        for entry in &ga.vectors {
-            let manifest_bytes =
-                fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
-            let manifest = crate::arena::vector::read_vector_manifest(&manifest_bytes)?;
-
-            let mut shard_sources = Vec::with_capacity(entry.shards.len());
-            for shard_cid in &entry.shards {
-                let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
-                if let Some(local) = cs.resolve_local_path(shard_cid) {
-                    shard_sources.push(crate::arena::vector::ShardSource {
-                        cid_hash,
-                        cid: None,
-                        path: local,
-                        on_disk: std::sync::atomic::AtomicBool::new(true),
-                    });
-                } else {
-                    let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
-                    let exists = cache_path.exists();
-                    shard_sources.push(crate::arena::vector::ShardSource {
-                        cid_hash,
-                        cid: Some(shard_cid.clone()),
-                        path: cache_path,
-                        on_disk: std::sync::atomic::AtomicBool::new(exists),
-                    });
+            let cs = Arc::clone(&cs);
+            let cid = cid.clone();
+            let cache_dir = cache_dir.to_path_buf();
+            let p_id = *p_id;
+            fetches.push(
+                async move {
+                    let bytes = fetch_cached_bytes(cs.as_ref(), &cid, &cache_dir, "nba").await?;
+                    let arena = crate::arena::numbig::read_numbig_arena_from_bytes(&bytes)?;
+                    Ok(ArenaLoaded::NumBig(g_id, p_id, arena))
                 }
-            }
-
-            // LazyVectorArena needs a LeafletCache for shard caching and
-            // an optional ContentStore for remote shard fetching.
-            let shard_cache = leaflet_cache
-                .cloned()
-                .unwrap_or_else(|| Arc::new(LeafletCache::with_max_mb(64)));
-            let arena = crate::arena::vector::LazyVectorArena::new(
-                manifest,
-                shard_sources,
-                shard_cache,
-                Some(Arc::clone(&cs)),
+                .boxed(),
             );
-            vectors.insert(entry.p_id, arena);
         }
 
-        // Spatial and fulltext arenas.
-        let mut spatial = HashMap::new();
+        // vectors: one owned fetch per vector entry (manifest only; shards
+        // are consulted lazily at query time).
+        for entry in &ga.vectors {
+            let cs = Arc::clone(&cs);
+            let manifest_cid = entry.manifest.clone();
+            let shard_cids = entry.shards.clone();
+            let p_id = entry.p_id;
+            let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
+            fetches.push(
+                async move {
+                    let manifest_bytes =
+                        fetch_cached_bytes(cs.as_ref(), &manifest_cid, &cache_dir, "vam").await?;
+                    let manifest = crate::arena::vector::read_vector_manifest(&manifest_bytes)?;
+
+                    let mut shard_sources = Vec::with_capacity(shard_cids.len());
+                    for shard_cid in &shard_cids {
+                        let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
+                        if let Some(local) = cs.resolve_local_path(shard_cid) {
+                            shard_sources.push(crate::arena::vector::ShardSource {
+                                cid_hash,
+                                cid: None,
+                                path: local,
+                                on_disk: std::sync::atomic::AtomicBool::new(true),
+                            });
+                        } else {
+                            let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
+                            let exists = cache_path.exists();
+                            shard_sources.push(crate::arena::vector::ShardSource {
+                                cid_hash,
+                                cid: Some(shard_cid.clone()),
+                                path: cache_path,
+                                on_disk: std::sync::atomic::AtomicBool::new(exists),
+                            });
+                        }
+                    }
+
+                    let shard_cache = leaflet_cache_cloned
+                        .unwrap_or_else(|| Arc::new(LeafletCache::with_max_mb(64)));
+                    let arena = crate::arena::vector::LazyVectorArena::new(
+                        manifest,
+                        shard_sources,
+                        shard_cache,
+                        Some(Arc::clone(&cs)),
+                    );
+                    Ok(ArenaLoaded::Vector(g_id, p_id, arena))
+                }
+                .boxed(),
+            );
+        }
+
+        // spatial: root fetch, then concurrent blob fetches, then decode.
         for sp_ref in &ga.spatial {
-            let root_bytes =
-                fetch_cached_bytes(cs.as_ref(), &sp_ref.root_cid, cache_dir, "spr").await?;
-            let spatial_root: fluree_db_spatial::SpatialIndexRoot =
-                serde_json::from_slice(&root_bytes).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, format!("spatial root: {e}"))
-                })?;
+            let cs = Arc::clone(&cs);
+            let sp_ref = sp_ref.clone();
+            let cache_dir = cache_dir.to_path_buf();
+            fetches.push(
+                async move {
+                    let root_bytes =
+                        fetch_cached_bytes(cs.as_ref(), &sp_ref.root_cid, &cache_dir, "spr")
+                            .await?;
+                    let spatial_root: fluree_db_spatial::SpatialIndexRoot =
+                        serde_json::from_slice(&root_bytes).map_err(|e| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("spatial root: {e}"),
+                            )
+                        })?;
 
-            // Pre-fetch all spatial blobs, keyed by digest_hex.
-            let mut blob_cache: HashMap<String, Vec<u8>> = HashMap::new();
-            for cid in [&sp_ref.manifest, &sp_ref.arena]
-                .into_iter()
-                .chain(sp_ref.leaflets.iter())
-            {
-                let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "spa").await?;
-                blob_cache.insert(cid.digest_hex(), bytes);
-            }
-            let blob_cache = Arc::new(blob_cache);
+                    // Fetch the manifest + arena + all leaflet blobs
+                    // concurrently; they're independent content-addressed
+                    // reads referenced by the already-decoded root.
+                    let blob_cids: Vec<_> = std::iter::once(sp_ref.manifest.clone())
+                        .chain(std::iter::once(sp_ref.arena.clone()))
+                        .chain(sp_ref.leaflets.iter().cloned())
+                        .collect();
+                    let blob_fetches: Vec<_> = blob_cids
+                        .into_iter()
+                        .map(|cid| {
+                            let cs = Arc::clone(&cs);
+                            let cache_dir = cache_dir.clone();
+                            async move {
+                                let bytes =
+                                    fetch_cached_bytes(cs.as_ref(), &cid, &cache_dir, "spa")
+                                        .await?;
+                                Ok::<_, io::Error>((cid.digest_hex(), bytes))
+                            }
+                        })
+                        .collect();
+                    let fetched = futures::future::try_join_all(blob_fetches).await?;
+                    let blob_cache: HashMap<String, Vec<u8>> = fetched.into_iter().collect();
+                    let blob_cache = Arc::new(blob_cache);
 
-            let snapshot =
-                fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(spatial_root, move |hash| {
-                    blob_cache.get(hash).cloned().ok_or_else(|| {
-                        fluree_db_spatial::SpatialError::ChunkNotFound(hash.to_string())
-                    })
-                })
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("spatial snapshot load: {e}"),
+                    let snapshot = fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(
+                        spatial_root,
+                        move |hash| {
+                            blob_cache.get(hash).cloned().ok_or_else(|| {
+                                fluree_db_spatial::SpatialError::ChunkNotFound(hash.to_string())
+                            })
+                        },
                     )
-                })?;
-            let provider: Arc<dyn fluree_db_spatial::SpatialIndexProvider> =
-                Arc::new(fluree_db_spatial::EmbeddedSpatialProvider::new(snapshot));
-            spatial.insert(sp_ref.p_id, provider);
+                    .map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("spatial snapshot load: {e}"),
+                        )
+                    })?;
+                    let provider: Arc<dyn fluree_db_spatial::SpatialIndexProvider> =
+                        Arc::new(fluree_db_spatial::EmbeddedSpatialProvider::new(snapshot));
+                    Ok(ArenaLoaded::Spatial(g_id, sp_ref.p_id, provider))
+                }
+                .boxed(),
+            );
         }
 
-        let mut fulltext = HashMap::new();
+        // fulltext: one owned fetch per fulltext ref.
         for ft_ref in &ga.fulltext {
-            let bytes =
-                fetch_cached_bytes(cs.as_ref(), &ft_ref.arena_cid, cache_dir, "fta").await?;
-            let arena = crate::arena::fulltext::FulltextArena::decode(&bytes)?;
-            fulltext.insert(ft_ref.p_id, Arc::new(arena));
+            let cs = Arc::clone(&cs);
+            let arena_cid = ft_ref.arena_cid.clone();
+            let p_id = ft_ref.p_id;
+            let cache_dir = cache_dir.to_path_buf();
+            fetches.push(
+                async move {
+                    let bytes =
+                        fetch_cached_bytes(cs.as_ref(), &arena_cid, &cache_dir, "fta").await?;
+                    let arena = crate::arena::fulltext::FulltextArena::decode(&bytes)?;
+                    Ok(ArenaLoaded::Fulltext(g_id, p_id, Arc::new(arena)))
+                }
+                .boxed(),
+            );
         }
+    }
 
-        result.insert(
-            ga.g_id,
-            LoadedArenas {
-                numbig,
-                vectors,
-                spatial,
-                fulltext,
-            },
-        );
+    let loaded = futures::future::try_join_all(fetches).await?;
+
+    // Seed the result map with one empty entry per graph so that graphs
+    // declared in `graph_arenas` with no arena items still appear, matching
+    // the pre-parallel-fetch behaviour that unconditionally inserted every
+    // `ga.g_id`.
+    let mut result: HashMap<GraphId, LoadedArenas> = HashMap::with_capacity(graph_arenas.len());
+    for ga in graph_arenas {
+        result.entry(ga.g_id).or_insert_with(|| LoadedArenas {
+            numbig: HashMap::new(),
+            vectors: HashMap::new(),
+            spatial: HashMap::new(),
+            fulltext: HashMap::new(),
+        });
+    }
+
+    for item in loaded {
+        match item {
+            ArenaLoaded::NumBig(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .numbig
+                    .insert(p_id, arena);
+            }
+            ArenaLoaded::Vector(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .vectors
+                    .insert(p_id, arena);
+            }
+            ArenaLoaded::Spatial(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .spatial
+                    .insert(p_id, arena);
+            }
+            ArenaLoaded::Fulltext(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .fulltext
+                    .insert(p_id, arena);
+            }
+        }
     }
 
     Ok(result)
