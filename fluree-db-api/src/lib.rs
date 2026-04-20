@@ -38,7 +38,6 @@ pub mod block_fetch;
 pub mod bm25_worker;
 pub mod commit_transfer;
 pub mod config_resolver;
-mod indexer_fulltext_provider;
 #[cfg(feature = "credential")]
 pub mod credential;
 pub mod dataset;
@@ -54,6 +53,7 @@ pub mod graph_snapshot;
 pub mod graph_source;
 pub mod graph_transact_builder;
 pub mod import;
+mod indexer_fulltext_provider;
 mod ledger;
 pub mod ledger_info;
 mod merge;
@@ -2137,23 +2137,19 @@ impl FlureeBuilder {
             // the default `LeafletCache` budget in `load_per_graph_arenas`.
             let ns_for_provider: Arc<dyn fluree_db_nameservice::NameService> =
                 Arc::clone(&nameservice) as _;
-            let provider =
-                Arc::new(crate::indexer_fulltext_provider::ApiFulltextConfigProvider {
+            let provider = Arc::new(
+                crate::indexer_fulltext_provider::ApiFulltextConfigProvider {
                     backend: backend.clone(),
                     nameservice: ns_for_provider,
-                    leaflet_cache: Arc::new(
-                        fluree_db_binary_index::LeafletCache::with_max_mb(64),
-                    ),
-                }) as Arc<dyn fluree_db_indexer::FulltextConfigProvider>;
+                    leaflet_cache: Arc::new(fluree_db_binary_index::LeafletCache::with_max_mb(64)),
+                },
+            ) as Arc<dyn fluree_db_indexer::FulltextConfigProvider>;
             let indexer_config = idx_config
                 .indexer_config
                 .clone()
                 .with_fulltext_config_provider(provider);
-            let (worker, handle) = BackgroundIndexerWorker::new(
-                backend.clone(),
-                nameservice,
-                indexer_config,
-            );
+            let (worker, handle) =
+                BackgroundIndexerWorker::new(backend.clone(), nameservice, indexer_config);
             tokio::spawn(worker.run());
             tx::IndexingMode::Background(handle)
         } else {
@@ -2607,14 +2603,14 @@ impl Fluree {
     /// already attaches one of these automatically; external callers
     /// invoking `fluree_db_indexer::build_index_for_ledger` directly should
     /// attach their own by calling this method.
-    pub fn fulltext_config_provider(
-        &self,
-    ) -> Arc<dyn fluree_db_indexer::FulltextConfigProvider> {
-        Arc::new(crate::indexer_fulltext_provider::ApiFulltextConfigProvider {
-            backend: self.backend.clone(),
-            nameservice: self.nameservice_mode.as_arc_reader(),
-            leaflet_cache: Arc::clone(&self.leaflet_cache),
-        })
+    pub fn fulltext_config_provider(&self) -> Arc<dyn fluree_db_indexer::FulltextConfigProvider> {
+        Arc::new(
+            crate::indexer_fulltext_provider::ApiFulltextConfigProvider {
+                backend: self.backend.clone(),
+                nameservice: self.nameservice_mode.as_arc_reader(),
+                leaflet_cache: Arc::clone(&self.leaflet_cache),
+            },
+        )
     }
 
     /// Get the raw address-based storage for admin/GC operations.

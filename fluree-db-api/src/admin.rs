@@ -1001,12 +1001,8 @@ impl crate::Fluree {
             Ok(state) => {
                 let snapshot = &state.snapshot;
                 let overlay: &dyn fluree_db_core::OverlayProvider = &*state.novelty;
-                match crate::config_resolver::resolve_ledger_config(
-                    snapshot,
-                    overlay,
-                    snapshot.t,
-                )
-                .await
+                match crate::config_resolver::resolve_ledger_config(snapshot, overlay, snapshot.t)
+                    .await
                 {
                     Ok(Some(cfg)) => {
                         indexer_config.fulltext_configured_properties =

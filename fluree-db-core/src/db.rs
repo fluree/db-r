@@ -626,11 +626,7 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
         Ok(())
     }
 
-    fn skip_graph_arenas(
-        bytes: &[u8],
-        pos: &mut usize,
-        version: u8,
-    ) -> std::io::Result<()> {
+    fn skip_graph_arenas(bytes: &[u8], pos: &mut usize, version: u8) -> std::io::Result<()> {
         // Matches `write_graph_arenas_v5` in binary-index.
         let _g_id = read_u16(bytes, pos)?;
 

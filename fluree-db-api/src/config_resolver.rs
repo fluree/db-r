@@ -1124,9 +1124,7 @@ async fn read_fulltext_defaults(
                 match target {
                     Some(iri) => properties.push(FullTextProperty { target: iri }),
                     None => {
-                        tracing::warn!(
-                            "FullTextProperty node without f:target — skipping"
-                        );
+                        tracing::warn!("FullTextProperty node without f:target — skipping");
                     }
                 }
             }

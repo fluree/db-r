@@ -41,9 +41,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::error;
 
-#[cfg(feature = "shacl")]
-use fluree_db_shacl::ShaclEngine;
-
 /// Base64-encoded bytes for JSON payloads.
 ///
 /// In JSON, we encode as a base64 string to avoid large `[0,1,2,...]` arrays.
@@ -237,22 +234,27 @@ impl Fluree {
             .map_err(|e| e.into_api_error())?;
 
             // 4.4 SHACL (optional feature).
+            //
+            // Route through the shared post-stage helper so commit replay
+            // honors the ledger's current `f:shaclEnabled` / `f:validationMode`
+            // AND per-graph SHACL overrides. A commit created under `Warn` on
+            // the leader (ledger-wide or per-graph) must not reject replication
+            // on the follower.
+            //
+            // `graph_delta` is built from `routing.graph_iris` — IRIs already
+            // resolved during graph routing. Overlay-only graphs (not yet in
+            // the binary store) are intentionally absent from `graph_iris` and
+            // therefore fall back to the ledger-wide baseline, which is the
+            // correct behavior: config cannot exist for a graph not yet known.
             #[cfg(feature = "shacl")]
             {
-                let shacl_db = fluree_db_core::GraphDbRef::new(
-                    &base_state.snapshot,
-                    0,
-                    &evolving_novelty,
-                    current_t,
-                );
-                let engine = ShaclEngine::from_db_with_overlay(shacl_db, base_state.ledger_id())
-                    .await
-                    .map_err(|e| ApiError::Transact(fluree_db_transact::TransactError::from(e)))?;
-                let shacl_cache = engine.cache().clone();
-                fluree_db_transact::validate_view_with_shacl(
+                crate::tx::apply_shacl_policy_to_staged_view(
                     &staged_view,
-                    &shacl_cache,
-                    Some(&routing.graph_sids),
+                    crate::tx::StagedShaclContext {
+                        graph_delta: Some(&routing.graph_iris),
+                        graph_sids: Some(&routing.graph_sids),
+                        tracker: None,
+                    },
                 )
                 .await
                 .map_err(|e| ApiError::http(422, e.to_string()))?;
@@ -424,6 +426,14 @@ impl PushError {
 struct GraphRoutingResult {
     /// All graph ID → Sid mappings (resolved + fabricated).
     graph_sids: HashMap<GraphId, Sid>,
+
+    /// `GraphId → graph IRI` for graphs resolved against the binary store.
+    ///
+    /// Used for per-graph SHACL config lookup during replay. Overlay-only
+    /// (unresolved) graphs are intentionally omitted — no per-graph config can
+    /// exist for a graph that isn't yet known to the store, so those fall back
+    /// to the ledger-wide SHACL baseline.
+    graph_iris: rustc_hash::FxHashMap<GraphId, String>,
 }
 
 /// Derive a `GraphId → Sid` routing map from flakes + binary store.
@@ -446,6 +456,7 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
     if graph_sids_set.is_empty() {
         return GraphRoutingResult {
             graph_sids: HashMap::new(),
+            graph_iris: rustc_hash::FxHashMap::default(),
         };
     }
 
@@ -455,6 +466,7 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
         .and_then(|te| Arc::clone(&te.0).downcast::<BinaryIndexStore>().ok());
 
     let mut result: HashMap<GraphId, Sid> = HashMap::new();
+    let mut graph_iris: rustc_hash::FxHashMap<GraphId, String> = rustc_hash::FxHashMap::default();
     let mut max_g_id: GraphId = 1; // 0=default, 1=txn-meta
     let mut unresolved: Vec<Sid> = Vec::new();
 
@@ -471,14 +483,15 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
                     continue; // skip unresolvable graph SID
                 }
             };
-            store.graph_id_for_iri(&iri)
+            store.graph_id_for_iri(&iri).map(|g_id| (g_id, iri))
         } else {
             None
         };
 
-        if let Some(g_id) = resolved {
+        if let Some((g_id, iri)) = resolved {
             max_g_id = max_g_id.max(g_id);
             result.insert(g_id, g_sid.clone());
+            graph_iris.insert(g_id, iri);
         } else {
             unresolved.push(g_sid.clone());
         }
@@ -493,7 +506,10 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
         next_id += 1;
     }
 
-    GraphRoutingResult { graph_sids: result }
+    GraphRoutingResult {
+        graph_sids: result,
+        graph_iris,
+    }
 }
 
 /// Build a reverse lookup from graph Sid → GraphId.

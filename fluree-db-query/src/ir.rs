@@ -1439,12 +1439,10 @@ pub fn pattern_contains_function(pattern: &Pattern, target: &Function) -> bool {
         Pattern::Exists(inner) | Pattern::NotExists(inner) | Pattern::Minus(inner) => {
             inner.iter().any(|p| pattern_contains_function(p, target))
         }
-        Pattern::Optional(inner) => {
-            inner.iter().any(|p| pattern_contains_function(p, target))
-        }
-        Pattern::Union(branches) => branches
-            .iter()
-            .any(|branch: &Vec<Pattern>| branch.iter().any(|p| pattern_contains_function(p, target))),
+        Pattern::Optional(inner) => inner.iter().any(|p| pattern_contains_function(p, target)),
+        Pattern::Union(branches) => branches.iter().any(|branch: &Vec<Pattern>| {
+            branch.iter().any(|p| pattern_contains_function(p, target))
+        }),
         Pattern::Graph { patterns, .. } => patterns
             .iter()
             .any(|p| pattern_contains_function(p, target)),

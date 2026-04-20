@@ -25,13 +25,13 @@ use fluree_db_novelty::TxnMetaEntry;
 #[cfg(feature = "shacl")]
 use fluree_db_shacl::ShaclEngine;
 use fluree_db_transact::stage as stage_txn;
+#[cfg(feature = "shacl")]
+use fluree_db_transact::validate_view_with_shacl;
 use fluree_db_transact::{
     commit as commit_txn, parse_transaction, resolve_trig_meta, CommitOpts, CommitReceipt,
     NamedGraphBlock, NamespaceRegistry, RawTrigMeta, StageOptions, TemplateTerm, TripleTemplate,
     Txn, TxnOpts, TxnType,
 };
-#[cfg(feature = "shacl")]
-use fluree_db_transact::{stage_with_shacl, validate_view_with_shacl};
 use fluree_vocab::config_iris;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
@@ -199,15 +199,110 @@ fn resolve_txn_shacl_config(
     strictest
 }
 
-/// Perform staging with config-aware SHACL validation.
+/// Context for applying SHACL policy to an already-staged [`LedgerView`].
 ///
-/// Decision tree:
-/// 1. Load config from pre-transaction state
-/// 2. If config exists: resolve per-graph, apply strictest-wins
-/// 3. If no config: fall back to shapes-exist heuristic (backward compat)
-/// 4. If SHACL disabled: plain `stage()`
-/// 5. If SHACL enabled + Reject: `stage_with_shacl()` (existing path)
-/// 6. If SHACL enabled + Warn: `stage()` + `validate_view_with_shacl()`, log warnings
+/// All fields are optional: callers without full transaction context (Turtle
+/// insert, commit replay) pass `None` and get sensible default behavior:
+/// - no `graph_delta` → ledger-wide config only (no per-graph overrides)
+/// - no `graph_sids`  → flakes validated against the default graph (g_id=0)
+/// - no `tracker`     → SHACL range scans are not fuel-accounted
+#[cfg(feature = "shacl")]
+pub(crate) struct StagedShaclContext<'a> {
+    /// Per-`GraphId` IRI map from the transaction. Used only for resolving
+    /// per-graph SHACL config overlays. Pass `None` when txn graph metadata
+    /// is unavailable (Turtle insert, commit replay).
+    pub graph_delta: Option<&'a FxHashMap<u16, String>>,
+
+    /// `GraphId → Sid` mapping used by [`validate_view_with_shacl`] to route
+    /// each staged flake to the correct per-graph validator. Pass `None` to
+    /// fall back to default-graph validation (see `validate_staged_nodes`).
+    pub graph_sids: Option<&'a HashMap<GraphId, Sid>>,
+
+    /// Optional tracker for SHACL fuel accounting during validation.
+    pub tracker: Option<&'a fluree_db_core::Tracker>,
+}
+
+/// Apply SHACL policy to an already-staged [`LedgerView`].
+///
+/// This is the single canonical post-stage SHACL entry point shared by every
+/// write surface (JSON-LD txn staging, Turtle insert, commit replay). It:
+///
+/// 1. Loads config from the view's pre-staging state (`view.base()`)
+/// 2. Resolves effective SHACL config (per-graph strictest-wins when
+///    `ctx.graph_delta` is `Some`; ledger-wide only otherwise)
+/// 3. Short-circuits when SHACL is disabled or no shapes exist
+/// 4. Validates staged flakes against compiled shapes
+/// 5. Under `Warn`: logs `ShaclViolation` and returns `Ok`; propagates every
+///    other error so a broken validation pipeline never silently admits writes
+/// 6. Under `Reject`: propagates `ShaclViolation` normally
+///
+/// Kept in the API layer (not `fluree-db-transact`) because config resolution
+/// is API-layer policy, not a staging primitive.
+#[cfg(feature = "shacl")]
+pub(crate) async fn apply_shacl_policy_to_staged_view(
+    view: &LedgerView,
+    ctx: StagedShaclContext<'_>,
+) -> std::result::Result<(), fluree_db_transact::TransactError> {
+    let base = view.base();
+
+    // 1. Load config from pre-transaction state
+    let config = load_transaction_config(base).await;
+
+    // 2. Resolve effective SHACL config
+    let shacl_config = match (&config, ctx.graph_delta) {
+        (Some(c), Some(gd)) => resolve_txn_shacl_config(c, gd),
+        (Some(c), None) => {
+            // No graph context available → ledger-wide baseline only.
+            config_resolver::merge_shacl_opts(
+                &config_resolver::resolve_effective_config(c, None),
+                None,
+            )
+        }
+        (None, _) => None,
+    };
+
+    // 3. Determine enablement
+    //    - Config present → use config's enabled flag
+    //    - No config → shapes-exist heuristic (build engine, check cache empty)
+    let (shacl_enabled, validation_mode) = match &shacl_config {
+        Some(c) => (c.enabled, c.validation_mode),
+        None => (true, ValidationMode::Reject),
+    };
+
+    if !shacl_enabled {
+        return Ok(());
+    }
+
+    // 4. Build SHACL engine from the pre-staging view. Uses
+    //    `from_db_with_overlay` so shapes transacted earlier but not yet
+    //    indexed still participate. Shapes are compiled from the default
+    //    graph (g_id=0) — per-graph `f:shapesSource` is a later PR.
+    let engine = ShaclEngine::from_db_with_overlay(base.as_graph_db_ref(0), base.ledger_id())
+        .await
+        .map_err(fluree_db_transact::TransactError::from)?;
+    let shacl_cache = engine.cache();
+
+    // No config + no shapes → skip (backward compat: shapes-exist heuristic).
+    if shacl_config.is_none() && shacl_cache.is_empty() {
+        return Ok(());
+    }
+
+    // 5. Validate and apply mode policy.
+    let result = validate_view_with_shacl(view, shacl_cache, ctx.graph_sids, ctx.tracker).await;
+    match validation_mode {
+        ValidationMode::Warn => handle_warn_mode_result(result),
+        ValidationMode::Reject => result,
+    }
+}
+
+/// Perform staging followed by config-aware SHACL validation.
+///
+/// Splits cleanly into two phases:
+/// 1. plain `stage_txn(...)`
+/// 2. `apply_shacl_policy_to_staged_view(...)` on the resulting view
+///
+/// The helper handles config resolution, warn vs reject, and the shapes-exist
+/// heuristic — this function just wires the context.
 #[cfg(feature = "shacl")]
 async fn stage_with_config_shacl(
     ledger: LedgerState,
@@ -215,70 +310,53 @@ async fn stage_with_config_shacl(
     ns_registry: NamespaceRegistry,
     options: StageOptions<'_>,
 ) -> std::result::Result<(LedgerView, NamespaceRegistry), fluree_db_transact::TransactError> {
-    // 1. Load config from pre-transaction state
-    let config = load_transaction_config(&ledger).await;
+    // Capture graph_delta + tracker before stage_txn consumes the options/txn.
+    // graph_delta is used both for per-graph config lookup and for rebuilding
+    // graph_sids after staging (IRIs are already interned in ns_registry, so
+    // sid_for_iri hits the trie cache — no new allocations).
+    let graph_delta = txn.graph_delta.clone();
+    let tracker = options.tracker;
 
-    // 2. Resolve SHACL settings (per-graph strictest-wins)
-    let shacl_config = config
-        .as_ref()
-        .and_then(|c| resolve_txn_shacl_config(c, &txn.graph_delta));
+    let (view, mut ns_registry) = stage_txn(ledger, txn, ns_registry, options).await?;
 
-    // 3. Determine enablement
-    //    - Config present → use config's enabled flag
-    //    - No config → shapes-exist heuristic (build engine, check if cache is empty)
-    let (shacl_enabled, validation_mode) = match &shacl_config {
-        Some(c) => (c.enabled, c.validation_mode),
-        None => {
-            // No config: fall back to shapes-exist heuristic.
-            // "true" means "try it" — empty cache → fast no-op below.
-            (true, ValidationMode::Reject)
+    let graph_sids: HashMap<GraphId, Sid> = graph_delta
+        .iter()
+        .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
+        .collect();
+
+    apply_shacl_policy_to_staged_view(
+        &view,
+        StagedShaclContext {
+            graph_delta: Some(&graph_delta),
+            graph_sids: Some(&graph_sids),
+            tracker,
+        },
+    )
+    .await?;
+
+    Ok((view, ns_registry))
+}
+
+/// Classify a SHACL validation result under `ValidationMode::Warn`.
+///
+/// `ShaclViolation` is logged and demoted to `Ok` (the contract of warn mode).
+/// Every other error variant (SHACL compile failure, range-scan failure, etc.)
+/// must propagate — those indicate a broken validation pipeline, not a
+/// violation, and swallowing them would silently admit unvalidated writes.
+#[cfg(feature = "shacl")]
+fn handle_warn_mode_result(
+    result: std::result::Result<(), fluree_db_transact::TransactError>,
+) -> std::result::Result<(), fluree_db_transact::TransactError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(fluree_db_transact::TransactError::ShaclViolation(report)) => {
+            tracing::warn!(
+                report = %report,
+                "SHACL violations (config mode=Warn, continuing)"
+            );
+            Ok(())
         }
-    };
-
-    if !shacl_enabled {
-        return stage_txn(ledger, txn, ns_registry, options).await;
-    }
-
-    // 4. Build SHACL engine
-    let engine = ShaclEngine::from_db_with_overlay(ledger.as_graph_db_ref(0), ledger.ledger_id())
-        .await
-        .map_err(fluree_db_transact::TransactError::from)?;
-    let shacl_cache = engine.cache();
-
-    // No config + no shapes → skip (backward compat: no shapes = no SHACL)
-    if shacl_config.is_none() && shacl_cache.is_empty() {
-        return stage_txn(ledger, txn, ns_registry, options).await;
-    }
-
-    // 5. Stage with appropriate validation mode
-    match validation_mode {
-        ValidationMode::Warn => {
-            // Clone graph_delta before stage_txn consumes the txn — needed to
-            // rebuild graph_sids for per-graph SHACL validation.
-            let graph_delta = txn.graph_delta.clone();
-            let (view, mut ns_registry) = stage_txn(ledger, txn, ns_registry, options).await?;
-            if !shacl_cache.is_empty() {
-                // Rebuild graph_sids from cloned graph_delta + ns_registry.
-                // Same pattern as stage_with_shacl() — IRIs were resolved during
-                // stage(), so sid_for_iri hits the trie cache (no new allocations).
-                let graph_sids: HashMap<GraphId, Sid> = graph_delta
-                    .iter()
-                    .map(|(&g_id, iri)| (g_id, ns_registry.sid_for_iri(iri)))
-                    .collect();
-                if let Err(fluree_db_transact::TransactError::ShaclViolation(report)) =
-                    validate_view_with_shacl(&view, shacl_cache, Some(&graph_sids)).await
-                {
-                    tracing::warn!(
-                        report = %report,
-                        "SHACL violations (config mode=Warn, continuing)"
-                    );
-                }
-            }
-            Ok((view, ns_registry))
-        }
-        ValidationMode::Reject => {
-            stage_with_shacl(ledger, txn, ns_registry, options, shacl_cache).await
-        }
+        Err(e) => Err(e),
     }
 }
 
@@ -1648,6 +1726,22 @@ impl crate::Fluree {
         };
         let view = stage_flakes(ledger, flakes, options).await?;
 
+        // Apply SHACL policy to the staged view. Plain Turtle has no named-graph
+        // metadata (that's TriG), so we pass `None` for graph_delta/graph_sids —
+        // validation falls back to default-graph (g_id=0), matching how flakes
+        // are produced by `FlakeSink`.
+        #[cfg(feature = "shacl")]
+        apply_shacl_policy_to_staged_view(
+            &view,
+            StagedShaclContext {
+                graph_delta: None,
+                graph_sids: None,
+                tracker: None,
+            },
+        )
+        .await
+        .map_err(ApiError::from)?;
+
         // Plain Turtle doesn't support named graphs or txn-meta extraction (TriG support handles these)
         Ok(StageResult {
             view,
@@ -1994,4 +2088,49 @@ impl crate::Fluree {
 #[allow(dead_code)]
 fn _ensure_error_used(e: ApiError) -> ApiError {
     e
+}
+
+#[cfg(all(test, feature = "shacl"))]
+mod warn_mode_tests {
+    use super::handle_warn_mode_result;
+    use fluree_db_transact::TransactError;
+
+    #[test]
+    fn ok_passes_through() {
+        assert!(handle_warn_mode_result(Ok(())).is_ok());
+    }
+
+    #[test]
+    fn shacl_violation_is_demoted_to_ok() {
+        let result =
+            handle_warn_mode_result(Err(TransactError::ShaclViolation("bad shape".into())));
+        assert!(
+            result.is_ok(),
+            "Warn mode must convert ShaclViolation to Ok (log-and-continue)"
+        );
+    }
+
+    #[test]
+    fn non_violation_error_propagates() {
+        // EmptyTransaction stands in for any non-ShaclViolation variant.
+        // The specific variant doesn't matter; what matters is that warn mode
+        // never silently swallows a pipeline failure as a pass.
+        let result = handle_warn_mode_result(Err(TransactError::EmptyTransaction));
+        match result {
+            Err(TransactError::EmptyTransaction) => {}
+            other => panic!(
+                "Warn mode must propagate non-ShaclViolation errors, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn parse_error_propagates() {
+        let result = handle_warn_mode_result(Err(TransactError::Parse("bad txn".into())));
+        match result {
+            Err(TransactError::Parse(msg)) => assert_eq!(msg, "bad txn"),
+            other => panic!("expected Parse error to propagate, got {:?}", other),
+        }
+    }
 }

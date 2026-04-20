@@ -1126,6 +1126,136 @@ async fn shacl_no_shapes_no_config_skips() {
 }
 
 // =============================================================================
+// Test 17b: Turtle insert is SHACL-validated under Reject mode
+// =============================================================================
+
+/// Before this refactor, `stage_turtle_insert` bypassed config-aware SHACL
+/// entirely — it called `stage_flakes` directly without any validation hook.
+/// After the shared post-stage helper lands, Turtle inserts must honor the
+/// ledger's SHACL policy the same way JSON-LD inserts do.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_turtle_insert_rejected_when_violating() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-turtle-reject:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Seed a SHACL shape requiring ex:name on every ex:Person.
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "sh": "http://www.w3.org/ns/shacl#",
+                    "ex": "http://example.org/",
+                    "xsd": "http://www.w3.org/2001/XMLSchema#"
+                },
+                "@id": "ex:PersonShape",
+                "@type": "sh:NodeShape",
+                "sh:targetClass": {"@id": "ex:Person"},
+                "sh:property": [{
+                    "sh:path": {"@id": "ex:name"},
+                    "sh:minCount": 1,
+                    "sh:datatype": {"@id": "xsd:string"}
+                }]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Violating Turtle: an ex:Person with no ex:name.
+    let turtle = r#"
+        @prefix ex: <http://example.org/> .
+        ex:charlie a ex:Person .
+    "#;
+
+    let err = fluree
+        .insert_turtle(ledger, turtle)
+        .await
+        .expect_err("Turtle insert must honor SHACL reject mode (shapes-exist heuristic)");
+
+    assert!(
+        matches!(
+            err,
+            fluree_db_api::ApiError::Transact(fluree_db_transact::TransactError::ShaclViolation(_))
+        ),
+        "Turtle path should route through the shared SHACL helper: {err:?}"
+    );
+}
+
+// =============================================================================
+// Test 17c: Turtle insert under Warn mode logs but succeeds
+// =============================================================================
+
+/// Mirrors `shacl_config_warn_mode` but for the Turtle write surface. Verifies
+/// that the shared post-stage helper applies warn-mode demotion consistently.
+#[cfg(feature = "shacl")]
+#[tokio::test]
+async fn shacl_turtle_insert_warn_mode_logs_but_succeeds() {
+    let fluree = FlureeBuilder::memory().build_memory();
+    let ledger_id = "it/shacl-turtle-warn:main";
+    let ledger = genesis_ledger(&fluree, ledger_id);
+
+    // Seed the shape first.
+    let result = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {
+                    "sh": "http://www.w3.org/ns/shacl#",
+                    "ex": "http://example.org/",
+                    "xsd": "http://www.w3.org/2001/XMLSchema#"
+                },
+                "@id": "ex:PersonShape",
+                "@type": "sh:NodeShape",
+                "sh:targetClass": {"@id": "ex:Person"},
+                "sh:property": [{
+                    "sh:path": {"@id": "ex:name"},
+                    "sh:minCount": 1,
+                    "sh:datatype": {"@id": "xsd:string"}
+                }]
+            }),
+        )
+        .await
+        .unwrap();
+    let ledger = result.ledger;
+
+    // Switch SHACL to Warn mode.
+    let config_iri = config_graph_iri(ledger_id);
+    let trig = format!(
+        r#"
+        @prefix f: <https://ns.flur.ee/db#> .
+        @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+
+        GRAPH <{config_iri}> {{
+            <urn:config:main> rdf:type f:LedgerConfig .
+            <urn:config:main> f:shaclDefaults <urn:config:shacl> .
+            <urn:config:shacl> f:shaclEnabled true .
+            <urn:config:shacl> f:validationMode f:ValidationWarn .
+        }}
+    "#
+    );
+    let result = fluree
+        .stage_owned(ledger)
+        .upsert_turtle(&trig)
+        .execute()
+        .await
+        .expect("config write should succeed");
+    let ledger = result.ledger;
+
+    // Violating Turtle should now succeed (warn-logged, not rejected).
+    let turtle = r#"
+        @prefix ex: <http://example.org/> .
+        ex:dave a ex:Person .
+    "#;
+    fluree
+        .insert_turtle(ledger, turtle)
+        .await
+        .expect("Turtle insert must respect Warn mode — violation is logged, not rejected");
+}
+
+// =============================================================================
 // Test 18: Datalog config disables reasoning (merge_datalog_opts)
 // =============================================================================
 
@@ -1925,8 +2055,7 @@ async fn fulltext_defaults_per_graph_override_additive() {
     assert_eq!(ft.properties[0].target, "http://example.org/title");
 
     // Effective for the catalog graph: additive merge.
-    let effective =
-        config_resolver::resolve_effective_config(&config, Some(target_graph));
+    let effective = config_resolver::resolve_effective_config(&config, Some(target_graph));
     let effective_ft = effective
         .full_text
         .as_ref()
@@ -2006,8 +2135,7 @@ async fn fulltext_defaults_override_none_blocks_per_graph() {
     let view = fluree.db(ledger_id).await.unwrap();
     let config = view.ledger_config().expect("config attached");
 
-    let effective =
-        config_resolver::resolve_effective_config(&config, Some(target_graph));
+    let effective = config_resolver::resolve_effective_config(&config, Some(target_graph));
     let effective_ft = effective
         .full_text
         .as_ref()
@@ -2024,8 +2152,7 @@ async fn fulltext_defaults_override_none_blocks_per_graph() {
         "per-graph property should NOT be added under OverrideNone"
     );
     assert_eq!(
-        effective_ft.properties[0].target,
-        "http://example.org/title",
+        effective_ft.properties[0].target, "http://example.org/title",
         "ledger-wide property is the only entry"
     );
 }
@@ -2117,7 +2244,9 @@ async fn configured_fulltext_properties_for_indexer_shape() {
     // Named-graph override → NamedGraph(target_graph).
     let named_graph: Vec<&str> = props
         .iter()
-        .filter(|p| matches!(&p.scope, ConfiguredFulltextScope::NamedGraph(iri) if iri == target_graph))
+        .filter(
+            |p| matches!(&p.scope, ConfiguredFulltextScope::NamedGraph(iri) if iri == target_graph),
+        )
         .map(|p| p.property_iri.as_str())
         .collect();
     assert_eq!(

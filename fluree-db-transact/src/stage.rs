@@ -1576,6 +1576,7 @@ pub async fn validate_view_with_shacl(
     view: &LedgerView,
     shacl_cache: &ShaclCache,
     graph_sids: Option<&HashMap<GraphId, Sid>>,
+    tracker: Option<&fluree_db_core::Tracker>,
 ) -> Result<()> {
     // Fast path: if there are no SHACL shapes, elide validation entirely.
     if shacl_cache.is_empty() {
@@ -1583,8 +1584,7 @@ pub async fn validate_view_with_shacl(
     }
 
     let engine = ShaclEngine::new(shacl_cache.clone());
-    // No tracker context available on this entry point (commit-transfer path).
-    let report = validate_staged_nodes(view, &engine, graph_sids, None).await?;
+    let report = validate_staged_nodes(view, &engine, graph_sids, tracker).await?;
     if !report.conforms {
         return Err(TransactError::ShaclViolation(format_shacl_report(&report)));
     }

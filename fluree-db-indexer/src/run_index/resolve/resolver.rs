@@ -121,10 +121,7 @@ impl CommitResolver {
     }
 
     /// Set the configured full-text property set for this indexing run.
-    pub fn set_fulltext_hook_config(
-        &mut self,
-        config: crate::fulltext_hook::FulltextHookConfig,
-    ) {
+    pub fn set_fulltext_hook_config(&mut self, config: crate::fulltext_hook::FulltextHookConfig) {
         self.fulltext_hook_config = config;
     }
 

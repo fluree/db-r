@@ -163,14 +163,11 @@ pub(crate) async fn build_and_upload_fulltext_arenas<C: ContentStore + ?Sized>(
             .await
             .map_err(|e| IndexerError::StorageWrite(format!("fulltext CAS write: {e}")))?;
 
-        per_graph
-            .entry(g_id)
-            .or_default()
-            .push(FulltextArenaRef {
-                p_id,
-                lang_id,
-                arena_cid,
-            });
+        per_graph.entry(g_id).or_default().push(FulltextArenaRef {
+            p_id,
+            lang_id,
+            arena_cid,
+        });
 
         tracing::info!(
             g_id,
