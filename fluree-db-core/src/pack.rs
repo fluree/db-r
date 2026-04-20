@@ -745,7 +745,10 @@ mod tests {
         let mut buf = Vec::new();
 
         write_stream_preamble(&mut buf);
-        encode_header_frame(&PackHeader::with_indexes(Some(2), Some(1), 0, true), &mut buf);
+        encode_header_frame(
+            &PackHeader::with_indexes(Some(2), Some(1), 0, true),
+            &mut buf,
+        );
         encode_data_frame(
             &sample_cid(ContentKind::Commit, b"c1"),
             b"commit bytes",

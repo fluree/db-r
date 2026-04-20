@@ -1121,10 +1121,7 @@ pub async fn run_clone(
                                             "  Skipping index transfer, cloning commits only..."
                                         );
                                         let commits_only = if no_txns {
-                                            PackRequest::commits_no_txns(
-                                                vec![hcid.clone()],
-                                                vec![],
-                                            )
+                                            PackRequest::commits_no_txns(vec![hcid.clone()], vec![])
                                         } else {
                                             PackRequest::commits(vec![hcid.clone()], vec![])
                                         };
@@ -1556,10 +1553,9 @@ pub async fn run_clone_origin(
             if !no_txns {
                 if let Some(txn_cid) = &envelope.txn {
                     if !content_store.has(txn_cid).await.unwrap_or(false) {
-                        let txn_bytes =
-                            fetcher.fetch(txn_cid, &ledger_id).await.map_err(|e| {
-                                CliError::Config(format!("clone failed (fetch txn blob): {e}"))
-                            })?;
+                        let txn_bytes = fetcher.fetch(txn_cid, &ledger_id).await.map_err(|e| {
+                            CliError::Config(format!("clone failed (fetch txn blob): {e}"))
+                        })?;
                         // Txn blobs use full-bytes SHA-256, so put_with_id is safe.
                         content_store
                             .put_with_id(txn_cid, &txn_bytes)
