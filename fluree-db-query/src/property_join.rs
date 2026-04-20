@@ -45,7 +45,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tracing::Instrument;
 
-use crate::binary_scan::{EmitMask, ScanOperator};
+use crate::binary_scan::EmitMask;
 
 /// Internal temp var for object position in predicate scans.
 ///
@@ -65,13 +65,11 @@ fn make_property_join_scan(
     bounds: Option<ObjectBounds>,
     emit: EmitMask,
 ) -> BoxedOperator {
-    Box::new(ScanOperator::new_with_emit_and_index(
-        pattern,
-        bounds,
-        Vec::new(),
-        emit,
-        None,
-    ))
+    let builder =
+        crate::dataset_operator::ScanDatasetBuilder::new(pattern, bounds, Vec::new(), emit, None);
+    Box::new(crate::dataset_operator::DatasetOperator::new(Box::new(
+        builder,
+    )))
 }
 
 /// Property-join operator for same-subject multi-predicate patterns

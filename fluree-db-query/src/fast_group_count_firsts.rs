@@ -105,7 +105,8 @@ impl PredicateGroupCountFirstsOperator {
 
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         use crate::aggregate::AggregateFn;
-        use crate::binary_scan::ScanOperator;
+        use crate::binary_scan::EmitMask;
+        use crate::dataset_operator::{DatasetOperator, ScanDatasetBuilder};
         use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
         use crate::limit::LimitOperator;
         use crate::sort::{SortDirection, SortOperator, SortSpec};
@@ -120,7 +121,8 @@ impl PredicateGroupCountFirstsOperator {
         // Note: EmitMask pruning is only effective on the binary scan path.
         // RangeScanOperator (used in memory / pre-index fallback) ignores EmitMask,
         // so we use the default (ALL) to avoid a schema mismatch.
-        let scan: BoxedOperator = Box::new(ScanOperator::new(tp, None, Vec::new()));
+        let builder = ScanDatasetBuilder::new(tp, None, Vec::new(), EmitMask::ALL, None);
+        let scan: BoxedOperator = Box::new(DatasetOperator::new(Box::new(builder)));
 
         let agg_specs = vec![StreamingAggSpec {
             function: AggregateFn::CountAll,
@@ -341,7 +343,8 @@ impl PredicateObjectCountFirstsOperator {
 
     async fn open_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         use crate::aggregate::AggregateFn;
-        use crate::binary_scan::ScanOperator;
+        use crate::binary_scan::EmitMask;
+        use crate::dataset_operator::{DatasetOperator, ScanDatasetBuilder};
         use crate::group_aggregate::{GroupAggregateOperator, StreamingAggSpec};
         use crate::triple::{Ref, TriplePattern};
 
@@ -354,7 +357,8 @@ impl PredicateObjectCountFirstsOperator {
         // Note: EmitMask pruning is only effective on the binary scan path.
         // RangeScanOperator (used in memory / pre-index fallback) ignores EmitMask,
         // so we use the default (ALL) to avoid a schema mismatch.
-        let scan: BoxedOperator = Box::new(ScanOperator::new(tp, None, Vec::new()));
+        let builder = ScanDatasetBuilder::new(tp, None, Vec::new(), EmitMask::ALL, None);
+        let scan: BoxedOperator = Box::new(DatasetOperator::new(Box::new(builder)));
 
         let agg_specs = vec![StreamingAggSpec {
             function: AggregateFn::CountAll,

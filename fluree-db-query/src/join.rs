@@ -103,9 +103,8 @@ pub(crate) fn make_dict_overlay(
 
 /// Create a right-side scan operator for a join.
 ///
-/// Uses `ScanOperator` which selects between `BinaryScanOperator` (streaming
-/// cursor) and `RangeScanOperator` (range fallback) at `open()` time based
-/// on the execution context.
+/// Wraps the scan in a [`DatasetOperator`](crate::dataset_operator::DatasetOperator)
+/// so that multi-graph fanout is handled transparently.
 fn make_right_scan(
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
@@ -114,13 +113,16 @@ fn make_right_scan(
     index_hint: Option<IndexType>,
     _ctx: &ExecutionContext<'_>,
 ) -> Box<dyn Operator> {
-    Box::new(crate::binary_scan::ScanOperator::new_with_emit_and_index(
+    let builder = crate::dataset_operator::ScanDatasetBuilder::new(
         pattern,
         object_bounds,
         inline_ops,
         emit,
         index_hint,
-    ))
+    );
+    Box::new(crate::dataset_operator::DatasetOperator::new(Box::new(
+        builder,
+    )))
 }
 
 /// Position in a triple pattern (subject, predicate, object)

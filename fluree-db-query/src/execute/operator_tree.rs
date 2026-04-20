@@ -55,7 +55,6 @@ use crate::sort::SortOperator;
 use crate::stats_query::StatsCountByPredicateOperator;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarId;
-use crate::BinaryScanOperator;
 use fluree_db_core::StatsView;
 use std::sync::Arc;
 
@@ -2294,16 +2293,15 @@ fn build_operator_tree_inner(
                 .into_iter()
                 .map(|expr| InlineOperator::Filter(PreparedBoolExpression::new(expr)))
                 .collect();
-            let scan: BoxedOperator = Box::new(BinaryScanOperator::new_with_emit_and_index(
-                tp,
-                None,
-                inline_ops,
-                EmitMask {
-                    s: false,
-                    p: false,
-                    o: false,
-                },
-                None,
+            let emit = EmitMask {
+                s: false,
+                p: false,
+                o: false,
+            };
+            let builder =
+                crate::dataset_operator::ScanDatasetBuilder::new(tp, None, inline_ops, emit, None);
+            let scan: BoxedOperator = Box::new(crate::dataset_operator::DatasetOperator::new(
+                Box::new(builder),
             ));
             return Ok(Box::new(CountRowsOperator::new(
                 scan,

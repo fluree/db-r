@@ -1721,9 +1721,9 @@ pub fn build_where_operators_seeded_with_needed(
 
 /// Create a first-pattern scan operator.
 ///
-/// Creates a `ScanOperator` that selects between `BinaryScanOperator` (streaming
-/// cursor) and `RangeScanOperator` (range fallback) at `open()` time based on
-/// the `ExecutionContext`.
+/// Wraps the scan in a [`DatasetOperator`] so that multi-graph fanout and
+/// provenance stamping are handled transparently. In single-graph mode the
+/// `DatasetOperator` passes through to the inner scan with negligible overhead.
 fn make_first_scan(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
@@ -1733,13 +1733,16 @@ fn make_first_scan(
 ) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
     let index_hint = scan_index_hint_for_triple(tp, group_by, &inline_ops);
-    Box::new(crate::binary_scan::ScanOperator::new_with_emit_and_index(
+    let builder = crate::dataset_operator::ScanDatasetBuilder::new(
         tp.clone(),
         obj_bounds,
         inline_ops,
         emit,
         index_hint,
-    ))
+    );
+    Box::new(crate::dataset_operator::DatasetOperator::new(Box::new(
+        builder,
+    )))
 }
 
 /// Build a single scan or join operator for a triple pattern

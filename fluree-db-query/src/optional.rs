@@ -23,7 +23,6 @@
 //! - This matches SPARQL OPTIONAL semantics where unbound optional vars
 //!   prevent subsequent patterns from matching
 
-use crate::binary_scan::ScanOperator;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
@@ -337,11 +336,16 @@ impl OptionalBuilder for PatternOptionalBuilder {
 
         // Substitute bindings into pattern and create scan operator
         let bound_pattern = self.substitute_pattern(required_batch, row, ctx)?;
-        Ok(Some(Box::new(ScanOperator::new(
+        let builder = crate::dataset_operator::ScanDatasetBuilder::new(
             bound_pattern,
             None,
             Vec::new(),
-        ))))
+            crate::binary_scan::EmitMask::ALL,
+            None,
+        );
+        Ok(Some(Box::new(
+            crate::dataset_operator::DatasetOperator::new(Box::new(builder)),
+        )))
     }
 
     fn cache_key(

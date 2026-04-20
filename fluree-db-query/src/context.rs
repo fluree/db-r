@@ -794,6 +794,11 @@ impl<'a> ExecutionContext<'a> {
     /// Used by SERVICE operator to execute patterns against a specific ledger.
     /// The new context uses the graph's db, overlay, and to_t settings.
     pub fn with_graph_ref(&self, graph: &crate::dataset::GraphRef<'a>) -> Self {
+        // A per-graph context represents a single specific graph — NOT a
+        // dataset. Clear the dataset and multi_ledger flag so inner operators
+        // (BinaryScanOperator, etc.) take the single-graph path. Provenance
+        // stamping is the DatasetOperator's responsibility, not the inner
+        // scan's.
         Self {
             snapshot: graph.snapshot,
             vars: self.vars,
@@ -810,7 +815,7 @@ impl<'a> ExecutionContext<'a> {
             vector_provider: self.vector_provider,
             r2rml_provider: self.r2rml_provider,
             r2rml_table_provider: self.r2rml_table_provider,
-            dataset: self.dataset,
+            dataset: None,
             active_graph: ActiveGraph::Default,
             tracker: self.tracker.clone(),
             history_mode: self.history_mode,
@@ -823,7 +828,7 @@ impl<'a> ExecutionContext<'a> {
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
-            multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
+            multi_ledger: false,
             eager_materialization: self.eager_materialization,
         }
     }

@@ -746,87 +746,44 @@ impl BinaryScanOperator {
         let no_overlay = NoOverlay;
         let mut out: Vec<RangeFlake> = Vec::new();
 
-        // Dataset-aware range fallback:
-        // - In single-db mode, scan only `ctx.snapshot` / `self.g_id`.
-        // - In dataset mode, scan all active graphs and union results.
-        match ctx.active_graphs() {
-            crate::dataset::ActiveGraphs::Single => {
-                let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
-                let match_val = build_match_val_for_snapshot(ctx, ctx.snapshot, &self.pattern)?;
-                let opts = RangeOptions {
-                    to_t: Some(ctx.to_t),
-                    from_t: ctx.from_t,
-                    object_bounds: self.object_bounds.clone(),
-                    history_mode: ctx.history_mode,
-                    ..Default::default()
-                };
-                let mut flakes = range_with_overlay(
-                    ctx.snapshot,
-                    self.g_id,
-                    overlay,
-                    self.index,
-                    RangeTest::Eq,
-                    match_val,
-                    opts,
-                )
-                .await
-                .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
+        // Single-graph range fallback. Multi-graph fanout is handled by
+        // the DatasetOperator delegate (created in open() above).
+        {
+            let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
+            let match_val = build_match_val_for_snapshot(ctx, ctx.snapshot, &self.pattern)?;
+            let opts = RangeOptions {
+                to_t: Some(ctx.to_t),
+                from_t: ctx.from_t,
+                object_bounds: self.object_bounds.clone(),
+                history_mode: ctx.history_mode,
+                ..Default::default()
+            };
+            let mut flakes = range_with_overlay(
+                ctx.snapshot,
+                self.g_id,
+                overlay,
+                self.index,
+                RangeTest::Eq,
+                match_val,
+                opts,
+            )
+            .await
+            .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
 
-                // Apply policy filtering (including f:query) when present.
-                flakes = Self::filter_flakes_by_policy(
-                    ctx,
-                    ctx.snapshot,
-                    overlay,
-                    ctx.to_t,
-                    self.g_id,
-                    flakes,
-                )
-                .await?;
-                out.extend(flakes.into_iter().map(|flake| RangeFlake {
-                    flake,
-                    ledger_alias: None,
-                }));
-            }
-            crate::dataset::ActiveGraphs::Many(graphs) => {
-                for graph in graphs {
-                    let match_val =
-                        build_match_val_for_snapshot(ctx, graph.snapshot, &self.pattern)?;
-                    let opts = RangeOptions {
-                        to_t: Some(graph.to_t),
-                        from_t: ctx.from_t,
-                        object_bounds: self.object_bounds.clone(),
-                        history_mode: ctx.history_mode,
-                        ..Default::default()
-                    };
-                    let mut flakes = range_with_overlay(
-                        graph.snapshot,
-                        graph.g_id,
-                        graph.overlay,
-                        self.index,
-                        RangeTest::Eq,
-                        match_val,
-                        opts,
-                    )
-                    .await
-                    .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
-
-                    // Apply graph-scoped policy filtering when present.
-                    flakes = Self::filter_flakes_by_policy(
-                        ctx,
-                        graph.snapshot,
-                        graph.overlay,
-                        graph.to_t,
-                        graph.g_id,
-                        flakes,
-                    )
-                    .await?;
-                    let alias = Arc::clone(&graph.ledger_id);
-                    out.extend(flakes.into_iter().map(|flake| RangeFlake {
-                        flake,
-                        ledger_alias: Some(Arc::clone(&alias)),
-                    }));
-                }
-            }
+            // Apply policy filtering (including f:query) when present.
+            flakes = Self::filter_flakes_by_policy(
+                ctx,
+                ctx.snapshot,
+                overlay,
+                ctx.to_t,
+                self.g_id,
+                flakes,
+            )
+            .await?;
+            out.extend(flakes.into_iter().map(|flake| RangeFlake {
+                flake,
+                ledger_alias: None,
+            }));
         }
 
         self.range_iter = Some(out.into_iter());
@@ -1519,13 +1476,10 @@ impl Operator for BinaryScanOperator {
         self.store = ctx.binary_store.clone();
         self.g_id = ctx.binary_g_id;
 
-        // Dataset (multi-ledger) execution cannot use the binary cursor path:
-        // - Binary scans are single-graph and do not represent dataset unions.
-        // - Late-materialized IDs (`Binding::EncodedSid`) are single-ledger only and
-        //   break correlated OPTIONAL substitution when a binary graph view is unavailable.
-        if ctx.is_multi_ledger() {
-            return self.open_range_fallback(ctx).await;
-        }
+        // Multi-graph fanout is handled by DatasetOperator, which wraps
+        // BinaryScanOperator at the scan construction sites (where_plan.rs,
+        // join.rs, etc.). By the time open() is called here, the context is
+        // always single-graph.
 
         if self.store.is_none() {
             return self.open_range_fallback(ctx).await;

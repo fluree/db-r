@@ -234,43 +234,45 @@ impl Operator for DatasetOperator {
             return Err(QueryError::OperatorAlreadyOpened);
         }
 
-        let graphs = match ctx.active_graphs() {
+        match ctx.active_graphs() {
             ActiveGraphs::Single => {
-                return Err(QueryError::Internal(
-                    "DatasetOperator::open called in single-graph mode; \
-                     the planner should not wrap single-graph queries"
-                        .into(),
-                ));
+                // Single-graph mode: build one operator, open with parent
+                // context directly. No fanout, no provenance stamping.
+                let mut inner = self.builder.build()?;
+                inner.open(ctx).await?;
+                self.members.push(DatasetMember {
+                    operator: inner,
+                    ledger_id: Arc::from(""),
+                });
+                self.needs_provenance = false;
             }
-            ActiveGraphs::Many(graphs) => graphs,
-        };
+            ActiveGraphs::Many(graphs) => {
+                let first_ledger_id = graphs.first().map(|g| g.ledger_id.as_ref());
+                let mut all_same_ledger = true;
 
-        let mut members = Vec::with_capacity(graphs.len());
-        let first_ledger_id = graphs.first().map(|g| g.ledger_id.as_ref());
-        let mut all_same_ledger = true;
+                for graph in &graphs {
+                    let mut inner = self.builder.build()?;
+                    let per_graph_ctx = ctx.with_graph_ref(graph);
+                    inner.open(&per_graph_ctx).await?;
 
-        for graph in &graphs {
-            let mut inner = self.builder.build()?;
-            let per_graph_ctx = ctx.with_graph_ref(graph);
-            inner.open(&per_graph_ctx).await?;
-
-            if all_same_ledger {
-                if let Some(first) = first_ledger_id {
-                    if first != graph.ledger_id.as_ref() {
-                        all_same_ledger = false;
+                    if all_same_ledger {
+                        if let Some(first) = first_ledger_id {
+                            if first != graph.ledger_id.as_ref() {
+                                all_same_ledger = false;
+                            }
+                        }
                     }
-                }
-            }
 
-            members.push(DatasetMember {
-                operator: inner,
-                ledger_id: Arc::clone(&graph.ledger_id),
-            });
+                    self.members.push(DatasetMember {
+                        operator: inner,
+                        ledger_id: Arc::clone(&graph.ledger_id),
+                    });
+                }
+                self.needs_provenance = !all_same_ledger;
+            }
         }
 
-        self.members = members;
         self.current_member = 0;
-        self.needs_provenance = !all_same_ledger;
         self.state = OperatorState::Open;
         Ok(())
     }
@@ -283,21 +285,20 @@ impl Operator for DatasetOperator {
             return Ok(None);
         }
 
-        // Get active graphs for per-graph context reconstruction.
-        let graphs = match ctx.active_graphs() {
-            ActiveGraphs::Many(g) => g,
-            ActiveGraphs::Single => {
-                return Err(QueryError::Internal(
-                    "DatasetOperator::next_batch called in single-graph mode".into(),
-                ));
-            }
-        };
+        let graphs = ctx.active_graphs();
 
         while self.current_member < self.members.len() {
             let member = &mut self.members[self.current_member];
-            let per_graph_ctx = ctx.with_graph_ref(graphs[self.current_member]);
 
-            match member.operator.next_batch(&per_graph_ctx).await? {
+            let batch = match &graphs {
+                ActiveGraphs::Many(g) => {
+                    let graph_ctx = ctx.with_graph_ref(g[self.current_member]);
+                    member.operator.next_batch(&graph_ctx).await?
+                }
+                ActiveGraphs::Single => member.operator.next_batch(ctx).await?,
+            };
+
+            match batch {
                 Some(batch) if batch.is_empty() => continue,
                 Some(batch) => {
                     let result = if self.needs_provenance {
