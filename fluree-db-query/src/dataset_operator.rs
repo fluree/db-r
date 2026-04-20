@@ -270,8 +270,12 @@ impl Operator for DatasetOperator {
                 self.needs_provenance = false;
             }
             ActiveGraphs::Many(graphs) => {
-                let first_ledger_id = graphs.first().map(|g| g.ledger_id.as_ref());
-                let mut all_same_ledger = true;
+                // Pre-scan: determine whether graphs span multiple ledgers
+                // *before* opening any operators so we can consistently
+                // disable binary stores for all graphs when provenance
+                // stamping is needed.
+                let multi_ledger = graphs.windows(2).any(|w| w[0].ledger_id != w[1].ledger_id);
+                self.needs_provenance = multi_ledger;
 
                 for graph in &graphs {
                     let mut inner = self.builder.build()?;
@@ -283,7 +287,7 @@ impl Operator for DatasetOperator {
                     // EncodedSid is a late-materialized binary-cursor ID
                     // that cannot be decoded to an IRI without the store,
                     // which is not available at stamp_provenance time.
-                    if !all_same_ledger {
+                    if multi_ledger {
                         per_graph_ctx.binary_store = None;
                         per_graph_ctx.dict_novelty = None;
                         per_graph_ctx.runtime_small_dicts = None;
@@ -291,20 +295,11 @@ impl Operator for DatasetOperator {
 
                     inner.open(&per_graph_ctx).await?;
 
-                    if all_same_ledger {
-                        if let Some(first) = first_ledger_id {
-                            if first != graph.ledger_id.as_ref() {
-                                all_same_ledger = false;
-                            }
-                        }
-                    }
-
                     self.members.push(DatasetMember {
                         operator: inner,
                         ledger_id: Arc::clone(&graph.ledger_id),
                     });
                 }
-                self.needs_provenance = !all_same_ledger;
             }
         }
 
@@ -322,6 +317,14 @@ impl Operator for DatasetOperator {
         }
 
         let graphs = ctx.active_graphs();
+
+        debug_assert!(
+            match &graphs {
+                ActiveGraphs::Many(g) => g.len() == self.members.len(),
+                ActiveGraphs::Single => self.members.len() == 1,
+            },
+            "active_graphs() returned a different number of graphs than open() saw"
+        );
 
         while self.current_member < self.members.len() {
             let member = &mut self.members[self.current_member];
