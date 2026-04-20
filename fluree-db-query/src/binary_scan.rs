@@ -184,15 +184,10 @@ pub struct BinaryScanOperator {
     check_s_eq_p: bool,
     check_p_eq_o: bool,
     /// Range-scan fallback iterator (used when no binary store is attached).
-    range_iter: Option<std::vec::IntoIter<RangeFlake>>,
+    range_iter: Option<std::vec::IntoIter<Flake>>,
     /// When a bound subject IRI cannot be translated to a persisted `s_id`,
     /// keep a widened base scan correct by checking the resolved subject IRI row-by-row.
     unresolved_bound_subject_iri: Option<Arc<str>>,
-}
-
-#[derive(Clone, Debug)]
-struct RangeFlake {
-    flake: Flake,
 }
 
 /// A filter that can be evaluated on encoded index columns (no term decoding).
@@ -640,10 +635,9 @@ impl BinaryScanOperator {
         let mut produced = 0;
 
         while produced < batch_size {
-            let Some(rf) = self.range_iter.as_mut().and_then(|it| it.next()) else {
+            let Some(flake) = self.range_iter.as_mut().and_then(|it| it.next()) else {
                 break;
             };
-            let flake = rf.flake;
 
             if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
                 let subject_iri = ctx
@@ -688,14 +682,14 @@ impl BinaryScanOperator {
             let mut bindings: Vec<Binding> = vec![Binding::Unbound; base_len];
 
             if let Some(pos) = self.s_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = sid_binding(&flake.s);
+                bindings[pos] = Binding::Sid(flake.s.clone());
             }
             if let Some(pos) = self.p_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = sid_binding(&flake.p);
+                bindings[pos] = Binding::Sid(flake.p.clone());
             }
             if let Some(pos) = self.o_var_pos.filter(|p| *p < base_len) {
                 bindings[pos] = match &flake.o {
-                    FlakeValue::Ref(r) => sid_binding(r),
+                    FlakeValue::Ref(r) => Binding::Sid(r.clone()),
                     v => {
                         let dtc = match flake
                             .m
@@ -739,7 +733,7 @@ impl BinaryScanOperator {
 
     async fn open_range_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         let no_overlay = NoOverlay;
-        let mut out: Vec<RangeFlake> = Vec::new();
+        let mut out: Vec<Flake> = Vec::new();
 
         // Single-graph range fallback. Multi-graph fanout is handled by
         // DatasetOperator which wraps this operator at all scan sites.
@@ -768,7 +762,7 @@ impl BinaryScanOperator {
         flakes =
             Self::filter_flakes_by_policy(ctx, ctx.snapshot, overlay, ctx.to_t, self.g_id, flakes)
                 .await?;
-        out.extend(flakes.into_iter().map(|flake| RangeFlake { flake }));
+        out.extend(flakes);
 
         self.range_iter = Some(out.into_iter());
         self.cursor = None;
@@ -1227,7 +1221,7 @@ impl BinaryScanOperator {
         p_sid: &Option<Sid>,
     ) -> Result<()> {
         let Some(overlay) = ctx.overlay else {
-            self.range_iter = Some(Vec::<RangeFlake>::new().into_iter());
+            self.range_iter = Some(Vec::<Flake>::new().into_iter());
             self.cursor = None;
             self.state = OperatorState::Open;
             return Ok(());
@@ -1276,13 +1270,7 @@ impl BinaryScanOperator {
             flakes.retain(|f| bounds.matches(&f.o));
         }
 
-        self.range_iter = Some(
-            flakes
-                .into_iter()
-                .map(|flake| RangeFlake { flake })
-                .collect::<Vec<_>>()
-                .into_iter(),
-        );
+        self.range_iter = Some(flakes.into_iter());
         self.cursor = None;
         self.state = OperatorState::Open;
         Ok(())
@@ -1338,11 +1326,6 @@ fn resolve_overlay_retractions(flakes: Vec<Flake>) -> Vec<Flake> {
         .zip(keep)
         .filter_map(|(f, k)| k.then_some(f))
         .collect()
-}
-
-#[inline]
-fn sid_binding(sid: &Sid) -> Binding {
-    Binding::Sid(sid.clone())
 }
 
 fn build_match_val_for_snapshot(
@@ -1797,13 +1780,7 @@ impl Operator for BinaryScanOperator {
                 }
 
                 if !untranslated.is_empty() {
-                    self.range_iter = Some(
-                        untranslated
-                            .into_iter()
-                            .map(|flake| RangeFlake { flake })
-                            .collect::<Vec<_>>()
-                            .into_iter(),
-                    );
+                    self.range_iter = Some(untranslated.into_iter());
                 }
             }
         }
