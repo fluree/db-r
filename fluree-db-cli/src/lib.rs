@@ -393,6 +393,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
             token,
             alias,
             no_indexes,
+            no_txns,
         } => {
             let fluree_dir = config::require_fluree_dir(config_path)?;
             if let Some(origin_uri) = origin {
@@ -408,6 +409,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                     &args[0],
                     alias.as_deref(),
                     no_indexes,
+                    no_txns,
                     &fluree_dir,
                 )
                 .await
@@ -423,6 +425,7 @@ pub async fn run(cli: Cli) -> error::CliResult<()> {
                     &args[1],
                     alias.as_deref(),
                     no_indexes,
+                    no_txns,
                     &fluree_dir,
                 )
                 .await

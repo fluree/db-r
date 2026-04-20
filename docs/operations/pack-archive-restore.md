@@ -77,6 +77,11 @@ async fn archive_ledger(
     // ledger instant queryability; pass `false` for a smaller archive
     // that reindexes on import. Empty `want` is always rejected by
     // `stream_pack`, so always build via this helper.
+    //
+    // `full_ledger_pack_request` sets `include_txns = true` by default.
+    // To produce an even smaller archive without original transaction
+    // payloads (verifiable but not replayable), mutate the returned
+    // request: `request.include_txns = false;`.
     let request = full_ledger_pack_request(&handle, /* include_indexes */ true).await?;
 
     let (tx, mut rx) = mpsc::channel(64);

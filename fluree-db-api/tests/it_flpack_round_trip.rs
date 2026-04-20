@@ -69,9 +69,10 @@ async fn export_ledger_to_bytes(fluree: &fluree_db_api::Fluree, ledger_id: &str)
             Some(missing_commits.len() as u32),
             Some(artifact_count as u32),
             0,
+            true,
         )
     } else {
-        PackHeader::commits_only(Some(missing_commits.len() as u32))
+        PackHeader::commits_only(Some(missing_commits.len() as u32), true)
     };
     encode_header_frame(&header, &mut out);
 

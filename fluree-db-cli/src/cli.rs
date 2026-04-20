@@ -680,6 +680,15 @@ pub enum Commands {
         /// Skip pulling binary index data (indexes are pulled by default)
         #[arg(long)]
         no_indexes: bool,
+
+        /// Skip cloning original transaction payloads.
+        ///
+        /// Commits are still cloned (the chain remains valid and verifiable),
+        /// but the raw transaction blobs referenced by each commit are not
+        /// transferred. Useful when only the materialized ledger state is
+        /// needed — e.g., when cloning a large ledger for read-only query use.
+        #[arg(long)]
+        no_txns: bool,
     },
 
     /// Track a remote ledger (remote-only, no local data)

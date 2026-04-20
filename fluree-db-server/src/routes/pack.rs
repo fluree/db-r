@@ -94,6 +94,7 @@ async fn pack_ledger_local(
         want_count = pack_request.want.len(),
         have_count = pack_request.have.len(),
         include_indexes = pack_request.include_indexes,
+        include_txns = pack_request.include_txns,
         "pack: starting stream"
     );
 

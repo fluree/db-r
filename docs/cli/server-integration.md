@@ -38,7 +38,12 @@ Required:
 - `GET {api_base_url}/storage/ns/:ledger-id` (remote NsRecord, includes `commit_head_id`, optional `index_head_id`, and optional `config_id`)
 - `POST {api_base_url}/pack/*ledger` (binary `fluree-pack-v1` stream)
 
-The CLI sends pack requests with **index artifacts** by default (`include_indexes: true`, `want_index_root_id` from the NsRecord) when the remote advertises an `index_head_id`. Use `--no-indexes` on clone/pull to request commits and txns only. Servers that support pack should support both commits-only and index-inclusive requests.
+The CLI sends pack requests with **index artifacts** by default (`include_indexes: true`, `want_index_root_id` from the NsRecord) when the remote advertises an `index_head_id`. Use `--no-indexes` on clone/pull to request commits and txns only. Use `--no-txns` on clone to request commits without original transaction payloads (the commit chain still transfers and remains verifiable). Servers that support pack MUST honor the following request fields:
+
+- `include_indexes: bool` — when `false`, skip index artifact frames.
+- `include_txns: bool` — when `false`, skip transaction blob frames. Commits are still streamed; the server must decode each commit's envelope and simply omit the referenced `txn` blob from the stream. The emitted `PackHeader.capabilities` should reflect this (drop `"txns"` from the list).
+
+Servers that support pack should support all combinations of these flags.
 
 Fallbacks (strongly recommended):
 
@@ -210,7 +215,7 @@ Data API endpoints use normal read/transaction auth (`fluree.ledger.read.*`, `fl
 ## Pack Protocol Contract
 
 - Endpoint: `POST {api_base_url}/pack/*ledger`
-- Request: JSON `PackRequest` with `"protocol":"fluree-pack-v1"`. May include `include_indexes: true`, `want_index_root_id`, and `have_index_root_id` when the CLI requests index data (default for clone/pull unless `--no-indexes`).
+- Request: JSON `PackRequest` with `"protocol":"fluree-pack-v1"`. Includes `include_indexes: bool` (default `true` for clone/pull; `false` with `--no-indexes`), `include_txns: bool` (default `true`; `false` with `--no-txns` on clone), and optional `want_index_root_id` / `have_index_root_id` when the CLI requests index data.
 - Response: `Content-Type: application/x-fluree-pack`, streaming frames:
   - Preamble `FPK1` + version byte
   - Header frame (mandatory, first)

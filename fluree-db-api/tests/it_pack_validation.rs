@@ -71,6 +71,7 @@ async fn stream_pack_rejects_empty_want_with_error_frame() {
         want: vec![],
         have: vec![],
         include_indexes: true,
+        include_txns: true,
         want_index_root_id: None,
         have_index_root_id: None,
     };
@@ -137,9 +138,104 @@ async fn full_ledger_pack_request_builds_valid_request() {
         "have should be empty for a full archive"
     );
     assert!(!request.include_indexes);
+    assert!(
+        request.include_txns,
+        "full_ledger_pack_request defaults include_txns=true"
+    );
 
     // Sanity: the built request passes validation.
     assert!(fluree_db_api::pack::validate_pack_request(&request).is_ok());
+}
+
+/// End-to-end test: `include_txns = false` must stream commits without
+/// the referenced txn blob frames, and the header capabilities must
+/// omit `"txns"`.
+#[tokio::test]
+async fn stream_pack_omits_txn_blobs_when_include_txns_false() {
+    use fluree_db_core::ContentKind;
+
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let fluree = FlureeBuilder::file(dir.path().to_string_lossy().to_string())
+        .build()
+        .expect("build fluree");
+
+    let ledger_id = "pack-validation/no-txns:main";
+    let src_db = fluree_db_core::LedgerSnapshot::genesis(ledger_id);
+    let src_state = fluree_db_api::LedgerState::new(src_db, fluree_db_api::Novelty::new(0));
+    // Two commits so we exercise the per-commit loop.
+    let committed1 = fluree
+        .insert(
+            src_state,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:a", "ex:name": "A"}]
+            }),
+        )
+        .await
+        .expect("insert 1");
+    fluree
+        .insert(
+            committed1.ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:b", "ex:name": "B"}]
+            }),
+        )
+        .await
+        .expect("insert 2");
+
+    let handle = fluree.ledger_cached(ledger_id).await.expect("handle");
+
+    // Build a commits-only request and strip txns.
+    let mut request = full_ledger_pack_request(&handle, /* include_indexes */ false)
+        .await
+        .expect("build request");
+    request.include_txns = false;
+
+    let (tx, rx) = mpsc::channel(64);
+    let stats = stream_pack(&fluree, &handle, &request, tx).await;
+
+    assert!(
+        stats.commits_sent >= 2,
+        "expected >=2 commits, got {}",
+        stats.commits_sent
+    );
+    assert_eq!(
+        stats.txn_blobs_sent, 0,
+        "no txn blobs must be streamed when include_txns=false"
+    );
+
+    let bytes = drain_frames(rx).await;
+    let frames = decode_all_frames_no_preamble(&bytes);
+
+    // Header capabilities should not list "txns".
+    let header = frames
+        .iter()
+        .find_map(|f| match f {
+            PackFrame::Header(h) => Some(h.clone()),
+            _ => None,
+        })
+        .expect("header frame");
+    assert!(
+        !header.capabilities.iter().any(|c| c == "txns"),
+        "Header capabilities must omit 'txns' when include_txns=false, got {:?}",
+        header.capabilities
+    );
+    assert!(
+        header.capabilities.iter().any(|c| c == "commits"),
+        "Header capabilities must still list 'commits'"
+    );
+
+    // No Data frame should carry a Txn-kind CID.
+    for frame in &frames {
+        if let PackFrame::Data { cid, .. } = frame {
+            assert_ne!(
+                cid.content_kind(),
+                Some(ContentKind::Txn),
+                "a txn Data frame leaked into a no-txns stream"
+            );
+        }
+    }
 }
 
 #[tokio::test]

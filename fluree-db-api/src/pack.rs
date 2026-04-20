@@ -417,9 +417,10 @@ async fn stream_pack_inner(
             Some(missing_commits.len() as u32),
             Some(artifacts.len() as u32),
             estimated,
+            request.include_txns,
         )
     } else {
-        PackHeader::commits_only(Some(missing_commits.len() as u32))
+        PackHeader::commits_only(Some(missing_commits.len() as u32), request.include_txns)
     };
 
     let mut preamble_buf = Vec::with_capacity(256);
@@ -450,6 +451,10 @@ async fn stream_pack_inner(
             .await
             .map_err(|_| "client disconnected".to_string())?;
         commits_sent += 1;
+
+        if !request.include_txns {
+            continue;
+        }
 
         // Decode envelope to find txn blob CID.
         let header = CommitHeader::read_from(&raw_bytes)

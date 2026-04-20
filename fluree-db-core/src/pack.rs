@@ -136,6 +136,15 @@ pub struct PackRequest {
 
     /// Whether to include index artifacts in the pack.
     pub include_indexes: bool,
+
+    /// Whether to include original transaction blobs in the pack.
+    ///
+    /// When false, commits are streamed without their referenced `txn` blobs.
+    /// The commit chain remains valid and verifiable, but original transaction
+    /// payloads (e.g., JSON-LD insert/update requests) will not be available
+    /// on the client. Use this to dramatically shrink clones when only the
+    /// materialized ledger state matters.
+    pub include_txns: bool,
 }
 
 /// Server response header, the mandatory first frame in the pack stream.
@@ -407,7 +416,7 @@ pub fn estimate_pack_bytes(commit_count: u32) -> u64 {
 // ============================================================================
 
 impl PackRequest {
-    /// Create a pack request for commits only.
+    /// Create a pack request for commits + txn blobs only.
     pub fn commits(want: Vec<ContentId>, have: Vec<ContentId>) -> Self {
         Self {
             protocol: PACK_PROTOCOL.to_string(),
@@ -416,6 +425,20 @@ impl PackRequest {
             want_index_root_id: None,
             have_index_root_id: None,
             include_indexes: false,
+            include_txns: true,
+        }
+    }
+
+    /// Create a pack request for commits only (no txn blobs, no indexes).
+    pub fn commits_no_txns(want: Vec<ContentId>, have: Vec<ContentId>) -> Self {
+        Self {
+            protocol: PACK_PROTOCOL.to_string(),
+            want,
+            have,
+            want_index_root_id: None,
+            have_index_root_id: None,
+            include_indexes: false,
+            include_txns: false,
         }
     }
 
@@ -433,16 +456,32 @@ impl PackRequest {
             want_index_root_id: Some(want_index_root_id),
             have_index_root_id,
             include_indexes: true,
+            include_txns: true,
         }
+    }
+
+    /// Disable txn-blob transfer on an existing request. Returns `self` for chaining.
+    pub fn without_txns(mut self) -> Self {
+        self.include_txns = false;
+        self
     }
 }
 
 impl PackHeader {
     /// Create a commits-only header.
-    pub fn commits_only(commit_count: Option<u32>) -> Self {
+    ///
+    /// `include_txns` controls whether the stream will carry referenced
+    /// transaction blobs; it only affects the `capabilities` list on the
+    /// header (purely informational for the client).
+    pub fn commits_only(commit_count: Option<u32>, include_txns: bool) -> Self {
+        let capabilities = if include_txns {
+            vec!["commits".to_string(), "txns".to_string()]
+        } else {
+            vec!["commits".to_string()]
+        };
         Self {
             protocol: PACK_PROTOCOL.to_string(),
-            capabilities: vec!["commits".to_string(), "txns".to_string()],
+            capabilities,
             server_max_frame_bytes: Some(DEFAULT_MAX_PAYLOAD),
             commit_count,
             index_artifact_count: None,
@@ -455,14 +494,16 @@ impl PackHeader {
         commit_count: Option<u32>,
         index_artifact_count: Option<u32>,
         estimated_total_bytes: u64,
+        include_txns: bool,
     ) -> Self {
+        let mut capabilities = vec!["commits".to_string()];
+        if include_txns {
+            capabilities.push("txns".to_string());
+        }
+        capabilities.push("indexes".to_string());
         Self {
             protocol: PACK_PROTOCOL.to_string(),
-            capabilities: vec![
-                "commits".to_string(),
-                "txns".to_string(),
-                "indexes".to_string(),
-            ],
+            capabilities,
             server_max_frame_bytes: Some(DEFAULT_MAX_PAYLOAD),
             commit_count,
             index_artifact_count,
@@ -517,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_header_frame_roundtrip() {
-        let header = PackHeader::commits_only(Some(5));
+        let header = PackHeader::commits_only(Some(5), true);
         let mut buf = Vec::new();
         encode_header_frame(&header, &mut buf);
 
@@ -535,8 +576,23 @@ mod tests {
     }
 
     #[test]
+    fn test_header_frame_no_txns() {
+        let header = PackHeader::commits_only(Some(5), false);
+        let mut buf = Vec::new();
+        encode_header_frame(&header, &mut buf);
+
+        let (frame, _) = decode_frame(&buf, DEFAULT_MAX_PAYLOAD).unwrap();
+        match frame {
+            PackFrame::Header(h) => {
+                assert_eq!(h.capabilities, vec!["commits"]);
+            }
+            _ => panic!("expected Header frame"),
+        }
+    }
+
+    #[test]
     fn test_header_with_indexes_roundtrip() {
-        let header = PackHeader::with_indexes(Some(3), Some(100), 0);
+        let header = PackHeader::with_indexes(Some(3), Some(100), 0, true);
         let mut buf = Vec::new();
         encode_header_frame(&header, &mut buf);
 
@@ -689,7 +745,7 @@ mod tests {
         let mut buf = Vec::new();
 
         write_stream_preamble(&mut buf);
-        encode_header_frame(&PackHeader::with_indexes(Some(2), Some(1), 0), &mut buf);
+        encode_header_frame(&PackHeader::with_indexes(Some(2), Some(1), 0, true), &mut buf);
         encode_data_frame(
             &sample_cid(ContentKind::Commit, b"c1"),
             b"commit bytes",
@@ -734,7 +790,7 @@ mod tests {
 
     #[test]
     fn test_decode_incomplete_header() {
-        let header = PackHeader::commits_only(None);
+        let header = PackHeader::commits_only(None, true);
         let mut buf = Vec::new();
         encode_header_frame(&header, &mut buf);
 
@@ -817,6 +873,7 @@ mod tests {
         assert_eq!(parsed.want, vec![cid1]);
         assert_eq!(parsed.have, vec![cid2]);
         assert!(!parsed.include_indexes);
+        assert!(parsed.include_txns);
         assert!(parsed.want_index_root_id.is_none());
     }
 
@@ -841,12 +898,32 @@ mod tests {
 
     #[test]
     fn test_pack_header_serde() {
-        let header = PackHeader::commits_only(Some(10));
+        let header = PackHeader::commits_only(Some(10), true);
         let json = serde_json::to_string(&header).unwrap();
         let parsed: PackHeader = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.protocol, PACK_PROTOCOL);
         assert_eq!(parsed.commit_count, Some(10));
         assert!(parsed.server_max_frame_bytes.is_some());
+    }
+
+    #[test]
+    fn test_pack_request_serde_no_txns() {
+        let cid = sample_cid(ContentKind::Commit, b"head");
+        let req = PackRequest::commits_no_txns(vec![cid.clone()], vec![]);
+
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: PackRequest = serde_json::from_str(&json).unwrap();
+        assert!(!parsed.include_indexes);
+        assert!(!parsed.include_txns);
+        assert_eq!(parsed.want, vec![cid]);
+    }
+
+    #[test]
+    fn test_pack_request_without_txns_builder() {
+        let cid = sample_cid(ContentKind::IndexRoot, b"idx");
+        let req = PackRequest::with_indexes(vec![], vec![], cid, None).without_txns();
+        assert!(req.include_indexes);
+        assert!(!req.include_txns);
     }
 
     // --- Trailing / consecutive frames ---

@@ -21,6 +21,7 @@ fluree clone --origin <URI> [--token <TOKEN>] [OPTIONS] <LEDGER>
 | `--origin <URI>` | Bootstrap URI for CID-based clone (replaces `<REMOTE>`) |
 | `--token <TOKEN>` | Auth token for origin server (with `--origin` only) |
 | `--no-indexes` | Skip pulling binary index data; only transfer commits and txn blobs (queries will replay from commits until you run `fluree reindex`) |
+| `--no-txns` | Skip pulling original transaction payloads. Commits still transfer (chain remains valid and verifiable), but the raw JSON-LD / SPARQL requests that produced each commit are not downloaded. Use for read-only clones of large ledgers. See [Transaction transfer](#transaction-transfer). |
 
 ## Description
 
@@ -42,6 +43,15 @@ When using the pack protocol, the CLI requests **index artifacts** by default so
 - Use **`--no-indexes`** to transfer only commits and txn blobs. This reduces transfer size and time; afterward, run `fluree reindex` to build the index locally if needed.
 - For large transfers (estimated size above ~1 GiB), the CLI prompts: *"Estimated transfer size: ~X. This may take several minutes. Continue? [Y/n]"*. Answer `n` to abort or to re-request without index data (commits-only).
 - If the remote has no index yet (e.g. a fresh ledger), only commits and txns are transferred regardless of the flag.
+
+### Transaction transfer
+
+Every commit references an **original transaction blob** — the raw request (JSON-LD insert/update or SPARQL Update) that produced the commit. By default, `fluree clone` downloads these so the local ledger has a complete audit trail of the original payloads.
+
+- Use **`--no-txns`** to skip transaction blobs entirely. The commit chain is still cloned and remains valid and verifiable; only the original request payloads are missing.
+- The materialized ledger state (what queries return) is reconstructable from commits + indexes alone — transactions are not needed for query answering.
+- With `--no-txns`, operations that need the original request payload (e.g., `fluree show --flakes` for transaction-level inspection, or re-running a transaction against a branch) will fail locally for those transactions. Anything that only reads materialized state is unaffected.
+- Combine with `--no-indexes` for the smallest possible clone (`fluree clone --no-indexes --no-txns origin mydb`), useful for minimal verification / auditing of the commit chain only.
 
 ### Transport
 
@@ -91,6 +101,12 @@ fluree clone --origin https://api.example.com --token @~/.fluree/token mydb
 
 # Clone without index data (faster; run fluree reindex afterward if needed)
 fluree clone --no-indexes origin mydb
+
+# Clone commits + indexes but skip original transaction payloads
+fluree clone --no-txns origin mydb
+
+# Smallest possible clone — commits only (no indexes, no transactions)
+fluree clone --no-indexes --no-txns origin mydb
 ```
 
 ## Output
@@ -139,6 +155,7 @@ Remote ledger 'mydb:main' has no commits (t=0), nothing to clone.
 ## Limitations
 
 - **Post-clone indexing:** If you used `--no-indexes`, run `fluree reindex` to build a binary index locally. Without an index, queries replay from commits and can be slow for large ledgers. When index data is transferred by default (no `--no-indexes`), the local index head is set and no reindex is needed for the core ledger.
+- **Missing transactions:** If you used `--no-txns`, the original transaction payloads for historical commits are permanently unavailable on the local clone (re-pull will not fetch them unless you explicitly re-clone without the flag). The ledger state remains queryable; only transaction-level inspection and replay are affected.
 - **Graph source indexes not replicated:** Graph source snapshots (BM25/vector/geo, etc.) are not replicated by `fluree clone` yet. After cloning, rebuild graph source indexes in the target environment as needed.
 
 ## See Also

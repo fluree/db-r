@@ -983,6 +983,7 @@ pub async fn run_clone(
     ledger: &str,
     alias: Option<&str>,
     no_indexes: bool,
+    no_txns: bool,
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     let ledger_id = context::to_ledger_id(ledger);
@@ -1076,7 +1077,7 @@ pub async fn run_clone(
         Ok(Some(ns)) => {
             if let Some(ref hcid) = ns.commit_head_id {
                 // Build pack request — include indexes by default for clone.
-                let pack_request = if !no_indexes {
+                let mut pack_request = if !no_indexes {
                     if let Some(ref remote_index_id) = ns.index_head_id {
                         PackRequest::with_indexes(
                             vec![hcid.clone()],
@@ -1090,6 +1091,9 @@ pub async fn run_clone(
                 } else {
                     PackRequest::commits(vec![hcid.clone()], vec![])
                 };
+                if no_txns {
+                    pack_request.include_txns = false;
+                }
 
                 match client.fetch_pack_response(&ledger_id, &pack_request).await {
                     Ok(Some(response)) => {
@@ -1116,8 +1120,14 @@ pub async fn run_clone(
                                         eprintln!(
                                             "  Skipping index transfer, cloning commits only..."
                                         );
-                                        let commits_only =
-                                            PackRequest::commits(vec![hcid.clone()], vec![]);
+                                        let commits_only = if no_txns {
+                                            PackRequest::commits_no_txns(
+                                                vec![hcid.clone()],
+                                                vec![],
+                                            )
+                                        } else {
+                                            PackRequest::commits(vec![hcid.clone()], vec![])
+                                        };
                                         match client
                                             .fetch_pack_response(&ledger_id, &commits_only)
                                             .await
@@ -1309,6 +1319,7 @@ pub async fn run_clone_origin(
     ledger: &str,
     alias: Option<&str>,
     no_indexes: bool,
+    no_txns: bool,
     dirs: &FlureeDir,
 ) -> CliResult<()> {
     let ledger_id = context::to_ledger_id(ledger);
@@ -1388,7 +1399,7 @@ pub async fn run_clone_origin(
     let mut index_artifacts_fetched = 0usize;
 
     // Build pack request — include indexes by default for clone.
-    let pack_request = if !no_indexes {
+    let mut pack_request = if !no_indexes {
         if let Some(ref remote_index_id) = ns_record.index_head_id {
             PackRequest::with_indexes(
                 vec![head_cid.clone()],
@@ -1402,6 +1413,9 @@ pub async fn run_clone_origin(
     } else {
         PackRequest::commits(vec![head_cid.clone()], vec![])
     };
+    if no_txns {
+        pack_request.include_txns = false;
+    }
     let used_pack = match fetcher.fetch_pack_response(&ledger_id, &pack_request).await {
         Ok(Some(response)) => {
             let mut body_stream = response.bytes_stream();
@@ -1423,7 +1437,11 @@ pub async fn run_clone_origin(
                         } else {
                             drop(body_stream);
                             eprintln!("  Skipping index transfer, cloning commits only...");
-                            let commits_only = PackRequest::commits(vec![head_cid.clone()], vec![]);
+                            let commits_only = if no_txns {
+                                PackRequest::commits_no_txns(vec![head_cid.clone()], vec![])
+                            } else {
+                                PackRequest::commits(vec![head_cid.clone()], vec![])
+                            };
                             match fetcher.fetch_pack_response(&ledger_id, &commits_only).await {
                                 Ok(Some(resp2)) => {
                                     ingest_pack_stream(resp2, &storage, &local_id).await
@@ -1534,19 +1552,22 @@ pub async fn run_clone_origin(
             let envelope = read_commit_envelope(&commit_bytes)
                 .map_err(|e| CliError::Config(format!("clone failed (read envelope): {e}")))?;
 
-            // Fetch + store txn blob (if present).
-            if let Some(txn_cid) = &envelope.txn {
-                if !content_store.has(txn_cid).await.unwrap_or(false) {
-                    let txn_bytes = fetcher.fetch(txn_cid, &ledger_id).await.map_err(|e| {
-                        CliError::Config(format!("clone failed (fetch txn blob): {e}"))
-                    })?;
-                    // Txn blobs use full-bytes SHA-256, so put_with_id is safe.
-                    content_store
-                        .put_with_id(txn_cid, &txn_bytes)
-                        .await
-                        .map_err(|e| {
-                            CliError::Config(format!("clone failed (store txn blob): {e}"))
-                        })?;
+            // Fetch + store txn blob (if present and not explicitly skipped).
+            if !no_txns {
+                if let Some(txn_cid) = &envelope.txn {
+                    if !content_store.has(txn_cid).await.unwrap_or(false) {
+                        let txn_bytes =
+                            fetcher.fetch(txn_cid, &ledger_id).await.map_err(|e| {
+                                CliError::Config(format!("clone failed (fetch txn blob): {e}"))
+                            })?;
+                        // Txn blobs use full-bytes SHA-256, so put_with_id is safe.
+                        content_store
+                            .put_with_id(txn_cid, &txn_bytes)
+                            .await
+                            .map_err(|e| {
+                                CliError::Config(format!("clone failed (store txn blob): {e}"))
+                            })?;
+                    }
                 }
             }
 

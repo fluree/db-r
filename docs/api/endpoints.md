@@ -467,6 +467,7 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
   "want": ["bafy...remoteHead"],
   "have": ["bafy...localHead"],
   "include_indexes": true,
+  "include_txns": true,
   "want_index_root_id": "bafy...indexRoot",
   "have_index_root_id": "bafy...localIndexRoot"
 }
@@ -480,6 +481,7 @@ Authorization: Bearer <token>   (requires fluree.storage.* claims)
 | `want_index_root_id` | string | No | Index root CID the client wants (typically remote nameservice `index_head_id`). Required when `include_indexes=true`. |
 | `have_index_root_id` | string | No | Index root CID the client already has (typically local nameservice `index_head_id`). Used for index artifact diff. |
 | `include_indexes` | bool | Yes | Include index artifacts in the stream. When true, the stream contains commit + txn objects plus index root/branch/leaf/dict artifacts. |
+| `include_txns` | bool | Yes | Include original transaction blobs referenced by each commit. When false, only commits (and optionally index artifacts) are streamed — commit envelopes still reference their `txn` CIDs, but the client will not have the transaction payloads locally. The ledger state is fully reconstructable from commits + indexes; transactions are the original request payloads (e.g., JSON-LD insert/update requests). |
 
 **Response:**
 
@@ -515,7 +517,15 @@ curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
   -H "Content-Type: application/json" \
   -H "Accept: application/x-fluree-pack" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[]}' \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[],"include_indexes":false,"include_txns":true}' \
+  --output pack.bin
+
+# Download commits without transaction payloads (smaller clone, read-only use)
+curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/x-fluree-pack" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[],"include_indexes":true,"include_txns":false,"want_index_root_id":"bafy...indexRoot"}' \
   --output pack.bin
 
 # Download only missing commits (incremental pull)
@@ -523,7 +533,7 @@ curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
   -H "Content-Type: application/json" \
   -H "Accept: application/x-fluree-pack" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"protocol":"fluree-pack-v1","want":["bafy...remoteHead"],"have":["bafy...localHead"]}' \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...remoteHead"],"have":["bafy...localHead"],"include_indexes":false,"include_txns":true}' \
   --output pack.bin
 
 # Download commits + index artifacts (default for CLI pull/clone)
@@ -531,7 +541,7 @@ curl -X POST "http://localhost:8090/v1/fluree/pack/mydb:main" \
   -H "Content-Type: application/json" \
   -H "Accept: application/x-fluree-pack" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[],"include_indexes":true,"want_index_root_id":"bafy...indexRoot"}' \
+  -d '{"protocol":"fluree-pack-v1","want":["bafy...head"],"have":[],"include_indexes":true,"include_txns":true,"want_index_root_id":"bafy...indexRoot"}' \
   --output pack.bin
 ```
 
