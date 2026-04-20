@@ -349,7 +349,7 @@ fn build_fallback_prefixes(
     }
 
     // Sort longest-first for greedy matching (most specific prefix wins).
-    fallbacks.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    fallbacks.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
     fallbacks
 }
 

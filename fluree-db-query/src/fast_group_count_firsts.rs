@@ -1272,11 +1272,9 @@ fn compute_group_by_object_star_topk(
                 Ordering::Less => {
                     // Skip all group rows for this subject.
                     let skip_s = gs;
-                    loop {
-                        let Some(cur_gs) = peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
-                        else {
-                            break;
-                        };
+                    while let Some(cur_gs) =
+                        peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
+                    {
                         if cur_gs != skip_s {
                             break;
                         }
@@ -1288,11 +1286,9 @@ fn compute_group_by_object_star_topk(
                 }
                 Ordering::Equal => {
                     let s = gs;
-                    loop {
-                        let Some(cur_gs) = peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
-                        else {
-                            break;
-                        };
+                    while let Some(cur_gs) =
+                        peek_group_subject(&mut cursor, &mut g_batch, &mut g_i)?
+                    {
                         if cur_gs != s {
                             break;
                         }

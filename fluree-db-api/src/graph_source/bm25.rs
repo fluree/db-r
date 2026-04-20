@@ -590,7 +590,7 @@ impl crate::Fluree {
             }
 
             // Fetch all misses with bounded concurrency
-            let fetched: Vec<(LeafletRef, Vec<u8>)> = stream::iter(misses.into_iter())
+            let fetched: Vec<(LeafletRef, Vec<u8>)> = stream::iter(misses)
                 .map(|lr| {
                     let cs = cs.clone();
                     async move {
@@ -723,7 +723,7 @@ impl crate::Fluree {
         }
 
         // Fetch all misses with bounded concurrency
-        let fetched: Vec<(LeafletRef, Vec<u8>)> = stream::iter(misses.into_iter())
+        let fetched: Vec<(LeafletRef, Vec<u8>)> = stream::iter(misses)
             .map(|lr| {
                 let cs = cs.clone();
                 async move {
