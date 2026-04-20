@@ -185,6 +185,8 @@ The server will include this in logs and response headers for correlation.
 
 Integer. When set on **query requests**, the server ensures the ledger cache is refreshed to at least `t >= min_t` before executing the query. This guarantees read-after-write consistency in distributed or asynchronous workflows where the client has just committed a transaction and needs subsequent reads to reflect it.
 
+> **Peer-mode note.** Without `X-Fluree-Min-T`, a peer may serve a query against its prior cached snapshot while a background refresh catches the cache up to the latest SSE watermark. This is intentional — it prevents query latency from being coupled to index-load wall time. Pass `X-Fluree-Min-T` when you need to read your own writes.
+
 ```http
 X-Fluree-Min-T: 42
 ```

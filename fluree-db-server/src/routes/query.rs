@@ -1221,7 +1221,7 @@ fn delimited_response(bytes: Vec<u8>, format: DelimitedFormat) -> Response {
 }
 
 async fn execute_query(
-    state: &AppState,
+    state: &Arc<AppState>,
     ledger_id: &str,
     query_json: &JsonValue,
     delimited: Option<DelimitedFormat>,
@@ -1474,7 +1474,7 @@ async fn execute_query_proxy(
 
 /// Execute a SPARQL query against a specific ledger and return result
 async fn execute_sparql_ledger(
-    state: &AppState,
+    state: &Arc<AppState>,
     ledger_id: &str,
     sparql: &str,
     identity: Option<&str>,
@@ -2280,7 +2280,7 @@ pub async fn explain(
 /// common index-rebuild case) uses `apply_index_v2` which does not block
 /// concurrent queries; only large commit gaps fall back to a full reload.
 pub(crate) async fn load_ledger_for_query(
-    state: &AppState,
+    state: &Arc<AppState>,
     ledger_id: &str,
     span: &tracing::Span,
 ) -> Result<LedgerState> {
@@ -2308,34 +2308,68 @@ pub(crate) async fn load_ledger_for_query(
     // If no watermark available (SSE hasn't seen ledger), treat as current (lenient policy)
     if let Some(watermark) = peer_state.watermark(ledger_id) {
         if handle.check_freshness(&watermark).await == FreshnessCheck::Stale {
-            tracing::info!(
-                ledger_id = ledger_id,
-                remote_index_t = watermark.index_t,
-                "Refreshing ledger for peer query"
-            );
-
-            if let Some(mgr) = fluree.ledger_manager() {
-                // Use notify() → UpdatePlan so a pure index advance uses
-                // apply_index_v2 (non-blocking, no state lock across I/O),
-                // falling back to the heavier reload only for large commit
-                // gaps. The prior mgr.reload() took the blocking path even
-                // for common index-only advances (fluree/db-r#155).
-                let result = mgr
-                    .notify(NsNotify {
-                        ledger_id: ledger_id.to_string(),
-                        record: None,
-                    })
-                    .await
-                    .map_err(ServerError::Api)?;
-
-                // Only count actual refreshes (not Current/NotLoaded no-ops).
-                match result {
-                    NotifyResult::NotLoaded | NotifyResult::Current => {}
-                    NotifyResult::IndexUpdated
-                    | NotifyResult::CommitsApplied { .. }
-                    | NotifyResult::Reloaded => {
-                        state.refresh_counter.fetch_add(1, Ordering::Relaxed);
-                    }
+            // Spawn the refresh in the background — do NOT await it. Queries
+            // return the current (possibly stale) snapshot immediately; the
+            // refresh settles the cache for subsequent queries.
+            //
+            // Without this fire-and-forget behavior a burst of queries
+            // arriving during an in-flight index load all park behind the
+            // load's wall-clock (fluree/db-r#155 regression). Clients that
+            // require read-after-write consistency opt in explicitly via
+            // `X-Fluree-Min-T`, which routes through `enforce_min_t()` and
+            // does await the refresh.
+            //
+            // Per-ledger dedup: only one background refresh runs at a time
+            // for a given ledger. Subsequent stale-triggered queries during
+            // the refresh window simply serve the prior snapshot.
+            let inserted = state
+                .refresh_in_flight
+                .lock()
+                .expect("refresh_in_flight mutex poisoned")
+                .insert(ledger_id.to_string());
+            if inserted {
+                if let Some(mgr) = fluree.ledger_manager() {
+                    let mgr = mgr.clone();
+                    let state_for_task = Arc::clone(state);
+                    let ledger_id_owned = ledger_id.to_string();
+                    let remote_index_t = watermark.index_t;
+                    tokio::spawn(async move {
+                        tracing::info!(
+                            ledger_id = %ledger_id_owned,
+                            remote_index_t,
+                            "Refreshing ledger for peer query (background)"
+                        );
+                        match mgr
+                            .notify(NsNotify {
+                                ledger_id: ledger_id_owned.clone(),
+                                record: None,
+                            })
+                            .await
+                        {
+                            Ok(result) => match result {
+                                NotifyResult::NotLoaded | NotifyResult::Current => {}
+                                NotifyResult::IndexUpdated
+                                | NotifyResult::CommitsApplied { .. }
+                                | NotifyResult::Reloaded => {
+                                    state_for_task
+                                        .refresh_counter
+                                        .fetch_add(1, Ordering::Relaxed);
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!(
+                                    ledger_id = %ledger_id_owned,
+                                    error = %e,
+                                    "background ledger refresh failed"
+                                );
+                            }
+                        }
+                        state_for_task
+                            .refresh_in_flight
+                            .lock()
+                            .expect("refresh_in_flight mutex poisoned")
+                            .remove(&ledger_id_owned);
+                    });
                 }
             }
         }
@@ -2464,7 +2498,7 @@ async fn execute_history_query(
 ///
 /// If the query doesn't have a `from` key, the ledger ID from the URL path is injected.
 async fn execute_dataset_query(
-    state: &AppState,
+    state: &Arc<AppState>,
     ledger_id: &str,
     query_json: &JsonValue,
     span: &tracing::Span,

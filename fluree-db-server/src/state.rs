@@ -22,9 +22,10 @@ use crate::telemetry::TelemetryConfig;
 use fluree_db_api::{
     server_defaults, Fluree, FlureeBuilder, IndexConfig, LedgerManagerConfig, NameServiceMode,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 /// Application state shared across all request handlers
@@ -79,6 +80,15 @@ pub struct AppState {
     /// Counter for ledger refreshes (for testing/metrics)
     /// Incremented when a ledger is actually reloaded (not for coalesced requests)
     pub refresh_counter: AtomicU64,
+
+    /// Set of ledgers whose peer-mode background refresh is in flight.
+    ///
+    /// Peer queries that detect a stale SSE watermark spawn a background
+    /// `mgr.notify()` to catch the cache up. This set dedupes a burst of
+    /// concurrent stale-triggered queries so only one background refresh
+    /// runs per ledger at a time; the rest simply serve the prior snapshot
+    /// and let the in-flight refresh settle for the next query.
+    pub refresh_in_flight: StdMutex<HashSet<String>>,
 
     /// Handle for the background leaflet cache stats logger task.
     /// Aborted on drop so the `Arc<LeafletCache>` doesn't outlive the server.
@@ -245,6 +255,7 @@ impl AppState {
             forwarding_client,
             maintenance_mode: AtomicBool::new(start_in_maintenance),
             refresh_counter: AtomicU64::new(0),
+            refresh_in_flight: StdMutex::new(HashSet::new()),
             cache_stats_handle: Some(cache_stats_handle),
         })
     }
