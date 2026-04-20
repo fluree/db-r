@@ -183,7 +183,7 @@ impl HistSidecarBuilder {
             }
 
             // Sort by t descending (newest first).
-            entries.sort_unstable_by(|a, b| b.t.cmp(&a.t));
+            entries.sort_unstable_by_key(|b| std::cmp::Reverse(b.t));
 
             let entry_count = entries.len() as u32;
             let min_t = entries.last().unwrap().t;

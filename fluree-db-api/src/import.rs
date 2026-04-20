@@ -3419,7 +3419,7 @@ fn build_import_summary(
         }
     }
     // Sort longest-first so longest match wins.
-    iri_to_short.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    iri_to_short.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
     let compact = |full_iri: &str| -> String {
         for &(ns_iri, short) in &iri_to_short {
@@ -3432,7 +3432,7 @@ fn build_import_summary(
 
     // ---- Top 5 properties by count ----
     let mut props_sorted: Vec<_> = agg_props.iter().collect();
-    props_sorted.sort_by(|a, b| b.count.cmp(&a.count));
+    props_sorted.sort_by_key(|b| std::cmp::Reverse(b.count));
     let top_properties: Vec<(String, u64)> = props_sorted
         .iter()
         .take(5)
@@ -3521,7 +3521,7 @@ fn build_import_summary(
             }
         }
     }
-    connections.sort_by(|a, b| b.3.cmp(&a.3));
+    connections.sort_by_key(|b| std::cmp::Reverse(b.3));
     let top_connections: Vec<(String, String, String, u64)> = connections
         .iter()
         .take(5)

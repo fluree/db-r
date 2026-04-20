@@ -89,7 +89,7 @@ impl HllSketchBlob {
                 }
             })
             .collect();
-        entries.sort_by(|a, b| (a.g_id, a.p_id).cmp(&(b.g_id, b.p_id)));
+        entries.sort_by_key(|a| (a.g_id, a.p_id));
 
         Self {
             version: Self::CURRENT_VERSION,

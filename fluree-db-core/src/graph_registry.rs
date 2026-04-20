@@ -308,10 +308,8 @@ impl GraphRegistry {
         // Same deterministic sort as apply_delta
         truly_new.sort();
 
-        let mut next = self.next_id;
-        for arc in truly_new {
+        for (next, arc) in (self.next_id..).zip(truly_new) {
             result.insert(arc, next);
-            next += 1;
         }
 
         result

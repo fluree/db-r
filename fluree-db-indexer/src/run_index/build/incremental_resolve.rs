@@ -655,10 +655,8 @@ fn reconcile_chunk_to_global(
         .reverse_lookup_many(subject_reverse_keys.iter().map(Vec::as_slice))
         .map_err(IncrementalResolveError::Io)?;
 
-    for (chunk_local_id, ((ns_code, name_bytes), existing_id)) in subject_entries
-        .iter()
-        .zip(subject_existing_ids.into_iter())
-        .enumerate()
+    for (chunk_local_id, ((ns_code, name_bytes), existing_id)) in
+        subject_entries.iter().zip(subject_existing_ids).enumerate()
     {
         let global_sid64 = match existing_id {
             Some(sid64) => {
@@ -741,10 +739,8 @@ fn reconcile_chunk_to_global(
         .reverse_lookup_many(string_entries.iter().map(Vec::as_slice))
         .map_err(IncrementalResolveError::Io)?;
 
-    for (chunk_local_id, (value_bytes, existing_id)) in string_entries
-        .iter()
-        .zip(string_existing_ids.into_iter())
-        .enumerate()
+    for (chunk_local_id, (value_bytes, existing_id)) in
+        string_entries.iter().zip(string_existing_ids).enumerate()
     {
         let global_str_id = match existing_id {
             Some(id) => {
