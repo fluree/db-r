@@ -1993,9 +1993,7 @@ async fn dataset_staged_transaction_with_novel_namespace() {
     let view_a = GraphDb::from_ledger_state(&_ledger_a.ledger);
     let view_b = GraphDb::from_staged(&staged).expect("from_staged");
 
-    let dataset = DataSetDb::new()
-        .with_default(view_a)
-        .with_default(view_b);
+    let dataset = DataSetDb::new().with_default(view_a).with_default(view_b);
 
     // Cross-ledger join: find the person whose partnerId matches the org
     let query = json!({

@@ -224,13 +224,11 @@ fn stamp_binding(
 ) -> Result<Binding> {
     match binding {
         Binding::Sid(ref sid) => sid_to_iri_match(sid, ledger_id, ctx),
-        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
-            Err(QueryError::Internal(
-                "EncodedSid/EncodedPid reached stamp_provenance — binary store should have \
+        Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => Err(QueryError::Internal(
+            "EncodedSid/EncodedPid reached stamp_provenance — binary store should have \
                  been disabled for multi-ledger datasets"
-                    .into(),
-            ))
-        }
+                .into(),
+        )),
         other => Ok(other),
     }
 }
@@ -249,14 +247,16 @@ fn sid_to_iri_match(
     ledger_id: &Arc<str>,
     ctx: &ExecutionContext<'_>,
 ) -> Result<Binding> {
-    let iri = ctx.decode_sid_in_ledger(sid, ledger_id.as_ref()).ok_or_else(|| {
-        QueryError::Internal(format!(
-            "failed to decode SID (ns={}, name={:?}) from ledger {:?}: \
+    let iri = ctx
+        .decode_sid_in_ledger(sid, ledger_id.as_ref())
+        .ok_or_else(|| {
+            QueryError::Internal(format!(
+                "failed to decode SID (ns={}, name={:?}) from ledger {:?}: \
              namespace code not found in snapshot — multi-ledger equality \
              requires IriMatch but the SID cannot be resolved to an IRI",
-            sid.namespace_code, sid.name, ledger_id,
-        ))
-    })?;
+                sid.namespace_code, sid.name, ledger_id,
+            ))
+        })?;
     Ok(Binding::iri_match(
         Arc::<str>::from(iri.as_str()),
         sid.clone(),
