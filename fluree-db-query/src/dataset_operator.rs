@@ -189,7 +189,7 @@ fn stamp_provenance(
         return Ok(batch);
     }
 
-    let (schema, columns) = batch.into_parts();
+    let (schema, columns, _len) = batch.into_parts();
 
     let stamped_columns: Vec<Vec<Binding>> = columns
         .into_iter()

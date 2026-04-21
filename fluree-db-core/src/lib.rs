@@ -135,7 +135,7 @@ pub use range::{
     flake_matches_range_eq, range, range_bounded_with_overlay, range_with_overlay, ObjectBounds,
     RangeMatch, RangeOptions, RangeTest, BATCHED_JOIN_SIZE,
 };
-pub use range_provider::RangeProvider;
+pub use range_provider::{RangeProvider, RangeQuery};
 pub use runtime_small_dicts::RuntimeSmallDicts;
 pub use schema_hierarchy::SchemaHierarchy;
 pub use sid::{Sid, SidInterner};

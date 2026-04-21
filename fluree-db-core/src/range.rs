@@ -100,16 +100,24 @@ where
     match snapshot.range_provider.as_ref() {
         Some(provider) => {
             let overlay_ref = SizedOverlayRef(overlay);
-            provider
-                .range_tracked(g_id, index, test, &match_val, &opts, &overlay_ref, tracker)
-                .map_err(|e| {
-                    match e.get_ref().and_then(|inner| {
-                        inner.downcast_ref::<crate::tracking::FuelExceededError>()
-                    }) {
-                        Some(fe) => crate::error::Error::FuelExceeded(fe.clone()),
-                        None => crate::error::Error::Io(e.to_string()),
-                    }
-                })
+            let query = crate::range_provider::RangeQuery {
+                g_id,
+                index,
+                test,
+                match_val: &match_val,
+                opts: &opts,
+                overlay: &overlay_ref,
+                tracker,
+            };
+            provider.range(&query).map_err(|e| {
+                match e
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<crate::tracking::FuelExceededError>())
+                {
+                    Some(fe) => crate::error::Error::FuelExceeded(fe.clone()),
+                    None => crate::error::Error::Io(e.to_string()),
+                }
+            })
         }
         None if snapshot.t == 0 => {
             // Genesis Db: no base data, return overlay flakes only.

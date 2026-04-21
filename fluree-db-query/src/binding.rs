@@ -1012,11 +1012,6 @@ impl Batch {
         self.columns.get(col).map(|c| c.as_slice())
     }
 
-    /// Consume the batch, returning the schema and owned column vectors.
-    pub fn into_parts(self) -> (Arc<[VarId]>, Vec<Vec<Binding>>) {
-        (self.schema, self.columns)
-    }
-
     /// Zero-copy view selecting specific columns
     pub fn project_view(&self, vars: &[VarId]) -> Option<BatchView<'_>> {
         let col_indices: Vec<usize> = vars

@@ -21,6 +21,28 @@ use crate::sid::Sid;
 use crate::tracking::Tracker;
 use std::collections::HashMap;
 
+/// Parameters for a range query against a [`RangeProvider`].
+///
+/// Bundles the read-only references the provider needs to execute a single
+/// range scan. All fields are borrows so the caller retains ownership.
+pub struct RangeQuery<'a> {
+    /// Graph to query (0 = default graph).
+    pub g_id: GraphId,
+    /// Index order to scan (SPOT, PSOT, POST, OPST).
+    pub index: IndexType,
+    /// Comparison operator (Eq, Lt, Le, Gt, Ge).
+    pub test: RangeTest,
+    /// Components to match (subject, predicate, object).
+    pub match_val: &'a RangeMatch,
+    /// Query options (limit, time bounds, object bounds).
+    pub opts: &'a RangeOptions,
+    /// Overlay provider for uncommitted novelty flakes.
+    pub overlay: &'a dyn OverlayProvider,
+    /// Optional fuel tracker. When `Some`, implementations should charge
+    /// fuel for leaflet/dict touches during scan and decode.
+    pub tracker: Option<&'a Tracker>,
+}
+
 /// A range query backend that can execute range queries against an index.
 ///
 /// This trait abstracts the index implementation so callers can use the same
@@ -38,45 +60,13 @@ pub trait RangeProvider: Send + Sync {
 
     /// Execute a range query, returning matching flakes in index order.
     ///
-    /// # Arguments
-    ///
-    /// * `g_id` — graph to query (0 = default graph)
-    /// * `index` — which index order to scan (SPOT, PSOT, POST, OPST)
-    /// * `test` — comparison operator (Eq, Lt, Le, Gt, Ge)
-    /// * `match_val` — components to match (subject, predicate, object)
-    /// * `opts` — query options (limit, time bounds, object bounds)
-    /// * `overlay` — overlay provider for uncommitted novelty flakes
+    /// See [`RangeQuery`] for parameter meanings.
     ///
     /// # Errors
     ///
     /// Returns `io::Error` on I/O failures or if match components cannot be
     /// translated to the index's internal representation.
-    fn range(
-        &self,
-        g_id: GraphId,
-        index: IndexType,
-        test: RangeTest,
-        match_val: &RangeMatch,
-        opts: &RangeOptions,
-        overlay: &dyn OverlayProvider,
-    ) -> std::io::Result<Vec<Flake>>;
-
-    /// Tracker-aware variant of [`range`](Self::range). The default
-    /// implementation discards the tracker and falls back to `range`. Concrete
-    /// implementations should override to charge fuel for leaflet/dict touches
-    /// during scan and decode.
-    fn range_tracked(
-        &self,
-        g_id: GraphId,
-        index: IndexType,
-        test: RangeTest,
-        match_val: &RangeMatch,
-        opts: &RangeOptions,
-        overlay: &dyn OverlayProvider,
-        _tracker: Option<&Tracker>,
-    ) -> std::io::Result<Vec<Flake>> {
-        self.range(g_id, index, test, match_val, opts, overlay)
-    }
+    fn range(&self, query: &RangeQuery<'_>) -> std::io::Result<Vec<Flake>>;
 
     /// Execute a bounded range query with explicit start/end flakes.
     ///

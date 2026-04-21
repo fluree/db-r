@@ -13,8 +13,9 @@ use fluree_db_binary_index::{
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::subject_id::SubjectId;
 use fluree_db_core::{
-    flake_matches_range_eq, Flake, FlakeValue, GraphId, IndexType, OType, OverlayProvider,
-    RangeMatch, RangeOptions, RangeProvider, RangeTest, RuntimeSmallDicts, Sid,
+    flake_matches_range_eq, range_provider::RangeQuery, Flake, FlakeValue, GraphId, IndexType,
+    OType, OverlayProvider, RangeMatch, RangeOptions, RangeProvider, RangeTest, RuntimeSmallDicts,
+    Sid,
 };
 
 use crate::binary_scan::{encode_bound_object_prefilter, index_type_to_sort_order};
@@ -158,41 +159,20 @@ impl RangeProvider for BinaryRangeProvider {
         self
     }
 
-    fn range(
-        &self,
-        g_id: GraphId,
-        index: IndexType,
-        test: RangeTest,
-        match_val: &RangeMatch,
-        opts: &RangeOptions,
-        overlay: &dyn OverlayProvider,
-    ) -> std::io::Result<Vec<Flake>> {
-        self.range_tracked(g_id, index, test, match_val, opts, overlay, None)
-    }
-
-    fn range_tracked(
-        &self,
-        g_id: GraphId,
-        index: IndexType,
-        test: RangeTest,
-        match_val: &RangeMatch,
-        opts: &RangeOptions,
-        overlay: &dyn OverlayProvider,
-        tracker: Option<&fluree_db_core::Tracker>,
-    ) -> std::io::Result<Vec<Flake>> {
-        match test {
+    fn range(&self, query: &RangeQuery<'_>) -> std::io::Result<Vec<Flake>> {
+        match query.test {
             RangeTest::Eq => binary_range_eq_v3(
                 &self.store,
                 &self.dict_novelty,
                 &self.runtime_small_dicts,
-                g_id,
-                index,
-                match_val,
-                opts,
-                overlay,
-                tracker,
+                query.g_id,
+                query.index,
+                query.match_val,
+                query.opts,
+                query.overlay,
+                query.tracker,
             ),
-            _ => Err(std::io::Error::new(
+            test => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 format!("V3 range provider: unsupported RangeTest {:?}", test),
             )),
@@ -247,7 +227,6 @@ impl RangeProvider for BinaryRangeProvider {
 
 /// V3 equality range query: scan the appropriate index order with filters,
 /// decode each row to a `Flake`, apply overlay merge.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 fn binary_range_eq_v3(
     store: &Arc<BinaryIndexStore>,
