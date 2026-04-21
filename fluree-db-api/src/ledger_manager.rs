@@ -2038,4 +2038,160 @@ mod tests {
         assert_eq!(extracted.status_code(), 404);
         assert!(extracted.to_string().contains("ledger bar"));
     }
+
+    // ========================================================================
+    // fluree/db-r#155 follow-up validation — Change 2 single-flight
+    // ========================================================================
+
+    use async_trait::async_trait;
+    use fluree_db_core::content_kind::ContentKind;
+    use fluree_db_core::db::LedgerSnapshot;
+    use fluree_db_core::MemoryContentStore;
+    use fluree_db_novelty::Novelty;
+    use std::collections::HashMap as StdHashMap;
+    use std::sync::atomic::{AtomicU64 as StdAtomicU64, Ordering as StdOrdering};
+    use std::sync::RwLock as StdRwLock;
+
+    /// `ContentStore` mock that tracks per-CID `get()` call counts and
+    /// injects a fixed delay on every call. The per-CID counter is the key
+    /// signal: `apply_index_v2` concurrency-dedup should ensure that N
+    /// concurrent callers result in exactly ONE `cs.get(index_id)` call.
+    #[derive(Debug)]
+    struct PerCidCountingCs {
+        inner: MemoryContentStore,
+        counts: StdRwLock<StdHashMap<ContentId, StdAtomicU64>>,
+        delay: std::time::Duration,
+    }
+
+    impl PerCidCountingCs {
+        fn new(delay: std::time::Duration) -> Self {
+            Self {
+                inner: MemoryContentStore::new(),
+                counts: StdRwLock::new(StdHashMap::new()),
+                delay,
+            }
+        }
+
+        fn count_for(&self, id: &ContentId) -> u64 {
+            self.counts
+                .read()
+                .unwrap()
+                .get(id)
+                .map(|c| c.load(StdOrdering::Relaxed))
+                .unwrap_or(0)
+        }
+    }
+
+    #[async_trait]
+    impl ContentStore for PerCidCountingCs {
+        async fn has(&self, id: &ContentId) -> fluree_db_core::Result<bool> {
+            self.inner.has(id).await
+        }
+
+        async fn get(&self, id: &ContentId) -> fluree_db_core::Result<Vec<u8>> {
+            // Record the call before returning so that even an error path
+            // increments the counter. Per-CID counting is the signal we
+            // care about for dedup validation.
+            self.counts
+                .write()
+                .unwrap()
+                .entry(id.clone())
+                .or_insert_with(|| StdAtomicU64::new(0))
+                .fetch_add(1, StdOrdering::Relaxed);
+            tokio::time::sleep(self.delay).await;
+            self.inner.get(id).await
+        }
+
+        async fn put(&self, kind: ContentKind, bytes: &[u8]) -> fluree_db_core::Result<ContentId> {
+            self.inner.put(kind, bytes).await
+        }
+
+        async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::Result<()> {
+            self.inner.put_with_id(id, bytes).await
+        }
+
+        async fn release(&self, id: &ContentId) -> fluree_db_core::Result<()> {
+            self.inner.release(id).await
+        }
+    }
+
+    /// Concurrent `apply_index_v2` callers on the same handle must share a
+    /// single in-flight leader. Only ONE `cs.get(index_id)` should happen
+    /// even when N callers race — followers register on the waiter channel
+    /// and receive the leader's result via oneshot.
+    ///
+    /// The test uses intentionally-malformed index bytes so the leader's
+    /// `load_from_root_bytes` fails with a decode error. That keeps the
+    /// setup minimal (no real dict/arena CIDs needed) while still
+    /// exercising the full dedup pathway: leader registers, followers
+    /// subscribe, leader completes with Err, followers receive the shared
+    /// error via oneshot and surface equivalent Err back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_index_v2_dedupes_concurrent_callers() {
+        // Stand up an ephemeral handle. `apply_index_v2` reads the
+        // ledger_id from state and passes it to `backend.content_store`,
+        // but with a `Permanent` backend the namespace_id is ignored and
+        // the single inner store is returned, so any valid ledger ID works.
+        let snapshot = LedgerSnapshot::genesis("test:single-flight");
+        let state = LedgerState::new(snapshot, Novelty::new(0));
+        let handle = LedgerHandle::ephemeral("test:single-flight".to_string(), state);
+
+        let cs = Arc::new(PerCidCountingCs::new(std::time::Duration::from_millis(80)));
+        // Seed an opaque blob under a CID we can reference. The bytes
+        // aren't a valid FIR6 root — `load_from_root_bytes` will fail with
+        // a decode error after the leader's single `cs.get`, which is
+        // exactly what we want for this test (the failure path still runs
+        // through the full dedup coordination).
+        let junk = b"not-a-real-index-root".to_vec();
+        let index_id = ContentId::new(ContentKind::IndexRoot, &junk);
+        cs.inner
+            .put_with_id(&index_id, &junk)
+            .await
+            .expect("seed index bytes");
+
+        let backend =
+            StorageBackend::Permanent(Arc::clone(&cs) as Arc<dyn fluree_db_core::ContentStore>);
+
+        let cache_dir =
+            std::env::temp_dir().join(format!("fluree-single-flight-test-{}", std::process::id()));
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        // Fan out N concurrent `apply_index_v2` calls. Without dedup each
+        // would independently invoke `cs.get(index_id)`; with dedup only
+        // the leader does, followers wait on the oneshot.
+        const N: usize = 6;
+        let mut tasks = Vec::with_capacity(N);
+        for _ in 0..N {
+            let handle = handle.clone();
+            let backend = backend.clone();
+            let cache_dir = cache_dir.clone();
+            let id = index_id.clone();
+            tasks.push(tokio::spawn(async move {
+                handle.apply_index_v2(&id, &backend, &cache_dir, None).await
+            }));
+        }
+
+        let mut results = Vec::with_capacity(N);
+        for t in tasks {
+            results.push(t.await.expect("task did not panic"));
+        }
+
+        // All N callers should have received the SAME kind of result. The
+        // leader runs the full load (which fails because `junk` isn't a
+        // FIR6 root); followers receive the shared error via oneshot.
+        // Either way, every result is an Err, and every Err originates
+        // from the same leader run.
+        for (i, r) in results.iter().enumerate() {
+            assert!(r.is_err(), "task {i} unexpectedly succeeded: {r:?}");
+        }
+
+        // The core assertion: exactly ONE `cs.get(index_id)` happened
+        // across all N callers. If single-flight regressed, this would
+        // equal N instead.
+        let got = cs.count_for(&index_id);
+        assert_eq!(
+            got, 1,
+            "expected dedup to fold {N} callers into 1 cs.get(index_id), got {got}"
+        );
+    }
 }

@@ -2797,4 +2797,147 @@ mod tests {
             .unwrap();
         assert_eq!(val, FlakeValue::Long(1_350_000));
     }
+
+    // ========================================================================
+    // fluree/db-r#155 follow-up validation — Change 3 parallelism
+    // ========================================================================
+
+    /// `ContentStore` wrapper that injects a fixed delay on every `get()` and
+    /// tracks peak in-flight concurrency via an atomic gauge. Used to prove
+    /// that `fetch_named_graph_branches` drives its fetches concurrently
+    /// rather than serially.
+    #[derive(Debug)]
+    struct LatencyConcurrencyCs {
+        inner: MemoryContentStore,
+        delay: std::time::Duration,
+        in_flight: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl LatencyConcurrencyCs {
+        fn new(delay: std::time::Duration) -> Self {
+            Self {
+                inner: MemoryContentStore::new(),
+                delay,
+                in_flight: Arc::new(AtomicUsize::new(0)),
+                peak: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn peak_concurrency(&self) -> usize {
+            self.peak.load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl ContentStore for LatencyConcurrencyCs {
+        async fn has(&self, id: &ContentId) -> fluree_db_core::Result<bool> {
+            self.inner.has(id).await
+        }
+
+        async fn get(&self, id: &ContentId) -> fluree_db_core::Result<Vec<u8>> {
+            // Record concurrency on entry; update peak via CAS; hold while
+            // sleeping; decrement on exit.
+            let now = self.in_flight.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+            let mut peak = self.peak.load(AtomicOrdering::Relaxed);
+            while now > peak {
+                match self.peak.compare_exchange(
+                    peak,
+                    now,
+                    AtomicOrdering::Relaxed,
+                    AtomicOrdering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => peak = actual,
+                }
+            }
+            tokio::time::sleep(self.delay).await;
+            let bytes = self.inner.get(id).await;
+            self.in_flight.fetch_sub(1, AtomicOrdering::Relaxed);
+            bytes
+        }
+
+        async fn put(&self, kind: ContentKind, bytes: &[u8]) -> fluree_db_core::Result<ContentId> {
+            self.inner.put(kind, bytes).await
+        }
+
+        async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::Result<()> {
+            self.inner.put_with_id(id, bytes).await
+        }
+
+        async fn release(&self, id: &ContentId) -> fluree_db_core::Result<()> {
+            self.inner.release(id).await
+        }
+    }
+
+    /// `fetch_named_graph_branches` drives its (g_id, order, cid) fetches
+    /// concurrently. Validates the Change 3 hypothesis that wall clock
+    /// drops from `sum(GETs)` to roughly `max(GETs)` — observable here via
+    /// (a) peak in-flight concurrency > 1 and (b) elapsed time < sum.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fetch_named_graph_branches_is_concurrent() {
+        use crate::format::branch::build_branch_bytes;
+        use crate::format::run_record::RunSortOrder;
+
+        let cs = Arc::new(LatencyConcurrencyCs::new(std::time::Duration::from_millis(
+            80,
+        )));
+        let cache_dir = temp_cache_dir();
+
+        // Build 6 distinct branch manifests (2 graphs × 3 orders) and
+        // register each under its content-addressed CID. Empty leaves
+        // keeps the payload small; we're measuring fan-out, not decode.
+        let orders = [RunSortOrder::Spot, RunSortOrder::Psot, RunSortOrder::Post];
+        let mut named_graphs: Vec<NamedGraphRouting> = Vec::new();
+        for (g_ix, g_id) in [3u16, 4u16].iter().enumerate() {
+            let mut routes = Vec::new();
+            for (o_ix, order) in orders.iter().enumerate() {
+                // Perturb bytes so every manifest has a distinct CID.
+                let mut bytes = build_branch_bytes(*order, *g_id, &[]);
+                bytes.push(g_ix as u8);
+                bytes.push(o_ix as u8);
+                let id = ContentId::new(ContentKind::IndexBranch, &bytes);
+                cs.inner
+                    .put_with_id(&id, &bytes)
+                    .await
+                    .expect("seed branch");
+                routes.push((*order, id));
+            }
+            named_graphs.push(NamedGraphRouting {
+                g_id: *g_id,
+                orders: routes,
+            });
+        }
+
+        let started = std::time::Instant::now();
+        let branches = super::fetch_named_graph_branches(
+            Arc::clone(&cs) as Arc<dyn ContentStore>,
+            &named_graphs,
+            &cache_dir,
+            None,
+        )
+        .await
+        .expect("fetch_named_graph_branches");
+        let elapsed = started.elapsed();
+
+        assert_eq!(branches.len(), 6, "should return one entry per fetch");
+
+        // Serial would be 6 × 80ms = 480ms; concurrent should finish in
+        // roughly max(80ms) plus async overhead. Allow generous slack for
+        // CI scheduler noise.
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "expected concurrent fetch, but elapsed {:?} ≥ 300ms (serial would be ~480ms)",
+            elapsed
+        );
+
+        // Peak concurrency should be at least 2 (ideally ≈6). If the code
+        // regressed back to serial, peak would be 1.
+        assert!(
+            cs.peak_concurrency() >= 2,
+            "expected parallel fan-out, but peak concurrency was {} — fetch_named_graph_branches \
+             must drive concurrent futures via try_join_all, not a serial for-await loop",
+            cs.peak_concurrency()
+        );
+    }
 }
