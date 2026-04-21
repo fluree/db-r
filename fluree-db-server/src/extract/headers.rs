@@ -48,6 +48,11 @@ pub struct FlureeHeaders {
 
     /// Accept header value (for content negotiation)
     pub accept: Option<String>,
+
+    /// Minimum `t` value required for read-after-write consistency.
+    /// When set, the server refreshes the ledger cache before executing
+    /// the query, and returns 409 Conflict if `t` < `min_t`.
+    pub min_t: Option<i64>,
 }
 
 impl Default for FlureeHeaders {
@@ -65,6 +70,7 @@ impl Default for FlureeHeaders {
             max_fuel: None,
             content_type: None,
             accept: None,
+            min_t: None,
         }
     }
 }
@@ -80,6 +86,7 @@ impl FlureeHeaders {
     pub const TRACK_FUEL: &'static str = "fluree-track-fuel";
     pub const TRACK_TIME: &'static str = "fluree-track-time";
     pub const MAX_FUEL: &'static str = "fluree-max-fuel";
+    pub const MIN_T: &'static str = "x-fluree-min-t";
 
     /// Parse headers from a HeaderMap
     pub fn from_headers(headers: &HeaderMap) -> Result<Self> {
@@ -129,6 +136,13 @@ impl FlureeHeaders {
         if let Some(val) = get_header_str(headers, Self::MAX_FUEL) {
             fluree_headers.max_fuel = Some(val.parse().map_err(|_| {
                 ServerError::invalid_header(format!("{} must be a number", Self::MAX_FUEL))
+            })?);
+        }
+
+        // Read-after-write consistency
+        if let Some(val) = get_header_str(headers, Self::MIN_T) {
+            fluree_headers.min_t = Some(val.parse().map_err(|_| {
+                ServerError::invalid_header(format!("{} must be an integer", Self::MIN_T))
             })?);
         }
 

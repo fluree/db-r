@@ -2676,3 +2676,697 @@ async fn commits_endpoint_without_token_returns_401() {
         "missing token should return 401 when storage proxy is enabled"
     );
 }
+
+// ============================================================================
+// Maintenance mode tests
+// ============================================================================
+
+#[tokio::test]
+async fn maintenance_mode_blocks_writes_allows_reads() {
+    let (_tmp, state) = test_state();
+
+    // Create a ledger first
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"maint-test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Enable maintenance mode
+    state
+        .maintenance_mode
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // Health check should still work (read-only)
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Insert should be blocked with 503
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert/maint-test:main")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"insert":[{"@id":"ex:1","ex:name":"test"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body_bytes = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect")
+        .to_bytes();
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Expected 503, got {}: {}",
+        status,
+        body_str
+    );
+
+    // Disable maintenance mode
+    state
+        .maintenance_mode
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // Insert should work again
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert/maint-test:main")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"insert":[{"@id":"ex:1","ex:name":"test"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ============================================================================
+// Readiness probe tests
+// ============================================================================
+
+#[tokio::test]
+async fn readiness_probe_returns_ok() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["status"], "ready");
+    assert_eq!(json["checks"]["nameservice"]["status"], "ok");
+}
+
+// ============================================================================
+// Read-after-write consistency tests (X-Fluree-Min-T / X-Fluree-T)
+// ============================================================================
+
+#[tokio::test]
+async fn transaction_response_includes_x_fluree_t_header() {
+    let (_tmp, state) = test_state();
+
+    // Create ledger
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"raw-test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Insert data
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"ledger":"raw-test:main","insert":[{"@id":"ex:1","ex:name":"test"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify X-Fluree-T header is present
+    let t_header = resp.headers().get("x-fluree-t");
+    assert!(
+        t_header.is_some(),
+        "Transaction response should include X-Fluree-T header"
+    );
+    let t_value: i64 = t_header
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("X-Fluree-T should be an integer");
+    assert!(t_value > 0, "X-Fluree-T should be positive");
+}
+
+#[tokio::test]
+async fn min_t_header_enforces_read_after_write() {
+    let (_tmp, state) = test_state();
+
+    // Create ledger and insert data
+    let app = build_router(state.clone());
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/fluree/create")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"ledger":"mint-test"}"#))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"ledger":"mint-test:main","insert":[{"@id":"ex:1","ex:name":"alice"}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let t_value = resp
+        .headers()
+        .get("x-fluree-t")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    // Query with X-Fluree-Min-T equal to the committed t — should succeed
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/mint-test:main")
+                .header("content-type", "application/json")
+                .header("x-fluree-min-t", &t_value)
+                .body(Body::from(
+                    r#"{"where":{"@id":"?s"},"select":{"?s":["*"]}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let valid_status = resp.status();
+    if valid_status != StatusCode::OK {
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        panic!(
+            "Expected 200 for valid min_t, got {}: {}",
+            valid_status,
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    // Query with X-Fluree-Min-T far in the future — should return 409
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/query/mint-test:main")
+                .header("content-type", "application/json")
+                .header("x-fluree-min-t", "999999")
+                .body(Body::from(
+                    r#"{"where":{"@id":"?s"},"select":{"?s":["*"]}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    assert!(
+        status == StatusCode::CONFLICT || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "Expected 409 or 500 for unreachable min_t, got {}",
+        status,
+    );
+}
+
+// ============================================================================
+// BM25 query endpoint tests
+// ============================================================================
+
+#[tokio::test]
+async fn bm25_query_endpoint_requires_from_field() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state);
+
+    // Query without `from` should return an error (400 or 500)
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"select":{"?s":["*"]}}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        resp.status().is_client_error() || resp.status().is_server_error(),
+        "Missing 'from' should return an error, got {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn bm25_query_endpoint_accepts_valid_query() {
+    let (_tmp, state) = test_state();
+
+    // Create a ledger so the `from` resolves
+    let app = build_router(state.clone());
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/v1/fluree/create")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"ledger":"bm25q-test"}"#))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    // A simple query (no BM25 pattern) should still work through the
+    // BM25-aware path since it falls back gracefully.
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"from":"bm25q-test:main","where":{"@id":"?s"},"select":{"?s":["@id"]}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+// ── End-to-end BM25 test: Adaptive project patterns ──────────────
+// Tests the full lifecycle via HTTP: insert data with unqualified property
+// names → create BM25 index → query via /graph-source/bm25/query endpoint.
+// Mirrors exactly what the Adaptive app does.
+#[tokio::test]
+async fn bm25_query_endpoint_end_to_end_with_unqualified_names() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    // Create ledger
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"adaptive-e2e"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Insert data with unqualified property names (Adaptive's schema)
+    let insert = serde_json::json!({
+        "@graph": [
+            {
+                "@id": "Class_AccessRight",
+                "@type": "Class",
+                "Name": "Access Right",
+                "Description": "Access rights and permissions"
+            },
+            {
+                "@id": "Class_Activity",
+                "@type": "Class",
+                "Name": "Unit Activity",
+                "Description": "Unit of work activity tracking"
+            },
+            {
+                "@id": "Entity_DeptHR",
+                "@type": "ErEntity",
+                "Name": "Department HR",
+                "Description": "Human Resources Department"
+            },
+            {
+                "@id": "Entity_DeptFinance",
+                "@type": "ErEntity",
+                "Name": "Finance Department",
+                "Description": "Corporate finance and accounting"
+            }
+        ]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/insert")
+                .header("content-type", "application/json")
+                .header("fluree-ledger", "adaptive-e2e:main")
+                .body(Body::from(insert.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "insert should succeed");
+
+    // Create BM25 index for Name property
+    let create_body = serde_json::json!({
+        "name": "nameSearch",
+        "ledger": "adaptive-e2e:main",
+        "query": {
+            "where": [{"@id": "?x", "Name": "?name"}],
+            "select": {"?x": ["@id", "Name"]}
+        }
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/create")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "BM25 create failed ({status}): {json}"
+    );
+    let doc_count = json["doc_count"].as_u64().unwrap_or(0);
+    assert!(
+        doc_count >= 4,
+        "should index at least 4 documents, got {doc_count}"
+    );
+
+    // Query via /graph-source/bm25/query — search for "department"
+    let search_query = serde_json::json!({
+        "@context": { "f": "https://ns.flur.ee/db#" },
+        "from": "adaptive-e2e:main",
+        "where": [
+            {
+                "f:graphSource": "nameSearch:main",
+                "f:searchText": "department",
+                "f:searchLimit": 10,
+                "f:searchResult": {
+                    "f:resultId": "?x",
+                    "f:resultScore": "?score"
+                }
+            },
+            { "@id": "?x", "Name": "?name" }
+        ],
+        "select": ["?name", "?score"]
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(search_query.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "BM25 query failed: {json}");
+    let results = json.as_array().expect("should return array");
+    assert!(
+        !results.is_empty(),
+        "searching 'department' should find results, got: {json}"
+    );
+
+    // Verify result contains expected names
+    let names: Vec<&str> = results
+        .iter()
+        .filter_map(|r| r.as_array().and_then(|a| a[0].as_str()))
+        .collect();
+    assert!(
+        names.iter().any(|n| n.contains("Department")),
+        "results should include Department entities, got: {:?}",
+        names
+    );
+
+    // Also test: BM25 query with type filter join (search_schema pattern)
+    let class_search = serde_json::json!({
+        "@context": { "f": "https://ns.flur.ee/db#" },
+        "from": "adaptive-e2e:main",
+        "where": [
+            {
+                "f:graphSource": "nameSearch:main",
+                "f:searchText": "access",
+                "f:searchLimit": 10,
+                "f:searchResult": {
+                    "f:resultId": "?s",
+                    "f:resultScore": "?score"
+                }
+            },
+            { "@id": "?s", "@type": "Class", "Name": "?name" }
+        ],
+        "select": ["?name", "?score"]
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/graph-source/bm25/query")
+                .header("content-type", "application/json")
+                .body(Body::from(class_search.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK, "class search failed: {json}");
+    let results = json.as_array().expect("should return array");
+    assert!(
+        !results.is_empty(),
+        "searching 'access' with Class type filter should find Access Right, got: {json}"
+    );
+}
+
+// ============================================================================
+// Export endpoint tests
+// ============================================================================
+
+#[tokio::test]
+async fn export_returns_404_for_unknown_ledger() {
+    let (_tmp, state) = test_state();
+    let app = build_router(state.clone());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/fluree/export/nonexistent:main")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Unknown ledger should return 404 or 500 (depending on API error mapping)
+    assert_ne!(
+        resp.status(),
+        StatusCode::OK,
+        "export of non-existent ledger should not succeed"
+    );
+}
+
+#[tokio::test]
+async fn export_rejects_invalid_format() {
+    let (_tmp, state) = test_state();
+
+    // Create a ledger
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"export-fmt-test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/fluree/export/export-fmt-test:main?format=xml")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "unsupported format should return 400"
+    );
+}
+
+// ============================================================================
+// Context endpoint + maintenance mode test
+// ============================================================================
+
+#[tokio::test]
+async fn context_set_blocked_in_maintenance_mode() {
+    let (_tmp, state) = test_state();
+
+    // Create a ledger
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"ctx-maint-test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Enable maintenance mode
+    state
+        .maintenance_mode
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
+    // PUT context should be blocked (write operation)
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/v1/fluree/context/ctx-maint-test:main")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ex": "http://example.org/"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "context SET should be blocked in maintenance mode"
+    );
+
+    // GET context should still work (read operation)
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/fluree/context/ctx-maint-test:main")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "context GET should work in maintenance mode"
+    );
+
+    // Cleanup
+    state
+        .maintenance_mode
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[tokio::test]
+async fn context_get_returns_null_for_no_default() {
+    let (_tmp, state) = test_state();
+
+    // Create a ledger
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/fluree/create")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ledger":"ctx-get-test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // GET context on a fresh ledger should return null context
+    let app = build_router(state.clone());
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/v1/fluree/context/ctx-get-test:main")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let (status, json) = json_body(resp).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json.get("@context").unwrap().is_null(),
+        "fresh ledger should have null context, got: {json}"
+    );
+}

@@ -5,9 +5,14 @@ mod admin_auth;
 mod commits;
 mod context;
 mod events;
+mod export;
+mod graph_source;
 #[cfg(feature = "iceberg")]
 mod iceberg;
+mod import;
 mod ledger;
+#[cfg(feature = "metrics")]
+pub(crate) mod metrics;
 mod nameservice_refs;
 mod pack;
 mod push;
@@ -20,7 +25,7 @@ mod transact;
 use crate::state::AppState;
 use axum::{
     middleware,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
 use std::sync::Arc;
@@ -40,7 +45,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/branch", post(ledger::create_branch))
         .route("/drop-branch", post(ledger::drop_branch))
         .route("/rebase", post(ledger::rebase))
-        .route("/merge", post(ledger::merge));
+        .route("/merge", post(ledger::merge))
+        .route("/admin/maintenance", post(admin::maintenance_toggle))
+        .route("/graph-source/bm25/create", post(graph_source::bm25_create))
+        .route("/graph-source/bm25/sync", post(graph_source::bm25_sync))
+        .route("/graph-source/bm25/status", post(graph_source::bm25_status))
+        .route("/graph-source/bm25/drop", post(graph_source::bm25_drop))
+        .route("/admin/config", put(admin::config_update))
+        .route("/config", get(admin::config_inspect))
+        .route("/import", post(import::import));
 
     #[cfg(feature = "iceberg")]
     let v1_admin_protected_routes =
@@ -75,6 +88,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/explain/*ledger",
             get(query::explain_ledger_tail).post(query::explain_ledger_tail),
         )
+        // BM25 full-text search query (index provider-aware)
+        .route("/graph-source/bm25/query", post(graph_source::bm25_query))
+        // Streaming RDF export
+        .route("/export/*ledger", get(export::export))
         // Transaction endpoints
         .route("/update", post(transact::update))
         .route("/update/*ledger", post(transact::update_ledger_tail))
@@ -123,8 +140,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/remote/:path", get(stubs::remote).post(stubs::remote));
 
     let mut router = Router::new()
-        // Health check
+        // Health check (liveness) and readiness probe
         .route("/health", get(admin::health))
+        .route("/ready", get(admin::readiness))
         // Auth discovery (CLI auto-configuration)
         .route("/.well-known/fluree.json", get(admin::discovery))
         // Versioned API
@@ -136,6 +154,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     if state.config.mcp_enabled {
         let mcp_router = crate::mcp::build_mcp_router(state.clone());
         router = router.nest("/mcp", mcp_router);
+    }
+
+    // Prometheus metrics endpoint (feature-gated, no auth — scrapers need direct access)
+    #[cfg(feature = "metrics")]
+    {
+        router = router.route("/metrics", get(metrics::metrics_handler));
     }
 
     // Add state

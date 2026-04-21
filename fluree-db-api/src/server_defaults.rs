@@ -256,10 +256,27 @@ pub fn generate_config_template(storage_path_override: Option<&str>) -> String {
 # [server]
 # listen_addr = "{listen_addr}"
 # storage_path = "{storage_path}"   {storage_comment}
+# encryption_key = ""                    # base64-encoded 32-byte AES-256-GCM key
+# encryption_key_file = ""               # or path to file containing the key
 # log_level = "{log_level}"                 # trace, debug, info, warn, error
 # cors_enabled = {cors_enabled}
 # body_limit = {body_limit}              # 50 MB
 # cache_max_mb = 4096                    # global cache budget (MB); default: 50% of RAM
+# no_preload = false                     # skip ledger preload at startup (useful for containers)
+# parallelism = 0                        # thread pool size; 0 = auto-detect from CPU cores
+# novelty_min_bytes = {reindex_min_bytes}         # soft novelty threshold — triggers background indexing
+# novelty_max_bytes = {reindex_max_bytes}        # hard novelty threshold — blocks commits until indexed
+# no_ledger_cache = false                # disable in-memory ledger caching
+# ledger_cache_idle_ttl_secs = 1800      # evict idle ledgers after 30 min
+# ledger_cache_sweep_secs = 60           # background sweep interval
+# shutdown_timeout_secs = 30             # graceful shutdown drain timeout
+# query_timeout_secs = 0                 # global query timeout; 0 = no timeout
+# maintenance_mode = false               # start in read-only mode (toggle via /v1/fluree/admin/maintenance)
+
+# [server.s3]
+# bucket = ""                            # S3 bucket name (enables S3 storage, requires aws feature)
+# endpoint = ""                          # S3 endpoint URL
+# prefix = ""                            # key prefix within bucket
 
 # [server.indexing]
 # enabled = {indexing_enabled}
@@ -367,6 +384,15 @@ pub fn generate_jsonld_config_template(storage_path_override: Option<&str>) -> S
             "log_level": DEFAULT_LOG_LEVEL,
             "cors_enabled": DEFAULT_CORS_ENABLED,
             "body_limit": DEFAULT_BODY_LIMIT,
+            "no_preload": false,
+            "parallelism": 0,
+            "novelty_min_bytes": DEFAULT_REINDEX_MIN_BYTES,
+            "novelty_max_bytes": DEFAULT_REINDEX_MAX_BYTES,
+            "no_ledger_cache": false,
+            "ledger_cache_idle_ttl_secs": 1800,
+            "ledger_cache_sweep_secs": 60,
+            "shutdown_timeout_secs": 30,
+            "query_timeout_secs": 0,
             "indexing": {
                 "enabled": DEFAULT_INDEXING_ENABLED,
                 "reindex_min_bytes": DEFAULT_REINDEX_MIN_BYTES,

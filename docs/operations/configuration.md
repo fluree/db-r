@@ -38,6 +38,8 @@ listen_addr = "0.0.0.0:8090"
 storage_path = "/var/lib/fluree"
 log_level = "info"
 # cache_max_mb = 4096  # global cache budget (MB); default: 50% of RAM
+# data_dir = "/var/lib/fluree/data"  # base dir for disk caches; default: system temp
+# disk_cache_budget_bytes = 5368709120  # disk artifact cache budget; default: 90% of available
 
 [server.indexing]
 enabled = true
@@ -218,11 +220,24 @@ Options: `trace`, `debug`, `info`, `warn`, `error`
 
 ### Cache Size
 
-Global cache budget (MB):
+Global in-memory cache budget (MB):
 
 | Flag              | Env Var              | Default                |
 | ----------------- | -------------------- | ---------------------- |
 | `--cache-max-mb`  | `FLUREE_CACHE_MAX_MB`| `50% of system RAM`    |
+
+### Disk Cache
+
+Binary index artifacts fetched from remote storage (S3, HTTP) are cached on disk for performance. This is especially impactful for remote/cloud deployments.
+
+| Flag                        | Env Var                          | Default                    | Description                                      |
+| --------------------------- | -------------------------------- | -------------------------- | ------------------------------------------------ |
+| `--data-dir`                | `FLUREE_DATA_DIR`                | System temp dir            | Base directory for disk caches and staging        |
+| `--disk-cache-budget-bytes` | `FLUREE_DISK_CACHE_BUDGET_BYTES` | `90% of available space`   | Max disk cache size in bytes. `0` disables cache  |
+
+The disk artifact cache stores binary index blobs (leaf nodes, branch manifests) fetched during queries. On subsequent queries, cached blobs are served from disk instead of re-fetching from remote storage. LRU eviction keeps the cache within budget.
+
+When `--data-dir` is set, the binary cache lives at `{data_dir}/binary_cache/`. Otherwise it defaults to `{system_temp_dir}/fluree_binary_cache`.
 
 ### Background Indexing
 
@@ -241,6 +256,156 @@ Config file equivalent:
 enabled = true
 reindex_min_bytes = 100000   # 100 KB
 reindex_max_bytes = 1000000  # 1 MB
+```
+
+### Parallelism
+
+Thread pool size for query execution and indexing:
+
+| Flag              | Env Var               | Default              |
+| ----------------- | --------------------- | -------------------- |
+| `--parallelism`   | `FLUREE_PARALLELISM`  | `0` (auto-detect)    |
+
+When set to `0` (the default), the server detects the number of available CPU cores and sizes the thread pool accordingly. Set an explicit value to limit CPU usage in shared-tenancy or container environments.
+
+### Novelty Thresholds
+
+Fine-grained control over novelty backpressure, independent of the `--indexing-enabled` flag above:
+
+| Flag                    | Env Var                      | Default    | Description                                      |
+| ----------------------- | ---------------------------- | ---------- | ------------------------------------------------ |
+| `--novelty-min-bytes`   | `FLUREE_NOVELTY_MIN_BYTES`   | `100000`   | Soft threshold (triggers background indexing)     |
+| `--novelty-max-bytes`   | `FLUREE_NOVELTY_MAX_BYTES`   | `1000000`  | Hard threshold (blocks commits until indexed)     |
+
+These correspond to the `reindex_min_bytes` / `reindex_max_bytes` config file keys. The `--novelty-*` CLI flags are aliases that may be used interchangeably.
+
+### Ledger Preload
+
+| Flag            | Env Var              | Default |
+| --------------- | -------------------- | ------- |
+| `--no-preload`  | `FLUREE_NO_PRELOAD`  | `false` |
+
+By default, the server walks the storage directory at startup and preloads all discovered ledgers into memory. Pass `--no-preload` (or set `FLUREE_NO_PRELOAD=true`) to skip this step. This is useful for memory-constrained containers with many ledgers — ledgers will instead be loaded on first access.
+
+### Ledger Cache
+
+Control the in-memory ledger cache. When caching is enabled (the default), recently-accessed ledgers are held in memory and evicted after a period of inactivity.
+
+| Flag                            | Env Var                              | Default   | Description                                        |
+| ------------------------------- | ------------------------------------ | --------- | -------------------------------------------------- |
+| `--no-ledger-cache`             | `FLUREE_NO_LEDGER_CACHE`             | `false`   | Disable in-memory ledger caching entirely           |
+| `--ledger-cache-idle-ttl-secs`  | `FLUREE_LEDGER_CACHE_IDLE_TTL`       | `1800`    | Seconds before idle ledgers are evicted from cache  |
+| `--ledger-cache-sweep-secs`     | `FLUREE_LEDGER_CACHE_SWEEP_INTERVAL` | `60`      | Background sweep interval for cache cleanup         |
+
+```bash
+# Disable caching (every request loads from storage)
+fluree-server --no-ledger-cache
+
+# Keep idle ledgers for 1 hour, sweep every 2 minutes
+fluree-server --ledger-cache-idle-ttl-secs 3600 --ledger-cache-sweep-secs 120
+```
+
+#### Container-Aware Cache Sizing
+
+The `--cache-max-mb` default (50% of system RAM) is container-aware. On startup the server checks for cgroup v2 memory limits (`/sys/fs/cgroup/memory.max`), then falls back to cgroup v1 (`/sys/fs/cgroup/memory/memory.limit_in_bytes`), before using `sysinfo` as a last resort. This means `cache_max_mb` defaults correctly in Docker, Kubernetes, and AWS Fargate environments without any explicit configuration. If the cgroup memory limit is set to "max" (unlimited), the server falls back to `sysinfo` physical memory detection.
+
+To override the automatic detection, set `--cache-max-mb` explicitly:
+
+```bash
+# Explicit 2 GB cache in a 4 GB container
+fluree-server --cache-max-mb 2048
+```
+
+### Query Timeout
+
+Global query timeout:
+
+| Flag                    | Env Var                 | Default          |
+| ----------------------- | ----------------------- | ---------------- |
+| `--query-timeout-secs`  | `FLUREE_QUERY_TIMEOUT`  | `0` (disabled)   |
+
+When set to a positive value, any query exceeding this duration returns HTTP 504 Gateway Timeout. Per-query `max-fuel` limits still apply independently — whichever limit is reached first terminates the query.
+
+### Shutdown Timeout
+
+Graceful shutdown drain timeout:
+
+| Flag                      | Env Var                    | Default |
+| ------------------------- | -------------------------- | ------- |
+| `--shutdown-timeout-secs` | `FLUREE_SHUTDOWN_TIMEOUT`  | `30`    |
+
+On receiving SIGTERM (or Ctrl-C), the server stops accepting new connections and waits up to this many seconds for inflight requests to complete before forcing shutdown.
+
+### Maintenance Mode
+
+| Flag                  | Env Var                    | Default |
+| --------------------- | -------------------------- | ------- |
+| `--maintenance-mode`  | `FLUREE_MAINTENANCE_MODE`  | `false` |
+
+Start the server in read-only mode. All write endpoints (`insert`, `upsert`, `update`, `create`, `drop`) return HTTP 503 Service Unavailable. Read endpoints (`query`, `ledger-info`, `exists`) continue to function normally.
+
+Maintenance mode can be toggled at runtime without restarting the server:
+
+```bash
+# Enter maintenance mode
+curl -X POST http://localhost:8090/v1/fluree/admin/maintenance
+
+# Exit maintenance mode
+curl -X DELETE http://localhost:8090/v1/fluree/admin/maintenance
+```
+
+### Encryption
+
+Encrypt data at rest using AES-256-GCM. Provide exactly one of the two options below:
+
+| Flag                    | Env Var                    | Default | Description                                        |
+| ----------------------- | -------------------------- | ------- | -------------------------------------------------- |
+| `--encryption-key`      | `FLUREE_ENCRYPTION_KEY`    | None    | Base64-encoded 32-byte AES-256-GCM key             |
+| `--encryption-key-file` | `FLUREE_ENCRYPTION_KEY_FILE` | None  | Path to file containing the encryption key          |
+
+When an encryption key is configured, all data written to storage is encrypted before writing and decrypted on read. The key must be exactly 32 bytes (256 bits) when decoded from Base64.
+
+> **Warning:** Losing the encryption key means permanent data loss. Back up the key separately from the encrypted data.
+
+```bash
+# Inline key (Base64)
+fluree-server --encryption-key "dGhpcyBpcyBhIDMyLWJ5dGUga2V5ISEhMTIzNDU2Nzg="
+
+# Key from file (recommended for production)
+fluree-server --encryption-key-file /etc/fluree/encryption.key
+```
+
+### S3 Storage Backend
+
+Enable S3 as the storage backend (requires the `aws` feature):
+
+| Flag              | Env Var              | Default | Description                       |
+| ----------------- | -------------------- | ------- | --------------------------------- |
+| `--s3-bucket`     | `FLUREE_S3_BUCKET`   | None    | S3 bucket name                    |
+| `--s3-endpoint`   | `FLUREE_S3_ENDPOINT` | None    | S3 endpoint URL                   |
+| `--s3-prefix`     | `FLUREE_S3_PREFIX`   | None    | Key prefix within the S3 bucket   |
+
+Setting `--s3-bucket` enables S3 storage. The server uses the default AWS credential chain (environment variables, instance profile, etc.). Use `--s3-endpoint` to point at S3-compatible services (MinIO, LocalStack).
+
+```bash
+# AWS S3
+fluree-server \
+  --s3-bucket my-fluree-data \
+  --s3-prefix prod/v1
+
+# LocalStack / MinIO
+fluree-server \
+  --s3-bucket my-fluree-data \
+  --s3-endpoint http://localhost:4566
+```
+
+Config file equivalent:
+
+```toml
+[server.s3]
+bucket = "my-fluree-data"
+prefix = "prod/v1"
+# endpoint = "http://localhost:4566"  # optional, for S3-compatible services
 ```
 
 ## Server Role Configuration
@@ -575,6 +740,44 @@ fluree-server \
   --admin-auth-mode required
 ```
 
+### Container Deployment (Docker / Kubernetes)
+
+```bash
+fluree-server \
+  --storage-path /data/fluree \
+  --no-preload \
+  --cache-max-mb 1024 \
+  --parallelism 4 \
+  --ledger-cache-idle-ttl-secs 600 \
+  --query-timeout-secs 30 \
+  --shutdown-timeout-secs 15 \
+  --indexing-enabled
+```
+
+Cache sizing is container-aware by default (detects cgroup memory limits), so `--cache-max-mb` can often be omitted.
+
+### S3 Storage Backend
+
+```bash
+fluree-server \
+  --s3-bucket my-fluree-data \
+  --s3-prefix prod/v1 \
+  --indexing-enabled \
+  --admin-auth-mode required \
+  --admin-auth-trusted-issuer did:key:z6Mk...
+```
+
+### Production with Encryption
+
+```bash
+fluree-server \
+  --storage-path /var/lib/fluree \
+  --encryption-key-file /etc/fluree/encryption.key \
+  --indexing-enabled \
+  --admin-auth-mode required \
+  --admin-auth-trusted-issuer did:key:z6Mk...
+```
+
 ### Production with OIDC (All Endpoints)
 
 ```bash
@@ -625,6 +828,23 @@ fluree-server \
 | `FLUREE_REINDEX_MIN_BYTES`              | Soft reindex threshold (bytes)                  | `100000`                                                                |
 | `FLUREE_REINDEX_MAX_BYTES`              | Hard reindex threshold (bytes)                  | `1000000`                                                               |
 | `FLUREE_CACHE_MAX_MB`                   | Global cache budget (MB)                        | `50% of system RAM`                                                     |
+| `FLUREE_DATA_DIR`                       | Base directory for disk caches                  | System temp dir                                                         |
+| `FLUREE_DISK_CACHE_BUDGET_BYTES`        | Disk artifact cache budget (bytes, 0=disabled)  | `90% of available space`                                                |
+| `FLUREE_NO_PRELOAD`                     | Skip ledger preload at startup                  | `false`                                                                 |
+| `FLUREE_PARALLELISM`                    | Thread pool size (0 = auto-detect)              | `0`                                                                     |
+| `FLUREE_NOVELTY_MIN_BYTES`              | Soft novelty threshold (bytes)                  | `100000`                                                                |
+| `FLUREE_NOVELTY_MAX_BYTES`              | Hard novelty threshold (bytes)                  | `1000000`                                                               |
+| `FLUREE_NO_LEDGER_CACHE`               | Disable in-memory ledger caching                | `false`                                                                 |
+| `FLUREE_LEDGER_CACHE_IDLE_TTL`          | Idle ledger eviction (seconds)                  | `1800`                                                                  |
+| `FLUREE_LEDGER_CACHE_SWEEP_INTERVAL`    | Cache sweep interval (seconds)                  | `60`                                                                    |
+| `FLUREE_QUERY_TIMEOUT`                  | Global query timeout (seconds, 0 = disabled)    | `0`                                                                     |
+| `FLUREE_SHUTDOWN_TIMEOUT`               | Graceful shutdown timeout (seconds)             | `30`                                                                    |
+| `FLUREE_MAINTENANCE_MODE`               | Start in read-only mode                         | `false`                                                                 |
+| `FLUREE_ENCRYPTION_KEY`                 | Base64-encoded AES-256-GCM encryption key       | None                                                                    |
+| `FLUREE_ENCRYPTION_KEY_FILE`            | Path to encryption key file                     | None                                                                    |
+| `FLUREE_S3_BUCKET`                      | S3 bucket name (enables S3 storage)             | None                                                                    |
+| `FLUREE_S3_ENDPOINT`                    | S3 endpoint URL                                 | None                                                                    |
+| `FLUREE_S3_PREFIX`                      | Key prefix within S3 bucket                     | None                                                                    |
 | `FLUREE_BODY_LIMIT`                     | Max request body bytes                          | `52428800`                                                              |
 | `FLUREE_LOG_LEVEL`                      | Log level                                       | `info`                                                                  |
 | `FLUREE_SERVER_ROLE`                    | Server role                                     | `transaction`                                                           |

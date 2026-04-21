@@ -19,10 +19,13 @@ use crate::config::{ServerConfig, ServerRole};
 use crate::peer::{ForwardingClient, PeerState, ProxyNameService, ProxyStorage};
 use crate::registry::LedgerRegistry;
 use crate::telemetry::TelemetryConfig;
-use fluree_db_api::{Fluree, FlureeBuilder, IndexConfig, NameServiceMode};
+use fluree_db_api::{
+    server_defaults, Fluree, FlureeBuilder, IndexConfig, LedgerManagerConfig, NameServiceMode,
+};
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 /// Application state shared across all request handlers
@@ -34,6 +37,17 @@ pub struct AppState {
 
     /// Server configuration
     pub config: ServerConfig,
+
+    /// Resolved path to the config file (.fluree/config.toml or .jsonld).
+    /// `None` if no config file was found or used.
+    pub config_file_path: Option<PathBuf>,
+
+    /// Mutex serializing config file writes to prevent TOCTOU races.
+    pub config_write_lock: tokio::sync::Mutex<()>,
+
+    /// IRI prefix mappings from `.fluree/prefixes.json` (managed by CLI).
+    /// Injected as default `@context` entries for JSON-LD queries.
+    pub prefixes: Option<std::collections::HashMap<String, String>>,
 
     /// Telemetry configuration
     pub telemetry_config: TelemetryConfig,
@@ -59,9 +73,22 @@ pub struct AppState {
     /// HTTP client for transaction forwarding (peer mode only)
     pub forwarding_client: Option<Arc<ForwardingClient>>,
 
+    /// When true, write endpoints (insert, upsert, update, create, drop, etc.)
+    /// are rejected with HTTP 503. Read-only endpoints continue to work.
+    pub maintenance_mode: AtomicBool,
+
     /// Counter for ledger refreshes (for testing/metrics)
     /// Incremented when a ledger is actually reloaded (not for coalesced requests)
     pub refresh_counter: AtomicU64,
+
+    /// Set of ledgers whose peer-mode background refresh is in flight.
+    ///
+    /// Peer queries that detect a stale SSE watermark spawn a background
+    /// `mgr.notify()` to catch the cache up. This set dedupes a burst of
+    /// concurrent stale-triggered queries so only one background refresh
+    /// runs per ledger at a time; the rest simply serve the prior snapshot
+    /// and let the in-flight refresh settle for the next query.
+    pub refresh_in_flight: StdMutex<HashSet<String>>,
 
     /// Handle for the background leaflet cache stats logger task.
     /// Aborted on drop so the `Arc<LeafletCache>` doesn't outlive the server.
@@ -118,17 +145,58 @@ impl AppState {
             fluree_db_api::ApiError::internal(format!("Invalid configuration: {}", e))
         })?;
 
+        // Resolve config file path (for config write API)
+        let config_file_path =
+            crate::config_file::resolve_config_path(config.config_file.as_deref());
+
+        // Load IRI prefixes from .fluree/prefixes.json (if present)
+        let prefixes = config_file_path.as_ref().and_then(|cfg_path| {
+            let fluree_dir = cfg_path.parent()?;
+            let prefix_path = fluree_dir.join("prefixes.json");
+            match std::fs::read_to_string(&prefix_path) {
+                Ok(content) => {
+                    match serde_json::from_str::<std::collections::HashMap<String, String>>(
+                        &content,
+                    ) {
+                        Ok(map) if !map.is_empty() => {
+                            tracing::info!(
+                                count = map.len(),
+                                path = %prefix_path.display(),
+                                "Loaded IRI prefixes"
+                            );
+                            Some(map)
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                path = %prefix_path.display(),
+                                "Failed to parse prefixes.json"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(_) => None, // File not found — normal, not an error
+            }
+        });
+
         // Create Fluree instance based on storage access mode
         let (fluree, cache_stats_handle) = if config.is_proxy_storage_mode() {
             // Proxy mode: peer proxies all storage reads through tx server
             Self::create_proxy_fluree(&config)?
         } else {
-            // Shared mode (or transaction server): use file storage
+            // Shared mode (or transaction server): use file storage (or S3)
             Self::create_file_fluree(&config)?
         };
 
-        // Default idle TTL of 5 minutes for ledger registry
-        let registry = Arc::new(LedgerRegistry::new(Duration::from_secs(300)));
+        // Use configured TTL for ledger registry, defaulting to 30 minutes
+        // (matching LedgerManagerConfig::default() in fluree-db-api).
+        let registry_ttl = config
+            .ledger_cache_idle_ttl_secs
+            .map(Duration::from_secs)
+            .unwrap_or_else(|| Duration::from_secs(1800));
+        let registry = Arc::new(LedgerRegistry::new(registry_ttl));
 
         // Initialize peer mode state if in peer role
         let (peer_state, forwarding_client) = if config.server_role == ServerRole::Peer {
@@ -169,9 +237,14 @@ impl AppState {
             reindex_max_bytes: config.reindex_max_bytes,
         });
 
+        let start_in_maintenance = config.maintenance_mode;
+
         Ok(Self {
             fluree,
             config,
+            config_file_path,
+            config_write_lock: tokio::sync::Mutex::new(()),
+            prefixes,
             telemetry_config,
             start_time: Instant::now(),
             index_config,
@@ -180,27 +253,121 @@ impl AppState {
             jwks_cache,
             peer_state,
             forwarding_client,
+            maintenance_mode: AtomicBool::new(start_in_maintenance),
             refresh_counter: AtomicU64::new(0),
+            refresh_in_flight: StdMutex::new(HashSet::new()),
             cache_stats_handle: Some(cache_stats_handle),
         })
     }
 
-    /// Create a file-backed Fluree instance
+    /// Create a file-backed (or S3-backed) Fluree instance.
+    ///
+    /// Selects the storage backend based on config: if `s3_bucket` is set the
+    /// server uses the S3 builder (requires the `aws` feature); otherwise it
+    /// falls back to local file storage.
     fn create_file_fluree(
         config: &ServerConfig,
     ) -> Result<(Arc<Fluree>, tokio::task::JoinHandle<()>), fluree_db_api::ApiError> {
-        let path = config
-            .storage_path
-            .clone()
-            .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
+        // Determine storage backend: S3 takes precedence if bucket is set
+        #[cfg(feature = "aws")]
+        let mut builder = if let Some(ref bucket) = config.s3_bucket {
+            let endpoint = config.s3_endpoint.as_deref().unwrap_or_default();
+            let mut b = FlureeBuilder::s3(bucket, endpoint);
+            if let Some(ref prefix) = config.s3_prefix {
+                b = b.s3_prefix(prefix);
+            }
+            b
+        } else {
+            let path = config
+                .storage_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
+            FlureeBuilder::file(path.to_string_lossy())
+        };
 
-        // Convert PathBuf to String for FlureeBuilder
-        let path_str = path.to_string_lossy().to_string();
+        #[cfg(not(feature = "aws"))]
+        let mut builder = {
+            if config.s3_bucket.is_some() {
+                return Err(fluree_db_api::ApiError::config(
+                    "S3 storage requires the 'aws' feature. Build with: cargo build -p fluree-db-server --features aws",
+                ));
+            }
+            let path = config
+                .storage_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(".fluree/storage"));
+            FlureeBuilder::file(path.to_string_lossy())
+        };
 
-        let mut builder = FlureeBuilder::file(&path_str);
+        // Encryption: resolve key from file or direct value
+        let encryption_key = match (&config.encryption_key, &config.encryption_key_file) {
+            (Some(key), _) => Some(key.clone()),
+            (_, Some(path)) => {
+                let content = std::fs::read_to_string(path).map_err(|e| {
+                    fluree_db_api::ApiError::config(format!(
+                        "Failed to read encryption key file {}: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+                Some(content.trim().to_string())
+            }
+            _ => None,
+        };
+        if let Some(ref key) = encryption_key {
+            builder = builder.with_encryption_key_base64(key)?;
+        }
 
         if let Some(max_mb) = config.cache_max_mb {
             builder = builder.cache_max_mb(max_mb);
+        }
+
+        // Wire parallelism
+        if let Some(p) = config.parallelism {
+            builder = builder.parallelism(p);
+        }
+
+        // Wire novelty thresholds (separate from indexing thresholds)
+        if config.novelty_min_bytes.is_some() || config.novelty_max_bytes.is_some() {
+            builder = builder.with_novelty_thresholds(
+                config
+                    .novelty_min_bytes
+                    .unwrap_or(server_defaults::DEFAULT_REINDEX_MIN_BYTES),
+                config
+                    .novelty_max_bytes
+                    .unwrap_or(server_defaults::DEFAULT_REINDEX_MAX_BYTES),
+            );
+        }
+
+        // Disk artifact cache budget: propagate to env var so DiskArtifactCache picks it up.
+        // The env var may already be set directly; config file / CLI flag values override it.
+        // SAFETY: called during single-threaded server init before spawning request handlers.
+        if let Some(budget) = config.disk_cache_budget_bytes {
+            unsafe {
+                std::env::set_var("FLUREE_DISK_CACHE_BUDGET_BYTES", budget.to_string());
+            }
+        }
+
+        // Ledger manager config: data_dir + cache TTL/sweep settings
+        if config.no_ledger_cache {
+            builder = builder.without_ledger_caching();
+        } else {
+            let needs_custom_config = config.data_dir.is_some()
+                || config.ledger_cache_idle_ttl_secs.is_some()
+                || config.ledger_cache_sweep_secs.is_some();
+            if needs_custom_config {
+                let mut mgr_config = LedgerManagerConfig::default();
+                if let Some(ref dir) = config.data_dir {
+                    mgr_config.cache_dir = dir.join("binary_cache");
+                }
+                if let Some(ttl) = config.ledger_cache_idle_ttl_secs {
+                    mgr_config.idle_ttl = Duration::from_secs(ttl);
+                }
+                if let Some(sweep) = config.ledger_cache_sweep_secs {
+                    mgr_config.sweep_interval = Duration::from_secs(sweep);
+                }
+                builder = builder.with_ledger_cache_config(mgr_config);
+            }
         }
 
         // Wire background indexing if enabled
@@ -242,6 +409,15 @@ impl AppState {
     /// Get server uptime in seconds
     pub fn uptime_secs(&self) -> u64 {
         self.start_time.elapsed().as_secs()
+    }
+
+    /// Returns the configured query timeout, or `None` if disabled (0).
+    pub fn query_timeout(&self) -> Option<Duration> {
+        if self.config.query_timeout_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(self.config.query_timeout_secs))
+        }
     }
 
     /// Subscribe to ledger/graph-source change events via the event bus.

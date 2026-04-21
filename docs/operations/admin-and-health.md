@@ -4,9 +4,16 @@ This document covers administrative operations, health monitoring, and server st
 
 ## Health Endpoints
 
+Fluree exposes two health endpoints with different purposes:
+
+| Endpoint | Type | I/O | Use case |
+|----------|------|-----|----------|
+| `GET /health` | Liveness probe | None (instant) | Confirms the HTTP listener is running. Use for Kubernetes `livenessProbe` and basic load-balancer checks. |
+| `GET /ready` | Readiness probe | Checks backends | Verifies the server can serve traffic by testing nameservice connectivity. Use for Kubernetes `readinessProbe` and load-balancer readiness gates. |
+
 ### GET /health
 
-Basic health check:
+Fast liveness probe. Performs no I/O — returns immediately to confirm the HTTP listener is running. Does **not** verify backend connectivity (nameservice, storage).
 
 ```bash
 curl http://localhost:8090/health
@@ -20,12 +27,43 @@ curl http://localhost:8090/health
 }
 ```
 
-Use this endpoint for:
-- Load balancer health checks
-- Container orchestration (Kubernetes liveness/readiness probes)
-- Monitoring systems
+### GET /ready
 
-**Kubernetes Example:**
+Readiness probe. Checks that the server can serve traffic by verifying connectivity to backend dependencies (e.g., nameservice). This endpoint may take longer than `/health` because it performs real I/O.
+
+```bash
+curl http://localhost:8090/ready
+```
+
+**Response (200 OK — ready):**
+```json
+{
+  "status": "ready",
+  "checks": {
+    "nameservice": {
+      "status": "ok"
+    }
+  }
+}
+```
+
+**Response (503 Service Unavailable — not ready):**
+```json
+{
+  "status": "not_ready",
+  "checks": {
+    "nameservice": {
+      "status": "error",
+      "message": "connection timed out"
+    }
+  }
+}
+```
+
+### Kubernetes Configuration
+
+Use `/health` for liveness and `/ready` for readiness:
+
 ```yaml
 livenessProbe:
   httpGet:
@@ -35,11 +73,14 @@ livenessProbe:
   periodSeconds: 10
 readinessProbe:
   httpGet:
-    path: /health
+    path: /ready
     port: 8090
-  initialDelaySeconds: 5
+  initialDelaySeconds: 10
   periodSeconds: 5
+  timeoutSeconds: 3
 ```
+
+The liveness probe uses `/health` (no I/O, fast) so that Kubernetes only restarts the pod if the HTTP listener itself is down. The readiness probe uses `/ready` (checks nameservice) so that the pod is removed from service endpoints when it cannot actually serve queries.
 
 ## Statistics Endpoints
 

@@ -188,6 +188,14 @@ enum CacheKey {
     /// (derived from leaf CID) — immutable, self-invalidating on rewrite.
     /// `leaflet_idx` selects which leaflet within the leaf.
     V3Batch(V3BatchCacheKey),
+    /// Load-time content-addressed artifact bytes (FIR3 named-graph branch
+    /// manifests, arena blobs, dict tree branch manifests, etc.) — anything
+    /// read through `fetch_cached_bytes` / `fetch_cached_bytes_cid` during
+    /// `load_from_root_v6`. Key = `xxh3_128(cid_bytes)`. Content-addressed
+    /// → immutable. Separated from `DictLeaf` so load-time artifacts and
+    /// query-time dict leaves never clash on cache semantics even if a CID
+    /// happens to appear in both roles.
+    LoadArtifact(u128),
 }
 
 /// Cache key for a V3 decoded `ColumnBatch`.
@@ -291,6 +299,9 @@ enum CachedEntry {
     StatsView(Arc<StatsView>),
     /// V3 decoded column batch (base columns, no overlay/replay applied).
     V3Batch(super::column_types::ColumnBatch),
+    /// Load-time content-addressed artifact bytes — see
+    /// [`CacheKey::LoadArtifact`].
+    LoadArtifact(Arc<[u8]>),
 }
 
 impl CachedEntry {
@@ -310,6 +321,7 @@ impl CachedEntry {
             CachedEntry::LedgerInfo(bytes) => bytes.len(),
             CachedEntry::StatsView(view) => view.byte_size(),
             CachedEntry::V3Batch(batch) => batch.byte_size(),
+            CachedEntry::LoadArtifact(bytes) => bytes.len(),
         }
     }
 }
@@ -442,6 +454,58 @@ impl LeafletCache {
             Ok(_) => unreachable!("DictLeaf key always maps to DictLeaf entry"),
             Err(arc_err) => Err(io::Error::new(arc_err.kind(), arc_err.to_string())),
         }
+    }
+
+    // ========================================================================
+    // Load-time content-addressed artifact cache
+    // ========================================================================
+
+    /// Check if a load-time artifact blob is cached (read-only, no insertion).
+    ///
+    /// Key should be `xxh3_128(cid.to_bytes())` — see `cid_cache_key`.
+    pub fn get_load_artifact(&self, key: u128) -> Option<Arc<[u8]>> {
+        match self.inner.get(&CacheKey::LoadArtifact(key)) {
+            Some(CachedEntry::LoadArtifact(bytes)) => Some(bytes),
+            _ => None,
+        }
+    }
+
+    /// Async get-or-load for a load-time content-addressed artifact blob.
+    ///
+    /// Separated from `try_get_or_load_dict_leaf` because the moka
+    /// `try_get_with` single-flight requires a synchronous initializer,
+    /// whereas load-time artifact fetches are async (S3 GET, disk probe,
+    /// etc.). The layered strategy here is:
+    ///
+    /// 1. Return the cached `Arc<[u8]>` if present (in-memory hit).
+    /// 2. Otherwise invoke the async `load_fn` to produce bytes (which
+    ///    itself consults disk cache and falls back to CAS).
+    /// 3. Insert the resulting bytes for future callers before returning.
+    ///
+    /// Note: unlike `try_get_with`, this does NOT deduplicate concurrent
+    /// callers — two simultaneous loads of the same CID may each run the
+    /// async `load_fn`. For load-time fetches at the scale of an index
+    /// load, this is acceptable: the small duplication window is bounded
+    /// by one `apply_index_v2` tick and dwarfed by the wall-clock savings
+    /// across repeated reloads.
+    pub async fn get_or_load_artifact<Fut>(
+        &self,
+        key: u128,
+        load_fn: impl FnOnce() -> Fut,
+    ) -> io::Result<Arc<[u8]>>
+    where
+        Fut: std::future::Future<Output = io::Result<Vec<u8>>>,
+    {
+        if let Some(bytes) = self.get_load_artifact(key) {
+            return Ok(bytes);
+        }
+        let bytes = load_fn().await?;
+        let arc: Arc<[u8]> = Arc::from(bytes.into_boxed_slice());
+        self.inner.insert(
+            CacheKey::LoadArtifact(key),
+            CachedEntry::LoadArtifact(Arc::clone(&arc)),
+        );
+        Ok(arc)
     }
 
     // ========================================================================

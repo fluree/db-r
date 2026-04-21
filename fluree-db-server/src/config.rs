@@ -370,7 +370,7 @@ impl AdminAuthConfig {
 }
 
 /// Fluree DB HTTP Server configuration
-#[derive(Parser, Debug, Clone)]
+#[derive(Parser, Clone)]
 #[command(name = "fluree-server")]
 #[command(about = "Fluree DB HTTP REST API Server")]
 pub struct ServerConfig {
@@ -390,6 +390,30 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_STORAGE_PATH")]
     pub storage_path: Option<PathBuf>,
 
+    // --- Encryption ---
+    /// AES-256-GCM encryption key (base64-encoded, 32 bytes).
+    /// When set, all data at rest is encrypted transparently.
+    #[arg(long, env = "FLUREE_ENCRYPTION_KEY", hide = true)]
+    pub encryption_key: Option<String>,
+
+    /// Path to a file containing the encryption key (base64-encoded).
+    /// Alternative to passing the key directly via env var.
+    #[arg(long, env = "FLUREE_ENCRYPTION_KEY_FILE")]
+    pub encryption_key_file: Option<PathBuf>,
+
+    // --- S3 storage (requires `aws` feature) ---
+    /// S3 bucket name. When set, uses S3 for storage instead of local files.
+    #[arg(long, env = "FLUREE_S3_BUCKET")]
+    pub s3_bucket: Option<String>,
+
+    /// S3 endpoint URL (e.g., https://s3.us-east-1.amazonaws.com).
+    #[arg(long, env = "FLUREE_S3_ENDPOINT")]
+    pub s3_endpoint: Option<String>,
+
+    /// S3 key prefix within the bucket.
+    #[arg(long, env = "FLUREE_S3_PREFIX")]
+    pub s3_prefix: Option<String>,
+
     /// Enable CORS (Cross-Origin Resource Sharing)
     #[arg(long, env = "FLUREE_CORS_ENABLED", default_value_t = server_defaults::DEFAULT_CORS_ENABLED)]
     pub cors_enabled: bool,
@@ -406,11 +430,79 @@ pub struct ServerConfig {
     #[arg(long, env = "FLUREE_REINDEX_MAX_BYTES", default_value_t = server_defaults::DEFAULT_REINDEX_MAX_BYTES)]
     pub reindex_max_bytes: usize,
 
+    /// Base data directory for persistent storage artifacts (binary index cache,
+    /// import staging, etc.). Default: system temp directory.
+    #[arg(long, env = "FLUREE_DATA_DIR")]
+    pub data_dir: Option<PathBuf>,
+
+    /// Disk artifact cache budget in bytes. Controls the bounded on-disk cache
+    /// for binary index blobs fetched from remote storage. Default: 90% of
+    /// available disk space. Set to 0 to disable disk caching.
+    #[arg(long, env = "FLUREE_DISK_CACHE_BUDGET_BYTES")]
+    pub disk_cache_budget_bytes: Option<u64>,
+
     /// Global cache budget in MB (default: 50% of system RAM)
     ///
     /// This controls the shared API-level cache budget used for decoded index artifacts.
     #[arg(long, env = "FLUREE_CACHE_MAX_MB")]
     pub cache_max_mb: Option<usize>,
+
+    /// Skip ledger preload at startup.
+    ///
+    /// By default the server eagerly loads all ledgers into cache on startup to
+    /// avoid cold-start latency on the first query. In memory-constrained
+    /// environments (containers, Fargate) with many or large ledgers, this can
+    /// cause OOM. Use this flag to defer loading until the first query.
+    #[arg(long, env = "FLUREE_NO_PRELOAD")]
+    pub no_preload: bool,
+
+    /// Thread pool parallelism for query execution and indexing.
+    /// 0 means auto-detect (uses available CPU cores).
+    #[arg(long, env = "FLUREE_PARALLELISM")]
+    pub parallelism: Option<usize>,
+
+    /// Soft novelty threshold in bytes. When in-memory novelty exceeds this
+    /// size, background indexing is triggered (non-blocking).
+    #[arg(long, env = "FLUREE_NOVELTY_MIN_BYTES")]
+    pub novelty_min_bytes: Option<usize>,
+
+    /// Hard novelty threshold in bytes. When in-memory novelty exceeds this
+    /// size, new commits are blocked until indexing completes.
+    #[arg(long, env = "FLUREE_NOVELTY_MAX_BYTES")]
+    pub novelty_max_bytes: Option<usize>,
+
+    /// Disable the in-memory ledger cache entirely.
+    /// Each query will reload the ledger from storage.
+    #[arg(long, env = "FLUREE_NO_LEDGER_CACHE")]
+    pub no_ledger_cache: bool,
+
+    /// How long (in seconds) an idle ledger stays cached before eviction.
+    /// Default: 1800 (30 minutes).
+    #[arg(long, env = "FLUREE_LEDGER_CACHE_IDLE_TTL")]
+    pub ledger_cache_idle_ttl_secs: Option<u64>,
+
+    /// How often (in seconds) the cache background sweep runs to evict idle
+    /// ledgers. Default: 60 (1 minute).
+    #[arg(long, env = "FLUREE_LEDGER_CACHE_SWEEP_INTERVAL")]
+    pub ledger_cache_sweep_secs: Option<u64>,
+
+    /// Start the server in maintenance (read-only) mode.
+    /// Write endpoints return HTTP 503. Toggle at runtime via
+    /// POST /v1/fluree/admin/maintenance.
+    #[arg(long, env = "FLUREE_MAINTENANCE_MODE")]
+    pub maintenance_mode: bool,
+
+    /// Global query timeout in seconds. Queries exceeding this limit are
+    /// cancelled and return HTTP 504. 0 means no timeout (default).
+    /// Per-query fuel limits (`max-fuel` in opts) still apply independently.
+    #[arg(long, env = "FLUREE_QUERY_TIMEOUT", default_value_t = 0)]
+    pub query_timeout_secs: u64,
+
+    /// Graceful shutdown timeout in seconds. After receiving a shutdown signal
+    /// (SIGTERM/SIGINT), the server waits up to this long for inflight requests
+    /// to complete before forcing shutdown. Default: 30 seconds.
+    #[arg(long, env = "FLUREE_SHUTDOWN_TIMEOUT", default_value_t = 30)]
+    pub shutdown_timeout_secs: u64,
 
     /// Request body size limit in bytes (default 50MB)
     #[arg(long, env = "FLUREE_BODY_LIMIT", default_value_t = server_defaults::DEFAULT_BODY_LIMIT)]
@@ -626,6 +718,23 @@ pub struct ServerConfig {
     pub admin_auth_insecure_accept_any_issuer: bool,
 }
 
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("listen_addr", &self.listen_addr)
+            .field("storage_path", &self.storage_path)
+            .field(
+                "encryption_key",
+                &self.encryption_key.as_ref().map(|_| "***"),
+            )
+            .field("encryption_key_file", &self.encryption_key_file)
+            .field("s3_bucket", &self.s3_bucket)
+            .field("indexing_enabled", &self.indexing_enabled)
+            .field("server_role", &self.server_role)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -633,11 +742,28 @@ impl Default for ServerConfig {
             profile: None,
             listen_addr: server_defaults::DEFAULT_LISTEN_ADDR.parse().unwrap(),
             storage_path: None,
+            encryption_key: None,
+            encryption_key_file: None,
+            s3_bucket: None,
+            s3_endpoint: None,
+            s3_prefix: None,
             cors_enabled: server_defaults::DEFAULT_CORS_ENABLED,
             indexing_enabled: server_defaults::DEFAULT_INDEXING_ENABLED,
             reindex_min_bytes: server_defaults::DEFAULT_REINDEX_MIN_BYTES,
             reindex_max_bytes: server_defaults::DEFAULT_REINDEX_MAX_BYTES,
+            data_dir: None,
+            disk_cache_budget_bytes: None,
             cache_max_mb: None,
+            no_preload: false,
+            parallelism: None,
+            novelty_min_bytes: None,
+            novelty_max_bytes: None,
+            no_ledger_cache: false,
+            ledger_cache_idle_ttl_secs: None,
+            ledger_cache_sweep_secs: None,
+            maintenance_mode: false,
+            query_timeout_secs: 0,
+            shutdown_timeout_secs: 30,
             body_limit: server_defaults::DEFAULT_BODY_LIMIT,
             log_level: server_defaults::DEFAULT_LOG_LEVEL.to_string(),
             events_auth_mode: EventsAuthMode::None,

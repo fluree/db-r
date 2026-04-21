@@ -60,7 +60,25 @@ pub struct ServerFileConfig {
     pub log_level: Option<String>,
     pub cors_enabled: Option<bool>,
     pub body_limit: Option<usize>,
+    pub data_dir: Option<String>,
+    pub disk_cache_budget_bytes: Option<u64>,
     pub cache_max_mb: Option<usize>,
+    pub no_preload: Option<bool>,
+    pub parallelism: Option<usize>,
+    pub novelty_min_bytes: Option<usize>,
+    pub novelty_max_bytes: Option<usize>,
+    pub no_ledger_cache: Option<bool>,
+    pub ledger_cache_idle_ttl_secs: Option<u64>,
+    pub ledger_cache_sweep_secs: Option<u64>,
+    pub shutdown_timeout_secs: Option<u64>,
+    pub query_timeout_secs: Option<u64>,
+    pub maintenance_mode: Option<bool>,
+    pub encryption_key: Option<String>,
+    pub encryption_key_file: Option<String>,
+
+    /// `[server.s3]`
+    #[serde(default)]
+    pub s3: Option<S3FileConfig>,
 
     /// `[server.indexing]`
     #[serde(default)]
@@ -164,6 +182,13 @@ pub struct StorageProxyFileConfig {
     pub default_identity: Option<String>,
     pub default_policy_class: Option<String>,
     pub debug_headers: Option<bool>,
+}
+
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+pub struct S3FileConfig {
+    pub bucket: Option<String>,
+    pub endpoint: Option<String>,
+    pub prefix: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -402,6 +427,24 @@ pub const CONFIG_FILE_ARG_IDS: &[&str] = &[
     "storage_proxy_default_identity",
     "storage_proxy_default_policy_class",
     "storage_proxy_debug_headers",
+    // Added in server maturity branch:
+    "data_dir",
+    "disk_cache_budget_bytes",
+    "no_preload",
+    "parallelism",
+    "novelty_min_bytes",
+    "novelty_max_bytes",
+    "no_ledger_cache",
+    "ledger_cache_idle_ttl_secs",
+    "ledger_cache_sweep_secs",
+    "shutdown_timeout_secs",
+    "query_timeout_secs",
+    "maintenance_mode",
+    "encryption_key",
+    "encryption_key_file",
+    "s3_bucket",
+    "s3_endpoint",
+    "s3_prefix",
 ];
 
 /// Arg IDs that are only available when the `oidc` feature is enabled.
@@ -466,9 +509,96 @@ pub fn apply_to_server_config(
             config.body_limit = v;
         }
     }
+    if is_default("data_dir") {
+        if let Some(ref path) = file.data_dir {
+            config.data_dir = Some(PathBuf::from(path));
+        }
+    }
+    if is_default("disk_cache_budget_bytes") {
+        if let Some(v) = file.disk_cache_budget_bytes {
+            config.disk_cache_budget_bytes = Some(v);
+        }
+    }
     if is_default("cache_max_mb") {
         if let Some(v) = file.cache_max_mb {
             config.cache_max_mb = Some(v);
+        }
+    }
+    if is_default("no_preload") {
+        if let Some(v) = file.no_preload {
+            config.no_preload = v;
+        }
+    }
+    if is_default("parallelism") {
+        if let Some(v) = file.parallelism {
+            config.parallelism = Some(v);
+        }
+    }
+    if is_default("novelty_min_bytes") {
+        if let Some(v) = file.novelty_min_bytes {
+            config.novelty_min_bytes = Some(v);
+        }
+    }
+    if is_default("novelty_max_bytes") {
+        if let Some(v) = file.novelty_max_bytes {
+            config.novelty_max_bytes = Some(v);
+        }
+    }
+    if is_default("no_ledger_cache") {
+        if let Some(v) = file.no_ledger_cache {
+            config.no_ledger_cache = v;
+        }
+    }
+    if is_default("ledger_cache_idle_ttl_secs") {
+        if let Some(v) = file.ledger_cache_idle_ttl_secs {
+            config.ledger_cache_idle_ttl_secs = Some(v);
+        }
+    }
+    if is_default("ledger_cache_sweep_secs") {
+        if let Some(v) = file.ledger_cache_sweep_secs {
+            config.ledger_cache_sweep_secs = Some(v);
+        }
+    }
+    if is_default("shutdown_timeout_secs") {
+        if let Some(v) = file.shutdown_timeout_secs {
+            config.shutdown_timeout_secs = v;
+        }
+    }
+    if is_default("query_timeout_secs") {
+        if let Some(v) = file.query_timeout_secs {
+            config.query_timeout_secs = v;
+        }
+    }
+    if is_default("maintenance_mode") {
+        if let Some(v) = file.maintenance_mode {
+            config.maintenance_mode = v;
+        }
+    }
+    if is_default("encryption_key") {
+        if let Some(ref v) = file.encryption_key {
+            config.encryption_key = Some(v.clone());
+        }
+    }
+    if is_default("encryption_key_file") {
+        if let Some(ref v) = file.encryption_key_file {
+            config.encryption_key_file = Some(PathBuf::from(v));
+        }
+    }
+    if let Some(ref s3) = file.s3 {
+        if is_default("s3_bucket") {
+            if let Some(ref v) = s3.bucket {
+                config.s3_bucket = Some(v.clone());
+            }
+        }
+        if is_default("s3_endpoint") {
+            if let Some(ref v) = s3.endpoint {
+                config.s3_endpoint = Some(v.clone());
+            }
+        }
+        if is_default("s3_prefix") {
+            if let Some(ref v) = s3.prefix {
+                config.s3_prefix = Some(v.clone());
+            }
         }
     }
 

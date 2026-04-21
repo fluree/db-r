@@ -69,6 +69,19 @@ pub struct TransactResponse {
     pub commit: CommitInfo,
 }
 
+/// Build response headers for a transaction, always including `X-Fluree-T`
+/// so clients can use it for read-after-write consistency.
+fn transact_headers(t: i64, tally: Option<&fluree_db_api::TrackingTally>) -> axum::http::HeaderMap {
+    let mut headers = match tally {
+        Some(tally) => tracking_headers(tally),
+        None => axum::http::HeaderMap::new(),
+    };
+    if let Ok(value) = axum::http::HeaderValue::from_str(&t.to_string()) {
+        headers.insert(axum::http::HeaderName::from_static("x-fluree-t"), value);
+    }
+    headers
+}
+
 /// Compute transaction ID from request body (SHA-256 hash)
 ///
 /// This matches the legacy derive-tx-id behavior which hashes the JSON-LD normalized data.
@@ -316,6 +329,9 @@ pub async fn update(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -452,6 +468,9 @@ pub async fn update_ledger(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -600,6 +619,9 @@ pub async fn insert(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -746,6 +768,9 @@ pub async fn upsert(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -891,6 +916,9 @@ pub async fn insert_ledger(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -1038,6 +1066,9 @@ pub async fn upsert_ledger(
     MaybeDataBearer(bearer): MaybeDataBearer,
     request: Request,
 ) -> Response {
+    if let Err(e) = super::admin::check_maintenance(&state) {
+        return e.into_response();
+    }
     // In peer mode, forward to transaction server
     if state.config.server_role == ServerRole::Peer {
         return forward_write_request(&state, request).await;
@@ -1269,23 +1300,18 @@ async fn execute_transaction(
             }
         };
 
+        let t = result.receipt.t;
         let response_json = Json(TransactResponse {
             ledger_id: ledger_id.to_string(),
-            t: result.receipt.t,
+            t,
             tx_id,
             commit: CommitInfo {
                 hash: result.receipt.commit_id.to_string(),
             },
         });
 
-        // Return tracking headers when a tally is present
-        match result.tally {
-            Some(tally) => {
-                let hdrs = tracking_headers(&tally);
-                Ok((hdrs, response_json).into_response())
-            }
-            None => Ok(response_json.into_response()),
-        }
+        let hdrs = transact_headers(t, result.tally.as_ref());
+        Ok((hdrs, response_json).into_response())
     }
     .instrument(span)
     .await
@@ -1412,22 +1438,18 @@ async fn execute_turtle_transaction(
             }
         };
 
+        let t = result.receipt.t;
         let response_json = Json(TransactResponse {
             ledger_id: ledger_id.to_string(),
-            t: result.receipt.t,
+            t,
             tx_id,
             commit: CommitInfo {
                 hash: result.receipt.commit_id.to_string(),
             },
         });
 
-        match result.tally {
-            Some(tally) => {
-                let hdrs = tracking_headers(&tally);
-                Ok((hdrs, response_json).into_response())
-            }
-            None => Ok(response_json.into_response()),
-        }
+        let hdrs = transact_headers(t, result.tally.as_ref());
+        Ok((hdrs, response_json).into_response())
     }
     .instrument(span)
     .await
@@ -1594,22 +1616,18 @@ async fn execute_sparql_update_request(
         }
     };
 
+    let t = result.receipt.t;
     let response_json = Json(TransactResponse {
         ledger_id,
-        t: result.receipt.t,
+        t,
         tx_id,
         commit: CommitInfo {
             hash: result.receipt.commit_id.to_string(),
         },
     });
 
-    match result.tally {
-        Some(tally) => {
-            let hdrs = tracking_headers(&tally);
-            Ok((hdrs, response_json).into_response())
-        }
-        None => Ok(response_json.into_response()),
-    }
+    let hdrs = transact_headers(t, result.tally.as_ref());
+    Ok((hdrs, response_json).into_response())
 }
 
 // ===== Peer mode forwarding =====

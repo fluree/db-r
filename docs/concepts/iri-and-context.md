@@ -216,7 +216,10 @@ Each ledger can store a **default context** — a JSON object mapping prefixes t
 
 1. **Query-level `@context`** (JSON-LD) or **`PREFIX` declarations** (SPARQL) — always win
 2. **Ledger default context** — merged as a fallback for any prefixes not declared in the query
-3. **Built-in prefixes** — `rdf`, `rdfs`, `xsd`, etc. are always available
+3. **Server-wide prefixes** (`.fluree/prefixes.json`) — merged into queries that already have an explicit `@context`, as lowest-priority fallback
+4. **Built-in prefixes** — `rdf`, `rdfs`, `xsd`, etc. are always available
+
+Queries that omit `@context` entirely will receive the per-ledger default context (if set), without server-wide prefixes. This ensures per-ledger defaults take priority over server-wide settings.
 
 ### Use with SPARQL
 

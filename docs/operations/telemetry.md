@@ -131,15 +131,23 @@ Output:
 
 ## Metrics
 
-> **Planned — not yet implemented.** The metrics below are a design target for a future PR. Prometheus metrics are not currently exposed by the server. The tracing/OTEL instrumentation described in the rest of this document is the current observability mechanism.
+Prometheus metrics are implemented via the `metrics` feature flag. Build the server with metrics support to expose the `GET /metrics` endpoint.
 
-### Prometheus Metrics (planned)
+### Building with Metrics
+
+```bash
+cargo build -p fluree-db-server --features metrics --release
+```
+
+### Prometheus Metrics Endpoint
 
 ```bash
 curl http://localhost:8090/metrics
 ```
 
-**Planned metrics:**
+The endpoint returns metrics in Prometheus text exposition format (`text/plain`).
+
+**Exported metrics:**
 - `fluree_transactions_total` - Total transactions (counter)
 - `fluree_transaction_duration_seconds` - Transaction latency (histogram)
 - `fluree_queries_total` - Total queries (counter)
@@ -149,7 +157,7 @@ curl http://localhost:8090/metrics
 - `fluree_index_duration_seconds` - Indexing time (histogram)
 - `fluree_uptime_seconds` - Server uptime (gauge)
 
-### Prometheus Integration (planned)
+### Prometheus Integration
 
 Configure Prometheus to scrape Fluree:
 
@@ -162,6 +170,8 @@ scrape_configs:
     metrics_path: '/metrics'
     scrape_interval: 15s
 ```
+
+> **Note:** If the server was not built with `--features metrics`, the `/metrics` endpoint returns `404 Not Found`.
 
 ## Distributed Tracing (OpenTelemetry)
 

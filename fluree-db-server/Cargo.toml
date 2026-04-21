@@ -29,6 +29,8 @@ native = ["fluree-db-api/native"]
 credential = ["fluree-db-api/credential"]
 # Enable OIDC JWT verification via JWKS (RS256 tokens from external IdPs)
 oidc = ["fluree-db-credential/oidc", "dep:jsonwebtoken"]
+# AWS S3 + DynamoDB storage backends
+aws = ["fluree-db-api/aws"]
 # Iceberg / R2RML graph source support
 iceberg = ["fluree-db-api/iceberg"]
 # Enable Swagger UI endpoint (requires network during build to download assets)
@@ -40,6 +42,8 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:opentelemetry_sdk",
 ]
+# Prometheus metrics export
+metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
 
 [dependencies]
 # Fluree DB crates
@@ -123,6 +127,13 @@ ciborium = "0.2" # CBOR encoding for policy-filtered flakes transport
 
 # JWT verification (OIDC/JWKS path)
 jsonwebtoken = { workspace = true, optional = true }
+
+# Temp files for bulk import endpoint
+tempfile = "3"
+
+# Prometheus metrics (optional, gated by `metrics` feature)
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
 
 # Shell expansion for token CLI
 shellexpand = "3"

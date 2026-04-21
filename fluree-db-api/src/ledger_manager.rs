@@ -211,6 +211,25 @@ impl Clone for LedgerHandle {
     }
 }
 
+/// Single-flight coordination for `apply_index_v2` on a handle.
+///
+/// When a leader is in flight, concurrent callers register as followers
+/// (push a oneshot::Sender onto `waiters`) and await the leader's result
+/// rather than kicking off duplicate `load_from_root_bytes` I/O. Same
+/// single-flight model the manager already uses for `reload()` via
+/// `LoadState::Reloading::waiters`.
+struct ApplyIndexInFlight {
+    /// Target index CID being applied. Retained for debug logs; followers
+    /// trust the leader's result regardless of whether their own target
+    /// matches (the nameservice moves forward, so a newer leader subsumes
+    /// an older follower's target; a rare older-leader case can be re-driven
+    /// by the caller on the next pass).
+    target: ContentId,
+    /// Oneshot senders waiting for the leader's result.
+    /// `ApiError` is not `Clone`, so errors are shared via `Arc<ApiError>`.
+    waiters: Vec<oneshot::Sender<std::result::Result<(), Arc<ApiError>>>>,
+}
+
 /// Lock ordering invariant: always acquire `state` before `binary_store`.
 /// All paths that touch both locks (snapshot, apply_index_v2, reload)
 /// follow this order to prevent deadlock and ensure coherence.
@@ -226,6 +245,9 @@ struct LedgerHandleInner {
     /// Always coherent with `state.snapshot.range_provider` — writers hold
     /// the `state` lock while updating this.
     binary_store: Mutex<Option<Arc<BinaryIndexStore>>>,
+    /// Single-flight registration for `apply_index_v2`. Briefly-held
+    /// `std::sync::Mutex` — never held across `.await`.
+    apply_index_in_flight: std::sync::Mutex<Option<ApplyIndexInFlight>>,
 }
 
 impl LedgerHandle {
@@ -241,6 +263,7 @@ impl LedgerHandle {
                 ledger_id,
                 last_access: AtomicU64::new(monotonic_secs()),
                 binary_store: Mutex::new(binary_store),
+                apply_index_in_flight: std::sync::Mutex::new(None),
             }),
         }
     }
@@ -367,7 +390,105 @@ impl LedgerHandle {
     /// The state lock is held for the brief atomic swap of both `state` and
     /// `binary_store`, ensuring coherence between `db.range_provider` and
     /// `binary_store` (lock ordering: state → binary_store).
+    ///
+    /// Single-flight: concurrent callers against the same handle do not each
+    /// kick off their own `load_from_root_bytes`. The first caller becomes
+    /// the leader and performs the load; followers register via a oneshot
+    /// channel and receive the leader's result when it completes. This
+    /// prevents a burst of peer queries against a stale SSE watermark from
+    /// amplifying S3 load by N× (fluree/db-r#155).
     pub async fn apply_index_v2(
+        &self,
+        index_id: &ContentId,
+        backend: &StorageBackend,
+        cache_dir: &std::path::Path,
+        leaflet_cache: Option<Arc<LeafletCache>>,
+    ) -> Result<()> {
+        // ── Single-flight registration ────────────────────────────────
+        enum Registration {
+            Leader,
+            Follower(oneshot::Receiver<std::result::Result<(), Arc<ApiError>>>),
+        }
+        let registration = {
+            let mut slot = self
+                .inner
+                .apply_index_in_flight
+                .lock()
+                .expect("apply_index_in_flight mutex poisoned");
+            if let Some(in_flight) = slot.as_mut() {
+                let (tx, rx) = oneshot::channel();
+                in_flight.waiters.push(tx);
+                tracing::debug!(
+                    follower_target = %index_id,
+                    leader_target = %in_flight.target,
+                    "apply_index_v2: joining in-flight leader as follower"
+                );
+                Registration::Follower(rx)
+            } else {
+                *slot = Some(ApplyIndexInFlight {
+                    target: index_id.clone(),
+                    waiters: Vec::new(),
+                });
+                Registration::Leader
+            }
+        };
+
+        match registration {
+            Registration::Follower(rx) => {
+                // Wait for leader's result. If the leader was cancelled
+                // (dropped mid-await), the channel closes and we return
+                // Internal.
+                return match rx.await {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(shared)) => {
+                        Err(ApiError::http(shared.status_code(), shared.to_string()))
+                    }
+                    Err(_) => Err(ApiError::internal(
+                        "apply_index_v2 leader was cancelled before completing",
+                    )),
+                };
+            }
+            Registration::Leader => {
+                // Fall through to do the work.
+            }
+        }
+
+        // ── Leader path: do the actual work ──────────────────────────
+        let result = self
+            .apply_index_v2_exclusive(index_id, backend, cache_dir, leaflet_cache)
+            .await;
+
+        // ── Publish result to waiters ────────────────────────────────
+        let in_flight = self
+            .inner
+            .apply_index_in_flight
+            .lock()
+            .expect("apply_index_in_flight mutex poisoned")
+            .take();
+        if let Some(in_flight) = in_flight {
+            match &result {
+                Ok(()) => {
+                    for tx in in_flight.waiters {
+                        let _ = tx.send(Ok(()));
+                    }
+                }
+                Err(e) => {
+                    // Share the error across waiters via Arc — ApiError isn't Clone.
+                    let shared = Arc::new(ApiError::http(e.status_code(), e.to_string()));
+                    for tx in in_flight.waiters {
+                        let _ = tx.send(Err(Arc::clone(&shared)));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Exclusive body of `apply_index_v2`. Assumes the caller has already
+    /// won the single-flight race and is the sole in-flight leader; all
+    /// post-completion waiter notification happens in `apply_index_v2`.
+    async fn apply_index_v2_exclusive(
         &self,
         index_id: &ContentId,
         backend: &StorageBackend,
@@ -959,20 +1080,33 @@ impl LedgerManager {
             }
 
             ReloadAction::BecomeLeader(handle) => {
-                // We're the reload leader - do I/O without manager lock
-                let mut write_guard = handle.lock_for_write().await;
+                // We're the reload leader. `LoadState::Reloading` (set before we
+                // dropped the manager lock) gives us single-flight coordination;
+                // we do NOT need to hold the per-ledger state lock during I/O.
+                //
+                // Running LedgerState::load + load_and_attach_binary_store without
+                // the state lock means concurrent queries continue to serve from
+                // the prior snapshot via `handle.snapshot()` instead of blocking
+                // on the full reload. See fluree/db-r#155.
 
-                let result = LedgerState::load(&self.nameservice_mode, ledger_id, &self.backend)
-                    .await
-                    .map_err(ApiError::from); // Convert LedgerError to ApiError
+                // Snapshot the pre-reload `t` so we can detect a concurrent
+                // transaction that landed while our I/O was in flight. In peer
+                // mode writes are forwarded to the tx server so this branch
+                // never fires; in tx mode it guards against overwriting a
+                // just-committed snapshot with one we loaded before the commit.
+                let pre_t = {
+                    let state = handle.inner.state.lock().await;
+                    state.t()
+                }; // lock released
 
-                // Publish result under lock
-                let mut entries = self.entries.write().await;
-                let shutting_down = self.is_shutdown();
+                // ── All I/O happens OUTSIDE any per-ledger lock ──────────────
+                let load_result =
+                    LedgerState::load(&self.nameservice_mode, ledger_id, &self.backend)
+                        .await
+                        .map_err(ApiError::from);
 
-                match result {
+                let prepared = match load_result {
                     Ok(mut new_state) => {
-                        // Attempt to load binary index store (v2 only)
                         let new_binary_store = match load_and_attach_binary_store(
                             &self.backend,
                             &mut new_state,
@@ -991,12 +1125,47 @@ impl LedgerManager {
                                 None
                             }
                         };
+                        Ok((new_state, new_binary_store))
+                    }
+                    Err(e) => Err(e),
+                };
 
-                        write_guard.replace(new_state);
-                        // Update binary_store coherently with the new state
-                        *handle.inner.binary_store.lock().await = new_binary_store;
+                // ── Atomic swap under brief state lock (I/O already complete) ─
+                let apply_result = match prepared {
+                    Ok((new_state, new_binary_store)) => {
+                        // Lock ordering (ledger_manager.rs:215): state → binary_store.
+                        // Swap both inside the state lock to preserve the
+                        // `snapshot.range_provider.is_some() == binary_store.is_some()`
+                        // invariant that `snapshot()` debug-asserts.
+                        let mut write_guard = handle.lock_for_write().await;
+                        let current_t = write_guard.state().t();
+                        if current_t > pre_t {
+                            // A concurrent transaction advanced the state while
+                            // we were doing I/O. The in-memory state is already
+                            // at least as fresh as what we just loaded, so we
+                            // discard our reloaded snapshot rather than regress.
+                            tracing::warn!(
+                                ledger_id = %ledger_id,
+                                pre_t,
+                                current_t,
+                                "reload: state advanced during lock-free I/O; discarding reloaded snapshot"
+                            );
+                        } else {
+                            write_guard.replace(new_state);
+                            *handle.inner.binary_store.lock().await = new_binary_store;
+                        }
+                        drop(write_guard);
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                };
 
-                        // Notify waiters and restore Ready state (unless shutting down)
+                // ── Publish result to waiters (brief manager lock) ───────────
+                let mut entries = self.entries.write().await;
+                let shutting_down = self.is_shutdown();
+
+                match apply_result {
+                    Ok(()) => {
                         if let Some(LoadState::Reloading { handle, waiters }) =
                             entries.remove(&canonical_alias)
                         {
@@ -1868,5 +2037,161 @@ mod tests {
         // Status code should be preserved (404, not 500)
         assert_eq!(extracted.status_code(), 404);
         assert!(extracted.to_string().contains("ledger bar"));
+    }
+
+    // ========================================================================
+    // fluree/db-r#155 follow-up validation — Change 2 single-flight
+    // ========================================================================
+
+    use async_trait::async_trait;
+    use fluree_db_core::content_kind::ContentKind;
+    use fluree_db_core::db::LedgerSnapshot;
+    use fluree_db_core::MemoryContentStore;
+    use fluree_db_novelty::Novelty;
+    use std::collections::HashMap as StdHashMap;
+    use std::sync::atomic::{AtomicU64 as StdAtomicU64, Ordering as StdOrdering};
+    use std::sync::RwLock as StdRwLock;
+
+    /// `ContentStore` mock that tracks per-CID `get()` call counts and
+    /// injects a fixed delay on every call. The per-CID counter is the key
+    /// signal: `apply_index_v2` concurrency-dedup should ensure that N
+    /// concurrent callers result in exactly ONE `cs.get(index_id)` call.
+    #[derive(Debug)]
+    struct PerCidCountingCs {
+        inner: MemoryContentStore,
+        counts: StdRwLock<StdHashMap<ContentId, StdAtomicU64>>,
+        delay: std::time::Duration,
+    }
+
+    impl PerCidCountingCs {
+        fn new(delay: std::time::Duration) -> Self {
+            Self {
+                inner: MemoryContentStore::new(),
+                counts: StdRwLock::new(StdHashMap::new()),
+                delay,
+            }
+        }
+
+        fn count_for(&self, id: &ContentId) -> u64 {
+            self.counts
+                .read()
+                .unwrap()
+                .get(id)
+                .map(|c| c.load(StdOrdering::Relaxed))
+                .unwrap_or(0)
+        }
+    }
+
+    #[async_trait]
+    impl ContentStore for PerCidCountingCs {
+        async fn has(&self, id: &ContentId) -> fluree_db_core::Result<bool> {
+            self.inner.has(id).await
+        }
+
+        async fn get(&self, id: &ContentId) -> fluree_db_core::Result<Vec<u8>> {
+            // Record the call before returning so that even an error path
+            // increments the counter. Per-CID counting is the signal we
+            // care about for dedup validation.
+            self.counts
+                .write()
+                .unwrap()
+                .entry(id.clone())
+                .or_insert_with(|| StdAtomicU64::new(0))
+                .fetch_add(1, StdOrdering::Relaxed);
+            tokio::time::sleep(self.delay).await;
+            self.inner.get(id).await
+        }
+
+        async fn put(&self, kind: ContentKind, bytes: &[u8]) -> fluree_db_core::Result<ContentId> {
+            self.inner.put(kind, bytes).await
+        }
+
+        async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::Result<()> {
+            self.inner.put_with_id(id, bytes).await
+        }
+
+        async fn release(&self, id: &ContentId) -> fluree_db_core::Result<()> {
+            self.inner.release(id).await
+        }
+    }
+
+    /// Concurrent `apply_index_v2` callers on the same handle must share a
+    /// single in-flight leader. Only ONE `cs.get(index_id)` should happen
+    /// even when N callers race — followers register on the waiter channel
+    /// and receive the leader's result via oneshot.
+    ///
+    /// The test uses intentionally-malformed index bytes so the leader's
+    /// `load_from_root_bytes` fails with a decode error. That keeps the
+    /// setup minimal (no real dict/arena CIDs needed) while still
+    /// exercising the full dedup pathway: leader registers, followers
+    /// subscribe, leader completes with Err, followers receive the shared
+    /// error via oneshot and surface equivalent Err back.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn apply_index_v2_dedupes_concurrent_callers() {
+        // Stand up an ephemeral handle. `apply_index_v2` reads the
+        // ledger_id from state and passes it to `backend.content_store`,
+        // but with a `Permanent` backend the namespace_id is ignored and
+        // the single inner store is returned, so any valid ledger ID works.
+        let snapshot = LedgerSnapshot::genesis("test:single-flight");
+        let state = LedgerState::new(snapshot, Novelty::new(0));
+        let handle = LedgerHandle::ephemeral("test:single-flight".to_string(), state);
+
+        let cs = Arc::new(PerCidCountingCs::new(std::time::Duration::from_millis(80)));
+        // Seed an opaque blob under a CID we can reference. The bytes
+        // aren't a valid FIR6 root — `load_from_root_bytes` will fail with
+        // a decode error after the leader's single `cs.get`, which is
+        // exactly what we want for this test (the failure path still runs
+        // through the full dedup coordination).
+        let junk = b"not-a-real-index-root".to_vec();
+        let index_id = ContentId::new(ContentKind::IndexRoot, &junk);
+        cs.inner
+            .put_with_id(&index_id, &junk)
+            .await
+            .expect("seed index bytes");
+
+        let backend =
+            StorageBackend::Permanent(Arc::clone(&cs) as Arc<dyn fluree_db_core::ContentStore>);
+
+        let cache_dir =
+            std::env::temp_dir().join(format!("fluree-single-flight-test-{}", std::process::id()));
+        std::fs::create_dir_all(&cache_dir).expect("create cache dir");
+
+        // Fan out N concurrent `apply_index_v2` calls. Without dedup each
+        // would independently invoke `cs.get(index_id)`; with dedup only
+        // the leader does, followers wait on the oneshot.
+        const N: usize = 6;
+        let mut tasks = Vec::with_capacity(N);
+        for _ in 0..N {
+            let handle = handle.clone();
+            let backend = backend.clone();
+            let cache_dir = cache_dir.clone();
+            let id = index_id.clone();
+            tasks.push(tokio::spawn(async move {
+                handle.apply_index_v2(&id, &backend, &cache_dir, None).await
+            }));
+        }
+
+        let mut results = Vec::with_capacity(N);
+        for t in tasks {
+            results.push(t.await.expect("task did not panic"));
+        }
+
+        // All N callers should have received the SAME kind of result. The
+        // leader runs the full load (which fails because `junk` isn't a
+        // FIR6 root); followers receive the shared error via oneshot.
+        // Either way, every result is an Err, and every Err originates
+        // from the same leader run.
+        for (i, r) in results.iter().enumerate() {
+            assert!(r.is_err(), "task {i} unexpectedly succeeded: {r:?}");
+        }
+
+        // The core assertion: exactly ONE `cs.get(index_id)` happened
+        // across all N callers. If single-flight regressed, this would
+        // equal N instead.
+        let got = cs.count_for(&index_id);
+        assert_eq!(
+            got, 1,
+            "expected dedup to fold {N} callers into 1 cs.get(index_id), got {got}"
+        );
     }
 }

@@ -32,6 +32,353 @@ pub async fn health() -> Json<HealthResponse> {
     })
 }
 
+/// Readiness check response
+#[derive(Serialize)]
+pub struct ReadinessResponse {
+    pub status: &'static str,
+    pub checks: ReadinessChecks,
+}
+
+/// Individual readiness check results
+#[derive(Serialize)]
+pub struct ReadinessChecks {
+    pub nameservice: CheckResult,
+}
+
+/// Result of a single readiness check
+#[derive(Serialize)]
+pub struct CheckResult {
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Readiness probe endpoint
+///
+/// GET /ready
+///
+/// Verifies the server can serve requests by checking that the nameservice
+/// is reachable and functional. Use this as a Kubernetes/ECS readiness probe.
+///
+/// Returns 200 if ready, 503 if not.
+pub async fn readiness(
+    State(state): State<Arc<AppState>>,
+) -> std::result::Result<Json<ReadinessResponse>, (axum::http::StatusCode, Json<ReadinessResponse>)>
+{
+    // Check nameservice connectivity with a 5-second timeout
+    let ns_check = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        state.fluree.nameservice().all_records().await.map(|_| ())
+    })
+    .await;
+
+    let nameservice = match ns_check {
+        Ok(Ok(())) => CheckResult {
+            status: "ok",
+            error: None,
+        },
+        Ok(Err(e)) => CheckResult {
+            status: "error",
+            error: Some(e.to_string()),
+        },
+        Err(_) => CheckResult {
+            status: "error",
+            error: Some("nameservice check timed out (5s)".to_string()),
+        },
+    };
+
+    let all_ok = nameservice.status == "ok";
+
+    let response = ReadinessResponse {
+        status: if all_ok { "ready" } else { "not_ready" },
+        checks: ReadinessChecks { nameservice },
+    };
+
+    if all_ok {
+        Ok(Json(response))
+    } else {
+        Err((axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(response)))
+    }
+}
+
+/// Maintenance mode toggle endpoint
+///
+/// POST /v1/fluree/admin/maintenance
+///
+/// Toggle read-only mode at runtime. When enabled, write endpoints
+/// (insert, upsert, update, create, drop, branch, rebase, push)
+/// return HTTP 503 Service Unavailable.
+///
+/// Request body: `{"enabled": true}` or `{"enabled": false}`
+pub async fn maintenance_toggle(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<MaintenanceRequest>,
+) -> Result<Json<MaintenanceResponse>> {
+    let previous = state
+        .maintenance_mode
+        .swap(body.enabled, std::sync::atomic::Ordering::SeqCst);
+
+    tracing::info!(enabled = body.enabled, previous, "Maintenance mode toggled");
+
+    Ok(Json(MaintenanceResponse {
+        enabled: body.enabled,
+        previous,
+    }))
+}
+
+#[derive(serde::Deserialize)]
+pub struct MaintenanceRequest {
+    pub enabled: bool,
+}
+
+#[derive(Serialize)]
+pub struct MaintenanceResponse {
+    pub enabled: bool,
+    pub previous: bool,
+}
+
+/// Check if the server is in maintenance mode. Returns 503 if so.
+///
+/// Called at the top of write endpoints to enforce read-only mode.
+pub fn check_maintenance(state: &AppState) -> Result<()> {
+    if state
+        .maintenance_mode
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        Err(crate::error::ServerError::service_unavailable(
+            "Server is in maintenance mode — write operations are temporarily disabled",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Config inspection endpoint
+///
+/// GET /v1/fluree/config
+///
+/// Returns the effective server configuration with secrets masked.
+/// Useful for debugging, auditing, and CLI integration.
+pub async fn config_inspect(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let c = &state.config;
+    Json(serde_json::json!({
+        "listen_addr": c.listen_addr.to_string(),
+        "storage_path": c.storage_path.as_ref().map(|p| p.display().to_string()),
+        "storage_type": c.storage_type_str(),
+        "encryption": c.encryption_key.is_some() || c.encryption_key_file.is_some(),
+        "s3_bucket": c.s3_bucket.as_deref(),
+        "cors_enabled": c.cors_enabled,
+        "body_limit": c.body_limit,
+        "data_dir": c.data_dir.as_ref().map(|p| p.display().to_string()),
+        "disk_cache_budget_bytes": c.disk_cache_budget_bytes,
+        "cache_max_mb": c.cache_max_mb,
+        "no_preload": c.no_preload,
+        "parallelism": c.parallelism,
+        "query_timeout_secs": c.query_timeout_secs,
+        "shutdown_timeout_secs": c.shutdown_timeout_secs,
+        "log_level": c.log_level,
+        "indexing": {
+            "enabled": c.indexing_enabled,
+            "reindex_min_bytes": c.reindex_min_bytes,
+            "reindex_max_bytes": c.reindex_max_bytes,
+        },
+        "novelty": {
+            "min_bytes": c.novelty_min_bytes,
+            "max_bytes": c.novelty_max_bytes,
+        },
+        "ledger_cache": {
+            "enabled": !c.no_ledger_cache,
+            "idle_ttl_secs": c.ledger_cache_idle_ttl_secs,
+            "sweep_interval_secs": c.ledger_cache_sweep_secs,
+        },
+        "auth": {
+            "events": {
+                "mode": format!("{:?}", c.events_auth_mode),
+                "has_trusted_issuers": !c.events_auth_trusted_issuers.is_empty(),
+            },
+            "data": {
+                "mode": format!("{:?}", c.data_auth_mode),
+                "has_trusted_issuers": !c.data_auth_trusted_issuers.is_empty(),
+                "has_default_policy_class": c.data_auth_default_policy_class.is_some(),
+            },
+            "admin": {
+                "mode": format!("{:?}", c.admin_auth_mode),
+                "has_trusted_issuers": !c.admin_auth_trusted_issuers.is_empty(),
+            },
+        },
+        "peer": {
+            "role": format!("{:?}", c.server_role),
+            "tx_server_url": c.tx_server_url.as_deref().map(|_| "***"),
+        },
+        "mcp_enabled": c.mcp_enabled,
+        "maintenance_mode": state.maintenance_mode.load(std::sync::atomic::Ordering::Relaxed),
+    }))
+}
+
+/// Config write endpoint
+///
+/// PUT /v1/fluree/config
+///
+/// Persists configuration changes to the config file (.fluree/config.toml or .jsonld).
+/// Currently only `maintenance_mode` is hot-reloaded (takes effect immediately).
+/// All other settings are written to the config file but require server restart.
+pub async fn config_update(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<Json<ConfigUpdateResponse>> {
+    // Serialize config writes to prevent TOCTOU races
+    let _lock = state.config_write_lock.lock().await;
+
+    let config_path = state.config_file_path.as_ref().ok_or_else(|| {
+        crate::error::ServerError::bad_request(
+            "No config file found — cannot persist changes. \
+             Run `fluree init` to create a config file first.",
+        )
+    })?;
+
+    // Read existing config
+    let existing_content = std::fs::read_to_string(config_path).map_err(|e| {
+        crate::error::ServerError::internal(format!(
+            "Failed to read config file {}: {}",
+            config_path.display(),
+            e
+        ))
+    })?;
+
+    // Determine format from extension
+    let is_json = config_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("jsonld"));
+
+    // Merge incoming values into the existing config
+    let updated_content = if is_json {
+        let mut existing: serde_json::Value =
+            serde_json::from_str(&existing_content).map_err(|e| {
+                crate::error::ServerError::internal(format!(
+                    "Config file is malformed JSON — fix it before updating: {}",
+                    e
+                ))
+            })?;
+        let server = existing.as_object_mut().and_then(|o| {
+            o.entry("server")
+                .or_insert_with(|| serde_json::json!({}))
+                .as_object_mut()
+        });
+        if let Some(server_obj) = server {
+            if let Some(updates) = body.as_object() {
+                for (k, v) in updates {
+                    server_obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        serde_json::to_string_pretty(&existing).map_err(|e| {
+            crate::error::ServerError::internal(format!("Failed to serialize config: {}", e))
+        })?
+    } else {
+        // TOML: parse, merge into [server], re-serialize
+        let mut existing: toml::Value = toml::from_str(&existing_content).map_err(|e| {
+            crate::error::ServerError::internal(format!(
+                "Config file is malformed TOML — fix it before updating: {}",
+                e
+            ))
+        })?;
+        let server = existing.as_table_mut().and_then(|t| {
+            t.entry("server")
+                .or_insert_with(|| toml::Value::Table(Default::default()))
+                .as_table_mut()
+        });
+        if let Some(server_table) = server {
+            if let Some(updates) = body.as_object() {
+                for (k, v) in updates {
+                    if let Some(toml_val) = json_to_toml(v) {
+                        server_table.insert(k.clone(), toml_val);
+                    }
+                }
+            }
+        }
+        toml::to_string_pretty(&existing).map_err(|e| {
+            crate::error::ServerError::internal(format!("Failed to serialize config: {}", e))
+        })?
+    };
+
+    // Write back
+    std::fs::write(config_path, &updated_content).map_err(|e| {
+        crate::error::ServerError::internal(format!(
+            "Failed to write config file {}: {}",
+            config_path.display(),
+            e
+        ))
+    })?;
+
+    // Hot-reload safe settings
+    let mut applied = Vec::new();
+    let mut requires_restart = Vec::new();
+
+    if let Some(obj) = body.as_object() {
+        for key in obj.keys() {
+            match key.as_str() {
+                "maintenance_mode" => {
+                    if let Some(v) = obj.get(key).and_then(|v| v.as_bool()) {
+                        state
+                            .maintenance_mode
+                            .store(v, std::sync::atomic::Ordering::SeqCst);
+                        applied.push(key.clone());
+                    }
+                }
+                // All other settings require restart
+                _ => {
+                    requires_restart.push(key.clone());
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        config_file = %config_path.display(),
+        applied = ?applied,
+        requires_restart = ?requires_restart,
+        "Config updated"
+    );
+
+    Ok(Json(ConfigUpdateResponse {
+        applied,
+        requires_restart,
+    }))
+}
+
+/// Convert a serde_json Value to a toml Value (best-effort for simple types).
+fn json_to_toml(v: &serde_json::Value) -> Option<toml::Value> {
+    match v {
+        serde_json::Value::Bool(b) => Some(toml::Value::Boolean(*b)),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(toml::Value::Integer)
+            .or_else(|| n.as_f64().map(toml::Value::Float)),
+        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<toml::Value> = arr.iter().filter_map(json_to_toml).collect();
+            Some(toml::Value::Array(items))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::map::Map::new();
+            for (k, v) in obj {
+                if let Some(tv) = json_to_toml(v) {
+                    table.insert(k.clone(), tv);
+                }
+            }
+            Some(toml::Value::Table(table))
+        }
+        serde_json::Value::Null => None,
+    }
+}
+
+#[derive(Serialize)]
+pub struct ConfigUpdateResponse {
+    /// Settings that took effect immediately
+    pub applied: Vec<String>,
+    /// Settings written to file but requiring server restart
+    pub requires_restart: Vec<String>,
+}
+
 /// Server statistics response
 #[derive(Serialize)]
 pub struct StatsResponse {

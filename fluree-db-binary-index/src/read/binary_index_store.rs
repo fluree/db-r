@@ -28,7 +28,7 @@ use crate::dict::global_dict::{LanguageTagDict, PredicateDict};
 use crate::dict::pack_reader::ForwardPackReader;
 use crate::dict::DictTreeReader;
 use crate::format::branch::{read_branch_from_bytes, BranchManifest};
-use crate::format::index_root::{IndexRoot, OTypeTableEntry};
+use crate::format::index_root::{IndexRoot, NamedGraphRouting, OTypeTableEntry};
 use crate::format::leaf::DecodedLeafDirV3;
 use crate::format::run_record::RunSortOrder;
 
@@ -243,20 +243,26 @@ impl BinaryIndexStore {
         }
 
         // Named graphs: fetch FBR3 branch manifests from CAS.
-        for ng in &root.named_graphs {
-            for (order, branch_cid) in &ng.orders {
-                let branch_bytes =
-                    fetch_cached_bytes_cid(cs.as_ref(), branch_cid, cache_dir).await?;
-                let branch = read_branch_from_bytes(&branch_bytes)?;
-                let gi = graph_indexes.entry(ng.g_id).or_insert_with(|| GraphIndex {
-                    orders: HashMap::new(),
-                    numbig: HashMap::new(),
-                    vectors: HashMap::new(),
-                    spatial: HashMap::new(),
-                    fulltext: HashMap::new(),
-                });
-                gi.orders.insert(*order, Arc::new(branch));
-            }
+        //
+        // Each (g_id, order) CAS GET is independent; running them in parallel
+        // cuts wall-clock load time roughly by the branch-manifest fan-out
+        // factor (fluree/db-r#155). See `fetch_named_graph_branches` below.
+        let named_branches = fetch_named_graph_branches(
+            Arc::clone(&cs),
+            &root.named_graphs,
+            cache_dir,
+            leaflet_cache.as_ref(),
+        )
+        .await?;
+        for (g_id, order, branch) in named_branches {
+            let gi = graph_indexes.entry(g_id).or_insert_with(|| GraphIndex {
+                orders: HashMap::new(),
+                numbig: HashMap::new(),
+                vectors: HashMap::new(),
+                spatial: HashMap::new(),
+                fulltext: HashMap::new(),
+            });
+            gi.orders.insert(order, Arc::new(branch));
         }
 
         // Inject per-graph arenas into graph indexes.
@@ -1834,6 +1840,56 @@ impl BinaryGraphView {
 }
 
 // ============================================================================
+// Named-graph branch fetching (parallel)
+// ============================================================================
+
+/// Fetch and decode every named-graph FBR3 branch manifest concurrently.
+///
+/// Each `(g_id, order, branch_cid)` triple owns one CAS GET followed by an
+/// in-memory decode; none of them depend on each other. `try_join_all`
+/// drives them all concurrently, so wall-clock latency drops from
+/// `sum(GETs)` to roughly `max(GETs)`.
+///
+/// This replaces the serial double-nested loop that previously lived inline
+/// in `load_from_root_v6` and contributed to the load-time regression
+/// tracked in fluree/db-r#155. Branch manifests are small and there are
+/// typically only a handful (graphs × orders), so unbounded concurrency is
+/// safe here — no need for `buffer_unordered`.
+async fn fetch_named_graph_branches(
+    cs: Arc<dyn ContentStore>,
+    named_graphs: &[NamedGraphRouting],
+    cache_dir: &Path,
+    leaflet_cache: Option<&Arc<LeafletCache>>,
+) -> io::Result<Vec<(GraphId, RunSortOrder, BranchManifest)>> {
+    // Build one fully-owned future per fetch so the combined future has no
+    // lifetime ties back into `load_from_root_v6`'s stack frame.
+    let mut fetches = Vec::new();
+    for ng in named_graphs {
+        let g_id = ng.g_id;
+        for (order, branch_cid) in &ng.orders {
+            let cs = Arc::clone(&cs);
+            let branch_cid = branch_cid.clone();
+            let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache = leaflet_cache.cloned();
+            let order = *order;
+            fetches.push(async move {
+                let bytes = fetch_cached_bytes_cid(
+                    cs.as_ref(),
+                    &branch_cid,
+                    &cache_dir,
+                    leaflet_cache.as_ref(),
+                )
+                .await?;
+                let branch = read_branch_from_bytes(&bytes)?;
+                Ok::<_, io::Error>((g_id, order, branch))
+            });
+        }
+    }
+
+    futures::future::try_join_all(fetches).await
+}
+
+// ============================================================================
 // Dict loading (reuses V5 infrastructure)
 // ============================================================================
 
@@ -1866,51 +1922,113 @@ async fn build_dictionary_set(
         (dict, rev)
     };
 
-    // Subject forward packs.
-    let mut subject_forward_packs = std::collections::BTreeMap::new();
-    for (ns_code, ns_refs) in &root.dict_refs.forward_packs.subject_fwd_ns_packs {
-        let reader = ForwardPackReader::from_pack_refs(
-            Arc::clone(&cs),
-            cache_dir,
-            ns_refs,
-            KIND_SUBJECT_FWD,
-            *ns_code,
-        )
-        .await?;
-        subject_forward_packs.insert(*ns_code, reader);
+    // Fan out the four I/O-bound phases concurrently. Each phase owns its
+    // inputs so the combined future has no lifetime ties to the caller's
+    // stack frame, matching the pattern established in
+    // `fetch_named_graph_branches` (fluree/db-r#155). `buffer_unordered`
+    // and `tokio::try_join!` are intentionally avoided here — they
+    // triggered a Rust trait-inference cascade that surfaced as `Send`
+    // bound failures elsewhere; see the commit message for 16326e72.
+    let subject_fwd_fut = {
+        let cs = Arc::clone(&cs);
+        let cache_dir = cache_dir.to_path_buf();
+        // One fetch per (ns_code, pack refs) entry; typically 1-few. Each
+        // owns its inputs so try_join_all drives them concurrently.
+        let per_ns_fetches: Vec<_> = root
+            .dict_refs
+            .forward_packs
+            .subject_fwd_ns_packs
+            .iter()
+            .map(|(ns_code, ns_refs)| {
+                let cs = Arc::clone(&cs);
+                let ns_refs = ns_refs.clone();
+                let cache_dir = cache_dir.clone();
+                let ns_code = *ns_code;
+                async move {
+                    let reader = ForwardPackReader::from_pack_refs(
+                        cs,
+                        &cache_dir,
+                        &ns_refs,
+                        KIND_SUBJECT_FWD,
+                        ns_code,
+                    )
+                    .await?;
+                    Ok::<_, io::Error>((ns_code, reader))
+                }
+            })
+            .collect();
+        async move { futures::future::try_join_all(per_ns_fetches).await }
+    };
+
+    let subject_reverse_fut = {
+        let cs = Arc::clone(&cs);
+        let refs = root.dict_refs.subject_reverse.clone();
+        let cache_dir = cache_dir.to_path_buf();
+        let leaflet_cache = leaflet_cache.cloned();
+        async move {
+            DictTreeReader::from_refs(&cs, &refs, leaflet_cache.as_ref(), Some(&cache_dir)).await
+        }
+    };
+
+    let string_fwd_fut = {
+        let cs = Arc::clone(&cs);
+        let refs = root.dict_refs.forward_packs.string_fwd_packs.clone();
+        let cache_dir = cache_dir.to_path_buf();
+        async move { ForwardPackReader::from_pack_refs(cs, &cache_dir, &refs, KIND_STRING_FWD, 0).await }
+    };
+
+    let string_reverse_fut = {
+        let cs = Arc::clone(&cs);
+        let refs = root.dict_refs.string_reverse.clone();
+        let cache_dir = cache_dir.to_path_buf();
+        let leaflet_cache = leaflet_cache.cloned();
+        async move {
+            DictTreeReader::from_refs(&cs, &refs, leaflet_cache.as_ref(), Some(&cache_dir)).await
+        }
+    };
+
+    // `try_join_all` over a Vec of BoxFuture<...Result<Phase>...> gives the
+    // four phases uniform types; the enum discriminant carries the phase
+    // identity back out.
+    enum DictPhase {
+        SubjectFwd(Vec<(u16, ForwardPackReader)>),
+        SubjectReverse(DictTreeReader),
+        StringFwd(ForwardPackReader),
+        StringReverse(DictTreeReader),
     }
+    use futures::future::FutureExt;
+    let phase_futs: Vec<futures::future::BoxFuture<'_, io::Result<DictPhase>>> = vec![
+        subject_fwd_fut
+            .map(|r| r.map(DictPhase::SubjectFwd))
+            .boxed(),
+        subject_reverse_fut
+            .map(|r| r.map(DictPhase::SubjectReverse))
+            .boxed(),
+        string_fwd_fut.map(|r| r.map(DictPhase::StringFwd)).boxed(),
+        string_reverse_fut
+            .map(|r| r.map(DictPhase::StringReverse))
+            .boxed(),
+    ];
+    let phases = futures::future::try_join_all(phase_futs).await?;
 
-    // Subject reverse tree.
-    let subject_reverse_tree = Some(
-        DictTreeReader::from_refs(
-            &cs,
-            &root.dict_refs.subject_reverse,
-            leaflet_cache,
-            Some(cache_dir),
-        )
-        .await?,
-    );
-
-    // String forward packs.
-    let string_forward_packs = ForwardPackReader::from_pack_refs(
-        Arc::clone(&cs),
-        cache_dir,
-        &root.dict_refs.forward_packs.string_fwd_packs,
-        KIND_STRING_FWD,
-        0,
-    )
-    .await?;
-
-    // String reverse tree.
-    let string_reverse_tree = Some(
-        DictTreeReader::from_refs(
-            &cs,
-            &root.dict_refs.string_reverse,
-            leaflet_cache,
-            Some(cache_dir),
-        )
-        .await?,
-    );
+    let mut subject_forward_packs = std::collections::BTreeMap::new();
+    let mut subject_reverse_tree: Option<DictTreeReader> = None;
+    let mut string_forward_packs: Option<ForwardPackReader> = None;
+    let mut string_reverse_tree: Option<DictTreeReader> = None;
+    for phase in phases {
+        match phase {
+            DictPhase::SubjectFwd(pairs) => {
+                for (ns_code, reader) in pairs {
+                    subject_forward_packs.insert(ns_code, reader);
+                }
+            }
+            DictPhase::SubjectReverse(reader) => subject_reverse_tree = Some(reader),
+            DictPhase::StringFwd(reader) => string_forward_packs = Some(reader),
+            DictPhase::StringReverse(reader) => string_reverse_tree = Some(reader),
+        }
+    }
+    let string_forward_packs =
+        string_forward_packs.expect("StringFwd phase must have populated string_forward_packs");
 
     // Namespace codes.
     let namespace_codes: HashMap<u16, String> = root
@@ -1999,119 +2117,271 @@ struct LoadedArenas {
 }
 
 /// Load per-graph specialty arenas from GraphArenaRefs.
+///
+/// All arena blob fetches — numbig, vector manifests, spatial roots +
+/// their per-spatial-index blob sets, fulltext arenas — are independent
+/// content-addressed reads. Running them serially dominates the index-load
+/// wall clock for ledgers with many arena entries (fluree/db-r#155
+/// follow-up). Flatten every fetch into one `try_join_all` over
+/// fully-owned futures so wall time drops from `sum(GETs)` to roughly
+/// `max(GETs)`.
+///
+/// `try_join_all` on an owned `Vec<BoxFuture>` is used rather than
+/// `buffer_unordered` or `tokio::try_join!` — the commit message for
+/// 16326e72 documents the Rust trait-inference cascade those alternatives
+/// trigger with async-trait methods on `ContentStore`.
 async fn load_per_graph_arenas(
     cs: Arc<dyn ContentStore>,
     graph_arenas: &[crate::format::wire_helpers::GraphArenaRefs],
     cache_dir: &Path,
     leaflet_cache: Option<&Arc<LeafletCache>>,
 ) -> io::Result<HashMap<GraphId, LoadedArenas>> {
-    let mut result = HashMap::new();
+    /// Per-future return type — carries the (graph, kind, key) identity so
+    /// results can be reassembled into `HashMap<GraphId, LoadedArenas>`
+    /// after the concurrent joins complete.
+    enum ArenaLoaded {
+        NumBig(GraphId, u32, crate::arena::numbig::NumBigArena),
+        Vector(GraphId, u32, crate::arena::vector::LazyVectorArena),
+        Spatial(
+            GraphId,
+            u32,
+            Arc<dyn fluree_db_spatial::SpatialIndexProvider>,
+        ),
+        Fulltext(GraphId, u32, Arc<crate::arena::fulltext::FulltextArena>),
+    }
+
+    use futures::future::{BoxFuture, FutureExt};
+    let mut fetches: Vec<BoxFuture<'_, io::Result<ArenaLoaded>>> = Vec::new();
 
     for ga in graph_arenas {
-        let mut numbig = HashMap::new();
+        let g_id = ga.g_id;
+
+        // numbig: one owned fetch per predicate.
         for (p_id, cid) in &ga.numbig {
-            let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "nba").await?;
-            let arena = crate::arena::numbig::read_numbig_arena_from_bytes(&bytes)?;
-            numbig.insert(*p_id, arena);
-        }
-
-        let mut vectors = HashMap::new();
-        for entry in &ga.vectors {
-            let manifest_bytes =
-                fetch_cached_bytes(cs.as_ref(), &entry.manifest, cache_dir, "vam").await?;
-            let manifest = crate::arena::vector::read_vector_manifest(&manifest_bytes)?;
-
-            let mut shard_sources = Vec::with_capacity(entry.shards.len());
-            for shard_cid in &entry.shards {
-                let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
-                if let Some(local) = cs.resolve_local_path(shard_cid) {
-                    shard_sources.push(crate::arena::vector::ShardSource {
-                        cid_hash,
-                        cid: None,
-                        path: local,
-                        on_disk: std::sync::atomic::AtomicBool::new(true),
-                    });
-                } else {
-                    let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
-                    let exists = cache_path.exists();
-                    shard_sources.push(crate::arena::vector::ShardSource {
-                        cid_hash,
-                        cid: Some(shard_cid.clone()),
-                        path: cache_path,
-                        on_disk: std::sync::atomic::AtomicBool::new(exists),
-                    });
-                }
-            }
-
-            // LazyVectorArena needs a LeafletCache for shard caching and
-            // an optional ContentStore for remote shard fetching.
-            let shard_cache = leaflet_cache
-                .cloned()
-                .unwrap_or_else(|| Arc::new(LeafletCache::with_max_mb(64)));
-            let arena = crate::arena::vector::LazyVectorArena::new(
-                manifest,
-                shard_sources,
-                shard_cache,
-                Some(Arc::clone(&cs)),
-            );
-            vectors.insert(entry.p_id, arena);
-        }
-
-        // Spatial and fulltext arenas.
-        let mut spatial = HashMap::new();
-        for sp_ref in &ga.spatial {
-            let root_bytes =
-                fetch_cached_bytes(cs.as_ref(), &sp_ref.root_cid, cache_dir, "spr").await?;
-            let spatial_root: fluree_db_spatial::SpatialIndexRoot =
-                serde_json::from_slice(&root_bytes).map_err(|e| {
-                    io::Error::new(io::ErrorKind::InvalidData, format!("spatial root: {e}"))
-                })?;
-
-            // Pre-fetch all spatial blobs, keyed by digest_hex.
-            let mut blob_cache: HashMap<String, Vec<u8>> = HashMap::new();
-            for cid in [&sp_ref.manifest, &sp_ref.arena]
-                .into_iter()
-                .chain(sp_ref.leaflets.iter())
-            {
-                let bytes = fetch_cached_bytes(cs.as_ref(), cid, cache_dir, "spa").await?;
-                blob_cache.insert(cid.digest_hex(), bytes);
-            }
-            let blob_cache = Arc::new(blob_cache);
-
-            let snapshot =
-                fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(spatial_root, move |hash| {
-                    blob_cache.get(hash).cloned().ok_or_else(|| {
-                        fluree_db_spatial::SpatialError::ChunkNotFound(hash.to_string())
-                    })
-                })
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("spatial snapshot load: {e}"),
+            let cs = Arc::clone(&cs);
+            let cid = cid.clone();
+            let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
+            let p_id = *p_id;
+            fetches.push(
+                async move {
+                    let bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &cid,
+                        &cache_dir,
+                        "nba",
+                        leaflet_cache_cloned.as_ref(),
                     )
-                })?;
-            let provider: Arc<dyn fluree_db_spatial::SpatialIndexProvider> =
-                Arc::new(fluree_db_spatial::EmbeddedSpatialProvider::new(snapshot));
-            spatial.insert(sp_ref.p_id, provider);
+                    .await?;
+                    let arena = crate::arena::numbig::read_numbig_arena_from_bytes(&bytes)?;
+                    Ok(ArenaLoaded::NumBig(g_id, p_id, arena))
+                }
+                .boxed(),
+            );
         }
 
-        let mut fulltext = HashMap::new();
+        // vectors: one owned fetch per vector entry (manifest only; shards
+        // are consulted lazily at query time).
+        for entry in &ga.vectors {
+            let cs = Arc::clone(&cs);
+            let manifest_cid = entry.manifest.clone();
+            let shard_cids = entry.shards.clone();
+            let p_id = entry.p_id;
+            let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
+            fetches.push(
+                async move {
+                    let manifest_bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &manifest_cid,
+                        &cache_dir,
+                        "vam",
+                        leaflet_cache_cloned.as_ref(),
+                    )
+                    .await?;
+                    let manifest = crate::arena::vector::read_vector_manifest(&manifest_bytes)?;
+
+                    let mut shard_sources = Vec::with_capacity(shard_cids.len());
+                    for shard_cid in &shard_cids {
+                        let cid_hash = LeafletCache::cid_cache_key(&shard_cid.to_bytes());
+                        if let Some(local) = cs.resolve_local_path(shard_cid) {
+                            shard_sources.push(crate::arena::vector::ShardSource {
+                                cid_hash,
+                                cid: None,
+                                path: local,
+                                on_disk: std::sync::atomic::AtomicBool::new(true),
+                            });
+                        } else {
+                            let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
+                            let exists = cache_path.exists();
+                            shard_sources.push(crate::arena::vector::ShardSource {
+                                cid_hash,
+                                cid: Some(shard_cid.clone()),
+                                path: cache_path,
+                                on_disk: std::sync::atomic::AtomicBool::new(exists),
+                            });
+                        }
+                    }
+
+                    let shard_cache = leaflet_cache_cloned
+                        .unwrap_or_else(|| Arc::new(LeafletCache::with_max_mb(64)));
+                    let arena = crate::arena::vector::LazyVectorArena::new(
+                        manifest,
+                        shard_sources,
+                        shard_cache,
+                        Some(Arc::clone(&cs)),
+                    );
+                    Ok(ArenaLoaded::Vector(g_id, p_id, arena))
+                }
+                .boxed(),
+            );
+        }
+
+        // spatial: root fetch, then concurrent blob fetches, then decode.
+        for sp_ref in &ga.spatial {
+            let cs = Arc::clone(&cs);
+            let sp_ref = sp_ref.clone();
+            let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
+            fetches.push(
+                async move {
+                    let root_bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &sp_ref.root_cid,
+                        &cache_dir,
+                        "spr",
+                        leaflet_cache_cloned.as_ref(),
+                    )
+                    .await?;
+                    let spatial_root: fluree_db_spatial::SpatialIndexRoot =
+                        serde_json::from_slice(&root_bytes).map_err(|e| {
+                            io::Error::new(io::ErrorKind::InvalidData, format!("spatial root: {e}"))
+                        })?;
+
+                    // Fetch the manifest + arena + all leaflet blobs
+                    // concurrently; they're independent content-addressed
+                    // reads referenced by the already-decoded root.
+                    let blob_cids: Vec<_> = std::iter::once(sp_ref.manifest.clone())
+                        .chain(std::iter::once(sp_ref.arena.clone()))
+                        .chain(sp_ref.leaflets.iter().cloned())
+                        .collect();
+                    let blob_fetches: Vec<_> = blob_cids
+                        .into_iter()
+                        .map(|cid| {
+                            let cs = Arc::clone(&cs);
+                            let cache_dir = cache_dir.clone();
+                            let leaflet_cache_cloned = leaflet_cache_cloned.clone();
+                            async move {
+                                let bytes = fetch_cached_bytes(
+                                    cs.as_ref(),
+                                    &cid,
+                                    &cache_dir,
+                                    "spa",
+                                    leaflet_cache_cloned.as_ref(),
+                                )
+                                .await?;
+                                Ok::<_, io::Error>((cid.digest_hex(), bytes))
+                            }
+                        })
+                        .collect();
+                    let fetched = futures::future::try_join_all(blob_fetches).await?;
+                    let blob_cache: HashMap<String, Vec<u8>> = fetched.into_iter().collect();
+                    let blob_cache = Arc::new(blob_cache);
+
+                    let snapshot = fluree_db_spatial::SpatialIndexSnapshot::load_from_cas(
+                        spatial_root,
+                        move |hash| {
+                            blob_cache.get(hash).cloned().ok_or_else(|| {
+                                fluree_db_spatial::SpatialError::ChunkNotFound(hash.to_string())
+                            })
+                        },
+                    )
+                    .map_err(|e| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("spatial snapshot load: {e}"),
+                        )
+                    })?;
+                    let provider: Arc<dyn fluree_db_spatial::SpatialIndexProvider> =
+                        Arc::new(fluree_db_spatial::EmbeddedSpatialProvider::new(snapshot));
+                    Ok(ArenaLoaded::Spatial(g_id, sp_ref.p_id, provider))
+                }
+                .boxed(),
+            );
+        }
+
+        // fulltext: one owned fetch per fulltext ref.
         for ft_ref in &ga.fulltext {
-            let bytes =
-                fetch_cached_bytes(cs.as_ref(), &ft_ref.arena_cid, cache_dir, "fta").await?;
-            let arena = crate::arena::fulltext::FulltextArena::decode(&bytes)?;
-            fulltext.insert(ft_ref.p_id, Arc::new(arena));
+            let cs = Arc::clone(&cs);
+            let arena_cid = ft_ref.arena_cid.clone();
+            let p_id = ft_ref.p_id;
+            let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
+            fetches.push(
+                async move {
+                    let bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &arena_cid,
+                        &cache_dir,
+                        "fta",
+                        leaflet_cache_cloned.as_ref(),
+                    )
+                    .await?;
+                    let arena = crate::arena::fulltext::FulltextArena::decode(&bytes)?;
+                    Ok(ArenaLoaded::Fulltext(g_id, p_id, Arc::new(arena)))
+                }
+                .boxed(),
+            );
         }
+    }
 
-        result.insert(
-            ga.g_id,
-            LoadedArenas {
-                numbig,
-                vectors,
-                spatial,
-                fulltext,
-            },
-        );
+    let loaded = futures::future::try_join_all(fetches).await?;
+
+    // Seed the result map with one empty entry per graph so that graphs
+    // declared in `graph_arenas` with no arena items still appear, matching
+    // the pre-parallel-fetch behaviour that unconditionally inserted every
+    // `ga.g_id`.
+    let mut result: HashMap<GraphId, LoadedArenas> = HashMap::with_capacity(graph_arenas.len());
+    for ga in graph_arenas {
+        result.entry(ga.g_id).or_insert_with(|| LoadedArenas {
+            numbig: HashMap::new(),
+            vectors: HashMap::new(),
+            spatial: HashMap::new(),
+            fulltext: HashMap::new(),
+        });
+    }
+
+    for item in loaded {
+        match item {
+            ArenaLoaded::NumBig(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .numbig
+                    .insert(p_id, arena);
+            }
+            ArenaLoaded::Vector(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .vectors
+                    .insert(p_id, arena);
+            }
+            ArenaLoaded::Spatial(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .spatial
+                    .insert(p_id, arena);
+            }
+            ArenaLoaded::Fulltext(g_id, p_id, arena) => {
+                result
+                    .get_mut(&g_id)
+                    .expect("graph seeded above")
+                    .fulltext
+                    .insert(p_id, arena);
+            }
+        }
     }
 
     Ok(result)
@@ -2526,5 +2796,148 @@ mod tests {
             )
             .unwrap();
         assert_eq!(val, FlakeValue::Long(1_350_000));
+    }
+
+    // ========================================================================
+    // fluree/db-r#155 follow-up validation — Change 3 parallelism
+    // ========================================================================
+
+    /// `ContentStore` wrapper that injects a fixed delay on every `get()` and
+    /// tracks peak in-flight concurrency via an atomic gauge. Used to prove
+    /// that `fetch_named_graph_branches` drives its fetches concurrently
+    /// rather than serially.
+    #[derive(Debug)]
+    struct LatencyConcurrencyCs {
+        inner: MemoryContentStore,
+        delay: std::time::Duration,
+        in_flight: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    impl LatencyConcurrencyCs {
+        fn new(delay: std::time::Duration) -> Self {
+            Self {
+                inner: MemoryContentStore::new(),
+                delay,
+                in_flight: Arc::new(AtomicUsize::new(0)),
+                peak: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn peak_concurrency(&self) -> usize {
+            self.peak.load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl ContentStore for LatencyConcurrencyCs {
+        async fn has(&self, id: &ContentId) -> fluree_db_core::Result<bool> {
+            self.inner.has(id).await
+        }
+
+        async fn get(&self, id: &ContentId) -> fluree_db_core::Result<Vec<u8>> {
+            // Record concurrency on entry; update peak via CAS; hold while
+            // sleeping; decrement on exit.
+            let now = self.in_flight.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+            let mut peak = self.peak.load(AtomicOrdering::Relaxed);
+            while now > peak {
+                match self.peak.compare_exchange(
+                    peak,
+                    now,
+                    AtomicOrdering::Relaxed,
+                    AtomicOrdering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(actual) => peak = actual,
+                }
+            }
+            tokio::time::sleep(self.delay).await;
+            let bytes = self.inner.get(id).await;
+            self.in_flight.fetch_sub(1, AtomicOrdering::Relaxed);
+            bytes
+        }
+
+        async fn put(&self, kind: ContentKind, bytes: &[u8]) -> fluree_db_core::Result<ContentId> {
+            self.inner.put(kind, bytes).await
+        }
+
+        async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::Result<()> {
+            self.inner.put_with_id(id, bytes).await
+        }
+
+        async fn release(&self, id: &ContentId) -> fluree_db_core::Result<()> {
+            self.inner.release(id).await
+        }
+    }
+
+    /// `fetch_named_graph_branches` drives its (g_id, order, cid) fetches
+    /// concurrently. Validates the Change 3 hypothesis that wall clock
+    /// drops from `sum(GETs)` to roughly `max(GETs)` — observable here via
+    /// (a) peak in-flight concurrency > 1 and (b) elapsed time < sum.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fetch_named_graph_branches_is_concurrent() {
+        use crate::format::branch::build_branch_bytes;
+        use crate::format::run_record::RunSortOrder;
+
+        let cs = Arc::new(LatencyConcurrencyCs::new(std::time::Duration::from_millis(
+            80,
+        )));
+        let cache_dir = temp_cache_dir();
+
+        // Build 6 distinct branch manifests (2 graphs × 3 orders) and
+        // register each under its content-addressed CID. Empty leaves
+        // keeps the payload small; we're measuring fan-out, not decode.
+        let orders = [RunSortOrder::Spot, RunSortOrder::Psot, RunSortOrder::Post];
+        let mut named_graphs: Vec<NamedGraphRouting> = Vec::new();
+        for (g_ix, g_id) in [3u16, 4u16].iter().enumerate() {
+            let mut routes = Vec::new();
+            for (o_ix, order) in orders.iter().enumerate() {
+                // Perturb bytes so every manifest has a distinct CID.
+                let mut bytes = build_branch_bytes(*order, *g_id, &[]);
+                bytes.push(g_ix as u8);
+                bytes.push(o_ix as u8);
+                let id = ContentId::new(ContentKind::IndexBranch, &bytes);
+                cs.inner
+                    .put_with_id(&id, &bytes)
+                    .await
+                    .expect("seed branch");
+                routes.push((*order, id));
+            }
+            named_graphs.push(NamedGraphRouting {
+                g_id: *g_id,
+                orders: routes,
+            });
+        }
+
+        let started = std::time::Instant::now();
+        let branches = super::fetch_named_graph_branches(
+            Arc::clone(&cs) as Arc<dyn ContentStore>,
+            &named_graphs,
+            &cache_dir,
+            None,
+        )
+        .await
+        .expect("fetch_named_graph_branches");
+        let elapsed = started.elapsed();
+
+        assert_eq!(branches.len(), 6, "should return one entry per fetch");
+
+        // Serial would be 6 × 80ms = 480ms; concurrent should finish in
+        // roughly max(80ms) plus async overhead. Allow generous slack for
+        // CI scheduler noise.
+        assert!(
+            elapsed < std::time::Duration::from_millis(300),
+            "expected concurrent fetch, but elapsed {:?} ≥ 300ms (serial would be ~480ms)",
+            elapsed
+        );
+
+        // Peak concurrency should be at least 2 (ideally ≈6). If the code
+        // regressed back to serial, peak would be 1.
+        assert!(
+            cs.peak_concurrency() >= 2,
+            "expected parallel fan-out, but peak concurrency was {} — fetch_named_graph_branches \
+             must drive concurrent futures via try_join_all, not a serial for-await loop",
+            cs.peak_concurrency()
+        );
     }
 }
