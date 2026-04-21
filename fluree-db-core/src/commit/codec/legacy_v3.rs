@@ -823,13 +823,8 @@ mod tests {
     // recovers the expected `Commit` / `CommitEnvelope` / `CommitOps`.
     // ========================================================================
 
-    use crate::commit::codec::envelope::{encode_envelope_fields, CodecEnvelope};
-    use crate::commit::codec::format::{
-        self, CommitFooter, CommitHeader, DictLocation, FOOTER_LEN, HEADER_LEN,
-    };
-    use crate::commit::codec::op_codec::{encode_op, CommitDicts};
+    use crate::commit::codec::format;
     use crate::{Flake, FlakeValue};
-    use std::collections::HashMap;
 
     /// Build a minimal v3 commit blob from flakes.
     ///
@@ -837,91 +832,7 @@ mod tests {
     /// The header is written with `version: VERSION_V3`, and the trailing
     /// hash is computed as `SHA-256(blob[..hash_offset])`.
     fn build_v3_test_blob(flakes: &[Flake], t: i64) -> Vec<u8> {
-        // Encode ops into a buffer and populate dicts
-        let mut dicts = CommitDicts::new();
-        let mut ops_buf = Vec::new();
-        for f in flakes {
-            encode_op(f, &mut dicts, &mut ops_buf).unwrap();
-        }
-
-        // Envelope
-        let envelope = CodecEnvelope {
-            t,
-            previous_refs: Vec::new(),
-            namespace_delta: HashMap::new(),
-            txn: None,
-            time: None,
-            txn_signature: None,
-            txn_meta: Vec::new(),
-            graph_delta: HashMap::new(),
-            ns_split_mode: None,
-        };
-        let mut envelope_bytes = Vec::new();
-        encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
-
-        // Serialize dicts
-        let dict_bytes: Vec<Vec<u8>> = vec![
-            dicts.graph.serialize(),
-            dicts.subject.serialize(),
-            dicts.predicate.serialize(),
-            dicts.datatype.serialize(),
-            dicts.object_ref.serialize(),
-        ];
-
-        // Layout offsets
-        let dict_start = HEADER_LEN + envelope_bytes.len() + ops_buf.len();
-        let mut dict_locations = [DictLocation::default(); 5];
-        let mut offset = dict_start as u64;
-        for (i, d) in dict_bytes.iter().enumerate() {
-            dict_locations[i] = DictLocation {
-                offset,
-                len: d.len() as u32,
-            };
-            offset += d.len() as u64;
-        }
-
-        let footer = CommitFooter {
-            dicts: dict_locations,
-            ops_section_len: ops_buf.len() as u32,
-        };
-        let header = CommitHeader {
-            version: format::VERSION_V3,
-            flags: 0,
-            t,
-            op_count: flakes.len() as u32,
-            envelope_len: envelope_bytes.len() as u32,
-            sig_block_len: 0,
-        };
-
-        // Size includes trailing 32-byte hash
-        let body_len = HEADER_LEN
-            + envelope_bytes.len()
-            + ops_buf.len()
-            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
-            + FOOTER_LEN;
-        let total_len = body_len + HASH_LEN_V3;
-        let mut blob = vec![0u8; total_len];
-
-        let mut pos = 0;
-        header.write_to(&mut blob[pos..]);
-        pos += HEADER_LEN;
-        blob[pos..pos + envelope_bytes.len()].copy_from_slice(&envelope_bytes);
-        pos += envelope_bytes.len();
-        blob[pos..pos + ops_buf.len()].copy_from_slice(&ops_buf);
-        pos += ops_buf.len();
-        for d in &dict_bytes {
-            blob[pos..pos + d.len()].copy_from_slice(d);
-            pos += d.len();
-        }
-        footer.write_to(&mut blob[pos..]);
-        // pos is now at body_len (start of trailing hash)
-        assert_eq!(pos + FOOTER_LEN, body_len);
-
-        // Compute + embed the trailing SHA-256 hash of the body
-        let body_hash: [u8; 32] = Sha256::digest(&blob[..body_len]).into();
-        blob[body_len..body_len + HASH_LEN_V3].copy_from_slice(&body_hash);
-
-        blob
+        super::test_support::build_v3_blob(flakes, super::test_support::default_envelope(t))
     }
 
     /// Build a single flake with a given datatype Sid, for corruption tests.
@@ -1051,5 +962,129 @@ mod tests {
             err,
             crate::commit::codec::CommitCodecError::UnsupportedVersion(99)
         ));
+    }
+}
+
+// ============================================================================
+// Integration-test support
+// ============================================================================
+
+/// Helpers for constructing synthetic legacy-v3 commit blobs from integration
+/// tests in dependent crates. Gated on `cfg(test)` for in-crate use and on the
+/// `test-util` feature for cross-crate use — never compiled into production.
+#[cfg(any(test, feature = "test-util"))]
+pub mod test_support {
+    use super::HASH_LEN_V3;
+    use crate::commit::codec::envelope::{encode_envelope_fields, CodecEnvelope};
+    use crate::commit::codec::format::{
+        CommitFooter, CommitHeader, DictLocation, FOOTER_LEN, HEADER_LEN, VERSION_V3,
+    };
+    use crate::commit::codec::op_codec::{encode_op, CommitDicts};
+    use crate::Flake;
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+
+    /// Build a default empty envelope for a given `t` — no parents, no
+    /// namespace delta, no txn, no signature. Convenience for callers that
+    /// don't need a structured envelope.
+    pub fn default_envelope(t: i64) -> CodecEnvelope {
+        CodecEnvelope {
+            t,
+            previous_refs: Vec::new(),
+            namespace_delta: HashMap::new(),
+            txn: None,
+            time: None,
+            txn_signature: None,
+            txn_meta: Vec::new(),
+            graph_delta: HashMap::new(),
+            ns_split_mode: None,
+        }
+    }
+
+    /// Serialize `flakes` + `envelope` into a legacy-v3 commit blob, including
+    /// the trailing SHA-256 body hash required by the v3 format.
+    ///
+    /// The `envelope.t` field is also written into the blob's header. Callers
+    /// that want to inject `namespace_delta` entries, `previous_refs`,
+    /// timestamps, or `ns_split_mode` simply construct the envelope with
+    /// those fields populated.
+    ///
+    /// Layout: `[header][envelope][ops][dicts][footer][hash: 32B]`
+    pub fn build_v3_blob(flakes: &[Flake], envelope: CodecEnvelope) -> Vec<u8> {
+        let t = envelope.t;
+
+        // Encode ops into a buffer and populate dicts
+        let mut dicts = CommitDicts::new();
+        let mut ops_buf = Vec::new();
+        for f in flakes {
+            encode_op(f, &mut dicts, &mut ops_buf).unwrap();
+        }
+
+        // Encode envelope
+        let mut envelope_bytes = Vec::new();
+        encode_envelope_fields(&envelope, &mut envelope_bytes).unwrap();
+
+        // Serialize dicts
+        let dict_bytes: Vec<Vec<u8>> = vec![
+            dicts.graph.serialize(),
+            dicts.subject.serialize(),
+            dicts.predicate.serialize(),
+            dicts.datatype.serialize(),
+            dicts.object_ref.serialize(),
+        ];
+
+        // Layout offsets
+        let dict_start = HEADER_LEN + envelope_bytes.len() + ops_buf.len();
+        let mut dict_locations = [DictLocation::default(); 5];
+        let mut offset = dict_start as u64;
+        for (i, d) in dict_bytes.iter().enumerate() {
+            dict_locations[i] = DictLocation {
+                offset,
+                len: d.len() as u32,
+            };
+            offset += d.len() as u64;
+        }
+
+        let footer = CommitFooter {
+            dicts: dict_locations,
+            ops_section_len: ops_buf.len() as u32,
+        };
+        let header = CommitHeader {
+            version: VERSION_V3,
+            flags: 0,
+            t,
+            op_count: flakes.len() as u32,
+            envelope_len: envelope_bytes.len() as u32,
+            sig_block_len: 0,
+        };
+
+        // Size includes trailing 32-byte hash
+        let body_len = HEADER_LEN
+            + envelope_bytes.len()
+            + ops_buf.len()
+            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+            + FOOTER_LEN;
+        let total_len = body_len + HASH_LEN_V3;
+        let mut blob = vec![0u8; total_len];
+
+        let mut pos = 0;
+        header.write_to(&mut blob[pos..]);
+        pos += HEADER_LEN;
+        blob[pos..pos + envelope_bytes.len()].copy_from_slice(&envelope_bytes);
+        pos += envelope_bytes.len();
+        blob[pos..pos + ops_buf.len()].copy_from_slice(&ops_buf);
+        pos += ops_buf.len();
+        for d in &dict_bytes {
+            blob[pos..pos + d.len()].copy_from_slice(d);
+            pos += d.len();
+        }
+        footer.write_to(&mut blob[pos..]);
+        assert_eq!(pos + FOOTER_LEN, body_len);
+
+        // Compute + embed the trailing SHA-256 hash of the body
+        let body_hash: [u8; 32] = Sha256::digest(&blob[..body_len]).into();
+        blob[body_len..body_len + HASH_LEN_V3].copy_from_slice(&body_hash);
+
+        blob
     }
 }

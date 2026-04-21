@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod branch;
+pub mod commit_upgrade;
 pub mod completions;
 pub mod config_cmd;
 pub mod context_cmd;

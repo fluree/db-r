@@ -605,6 +605,40 @@ impl NameService for FileNameService {
             return Err(NameServiceError::not_found(ledger_id));
         }
 
+        // Also reset the sidecar index file. `load_record` consults
+        // `{alias}.index.json` and overrides the main record's
+        // `index_head_id` whenever the sidecar's `t` is `>=` — so a
+        // `reset_head` that only updates the main record gets silently
+        // shadowed by a stale sidecar. Force-overwrite (or delete) the
+        // sidecar to keep both files coherent. Bypasses the monotonic
+        // guard that `publish_index` enforces — that's the whole point
+        // of `reset_head` as an `AdminPublisher` operation.
+        let index_address = Self::index_address(&ledger_name, &branch);
+        match snapshot.index_head_id.as_ref() {
+            Some(index_id) => {
+                let index_file = crate::ns_format::NsIndexFileV2 {
+                    context: crate::ns_format::ns_context(),
+                    index: crate::ns_format::IndexRef {
+                        cid: Some(index_id.to_string()),
+                        t: snapshot.index_t,
+                    },
+                };
+                let bytes = serialize_json(&index_file)?;
+                self.storage
+                    .compare_and_swap(&index_address, |_bytes| {
+                        Ok(CasAction::Write::<()>(bytes.clone()))
+                    })
+                    .await?;
+            }
+            None => {
+                // Snapshot says no index — remove the sidecar if it
+                // exists so a stale entry can't re-assert itself at
+                // read time.
+                use fluree_db_core::StorageWrite;
+                let _ = self.storage.delete(&index_address).await;
+            }
+        }
+
         Ok(())
     }
 }

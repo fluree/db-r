@@ -410,6 +410,12 @@ pub enum Commands {
         remote: Option<String>,
     },
 
+    /// Commit-level administrative operations
+    Commit {
+        #[command(subcommand)]
+        action: CommitAction,
+    },
+
     /// Manage configuration
     Config {
         #[command(subcommand)]
@@ -962,6 +968,48 @@ pub enum TrackAction {
     Status {
         /// Ledger alias (shows all if omitted)
         ledger: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CommitAction {
+    /// Audit and repair a legacy ledger whose binary index is missing flakes
+    /// due to the fluree/db-r#152 reindex bug (same-canonical retract+assert
+    /// pairs in a single legacy v3 commit).
+    ///
+    /// Walks the commit chain, computes the canonical should-exist set, and
+    /// diffs it against the live index via per-subject SPOT and per-predicate
+    /// PSOT scans. `--dry-run` reports without mutating; `--force` emits a
+    /// single repair commit appended to the ledger head containing the
+    /// missing asserts.
+    Upgrade {
+        /// Ledger name (required)
+        ledger: String,
+
+        /// Audit only; report missing flakes without mutating the ledger.
+        /// This is the default behavior if neither flag is given.
+        #[arg(long, conflicts_with = "force")]
+        dry_run: bool,
+
+        /// Run the audit and then emit a single repair commit asserting the
+        /// missing flakes. Idempotent: a second run with nothing to repair
+        /// is a no-op and exits 0.
+        #[arg(long, conflicts_with = "dry_run")]
+        force: bool,
+
+        /// Execute against a remote server (by remote name, e.g., "origin")
+        #[arg(long)]
+        remote: Option<String>,
+
+        /// Resume polling for a previously-dispatched remote commit-upgrade
+        /// instead of issuing a new one. Accepts the correlation ID printed
+        /// by the original dispatch. Only valid together with `--remote`.
+        ///
+        /// Useful when Ctrl-C interrupted an earlier poll — the migration
+        /// continues on the server regardless, so resuming polling picks up
+        /// the terminal status once it's written.
+        #[arg(long, requires = "remote")]
+        status: Option<String>,
     },
 }
 

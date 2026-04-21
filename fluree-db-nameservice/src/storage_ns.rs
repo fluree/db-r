@@ -688,6 +688,34 @@ where
             return Err(NameServiceError::not_found(ledger_id));
         }
 
+        // Also reset the sidecar index file. `load_record` merges main +
+        // `index_key` and uses the sidecar-wins rule whenever
+        // `sidecar.index_t >= main.index_t` — so a `reset_head` that
+        // only updates main gets silently shadowed by a stale sidecar.
+        // Parallel to the `FileNameService::reset_head` fix landed
+        // earlier on this branch; see fluree/db-r#152.
+        let index_key = self.index_key(&ledger_name, &branch);
+        match snapshot.index_head_id.as_ref() {
+            Some(index_id) => {
+                let index_file = crate::ns_format::NsIndexFileV2 {
+                    context: crate::ns_format::ns_context(),
+                    index: crate::ns_format::IndexRef {
+                        cid: Some(index_id.to_string()),
+                        t: snapshot.index_t,
+                    },
+                };
+                let bytes = serialize_json(&index_file)?;
+                self.storage
+                    .compare_and_swap(&index_key, |_bytes| {
+                        Ok(CasAction::Write::<()>(bytes.clone()))
+                    })
+                    .await?;
+            }
+            None => {
+                let _ = self.storage.delete(&index_key).await;
+            }
+        }
+
         Ok(())
     }
 }
