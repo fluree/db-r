@@ -28,8 +28,16 @@ use std::sync::Arc;
 pub struct LedgerSnapshotMetadata {
     /// Ledger ID (e.g., "mydb:main")
     pub ledger_id: String,
-    /// Current transaction time
+    /// Current transaction time (upper bound of index coverage).
     pub t: i64,
+    /// Earliest transaction time covered by this index.
+    ///
+    /// The index answers queries for any `target_t` in `base_t..=t` directly
+    /// from persisted history (FIR6 Region 3). `target_t < base_t` is outside
+    /// coverage and must fall back to overlay-only replay.
+    ///
+    /// `0` for full-history indexes and genesis snapshots.
+    pub base_t: i64,
     /// Namespace code -> IRI prefix mapping
     pub namespace_codes: HashMap<u16, String>,
     /// Ledger-fixed split mode from the index root.
@@ -58,6 +66,12 @@ pub struct LedgerSnapshot {
     pub ledger_id: String,
     /// Current transaction time
     pub t: i64,
+    /// Earliest transaction time covered by the underlying index.
+    ///
+    /// For snapshots loaded from an index root, the index answers queries
+    /// for any `target_t` in `base_t..=t`. For genesis snapshots, both
+    /// `base_t` and `t` are `0`.
+    pub base_t: i64,
     /// Index version
     pub version: i32,
 
@@ -119,6 +133,7 @@ impl Clone for LedgerSnapshot {
         Self {
             ledger_id: self.ledger_id.clone(),
             t: self.t,
+            base_t: self.base_t,
             version: self.version,
             namespace_codes: self.namespace_codes.clone(),
             namespace_reverse: self.namespace_reverse.clone(),
@@ -168,6 +183,7 @@ impl LedgerSnapshot {
         Self {
             ledger_id: ledger_id.to_string(),
             t: 0,
+            base_t: 0,
             version: 3,
             namespace_codes,
             namespace_reverse,
@@ -202,6 +218,7 @@ impl LedgerSnapshot {
         Ok(Self {
             ledger_id: meta.ledger_id,
             t: meta.t,
+            base_t: meta.base_t,
             version: 3,
             namespace_codes: meta.namespace_codes,
             namespace_reverse,
@@ -673,7 +690,7 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
 
     let mut pos = 8; // skip pad(2)
     let index_t = read_i64(bytes, &mut pos)?;
-    let _base_t = read_i64(bytes, &mut pos)?;
+    let base_t = read_i64(bytes, &mut pos)?;
 
     // Ledger ID
     let ledger_id = read_string(bytes, &mut pos)?;
@@ -811,6 +828,7 @@ fn decode_fir6_metadata(bytes: &[u8]) -> std::io::Result<LedgerSnapshotMetadata>
     Ok(LedgerSnapshotMetadata {
         ledger_id,
         t: index_t,
+        base_t,
         namespace_codes,
         ns_split_mode,
         stats,
@@ -869,6 +887,7 @@ mod tests {
         let db = LedgerSnapshot::new_meta(LedgerSnapshotMetadata {
             ledger_id: "test:main".into(),
             t: 1,
+            base_t: 0,
             namespace_codes: ns,
             ns_split_mode: NsSplitMode::default(),
             stats: None,

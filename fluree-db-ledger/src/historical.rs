@@ -119,23 +119,33 @@ impl HistoricalLedgerView {
         record: fluree_db_nameservice::NsRecord,
         target_t: i64,
     ) -> Result<Self> {
-        // If the requested time is *before* the latest index_t, we cannot assume the
-        // binary index can answer time-travel purely via the index. Until the index
-        // format guarantees history coverage for all updates, we fall back to an
-        // overlay-only reconstruction (genesis LedgerSnapshot + commit replay up to target_t).
+        // The binary index covers `base_t..=index_t` via FIR6 Region 3 history.
+        // Use the indexed snapshot whenever it covers `target_t`:
+        //   - `target_t >= base_t`: index can serve the query (with overlay replay
+        //     for any commits in `(index_t, target_t]` when `target_t > index_t`).
+        //   - `target_t <  base_t`: index has been compacted past the target, so
+        //     fall back to overlay-only reconstruction from genesis.
         //
-        // When target_t >= index_t, we can use the head index and only replay commits
-        // after index_t (normal fast path).
-        let use_index = record.index_head_id.is_some() && target_t >= record.index_t;
-
-        // Base snapshot + baseline index_t for overlay range.
-        let (mut snapshot, index_t) = if use_index {
-            let index_cid = record.index_head_id.as_ref().unwrap();
-            let root_bytes = store.get(index_cid).await?;
-            let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
-            (loaded, record.index_t)
-        } else {
-            (LedgerSnapshot::genesis(&record.ledger_id), 0)
+        // `base_t` must be read from the index root itself (it isn't in the
+        // nameservice record), so we load the root first and then decide.
+        let (mut snapshot, index_t) = match record.index_head_id.as_ref() {
+            Some(index_cid) => {
+                let root_bytes = store.get(index_cid).await?;
+                let loaded = LedgerSnapshot::from_root_bytes(&root_bytes)?;
+                if target_t < loaded.base_t {
+                    tracing::debug!(
+                        target_t,
+                        base_t = loaded.base_t,
+                        index_t = loaded.t,
+                        "HistoricalLedgerView: target before index base_t, falling back to overlay-only replay"
+                    );
+                    (LedgerSnapshot::genesis(&record.ledger_id), 0)
+                } else {
+                    let t = loaded.t;
+                    (loaded, t)
+                }
+            }
+            None => (LedgerSnapshot::genesis(&record.ledger_id), 0),
         };
 
         // Build novelty from commits between index_t and target_t.

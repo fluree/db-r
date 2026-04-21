@@ -247,42 +247,44 @@ impl crate::Fluree {
         }
     }
 
-    /// Execute an indexing query against a historical ledger view.
+    /// Execute an indexing query against a historical `GraphDb`.
     ///
     /// This is used for building BM25 indexes at historical points in time.
+    /// Callers must pass a `GraphDb` loaded via [`Fluree::load_graph_db_at_t`]
+    /// so the binary index store and range provider are attached — a raw
+    /// `HistoricalLedgerView` wrapped via `GraphDb::from_historical` is not
+    /// sufficient because it has no `range_provider` when `snapshot.t > 0`.
     pub(crate) async fn execute_bm25_indexing_query_historical(
         &self,
-        view: &crate::HistoricalLedgerView,
+        view: &crate::view::GraphDb,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
-        // Parse the query
         let mut vars = VarRegistry::new();
-        let parsed = parse_query(query_json, &view.snapshot, &mut vars, None)?;
+        let parsed = parse_query(query_json, view.snapshot.as_ref(), &mut vars, None)?;
 
-        // Execute with a wildcard select
         let mut parsed_for_exec = parsed.clone();
         parsed_for_exec.output = QueryOutput::Wildcard;
         parsed_for_exec.graph_select = None;
 
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
-        let db = view.as_graph_db_ref(0);
+        let db = view.as_graph_db_ref();
         let batches = execute_with_overlay(db, &vars, &executable).await?;
 
-        // Format using the standard JSON-LD formatter
         let novelty = view
-            .overlay()
-            .map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>);
+            .novelty()
+            .cloned()
+            .map(|n| n as Arc<dyn OverlayProvider>);
         let result = crate::query::helpers::build_query_result(
             vars,
             parsed,
             batches,
-            Some(view.to_t()),
+            Some(view.t),
             novelty,
             None,
         );
 
-        let json = result.to_jsonld_async(view.as_graph_db_ref(0)).await?;
+        let json = result.to_jsonld_async(view.as_graph_db_ref()).await?;
         match json {
             JsonValue::Array(arr) => Ok(arr),
             JsonValue::Object(_) => Ok(vec![json]),
@@ -1262,8 +1264,16 @@ impl crate::Fluree {
             });
         }
 
-        // 3. Load source ledger at target_t using time-travel
-        let view = self.ledger_view_at(&source_ledger, target_t).await?;
+        // 3. Load source ledger at target_t using time-travel.
+        //
+        // Use `load_graph_db_at_t` (not `ledger_view_at`) so the historical
+        // view comes back fully wired with a `BinaryIndexStore` and
+        // `BinaryRangeProvider`. A bare `HistoricalLedgerView` has neither,
+        // and any `range()` call against its snapshot would error with
+        // "binary-only db has no range_provider attached" once the snapshot
+        // is index-backed (which it now is for any `target_t` covered by
+        // `base_t..=index_t`).
+        let view = self.load_graph_db_at_t(&source_ledger, target_t).await?;
 
         // 4. Execute indexing query at target_t
         let results = self

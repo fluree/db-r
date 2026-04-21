@@ -65,6 +65,7 @@ async fn apply_index<S: Storage + Clone + 'static>(
     let meta = LedgerSnapshotMetadata {
         ledger_id: root.ledger_id,
         t: root.index_t,
+        base_t: root.base_t,
         namespace_codes: root.namespace_codes.into_iter().collect(),
         ns_split_mode: root.ns_split_mode,
         stats: root.stats,
