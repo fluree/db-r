@@ -56,7 +56,7 @@ fn fast_eq_ne_for_iri_bindings<R: RowAccess>(
     let sid_to_iri = |sid: &fluree_db_core::Sid| {
         store
             .sid_to_iri(sid)
-            .or_else(|| ctx.snapshot.decode_sid(sid))
+            .or_else(|| ctx.active_snapshot.decode_sid(sid))
     };
     let comparable_to_subject_iri = |value: ComparableValue| -> Option<String> {
         match value {

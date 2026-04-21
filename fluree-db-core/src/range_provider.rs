@@ -32,7 +32,7 @@ pub trait RangeProvider: Send + Sync {
     /// (e.g., `BinaryRangeProvider`) from `Arc<dyn RangeProvider>`.
     ///
     /// Cost: one `TypeId` comparison at the call site. Called once per
-    /// `ScanOperator::open()`, not per row.
+    /// `BinaryScanOperator::open()`, not per row.
     fn as_any(&self) -> &dyn std::any::Any;
 
     /// Execute a range query, returning matching flakes in index order.

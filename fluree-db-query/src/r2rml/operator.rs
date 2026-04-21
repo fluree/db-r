@@ -153,14 +153,14 @@ impl R2rmlScanOperator {
                 let xsd_string_fallback = fluree_db_core::Sid::new(2, "string");
                 let dt_sid = match dtc {
                     Some(UnresolvedDatatypeConstraint::Explicit(dt_iri)) => {
-                        ctx.snapshot.encode_iri(dt_iri).unwrap_or_else(|| {
-                            ctx.snapshot
+                        ctx.active_snapshot.encode_iri(dt_iri).unwrap_or_else(|| {
+                            ctx.active_snapshot
                                 .encode_iri(xsd::STRING)
                                 .unwrap_or(xsd_string_fallback)
                         })
                     }
                     _ => ctx
-                        .snapshot
+                        .active_snapshot
                         .encode_iri(xsd::STRING)
                         .unwrap_or(xsd_string_fallback),
                 };

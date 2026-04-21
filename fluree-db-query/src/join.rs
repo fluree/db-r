@@ -103,9 +103,8 @@ pub(crate) fn make_dict_overlay(
 
 /// Create a right-side scan operator for a join.
 ///
-/// Uses `ScanOperator` which selects between `BinaryScanOperator` (streaming
-/// cursor) and `RangeScanOperator` (range fallback) at `open()` time based
-/// on the execution context.
+/// Wraps the scan in a [`DatasetOperator`](crate::dataset_operator::DatasetOperator)
+/// so that multi-graph fanout is handled transparently.
 fn make_right_scan(
     pattern: TriplePattern,
     object_bounds: Option<ObjectBounds>,
@@ -114,7 +113,7 @@ fn make_right_scan(
     index_hint: Option<IndexType>,
     _ctx: &ExecutionContext<'_>,
 ) -> Box<dyn Operator> {
-    Box::new(crate::binary_scan::ScanOperator::new_with_emit_and_index(
+    Box::new(crate::dataset_operator::DatasetOperator::scan(
         pattern,
         object_bounds,
         inline_ops,
@@ -1282,7 +1281,7 @@ impl NestedLoopJoinOperator {
     }
     /// Flush batched accumulator using the appropriate snapshot/overlay/to_t for the current context.
     ///
-    /// - Single-db mode: uses ctx.snapshot/ctx.overlay()/ctx.to_t
+    /// - Single-db mode: uses ctx.active_snapshot/ctx.overlay()/ctx.to_t
     /// - Dataset mode with exactly one graph: uses that graph's snapshot/overlay/to_t
     async fn flush_batched_accumulator_for_ctx(
         &mut self,

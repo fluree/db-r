@@ -80,7 +80,7 @@ fn count_reachable_plus_from_fixed_subject(
         return Ok(None);
     };
 
-    if let Some(seed) = subject_ref_to_s_id(ctx.snapshot, store, subj)? {
+    if let Some(seed) = subject_ref_to_s_id(ctx.active_snapshot, store, subj)? {
         let adj = build_iri_adjacency_from_cursor(&mut cursor)?;
         return Ok(Some(reach_count_plus(&adj, seed)));
     }
@@ -88,7 +88,7 @@ fn count_reachable_plus_from_fixed_subject(
     let target_iri = match subj {
         Ref::Iri(iri) => Some(iri.to_string()),
         Ref::Sid(sid) => ctx
-            .snapshot
+            .active_snapshot
             .decode_sid(sid)
             .or_else(|| store.sid_to_iri(sid)),
         Ref::Var(_) => None,

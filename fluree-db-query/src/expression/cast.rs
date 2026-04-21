@@ -298,7 +298,7 @@ fn cast_to_string(
         let s = canonical_decimal_string(d);
         return Some(ComparableValue::String(Arc::from(s)));
     }
-    let namespace_codes = ctx.map(|c| c.snapshot.namespaces());
+    let namespace_codes = ctx.map(|c| c.active_snapshot.namespaces());
     v.into_string_value_with_namespaces(namespace_codes)
 }
 

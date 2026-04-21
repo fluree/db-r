@@ -99,7 +99,7 @@ pub fn eval_str<R: RowAccess>(
         ComparableValue::Sid(..) => {
             // Expand SID to full IRI using namespace codes from execution context.
             // Per W3C SPARQL spec, STR() on an IRI must return the full IRI string.
-            let namespaces = ctx.map(|c| c.snapshot.namespaces());
+            let namespaces = ctx.map(|c| c.active_snapshot.namespaces());
             v.into_string_value_with_namespaces(namespaces)
         }
         _ => v.into_string_value(),

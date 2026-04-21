@@ -1,7 +1,7 @@
 //! WHERE clause planning and operator building
 //!
 //! Builds operators for WHERE clause patterns including:
-//! - Triple patterns (ScanOperator, NestedLoopJoinOperator)
+//! - Triple patterns (DatasetOperator / BinaryScanOperator, NestedLoopJoinOperator)
 //! - Filter patterns (FilterOperator)
 //! - Optional patterns (OptionalOperator)
 //! - Values patterns (ValuesOperator)
@@ -1721,9 +1721,9 @@ pub fn build_where_operators_seeded_with_needed(
 
 /// Create a first-pattern scan operator.
 ///
-/// Creates a `ScanOperator` that selects between `BinaryScanOperator` (streaming
-/// cursor) and `RangeScanOperator` (range fallback) at `open()` time based on
-/// the `ExecutionContext`.
+/// Wraps the scan in a [`DatasetOperator`] so that multi-graph fanout and
+/// provenance stamping are handled transparently. In single-graph mode the
+/// `DatasetOperator` passes through to the inner scan with negligible overhead.
 fn make_first_scan(
     tp: &TriplePattern,
     object_bounds: &HashMap<VarId, ObjectBounds>,
@@ -1733,7 +1733,7 @@ fn make_first_scan(
 ) -> BoxedOperator {
     let obj_bounds = tp.o.as_var().and_then(|v| object_bounds.get(&v).cloned());
     let index_hint = scan_index_hint_for_triple(tp, group_by, &inline_ops);
-    Box::new(crate::binary_scan::ScanOperator::new_with_emit_and_index(
+    Box::new(crate::dataset_operator::DatasetOperator::scan(
         tp.clone(),
         obj_bounds,
         inline_ops,
@@ -1747,12 +1747,12 @@ fn make_first_scan(
 /// This is the extracted helper that eliminates the duplication between
 /// `build_where_operators_seeded` (incremental path) and `build_triple_operators`.
 ///
-/// - If `left` is None, creates a `ScanOperator` for the first pattern with inline operators
+/// - If `left` is None, creates a `DatasetOperator` scan for the first pattern with inline operators
 /// - If `left` is Some, creates a NestedLoopJoinOperator joining to the existing operator
 /// - Applies object bounds from filters when available
 ///
-/// The `inline_ops` are evaluated inline on the operator: baked into `ScanOperator`
-/// for the first scan, or evaluated per combined row in `NestedLoopJoinOperator` for joins.
+/// The `inline_ops` are evaluated inline on the operator: baked into the scan
+/// for the first pattern, or evaluated per combined row in `NestedLoopJoinOperator` for joins.
 pub fn build_scan_or_join(
     left: Option<BoxedOperator>,
     tp: &TriplePattern,
@@ -1856,7 +1856,7 @@ fn scan_index_hint_for_triple(
 /// Build operators for a sequence of triple patterns
 ///
 /// Uses property join optimization when applicable.
-/// When `object_bounds` is provided, range constraints are pushed down to ScanOperator
+/// When `object_bounds` is provided, range constraints are pushed down to the scan operator
 /// for the first pattern, enabling index-level filtering.
 #[allow(clippy::too_many_arguments)]
 pub fn build_triple_operators(
@@ -3088,8 +3088,8 @@ mod tests {
         let op = build_where_operators(&patterns, None).unwrap();
 
         // If the bind were a separate BindOperator, the top-level operator
-        // would be a BindOperator wrapping a ScanOperator. But since it's
-        // inlined, the ScanOperator itself has the extended schema.
+        // would be a BindOperator wrapping a scan operator. But since it's
+        // inlined, the scan operator itself has the extended schema.
         let schema = op.schema();
         assert_eq!(schema.len(), 3, "schema should have s, age, y");
         assert!(schema.contains(&s));
