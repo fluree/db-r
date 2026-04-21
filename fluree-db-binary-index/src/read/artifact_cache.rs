@@ -8,6 +8,8 @@ use fluree_db_core::{ContentId, ContentStore};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 
+use super::leaflet_cache::LeafletCache;
+
 const CACHE_BUDGET_NUMERATOR: u64 = 9;
 const CACHE_BUDGET_DENOMINATOR: u64 = 10;
 const CACHE_EVICT_NUMERATOR: u64 = 8;
@@ -355,7 +357,43 @@ pub fn best_effort_cache_bytes_to_path(cache_dir: &Path, target: &Path, bytes: &
     DiskArtifactCache::for_dir(cache_dir).best_effort_write(target, bytes);
 }
 
+/// Fetch bytes for a content-addressed artifact, layering an optional
+/// in-memory [`LeafletCache`] on top of the existing local-CAS / disk /
+/// CAS lookup chain.
+///
+/// Lookup order when `leaflet_cache` is `Some`:
+/// 1. In-memory `LeafletCache::LoadArtifact` slot — cheapest.
+/// 2. Local CAS path (memory-mapped or direct file read).
+/// 3. Disk cache under `cache_dir` (survives process restarts).
+/// 4. `cs.get(id)` — the network/CAS backend.
+///
+/// Every intermediate miss populates the in-memory cache so that a
+/// subsequent reload of the same index root pays zero S3 latency for
+/// unchanged arenas and dict blobs (fluree/db-r#155 follow-up — the
+/// incident report observed `cache_budget_pct = 0.12%` because this
+/// helper didn't consult the cache at all).
 pub async fn fetch_cached_bytes(
+    cs: &dyn ContentStore,
+    id: &ContentId,
+    cache_dir: &Path,
+    ext: &str,
+    leaflet_cache: Option<&Arc<LeafletCache>>,
+) -> io::Result<Vec<u8>> {
+    if let Some(cache) = leaflet_cache {
+        let key = LeafletCache::cid_cache_key(&id.to_bytes());
+        let arc = cache
+            .get_or_load_artifact(key, || async {
+                fetch_cached_bytes_uncached(cs, id, cache_dir, ext).await
+            })
+            .await?;
+        return Ok(arc.to_vec());
+    }
+    fetch_cached_bytes_uncached(cs, id, cache_dir, ext).await
+}
+
+/// Pre-cache implementation. Retained as its own function so the cached
+/// path can use it as the `load_fn` closure.
+async fn fetch_cached_bytes_uncached(
     cs: &dyn ContentStore,
     id: &ContentId,
     cache_dir: &Path,
@@ -389,7 +427,28 @@ pub async fn fetch_cached_bytes(
     Ok(bytes)
 }
 
+/// `fetch_cached_bytes` variant that stores on disk using the CID
+/// address directly rather than a digest-hex-plus-extension filename.
+/// See that function for the full lookup order and caching rationale.
 pub async fn fetch_cached_bytes_cid(
+    cs: &dyn ContentStore,
+    id: &ContentId,
+    cache_dir: &Path,
+    leaflet_cache: Option<&Arc<LeafletCache>>,
+) -> io::Result<Vec<u8>> {
+    if let Some(cache) = leaflet_cache {
+        let key = LeafletCache::cid_cache_key(&id.to_bytes());
+        let arc = cache
+            .get_or_load_artifact(key, || async {
+                fetch_cached_bytes_cid_uncached(cs, id, cache_dir).await
+            })
+            .await?;
+        return Ok(arc.to_vec());
+    }
+    fetch_cached_bytes_cid_uncached(cs, id, cache_dir).await
+}
+
+async fn fetch_cached_bytes_cid_uncached(
     cs: &dyn ContentStore,
     id: &ContentId,
     cache_dir: &Path,

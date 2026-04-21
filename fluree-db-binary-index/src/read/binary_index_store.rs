@@ -247,8 +247,13 @@ impl BinaryIndexStore {
         // Each (g_id, order) CAS GET is independent; running them in parallel
         // cuts wall-clock load time roughly by the branch-manifest fan-out
         // factor (fluree/db-r#155). See `fetch_named_graph_branches` below.
-        let named_branches =
-            fetch_named_graph_branches(Arc::clone(&cs), &root.named_graphs, cache_dir).await?;
+        let named_branches = fetch_named_graph_branches(
+            Arc::clone(&cs),
+            &root.named_graphs,
+            cache_dir,
+            leaflet_cache.as_ref(),
+        )
+        .await?;
         for (g_id, order, branch) in named_branches {
             let gi = graph_indexes.entry(g_id).or_insert_with(|| GraphIndex {
                 orders: HashMap::new(),
@@ -1854,6 +1859,7 @@ async fn fetch_named_graph_branches(
     cs: Arc<dyn ContentStore>,
     named_graphs: &[NamedGraphRouting],
     cache_dir: &Path,
+    leaflet_cache: Option<&Arc<LeafletCache>>,
 ) -> io::Result<Vec<(GraphId, RunSortOrder, BranchManifest)>> {
     // Build one fully-owned future per fetch so the combined future has no
     // lifetime ties back into `load_from_root_v6`'s stack frame.
@@ -1864,9 +1870,16 @@ async fn fetch_named_graph_branches(
             let cs = Arc::clone(&cs);
             let branch_cid = branch_cid.clone();
             let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache = leaflet_cache.cloned();
             let order = *order;
             fetches.push(async move {
-                let bytes = fetch_cached_bytes_cid(cs.as_ref(), &branch_cid, &cache_dir).await?;
+                let bytes = fetch_cached_bytes_cid(
+                    cs.as_ref(),
+                    &branch_cid,
+                    &cache_dir,
+                    leaflet_cache.as_ref(),
+                )
+                .await?;
                 let branch = read_branch_from_bytes(&bytes)?;
                 Ok::<_, io::Error>((g_id, order, branch))
             });
@@ -2148,10 +2161,18 @@ async fn load_per_graph_arenas(
             let cs = Arc::clone(&cs);
             let cid = cid.clone();
             let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
             let p_id = *p_id;
             fetches.push(
                 async move {
-                    let bytes = fetch_cached_bytes(cs.as_ref(), &cid, &cache_dir, "nba").await?;
+                    let bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &cid,
+                        &cache_dir,
+                        "nba",
+                        leaflet_cache_cloned.as_ref(),
+                    )
+                    .await?;
                     let arena = crate::arena::numbig::read_numbig_arena_from_bytes(&bytes)?;
                     Ok(ArenaLoaded::NumBig(g_id, p_id, arena))
                 }
@@ -2170,8 +2191,14 @@ async fn load_per_graph_arenas(
             let leaflet_cache_cloned = leaflet_cache.cloned();
             fetches.push(
                 async move {
-                    let manifest_bytes =
-                        fetch_cached_bytes(cs.as_ref(), &manifest_cid, &cache_dir, "vam").await?;
+                    let manifest_bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &manifest_cid,
+                        &cache_dir,
+                        "vam",
+                        leaflet_cache_cloned.as_ref(),
+                    )
+                    .await?;
                     let manifest = crate::arena::vector::read_vector_manifest(&manifest_bytes)?;
 
                     let mut shard_sources = Vec::with_capacity(shard_cids.len());
@@ -2215,11 +2242,17 @@ async fn load_per_graph_arenas(
             let cs = Arc::clone(&cs);
             let sp_ref = sp_ref.clone();
             let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
             fetches.push(
                 async move {
-                    let root_bytes =
-                        fetch_cached_bytes(cs.as_ref(), &sp_ref.root_cid, &cache_dir, "spr")
-                            .await?;
+                    let root_bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &sp_ref.root_cid,
+                        &cache_dir,
+                        "spr",
+                        leaflet_cache_cloned.as_ref(),
+                    )
+                    .await?;
                     let spatial_root: fluree_db_spatial::SpatialIndexRoot =
                         serde_json::from_slice(&root_bytes).map_err(|e| {
                             io::Error::new(io::ErrorKind::InvalidData, format!("spatial root: {e}"))
@@ -2237,10 +2270,16 @@ async fn load_per_graph_arenas(
                         .map(|cid| {
                             let cs = Arc::clone(&cs);
                             let cache_dir = cache_dir.clone();
+                            let leaflet_cache_cloned = leaflet_cache_cloned.clone();
                             async move {
-                                let bytes =
-                                    fetch_cached_bytes(cs.as_ref(), &cid, &cache_dir, "spa")
-                                        .await?;
+                                let bytes = fetch_cached_bytes(
+                                    cs.as_ref(),
+                                    &cid,
+                                    &cache_dir,
+                                    "spa",
+                                    leaflet_cache_cloned.as_ref(),
+                                )
+                                .await?;
                                 Ok::<_, io::Error>((cid.digest_hex(), bytes))
                             }
                         })
@@ -2277,10 +2316,17 @@ async fn load_per_graph_arenas(
             let arena_cid = ft_ref.arena_cid.clone();
             let p_id = ft_ref.p_id;
             let cache_dir = cache_dir.to_path_buf();
+            let leaflet_cache_cloned = leaflet_cache.cloned();
             fetches.push(
                 async move {
-                    let bytes =
-                        fetch_cached_bytes(cs.as_ref(), &arena_cid, &cache_dir, "fta").await?;
+                    let bytes = fetch_cached_bytes(
+                        cs.as_ref(),
+                        &arena_cid,
+                        &cache_dir,
+                        "fta",
+                        leaflet_cache_cloned.as_ref(),
+                    )
+                    .await?;
                     let arena = crate::arena::fulltext::FulltextArena::decode(&bytes)?;
                     Ok(ArenaLoaded::Fulltext(g_id, p_id, Arc::new(arena)))
                 }

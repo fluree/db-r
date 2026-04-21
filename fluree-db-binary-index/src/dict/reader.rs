@@ -420,10 +420,17 @@ impl DictTreeReader {
                     let res = handle
                         .block_on(async {
                             if let Some(cache_dir) = disk_cache_dir {
+                                // `None` leaflet_cache: this closure is
+                                // invoked from inside
+                                // `LeafletCache::try_get_or_load_dict_leaf`,
+                                // which already memoizes the decoded leaf.
+                                // Layering `LoadArtifact` caching on top
+                                // would double-cache the same bytes.
                                 crate::read::artifact_cache::fetch_cached_bytes_cid(
                                     cs.as_ref(),
                                     &fetch_cid,
                                     &cache_dir,
+                                    None,
                                 )
                                 .await
                                 .map_err(|e| e.to_string())

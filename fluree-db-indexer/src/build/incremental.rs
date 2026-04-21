@@ -71,10 +71,13 @@ async fn run_update_branch(
             &branch_config,
             &|cid| {
                 handle.block_on(async {
+                    // No leaflet_cache: indexer runs once per commit and
+                    // has no reason to memoize artifacts in process memory.
                     fluree_db_binary_index::read::artifact_cache::fetch_cached_bytes_cid(
                         cs.as_ref(),
                         cid,
                         &cache_dir,
+                        None,
                     )
                     .await
                 })
@@ -86,6 +89,7 @@ async fn run_update_branch(
                             cs2.as_ref(),
                             cid,
                             &cache_dir2,
+                            None,
                         )
                         .await
                     })
@@ -211,6 +215,7 @@ async fn execute_phase2_task(
                     content_store.as_ref(),
                     &branch_cid,
                     &cache_dir,
+                    None,
                 )
                 .await
                 .map_err(|e| {
