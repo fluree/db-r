@@ -224,6 +224,7 @@ impl<'a, 'g> GraphTransactBuilder<'a, 'g> {
         let staged = Staged {
             view: stage_result.view,
             ns_registry: stage_result.ns_registry,
+            graph_delta: stage_result.graph_delta,
         };
         let staged_view = GraphDb::from_staged(&staged)?;
 
