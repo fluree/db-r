@@ -500,10 +500,8 @@ fn derive_graph_routing(state: &LedgerState, flakes: &[&Flake]) -> GraphRoutingR
     // Assign fabricated sequential GraphIds for unresolved graphs.
     // Sort to ensure deterministic assignment across calls.
     unresolved.sort();
-    let mut next_id = max_g_id + 1;
-    for g_sid in unresolved {
+    for (next_id, g_sid) in (max_g_id + 1..).zip(unresolved) {
         result.insert(next_id, g_sid);
-        next_id += 1;
     }
 
     GraphRoutingResult {

@@ -1352,7 +1352,7 @@ fn push_idempotency_key(ledger: &str, request: &fluree_db_api::PushCommitsReques
     }
 
     let mut blobs: Vec<(&String, &fluree_db_api::Base64Bytes)> = request.blobs.iter().collect();
-    blobs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    blobs.sort_by_key(|(a, _)| *a);
     for (k, v) in blobs {
         hasher.update(k.as_bytes());
         hasher.update([0u8]);

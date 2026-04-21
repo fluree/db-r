@@ -449,17 +449,16 @@ async fn flpack_export_import_round_trip_with_index() {
                     decode_frame(&pack_bytes[pos..], DEFAULT_MAX_PAYLOAD).expect("decode");
                 pos += consumed;
                 match frame {
-                    PackFrame::Data { cid, .. } => {
+                    PackFrame::Data { cid, .. }
                         if cid.content_kind() != Some(ContentKind::Commit)
-                            && cid.content_kind() != Some(ContentKind::Txn)
-                        {
-                            index_artifact_count += 1;
-                        }
+                            && cid.content_kind() != Some(ContentKind::Txn) =>
+                    {
+                        index_artifact_count += 1;
                     }
-                    PackFrame::Manifest(ref json) => {
-                        if json.get("phase").and_then(|v| v.as_str()) == Some("indexes") {
-                            has_index_manifest = true;
-                        }
+                    PackFrame::Manifest(ref json)
+                        if json.get("phase").and_then(|v| v.as_str()) == Some("indexes") =>
+                    {
+                        has_index_manifest = true;
                     }
                     PackFrame::End => break,
                     _ => {}

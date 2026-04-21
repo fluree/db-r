@@ -283,10 +283,8 @@ fn collect_bound_variables(patterns: &[Pattern]) -> Vec<VarId> {
                         add(*v, seen, out);
                     }
                 }
-                Pattern::Bind { var, .. } => {
-                    if seen.insert(*var) {
-                        out.push(*var);
-                    }
+                Pattern::Bind { var, .. } if seen.insert(*var) => {
+                    out.push(*var);
                 }
                 Pattern::Values { vars, .. } => {
                     for v in vars {

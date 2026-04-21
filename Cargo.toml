@@ -39,9 +39,7 @@ members = [
     "fluree-db-memory",
     "bench-filter-query",
 ]
-exclude = [
-    "testsuite-sparql",
-]
+exclude = ["testsuite-sparql"]
 
 [workspace.package]
 version = "4.0.0"
@@ -65,7 +63,7 @@ sha2 = "0.10"
 hex = "0.4"
 
 # Content identifiers (CIDv1 / multiformats)
-cid = { version = "0.11", default-features = false, features = ["std"] }
+cid = { version = "0.11.2", default-features = false, features = ["std"] }
 multihash = { version = "0.19", default-features = false, features = ["std"] }
 
 # For unique ID generation
@@ -147,7 +145,7 @@ wiremock = "0.6"
 zstd = "0.13"
 
 # Iceberg format support (manifest Avro, data Parquet)
-apache-avro = "0.17"
+apache-avro = "0.21.0"
 parquet = { version = "54", default-features = false, features = ["zstd"] }
 
 # LRU cache for Parquet footers

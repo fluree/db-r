@@ -916,14 +916,14 @@ impl<'a> GraphCrawlFormatter<'a> {
                         want_type = true;
                         want_language = flake.m.as_ref().and_then(|m| m.lang.as_ref()).is_some();
                     }
-                    SelectionSpec::Property { predicate, .. } => {
-                        if predicate.namespace_code == JSON_LD {
-                            match predicate.name.as_ref() {
-                                "value" => want_value = true,
-                                "type" => want_type = true,
-                                "language" => want_language = true,
-                                _ => {}
-                            }
+                    SelectionSpec::Property { predicate, .. }
+                        if predicate.namespace_code == JSON_LD =>
+                    {
+                        match predicate.name.as_ref() {
+                            "value" => want_value = true,
+                            "type" => want_type = true,
+                            "language" => want_language = true,
+                            _ => {}
                         }
                     }
                     _ => {}

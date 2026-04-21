@@ -85,8 +85,8 @@ impl StorageRegistry {
         let timeout_ms = s3_config
             .read_timeout_ms
             .into_iter()
-            .chain(s3_config.write_timeout_ms.into_iter())
-            .chain(s3_config.list_timeout_ms.into_iter())
+            .chain(s3_config.write_timeout_ms)
+            .chain(s3_config.list_timeout_ms)
             .max();
 
         let raw_config = RawS3Config {
