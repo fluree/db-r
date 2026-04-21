@@ -1925,3 +1925,104 @@ async fn single_ledger_dataset_string_functions() {
         normalize_flat_results(&json!(["alice"]))
     );
 }
+
+// =============================================================================
+// Staged transaction + multi-ledger dataset
+// =============================================================================
+
+/// Regression test: a staged (uncommitted) transaction that introduces a new
+/// namespace prefix must be queryable in a multi-ledger dataset.
+///
+/// Before the fix, `GraphDb::from_staged()` cloned the base snapshot without
+/// applying the staged transaction's namespace delta. SIDs using the new
+/// namespace code could not be decoded to IRIs, so `sid_to_iri_match()` would
+/// either silently fall back to `Binding::Sid` (breaking cross-ledger joins)
+/// or — after the error-hardening fix — return an internal error.
+///
+/// The fix applies `apply_envelope_deltas()` to the snapshot clone in
+/// `from_staged()` before building the reverse graph or constructing the
+/// `GraphDb`, ensuring all namespace codes are resolvable.
+#[tokio::test]
+async fn dataset_staged_transaction_with_novel_namespace() {
+    assert_index_defaults();
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    // Ledger A: committed data using "ex:" namespace
+    let ledger_a0 = genesis_ledger(&fluree, "committed:main");
+    let insert_a = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "ex:alice",
+            "@type": "ex:Person",
+            "schema:name": "Alice",
+            "ex:partnerId": {"@id": "http://novel-namespace.example.com/org/acme"}
+        }]
+    });
+    let _ledger_a = fluree
+        .insert(ledger_a0, &insert_a)
+        .await
+        .expect("commit ledger A");
+
+    // Ledger B: stage (not commit) a transaction that introduces
+    // "http://novel-namespace.example.com/org/" — a namespace prefix that
+    // does NOT exist on ledger B's base (genesis) snapshot.
+    let ledger_b0 = genesis_ledger(&fluree, "staged:main");
+    let insert_b = json!({
+        "@context": {
+            "novel": "http://novel-namespace.example.com/org/",
+            "schema": "http://schema.org/"
+        },
+        "@graph": [{
+            "@id": "novel:acme",
+            "@type": "novel:Organization",
+            "schema:name": "Acme Corp"
+        }]
+    });
+
+    let staged = fluree
+        .stage_owned(ledger_b0)
+        .insert(&insert_b)
+        .stage()
+        .await
+        .expect("stage ledger B");
+
+    // Build a multi-ledger dataset: committed A + staged B
+    let view_a = GraphDb::from_ledger_state(&_ledger_a.ledger);
+    let view_b = GraphDb::from_staged(&staged).expect("from_staged");
+
+    let dataset = DataSetDb::new()
+        .with_default(view_a)
+        .with_default(view_b);
+
+    // Cross-ledger join: find the person whose partnerId matches the org
+    let query = json!({
+        "@context": {
+            "ex": "http://example.org/ns/",
+            "novel": "http://novel-namespace.example.com/org/",
+            "schema": "http://schema.org/"
+        },
+        "select": ["?personName", "?orgName"],
+        "where": [
+            {"@id": "?person", "schema:name": "?personName", "ex:partnerId": "?org"},
+            {"@id": "?org", "schema:name": "?orgName"}
+        ]
+    });
+
+    let result = fluree
+        .query_dataset(&dataset, &query)
+        .await
+        .expect("cross-ledger join with staged novel namespace should succeed");
+
+    let primary = dataset.primary().expect("primary");
+    let jsonld = result
+        .to_jsonld(primary.snapshot.as_ref())
+        .expect("to_jsonld");
+
+    assert_eq!(
+        normalize_rows_array(&jsonld),
+        normalize_rows_array(&json!([["Alice", "Acme Corp"]]))
+    );
+}
