@@ -509,7 +509,7 @@ impl Fluree {
     ///
     /// Single internal path that handles both policy and non-policy execution.
     /// Threads `binary_store` from the db into `ContextConfig` so that
-    /// `ScanOperator` can use `BinaryScanOperator` when available.
+    /// `BinaryScanOperator` can use the binary cursor path when available.
     pub(crate) async fn execute_view_internal(
         &self,
         db: &GraphDb,

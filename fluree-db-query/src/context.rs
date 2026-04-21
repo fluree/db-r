@@ -34,11 +34,16 @@ use std::sync::Arc;
 /// - `with_active_graph()` creates a new context targeting a specific named graph
 /// - Operators should use `active_graphs()` to get the appropriate graph(s) to scan
 ///
-/// When `dataset` is `None`, this is single-db mode and operators use `snapshot`/`overlay()`/`to_t`.
+/// When `dataset` is `None`, this is single-db mode and operators use `active_snapshot`/`overlay()`/`to_t`.
 ///
 pub struct ExecutionContext<'a> {
-    /// Reference to the primary database snapshot (for encoding/decoding, single-db fallback)
-    pub snapshot: &'a LedgerSnapshot,
+    /// The snapshot used for data access in the current execution scope.
+    ///
+    /// In single-graph mode this is the primary db snapshot. In per-graph
+    /// contexts (created by [`with_graph_ref`](Self::with_graph_ref)) it is
+    /// replaced with the per-graph snapshot. See [`original_snapshot`](Self::original_snapshot)
+    /// for the stable primary reference used for pattern SID decoding.
+    pub active_snapshot: &'a LedgerSnapshot,
     /// Variable registry for this query
     pub vars: &'a VarRegistry,
     /// Target transaction time (for time-travel queries)
@@ -147,13 +152,22 @@ pub struct ExecutionContext<'a> {
     /// (config resolution, policy loading) that call `binding.as_sid()` /
     /// `binding.as_lit()` directly.
     pub eager_materialization: bool,
+    /// The snapshot this context was originally constructed from.
+    ///
+    /// Equal to `active_snapshot` in the common single-graph case. In per-graph
+    /// contexts (created by [`with_graph_ref`](Self::with_graph_ref)),
+    /// `active_snapshot` is replaced with the per-graph snapshot for data access
+    /// while this field preserves the parent's snapshot so that pattern
+    /// SIDs — encoded in the original namespace space — can be decoded
+    /// correctly (see `reencode_sid` in `build_match_val_for_snapshot`).
+    pub original_snapshot: &'a LedgerSnapshot,
 }
 
 impl<'a> ExecutionContext<'a> {
     /// Create a new execution context
     pub fn new(snapshot: &'a LedgerSnapshot, vars: &'a VarRegistry) -> Self {
         Self {
-            snapshot,
+            active_snapshot: snapshot,
             vars,
             to_t: snapshot.t,
             from_t: None,
@@ -182,6 +196,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
+            original_snapshot: snapshot,
         }
     }
 
@@ -200,7 +215,7 @@ impl<'a> ExecutionContext<'a> {
             .or_else(|| Self::extract_runtime_small_dicts(db.snapshot));
 
         Self {
-            snapshot: db.snapshot,
+            active_snapshot: db.snapshot,
             vars,
             to_t: db.t,
             from_t: None,
@@ -229,6 +244,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: db.eager,
+            original_snapshot: db.snapshot,
         }
     }
 
@@ -251,7 +267,7 @@ impl<'a> ExecutionContext<'a> {
             .or_else(|| Self::extract_runtime_small_dicts(db.snapshot));
 
         Self {
-            snapshot: db.snapshot,
+            active_snapshot: db.snapshot,
             vars,
             to_t: db.t,
             from_t,
@@ -280,6 +296,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: db.eager,
+            original_snapshot: db.snapshot,
         }
     }
 
@@ -291,7 +308,7 @@ impl<'a> ExecutionContext<'a> {
         from_t: Option<i64>,
     ) -> Self {
         Self {
-            snapshot,
+            active_snapshot: snapshot,
             vars,
             to_t,
             from_t,
@@ -320,6 +337,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
+            original_snapshot: snapshot,
         }
     }
 
@@ -336,7 +354,7 @@ impl<'a> ExecutionContext<'a> {
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
         Self {
-            snapshot,
+            active_snapshot: snapshot,
             vars,
             to_t: snapshot.t,
             from_t: None,
@@ -365,6 +383,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
+            original_snapshot: snapshot,
         }
     }
 
@@ -377,7 +396,7 @@ impl<'a> ExecutionContext<'a> {
         overlay: &'a dyn OverlayProvider,
     ) -> Self {
         Self {
-            snapshot,
+            active_snapshot: snapshot,
             vars,
             to_t,
             from_t,
@@ -406,6 +425,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: std::collections::HashSet::new(),
             multi_ledger: false,
             eager_materialization: false,
+            original_snapshot: snapshot,
         }
     }
 
@@ -515,7 +535,7 @@ impl<'a> ExecutionContext<'a> {
 
     /// Encode an IRI to a SID using the database's namespace codes
     pub fn encode_iri(&self, iri: &str) -> Option<Sid> {
-        self.snapshot.encode_iri(iri)
+        self.active_snapshot.encode_iri(iri)
     }
 
     /// Encode an IRI to a SID, returning `None` if no registered namespace
@@ -524,12 +544,12 @@ impl<'a> ExecutionContext<'a> {
     /// Use this for runtime IRI resolution where unknown namespaces should
     /// remain as IRI strings rather than silently mapping to namespace 0.
     pub fn encode_iri_strict(&self, iri: &str) -> Option<Sid> {
-        self.snapshot.encode_iri_strict(iri)
+        self.active_snapshot.encode_iri_strict(iri)
     }
 
     /// Decode a SID to an IRI using the database's namespace codes
     pub fn decode_sid(&self, sid: &Sid) -> Option<String> {
-        self.snapshot.decode_sid(sid)
+        self.active_snapshot.decode_sid(sid)
     }
 
     /// Check if we're in multi-ledger (dataset) mode.
@@ -576,7 +596,7 @@ impl<'a> ExecutionContext<'a> {
             }
         }
         // Fallback to primary db
-        self.snapshot.decode_sid(sid)
+        self.active_snapshot.decode_sid(sid)
     }
 
     /// Encode an IRI to a SID using a specific ledger's namespace table
@@ -592,7 +612,7 @@ impl<'a> ExecutionContext<'a> {
             }
         }
         // Fallback to primary db
-        self.snapshot.encode_iri(iri)
+        self.active_snapshot.encode_iri(iri)
     }
 
     /// Get the ledger ID for the currently active graph (if in dataset mode)
@@ -617,7 +637,7 @@ impl<'a> ExecutionContext<'a> {
 
     /// Get active graphs for scanning
     ///
-    /// Returns `Single` when no dataset is present (callers should use `ctx.snapshot`),
+    /// Returns `Single` when no dataset is present (callers should use `ctx.active_snapshot`),
     /// or `Many` with the active graph(s) from the dataset.
     ///
     /// Returns `Single` when no dataset is present, or `Many` with the relevant graph references to iterate over.
@@ -642,7 +662,7 @@ impl<'a> ExecutionContext<'a> {
         &self,
     ) -> Result<(&'a LedgerSnapshot, &'a dyn OverlayProvider, i64), QueryError> {
         match self.active_graphs() {
-            ActiveGraphs::Single => Ok((self.snapshot, self.overlay(), self.to_t)),
+            ActiveGraphs::Single => Ok((self.active_snapshot, self.overlay(), self.to_t)),
             ActiveGraphs::Many(graphs) if graphs.len() == 1 => {
                 let g = graphs[0];
                 Ok((g.snapshot, g.overlay, g.to_t))
@@ -747,7 +767,7 @@ impl<'a> ExecutionContext<'a> {
         let active_graph = ActiveGraph::Named(iri);
         let multi_ledger = Self::compute_multi_ledger(self.dataset, &active_graph);
         Self {
-            snapshot: self.snapshot,
+            active_snapshot: self.active_snapshot,
             vars: self.vars,
             to_t: self.to_t,
             from_t: self.from_t,
@@ -776,6 +796,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger,
             eager_materialization: self.eager_materialization,
+            original_snapshot: self.original_snapshot,
         }
     }
 
@@ -797,7 +818,7 @@ impl<'a> ExecutionContext<'a> {
             })
             .unwrap_or(self.binary_g_id);
         Self {
-            snapshot: self.snapshot,
+            active_snapshot: self.active_snapshot,
             vars: self.vars,
             to_t: self.to_t,
             from_t: self.from_t,
@@ -826,6 +847,7 @@ impl<'a> ExecutionContext<'a> {
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
             multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
             eager_materialization: self.eager_materialization,
+            original_snapshot: self.original_snapshot,
         }
     }
 
@@ -834,8 +856,13 @@ impl<'a> ExecutionContext<'a> {
     /// Used by SERVICE operator to execute patterns against a specific ledger.
     /// The new context uses the graph's db, overlay, and to_t settings.
     pub fn with_graph_ref(&self, graph: &crate::dataset::GraphRef<'a>) -> Self {
+        // A per-graph context represents a single specific graph — NOT a
+        // dataset. Clear the dataset and multi_ledger flag so inner operators
+        // (BinaryScanOperator, etc.) take the single-graph path. Provenance
+        // stamping is the DatasetOperator's responsibility, not the inner
+        // scan's.
         Self {
-            snapshot: graph.snapshot,
+            active_snapshot: graph.snapshot,
             vars: self.vars,
             to_t: graph.to_t,
             from_t: self.from_t,
@@ -850,23 +877,24 @@ impl<'a> ExecutionContext<'a> {
             vector_provider: self.vector_provider,
             r2rml_provider: self.r2rml_provider,
             r2rml_table_provider: self.r2rml_table_provider,
-            dataset: self.dataset,
+            dataset: None,
             active_graph: ActiveGraph::Default,
             tracker: self.tracker.clone(),
             history_mode: self.history_mode,
             strict_bind_errors: self.strict_bind_errors,
-            binary_store: None, // GraphRef doesn't have binary store
+            binary_store: Self::extract_binary_store(graph.snapshot),
             binary_g_id: graph.g_id,
-            dict_novelty: None, // GraphRef doesn't have dict novelty
+            dict_novelty: Self::extract_dict_novelty(graph.snapshot),
             namespace_codes_fallback: None,
-            runtime_small_dicts: None,
+            runtime_small_dicts: Self::extract_runtime_small_dicts(graph.snapshot),
             spatial_providers: self.spatial_providers,
             fulltext_providers: self.fulltext_providers,
             english_lang_id: self.english_lang_id,
             remote_service: self.remote_service,
             r2rml_graph_ids: self.r2rml_graph_ids.clone(),
-            multi_ledger: Self::compute_multi_ledger(self.dataset, &ActiveGraph::Default),
+            multi_ledger: false,
             eager_materialization: self.eager_materialization,
+            original_snapshot: self.original_snapshot,
         }
     }
 
@@ -908,8 +936,8 @@ impl<'a> ExecutionContext<'a> {
 
     /// Attach a binary columnar index store for fast local-file scans.
     ///
-    /// When set, scan operators will use `BinaryScanOperator` instead of
-    /// `ScanOperator` for reading from the binary columnar indexes.
+    /// When set, `BinaryScanOperator` uses the binary cursor path instead of
+    /// the `range_with_overlay` fallback for reading from binary columnar indexes.
     pub fn with_binary_store(mut self, store: Arc<BinaryIndexStore>, g_id: GraphId) -> Self {
         self.binary_store = Some(store);
         self.binary_g_id = g_id;
@@ -937,7 +965,7 @@ impl<'a> ExecutionContext<'a> {
     /// Set the graph ID for range queries.
     ///
     /// This sets `binary_g_id` independently of `binary_store`, which is needed
-    /// for the `range_with_overlay()` fallback path (RangeScanOperator) where
+    /// for the `range_with_overlay()` fallback path in `BinaryScanOperator` where
     /// the graph ID must reach the range provider even without a local binary store.
     pub fn with_graph_id(mut self, g_id: GraphId) -> Self {
         self.binary_g_id = g_id;

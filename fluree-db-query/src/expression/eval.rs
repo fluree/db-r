@@ -251,7 +251,7 @@ impl Expression {
 /// to return `false`.
 ///
 /// This is the single point of inline-filter evaluation shared by
-/// `ScanOperator`, `NestedLoopJoinOperator`, and any future operator that
+/// `BinaryScanOperator`, `NestedLoopJoinOperator`, and any future operator that
 /// supports inline filters.
 pub fn passes_filters(
     filters: &[PreparedBoolExpression],

@@ -206,12 +206,20 @@ pub struct Staged {
     pub view: LedgerView,
     /// Namespace registry needed for commit.
     pub ns_registry: NamespaceRegistry,
+    /// Named graph IRI mappings introduced by this transaction (g_id → IRI).
+    ///
+    /// Carried here so that `GraphDb::from_staged()` can apply the full
+    /// envelope delta (namespace codes + graph IRIs) to the snapshot clone,
+    /// ensuring `decode_sid` works for SIDs referencing new namespaces or
+    /// graphs introduced by the staged transaction.
+    pub graph_delta: rustc_hash::FxHashMap<u16, String>,
 }
 
 impl std::fmt::Debug for Staged {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Staged")
             .field("has_staged", &self.view.has_staged())
+            .field("graph_delta_len", &self.graph_delta.len())
             .finish()
     }
 }
@@ -521,6 +529,7 @@ impl<'a> OwnedTransactBuilder<'a> {
             return Ok(Staged {
                 view: stage_result.view,
                 ns_registry: stage_result.ns_registry,
+                graph_delta: stage_result.graph_delta,
             });
         }
 
@@ -537,6 +546,7 @@ impl<'a> OwnedTransactBuilder<'a> {
             return Ok(Staged {
                 view: stage_result.view,
                 ns_registry: stage_result.ns_registry,
+                graph_delta: stage_result.graph_delta,
             });
         }
 
@@ -572,6 +582,7 @@ impl<'a> OwnedTransactBuilder<'a> {
             return Ok(Staged {
                 view: stage_result.view,
                 ns_registry: stage_result.ns_registry,
+                graph_delta: stage_result.graph_delta,
             });
         }
 
@@ -592,6 +603,7 @@ impl<'a> OwnedTransactBuilder<'a> {
         Ok(Staged {
             view: stage_result.view,
             ns_registry: stage_result.ns_registry,
+            graph_delta: stage_result.graph_delta,
         })
     }
 }

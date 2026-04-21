@@ -23,7 +23,6 @@
 //! - This matches SPARQL OPTIONAL semantics where unbound optional vars
 //!   prevent subsequent patterns from matching
 
-use crate::binary_scan::ScanOperator;
 use crate::binding::{Batch, Binding};
 use crate::context::ExecutionContext;
 use crate::error::{QueryError, Result};
@@ -133,14 +132,14 @@ pub trait OptionalBuilder: Send + Sync {
 
 /// Builder for single-pattern OPTIONAL
 ///
-/// This is the simplest form of optional builder - it creates a `ScanOperator`
+/// This is the simplest form of optional builder - it creates a `DatasetOperator`
 /// for a single triple pattern, substituting left-side bindings into the pattern.
 ///
 /// # Example
 ///
 /// For `OPTIONAL { ?s :email ?email }` where `?s` is bound from the left:
 /// - `build()` substitutes the left's `?s` value into the pattern
-/// - Returns a `ScanOperator` for `alice :email ?email` (when ?s = alice)
+/// - Returns a `DatasetOperator` for `alice :email ?email` (when ?s = alice)
 pub struct PatternOptionalBuilder {
     /// The triple pattern template
     pattern: TriplePattern,
@@ -393,11 +392,15 @@ impl OptionalBuilder for PatternOptionalBuilder {
 
         // Substitute bindings into pattern and create scan operator
         let bound_pattern = self.substitute_pattern(required_batch, row, ctx)?;
-        Ok(Some(Box::new(ScanOperator::new(
-            bound_pattern,
-            None,
-            Vec::new(),
-        ))))
+        Ok(Some(Box::new(
+            crate::dataset_operator::DatasetOperator::scan(
+                bound_pattern,
+                None,
+                Vec::new(),
+                crate::binary_scan::EmitMask::ALL,
+                None,
+            ),
+        )))
     }
 
     fn build_batch(

@@ -130,8 +130,7 @@ pub struct GraphDb {
     // ========================================================================
     /// Binary columnar index store for `BinaryScanOperator`.
     ///
-    /// When set, `ScanOperator` uses this for direct columnar scans
-    /// via `BinaryScanOperator`.
+    /// When set, `BinaryScanOperator` uses this for direct columnar scans.
     pub(crate) binary_store: Option<Arc<BinaryIndexStore>>,
 
     /// Dictionary novelty layer for binary scan subject/string lookups.
@@ -321,6 +320,25 @@ impl GraphDb {
         let base = staged.view.base();
         let staged_t = base.t() + 1;
 
+        // Apply the staged transaction's envelope deltas (namespace codes +
+        // graph IRIs) to the snapshot clone BEFORE building the reverse graph
+        // or merging staged flakes. This ensures:
+        //  1. build_reverse_graph() can encode IRIs for new named graphs
+        //  2. decode_sid() works for SIDs with newly-allocated namespace codes
+        // Without this, multi-ledger dataset queries would fail to convert
+        // these SIDs to IriMatch, and flake routing for new named graphs
+        // would be incomplete.
+        let mut snapshot = base.snapshot.clone();
+        let has_deltas = staged.ns_registry.has_delta() || !staged.graph_delta.is_empty();
+        if has_deltas {
+            snapshot
+                .apply_envelope_deltas(
+                    staged.ns_registry.delta(),
+                    staged.graph_delta.values().map(|s| s.as_str()),
+                )
+                .map_err(|e| crate::ApiError::internal(e.to_string()))?;
+        }
+
         // Clone base novelty and merge staged flakes into it so queries see
         // both committed and staged data.
         let mut combined = (*base.novelty).clone();
@@ -328,8 +346,7 @@ impl GraphDb {
         let mut runtime_small_dicts = (*base.runtime_small_dicts).clone();
         if !staged_flakes.is_empty() {
             runtime_small_dicts.populate_from_flakes(&staged_flakes);
-            let reverse_graph = base
-                .snapshot
+            let reverse_graph = snapshot
                 .build_reverse_graph()
                 .map_err(|e| crate::ApiError::internal(e.to_string()))?;
             combined
@@ -343,8 +360,9 @@ impl GraphDb {
         }
 
         let combined = Arc::new(combined);
+
         let mut gdb = Self::new(
-            Arc::new(base.snapshot.clone()),
+            Arc::new(snapshot),
             combined.clone() as Arc<dyn OverlayProvider>,
             Some(combined),
             staged_t,

@@ -353,7 +353,7 @@ impl Operator for GeoSearchOperator {
             }
         }
 
-        // Overlay translation + DictOverlay setup (matches ScanOperator's binary path).
+        // Overlay translation + DictOverlay setup (matches BinaryScanOperator's binary path).
         let g_id = ctx.binary_g_id;
         if let Some(ovl) = ctx.overlay {
             // Correctness first: GeoSearch depends on a predicate+o_type constrained overlay.
@@ -418,7 +418,7 @@ impl Operator for GeoSearchOperator {
         self.p_id = match self.dict_overlay.as_mut() {
             Some(dict_ov) => {
                 let iri = ctx
-                    .snapshot
+                    .active_snapshot
                     .decode_sid(&self.pattern.predicate)
                     .ok_or_else(|| {
                         QueryError::Internal(

@@ -138,9 +138,6 @@ fn inline_ops_need_t(ops: &[InlineOperator]) -> bool {
 
 // `translate_overlay_flakes` lives below, after BinaryScanOperator.
 
-/// Public type alias — `ScanOperator` is the sole scan implementation.
-pub type ScanOperator = BinaryScanOperator;
-
 // ============================================================================
 // BinaryScanOperator
 // ============================================================================
@@ -184,18 +181,10 @@ pub struct BinaryScanOperator {
     check_s_eq_p: bool,
     check_p_eq_o: bool,
     /// Range-scan fallback iterator (used when no binary store is attached).
-    range_iter: Option<std::vec::IntoIter<RangeFlake>>,
+    range_iter: Option<std::vec::IntoIter<Flake>>,
     /// When a bound subject IRI cannot be translated to a persisted `s_id`,
     /// keep a widened base scan correct by checking the resolved subject IRI row-by-row.
     unresolved_bound_subject_iri: Option<Arc<str>>,
-}
-
-#[derive(Clone, Debug)]
-struct RangeFlake {
-    flake: Flake,
-    /// When present (dataset mode), identifies the originating ledger for SID decoding
-    /// and provenance-carrying bindings (`Binding::IriMatch`).
-    ledger_alias: Option<Arc<str>>,
 }
 
 /// A filter that can be evaluated on encoded index columns (no term decoding).
@@ -643,17 +632,14 @@ impl BinaryScanOperator {
         let mut produced = 0;
 
         while produced < batch_size {
-            let Some(rf) = self.range_iter.as_mut().and_then(|it| it.next()) else {
+            let Some(flake) = self.range_iter.as_mut().and_then(|it| it.next()) else {
                 break;
             };
-            let flake = rf.flake;
-            let ledger_alias = rf.ledger_alias;
 
             if let Some(target_iri) = self.unresolved_bound_subject_iri.as_ref() {
-                let subject_iri = ledger_alias
-                    .as_ref()
-                    .and_then(|alias| ctx.decode_sid_in_ledger(&flake.s, alias.as_ref()))
-                    .or_else(|| ctx.snapshot.decode_sid(&flake.s))
+                let subject_iri = ctx
+                    .active_snapshot
+                    .decode_sid(&flake.s)
                     .unwrap_or_else(|| flake.s.to_string());
                 if subject_iri != target_iri.as_ref() {
                     continue;
@@ -693,14 +679,14 @@ impl BinaryScanOperator {
             let mut bindings: Vec<Binding> = vec![Binding::Unbound; base_len];
 
             if let Some(pos) = self.s_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = sid_binding(ctx, &flake.s, ledger_alias.as_ref());
+                bindings[pos] = Binding::Sid(flake.s.clone());
             }
             if let Some(pos) = self.p_var_pos.filter(|p| *p < base_len) {
-                bindings[pos] = sid_binding(ctx, &flake.p, ledger_alias.as_ref());
+                bindings[pos] = Binding::Sid(flake.p.clone());
             }
             if let Some(pos) = self.o_var_pos.filter(|p| *p < base_len) {
                 bindings[pos] = match &flake.o {
-                    FlakeValue::Ref(r) => sid_binding(ctx, r, ledger_alias.as_ref()),
+                    FlakeValue::Ref(r) => Binding::Sid(r.clone()),
                     v => {
                         let dtc = match flake
                             .m
@@ -744,90 +730,42 @@ impl BinaryScanOperator {
 
     async fn open_range_fallback(&mut self, ctx: &ExecutionContext<'_>) -> Result<()> {
         let no_overlay = NoOverlay;
-        let mut out: Vec<RangeFlake> = Vec::new();
+        let mut out: Vec<Flake> = Vec::new();
 
-        // Dataset-aware range fallback:
-        // - In single-db mode, scan only `ctx.snapshot` / `self.g_id`.
-        // - In dataset mode, scan all active graphs and union results.
-        match ctx.active_graphs() {
-            crate::dataset::ActiveGraphs::Single => {
-                let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
-                let match_val = build_match_val_for_snapshot(ctx, ctx.snapshot, &self.pattern)?;
-                let opts = RangeOptions {
-                    to_t: Some(ctx.to_t),
-                    from_t: ctx.from_t,
-                    object_bounds: self.object_bounds.clone(),
-                    history_mode: ctx.history_mode,
-                    ..Default::default()
-                };
-                let mut flakes = range_with_overlay(
-                    ctx.snapshot,
-                    self.g_id,
-                    overlay,
-                    self.index,
-                    RangeTest::Eq,
-                    match_val,
-                    opts,
-                )
-                .await
-                .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
+        // Single-graph range fallback. Multi-graph fanout is handled by
+        // DatasetOperator which wraps this operator at all scan sites.
+        let overlay: &dyn OverlayProvider = ctx.overlay.unwrap_or(&no_overlay);
+        let match_val = build_match_val_for_snapshot(ctx, ctx.active_snapshot, &self.pattern)?;
+        let opts = RangeOptions {
+            to_t: Some(ctx.to_t),
+            from_t: ctx.from_t,
+            object_bounds: self.object_bounds.clone(),
+            history_mode: ctx.history_mode,
+            ..Default::default()
+        };
+        let mut flakes = range_with_overlay(
+            ctx.active_snapshot,
+            self.g_id,
+            overlay,
+            self.index,
+            RangeTest::Eq,
+            match_val,
+            opts,
+        )
+        .await
+        .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
 
-                // Apply policy filtering (including f:query) when present.
-                flakes = Self::filter_flakes_by_policy(
-                    ctx,
-                    ctx.snapshot,
-                    overlay,
-                    ctx.to_t,
-                    self.g_id,
-                    flakes,
-                )
-                .await?;
-                out.extend(flakes.into_iter().map(|flake| RangeFlake {
-                    flake,
-                    ledger_alias: None,
-                }));
-            }
-            crate::dataset::ActiveGraphs::Many(graphs) => {
-                for graph in graphs {
-                    let match_val =
-                        build_match_val_for_snapshot(ctx, graph.snapshot, &self.pattern)?;
-                    let opts = RangeOptions {
-                        to_t: Some(graph.to_t),
-                        from_t: ctx.from_t,
-                        object_bounds: self.object_bounds.clone(),
-                        history_mode: ctx.history_mode,
-                        ..Default::default()
-                    };
-                    let mut flakes = range_with_overlay(
-                        graph.snapshot,
-                        graph.g_id,
-                        graph.overlay,
-                        self.index,
-                        RangeTest::Eq,
-                        match_val,
-                        opts,
-                    )
-                    .await
-                    .map_err(|e| QueryError::Internal(format!("range_with_overlay: {e}")))?;
-
-                    // Apply graph-scoped policy filtering when present.
-                    flakes = Self::filter_flakes_by_policy(
-                        ctx,
-                        graph.snapshot,
-                        graph.overlay,
-                        graph.to_t,
-                        graph.g_id,
-                        flakes,
-                    )
-                    .await?;
-                    let alias = Arc::clone(&graph.ledger_id);
-                    out.extend(flakes.into_iter().map(|flake| RangeFlake {
-                        flake,
-                        ledger_alias: Some(Arc::clone(&alias)),
-                    }));
-                }
-            }
-        }
+        // Apply policy filtering (including f:query) when present.
+        flakes = Self::filter_flakes_by_policy(
+            ctx,
+            ctx.active_snapshot,
+            overlay,
+            ctx.to_t,
+            self.g_id,
+            flakes,
+        )
+        .await?;
+        out.extend(flakes);
 
         self.range_iter = Some(out.into_iter());
         self.cursor = None;
@@ -1292,7 +1230,7 @@ impl BinaryScanOperator {
         p_sid: &Option<Sid>,
     ) -> Result<()> {
         let Some(overlay) = ctx.overlay else {
-            self.range_iter = Some(Vec::<RangeFlake>::new().into_iter());
+            self.range_iter = Some(Vec::<Flake>::new().into_iter());
             self.cursor = None;
             self.state = OperatorState::Open;
             return Ok(());
@@ -1341,16 +1279,7 @@ impl BinaryScanOperator {
             flakes.retain(|f| bounds.matches(&f.o));
         }
 
-        self.range_iter = Some(
-            flakes
-                .into_iter()
-                .map(|flake| RangeFlake {
-                    flake,
-                    ledger_alias: None,
-                })
-                .collect::<Vec<_>>()
-                .into_iter(),
-        );
+        self.range_iter = Some(flakes.into_iter());
         self.cursor = None;
         self.state = OperatorState::Open;
         Ok(())
@@ -1408,22 +1337,6 @@ fn resolve_overlay_retractions(flakes: Vec<Flake>) -> Vec<Flake> {
         .collect()
 }
 
-#[inline]
-fn sid_binding(ctx: &ExecutionContext<'_>, sid: &Sid, ledger_alias: Option<&Arc<str>>) -> Binding {
-    if ctx.is_multi_ledger() {
-        if let Some(alias) = ledger_alias {
-            if let Some(iri) = ctx.decode_sid_in_ledger(sid, alias.as_ref()) {
-                return Binding::iri_match(
-                    Arc::<str>::from(iri.as_str()),
-                    sid.clone(),
-                    alias.clone(),
-                );
-            }
-        }
-    }
-    Binding::Sid(sid.clone())
-}
-
 fn build_match_val_for_snapshot(
     ctx: &ExecutionContext<'_>,
     snapshot: &fluree_db_core::LedgerSnapshot,
@@ -1446,7 +1359,9 @@ fn build_match_val_for_snapshot(
     let reencode_sid = |sid: &Sid| -> Option<Sid> {
         // Pattern SIDs are encoded in the primary snapshot's namespace space.
         // Decode to canonical IRI and re-encode into the target snapshot.
-        if let Some(iri) = ctx.snapshot.decode_sid(sid) {
+        // Use `original_snapshot` (the primary) rather than `snapshot`
+        // (which may be a per-graph snapshot with different namespace codes).
+        if let Some(iri) = ctx.original_snapshot.decode_sid(sid) {
             if let Some(store) = ctx.binary_store.as_deref() {
                 if let Ok(Some(persisted_sid)) = store.find_subject_sid(&iri) {
                     return Some(persisted_sid);
@@ -1525,13 +1440,10 @@ impl Operator for BinaryScanOperator {
         self.store = ctx.binary_store.clone();
         self.g_id = ctx.binary_g_id;
 
-        // Dataset (multi-ledger) execution cannot use the binary cursor path:
-        // - Binary scans are single-graph and do not represent dataset unions.
-        // - Late-materialized IDs (`Binding::EncodedSid`) are single-ledger only and
-        //   break correlated OPTIONAL substitution when a binary graph view is unavailable.
-        if ctx.is_multi_ledger() {
-            return self.open_range_fallback(ctx).await;
-        }
+        // Multi-graph fanout is handled by DatasetOperator, which wraps
+        // BinaryScanOperator at the scan construction sites (where_plan.rs,
+        // join.rs, etc.). By the time open() is called here, the context is
+        // always single-graph.
 
         if self.store.is_none() {
             return self.open_range_fallback(ctx).await;
@@ -1562,10 +1474,11 @@ impl Operator for BinaryScanOperator {
 
         // Extract bound terms in snapshot namespace space and build the persisted-ID filter
         // by translating through full IRIs into store namespace space.
-        let (s_sid, p_sid, o_val) = Self::extract_bound_terms_snapshot(ctx.snapshot, &self.pattern);
+        let (s_sid, p_sid, o_val) =
+            Self::extract_bound_terms_snapshot(ctx.active_snapshot, &self.pattern);
         self.bound_o = o_val;
         let mut filter = Self::build_filter_from_snapshot_sids(
-            ctx.snapshot,
+            ctx.active_snapshot,
             &self.pattern,
             store_ref,
             &s_sid,
@@ -1584,7 +1497,7 @@ impl Operator for BinaryScanOperator {
         self.unresolved_bound_subject_iri = if s_sid.is_some() && filter.s_id.is_none() {
             match &self.pattern.s {
                 Ref::Iri(iri) => Some(Arc::clone(iri)),
-                Ref::Sid(sid) => ctx.snapshot.decode_sid(sid).map(Arc::from),
+                Ref::Sid(sid) => ctx.original_snapshot.decode_sid(sid).map(Arc::from),
                 Ref::Var(_) => None,
             }
         } else {
@@ -1605,8 +1518,13 @@ impl Operator for BinaryScanOperator {
             let dt_sid = dtc.map(|d| d.datatype());
             let dict_novelty = ctx.dict_novelty.as_ref();
             let stats_view = cached_stats_view_for_db(
-                fluree_db_core::GraphDbRef::new(ctx.snapshot, self.g_id, ctx.overlay(), ctx.to_t)
-                    .with_runtime_small_dicts_opt(ctx.runtime_small_dicts),
+                fluree_db_core::GraphDbRef::new(
+                    ctx.active_snapshot,
+                    self.g_id,
+                    ctx.overlay(),
+                    ctx.to_t,
+                )
+                .with_runtime_small_dicts_opt(ctx.runtime_small_dicts),
                 self.store.as_ref(),
             );
             let inferred_dt_sid = if dt_sid.is_none() && lang.is_none() {
@@ -1881,16 +1799,7 @@ impl Operator for BinaryScanOperator {
                 }
 
                 if !untranslated.is_empty() {
-                    self.range_iter = Some(
-                        untranslated
-                            .into_iter()
-                            .map(|flake| RangeFlake {
-                                flake,
-                                ledger_alias: None,
-                            })
-                            .collect::<Vec<_>>()
-                            .into_iter(),
-                    );
+                    self.range_iter = Some(untranslated.into_iter());
                 }
             }
         }

@@ -1089,7 +1089,7 @@ impl<'a> GraphCrawlFormatter<'a> {
                 }
 
                 // Get subject classes from cache (empty if not cached)
-                // Note: Graph crawl doesn't pre-populate class cache like ScanOperator.
+                // Note: Graph crawl doesn't pre-populate class cache like BinaryScanOperator.
                 // For graph crawl with class policies, the cache will be empty and
                 // class policies may not work correctly. This is a known limitation
                 // that can be addressed by pre-populating in format_async if needed.

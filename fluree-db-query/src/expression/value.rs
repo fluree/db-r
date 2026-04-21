@@ -408,7 +408,7 @@ impl ComparableValue {
                 // but fall back to Binding::Iri for constructed IRIs
                 // (UUID, IRI() function) that don't exist in the database.
                 if let Some(ctx) = ctx {
-                    if let Some(sid) = ctx.snapshot.encode_iri_strict(&iri) {
+                    if let Some(sid) = ctx.active_snapshot.encode_iri_strict(&iri) {
                         return Ok(Binding::Sid(sid));
                     }
                 }
@@ -425,9 +425,12 @@ impl ComparableValue {
                                 .to_string(),
                         )
                     })?;
-                    let dt = ctx.snapshot.encode_iri_strict(&dt_iri).ok_or_else(|| {
-                        QueryError::InvalidFilter(format!("Unknown datatype IRI: {}", dt_iri))
-                    })?;
+                    let dt = ctx
+                        .active_snapshot
+                        .encode_iri_strict(&dt_iri)
+                        .ok_or_else(|| {
+                            QueryError::InvalidFilter(format!("Unknown datatype IRI: {}", dt_iri))
+                        })?;
                     Ok(Binding::lit(val, dt))
                 }
                 None => Ok(Binding::lit(val, datatypes.xsd_string.clone())),

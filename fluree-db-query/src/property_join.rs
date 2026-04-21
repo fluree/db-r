@@ -45,7 +45,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tracing::Instrument;
 
-use crate::binary_scan::{EmitMask, ScanOperator};
+use crate::binary_scan::EmitMask;
 
 /// Internal temp var for object position in predicate scans.
 ///
@@ -65,7 +65,7 @@ fn make_property_join_scan(
     bounds: Option<ObjectBounds>,
     emit: EmitMask,
 ) -> BoxedOperator {
-    Box::new(ScanOperator::new_with_emit_and_index(
+    Box::new(crate::dataset_operator::DatasetOperator::scan(
         pattern,
         bounds,
         Vec::new(),
@@ -794,8 +794,9 @@ impl Operator for PropertyJoinOperator {
 
                 // Create scan with optional bounds pushdown for this object variable.
                 //
-                // `ScanOperator` selects between binary cursor and range fallback
-                // at open() time based on the execution context.
+                // `DatasetOperator` wraps the scan for multi-graph fanout;
+                // inner `BinaryScanOperator` selects between binary cursor
+                // and range fallback at open() time.
                 let emit = if predicate.emit_object {
                     // Subject + object (no predicate column) for emitted predicates.
                     EmitMask {

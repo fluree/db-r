@@ -202,7 +202,7 @@ async fn setup_dataset(
 /// Like `setup_dataset` but also builds a binary index and returns a reusable snapshot.
 ///
 /// This exercises the production fast path:
-/// - `ScanOperator` selects `BinaryScanOperator`
+/// - `BinaryScanOperator` uses binary cursor path
 /// - `PropertyJoinOperator` can batched-probe the non-driver predicate
 async fn setup_dataset_indexed(
     n_articles: usize,

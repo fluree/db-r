@@ -342,7 +342,7 @@ fn get_or_build_delta(
     // Hash the ledger_id to discriminate across ledgers sharing the process cache.
     let ledger_id_hash = {
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        ctx.snapshot.ledger_id.hash(&mut h);
+        ctx.active_snapshot.ledger_id.hash(&mut h);
         h.finish()
     };
 

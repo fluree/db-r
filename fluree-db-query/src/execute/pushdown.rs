@@ -52,7 +52,7 @@ pub fn extract_bounds_from_filters(
 ///
 /// Examines the patterns following the current triple segment to find FILTER patterns
 /// that impose range constraints on object variables. These bounds can be pushed down
-/// to ScanOperator, NestedLoopJoinOperator, or PropertyJoinOperator for index-level filtering.
+/// to the scan operator, NestedLoopJoinOperator, or PropertyJoinOperator for index-level filtering.
 ///
 /// # Arguments
 ///
