@@ -170,10 +170,10 @@ impl DatasetOperator {
 /// Convert `Binding::Sid` values in a batch to `Binding::IriMatch` for
 /// cross-ledger provenance tracking.
 ///
-/// - `Binding::Sid` → decoded via `snapshot`, wrapped in `IriMatch` with
-///   `ledger_id`. If the SID cannot be decoded, falls back to
-///   `Binding::Sid` (preserves correctness for novelty-only SIDs that
-///   may not have persisted IRIs yet).
+/// - `Binding::Sid` → decoded via the ledger's namespace table, wrapped in
+///   `IriMatch` with `ledger_id`. Returns an error if the SID cannot be
+///   decoded, since multi-ledger equality requires `IriMatch` and a silent
+///   fallback to `Binding::Sid` would break cross-ledger joins.
 /// - `Binding::IriMatch` → passed through unchanged (supports nested
 ///   `DatasetOperator` composition).
 /// - All other binding types → unchanged.
@@ -196,9 +196,9 @@ fn stamp_provenance(
         .map(|col| {
             col.into_iter()
                 .map(|binding| stamp_binding(binding, ledger_id, ctx))
-                .collect()
+                .collect::<Result<Vec<_>>>()
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     Batch::new(schema, stamped_columns).map_err(|e| QueryError::Internal(e.to_string()))
 }
@@ -208,42 +208,60 @@ fn stamp_provenance(
 /// `Binding::Sid` is converted to `IriMatch`; all other variants are moved
 /// through unchanged (no cloning).
 ///
-/// # Panics
+/// # Errors
 ///
-/// Panics on `Binding::EncodedSid` or `Binding::EncodedPid` in debug
-/// builds. These late-materialized binary-cursor IDs cannot be decoded
-/// without the store, so they must never reach provenance stamping — the
-/// `open()` loop disables binary stores for multi-ledger datasets.
-fn stamp_binding(binding: Binding, ledger_id: &Arc<str>, ctx: &ExecutionContext<'_>) -> Binding {
+/// - Returns `QueryError::Internal` if a `Binding::Sid` cannot be decoded
+///   to an IRI. Multi-ledger equality is defined around `IriMatch`, so a
+///   silent fallback to `Binding::Sid` would break cross-ledger joins.
+/// - Returns `QueryError::Internal` on `Binding::EncodedSid` or
+///   `Binding::EncodedPid` — these late-materialized binary-cursor IDs
+///   cannot be decoded without the store, which is disabled for
+///   multi-ledger datasets during `open()`.
+fn stamp_binding(
+    binding: Binding,
+    ledger_id: &Arc<str>,
+    ctx: &ExecutionContext<'_>,
+) -> Result<Binding> {
     match binding {
         Binding::Sid(ref sid) => sid_to_iri_match(sid, ledger_id, ctx),
         Binding::EncodedSid { .. } | Binding::EncodedPid { .. } => {
-            debug_assert!(
-                false,
+            Err(QueryError::Internal(
                 "EncodedSid/EncodedPid reached stamp_provenance — binary store should have \
                  been disabled for multi-ledger datasets"
-            );
-            // In release builds, pass through unchanged rather than panicking.
-            // The binding won't carry provenance, but won't corrupt data.
-            binding
+                    .into(),
+            ))
         }
-        other => other,
+        other => Ok(other),
     }
 }
 
 /// Convert a `Sid` to `IriMatch` using the dataset's decoding context.
-fn sid_to_iri_match(sid: &Sid, ledger_id: &Arc<str>, ctx: &ExecutionContext<'_>) -> Binding {
-    if let Some(iri) = ctx.decode_sid_in_ledger(sid, ledger_id.as_ref()) {
-        Binding::iri_match(
-            Arc::<str>::from(iri.as_str()),
-            sid.clone(),
-            Arc::clone(ledger_id),
-        )
-    } else {
-        // Cannot decode — preserve as Sid. This can happen for
-        // novelty-only SIDs that haven't been persisted yet.
-        Binding::Sid(sid.clone())
-    }
+///
+/// # Errors
+///
+/// Returns `QueryError::Internal` if the SID's namespace code cannot be
+/// resolved to an IRI prefix. This indicates either a snapshot that is
+/// missing namespace deltas (e.g. from a staged transaction) or data
+/// corruption — either way, silently falling back to `Binding::Sid` would
+/// break multi-ledger equality semantics.
+fn sid_to_iri_match(
+    sid: &Sid,
+    ledger_id: &Arc<str>,
+    ctx: &ExecutionContext<'_>,
+) -> Result<Binding> {
+    let iri = ctx.decode_sid_in_ledger(sid, ledger_id.as_ref()).ok_or_else(|| {
+        QueryError::Internal(format!(
+            "failed to decode SID (ns={}, name={:?}) from ledger {:?}: \
+             namespace code not found in snapshot — multi-ledger equality \
+             requires IriMatch but the SID cannot be resolved to an IRI",
+            sid.namespace_code, sid.name, ledger_id,
+        ))
+    })?;
+    Ok(Binding::iri_match(
+        Arc::<str>::from(iri.as_str()),
+        sid.clone(),
+        Arc::clone(ledger_id),
+    ))
 }
 
 #[async_trait]
