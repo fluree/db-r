@@ -317,29 +317,39 @@ impl Fluree {
                     });
                 }
 
-                // Walk the commit chain to find the commit at the requested t.
-                // collect_dag_cids returns commits from HEAD down to stop_at_t
-                // (exclusive), so we stop at t-1 to include the commit at t.
-                let store = self.content_store(&source_id);
-                let cids = collect_dag_cids(&store, &source_head_id, t - 1).await?;
+                // at_t equal to HEAD is the same as branching from HEAD — no
+                // DAG walk needed.
+                if t == source_record.commit_t {
+                    None
+                } else {
+                    // Walk the commit chain to find the commit at the requested t.
+                    // walk_dag excludes commits with t <= stop_at_t, so passing
+                    // t - 1 makes the commit at exactly t the last entry collected.
+                    let store = self.content_store(&source_id);
+                    let cids = collect_dag_cids(&store, &source_head_id, t - 1).await?;
 
-                // The last entry in the list is the oldest commit — the one at t.
-                let (commit_t, commit_id) = cids.last().ok_or_else(|| ApiError::Http {
-                    status: 400,
-                    message: format!("No commit found at t={} on source branch {}", t, source_id),
-                })?;
+                    // The last entry in the list is the oldest commit — the one at t.
+                    let (commit_t, commit_id) =
+                        cids.last().ok_or_else(|| ApiError::Http {
+                            status: 400,
+                            message: format!(
+                                "No commit found at t={} on source branch {}",
+                                t, source_id
+                            ),
+                        })?;
 
-                if *commit_t != t {
-                    return Err(ApiError::Http {
-                        status: 400,
-                        message: format!(
-                            "No commit found at t={} on source branch {} (nearest is t={})",
-                            t, source_id, commit_t
-                        ),
-                    });
+                    if *commit_t != t {
+                        return Err(ApiError::Http {
+                            status: 400,
+                            message: format!(
+                                "No commit found at t={} on source branch {} (nearest is t={})",
+                                t, source_id, commit_t
+                            ),
+                        });
+                    }
+
+                    Some((commit_id.clone(), *commit_t))
                 }
-
-                Some((commit_id.clone(), *commit_t))
             }
             None => None,
         };
