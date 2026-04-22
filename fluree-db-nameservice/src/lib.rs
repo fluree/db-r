@@ -227,10 +227,7 @@ impl NsRecord {
             ))
         })?;
 
-        match at_commit {
-            Some(commit) => Ok(commit),
-            None => Ok((head.clone(), self.commit_t)),
-        }
+        Ok(at_commit.unwrap_or_else(|| (head.clone(), self.commit_t)))
     }
 
     /// Check if this record has an index

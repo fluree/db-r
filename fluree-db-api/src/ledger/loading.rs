@@ -326,13 +326,12 @@ impl Fluree {
                     let cids = collect_dag_cids(&store, &source_head_id, t - 1).await?;
 
                     // The last entry in the list is the oldest commit — the one at t.
-                    let (commit_t, commit_id) =
-                        cids.last().ok_or_else(|| {
-                            ApiError::InvalidBranch(format!(
-                                "No commit found at t={} on source branch {}",
-                                t, source_id
-                            ))
-                        })?;
+                    let (commit_t, commit_id) = cids.last().ok_or_else(|| {
+                        ApiError::InvalidBranch(format!(
+                            "No commit found at t={} on source branch {}",
+                            t, source_id
+                        ))
+                    })?;
 
                     if *commit_t != t {
                         return Err(ApiError::InvalidBranch(format!(
@@ -341,7 +340,7 @@ impl Fluree {
                         )));
                     }
 
-                    Some((commit_id.clone(), *commit_t))
+                    Some((commit_id.clone(), t))
                 }
             }
             None => None,
