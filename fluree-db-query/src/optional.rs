@@ -50,6 +50,9 @@ use std::time::Instant;
 /// expensive batches or obvious cache/planning churn at debug level.
 const OPTIONAL_DEBUG_MIN_WORK: usize = 8;
 const OPTIONAL_DEBUG_MIN_MS: u64 = 25;
+
+/// Per-row result of a batched optional build: `(row_index, batches)`.
+pub type OptionalBatchRow = (usize, Vec<Batch>);
 /// Builder for correlated optional operators
 ///
 /// This trait encapsulates how to create an optional-side operator that is
@@ -99,7 +102,7 @@ pub trait OptionalBuilder: Send + Sync {
         _required_batch: &Batch,
         _start_row: usize,
         _ctx: &ExecutionContext<'_>,
-    ) -> Result<Option<Vec<(usize, Vec<Batch>)>>> {
+    ) -> Result<Option<Vec<OptionalBatchRow>>> {
         Ok(None)
     }
 
@@ -408,7 +411,7 @@ impl OptionalBuilder for PatternOptionalBuilder {
         required_batch: &Batch,
         start_row: usize,
         ctx: &ExecutionContext<'_>,
-    ) -> Result<Option<Vec<(usize, Vec<Batch>)>>> {
+    ) -> Result<Option<Vec<OptionalBatchRow>>> {
         if start_row >= required_batch.len() || ctx.is_multi_ledger() {
             return Ok(None);
         }
@@ -729,7 +732,7 @@ impl OptionalBuilder for GroupedPatternOptionalBuilder {
         required_batch: &Batch,
         start_row: usize,
         ctx: &ExecutionContext<'_>,
-    ) -> Result<Option<Vec<(usize, Vec<Batch>)>>> {
+    ) -> Result<Option<Vec<OptionalBatchRow>>> {
         if start_row >= required_batch.len() || ctx.is_multi_ledger() {
             tracing::debug!(
                 predicate_count = self.triples.len(),

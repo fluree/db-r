@@ -119,7 +119,7 @@ impl FlakeAccumulator {
                 // Touch the iterator only enough to detect a non-empty source
                 // so an accidentally-fed empty Vec doesn't panic.
                 assert!(
-                    !flakes.into_iter().next().is_some(),
+                    flakes.into_iter().next().is_none(),
                     "FlakeAccumulator::push_assertions called on a pure-DELETE \
                      accumulator — this indicates an upstream wiring bug"
                 );

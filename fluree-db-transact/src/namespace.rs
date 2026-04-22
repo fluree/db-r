@@ -361,10 +361,9 @@ impl SharedNamespaceAllocator {
             } else {
                 // Should never happen — every code in the set was allocated
                 // through this allocator. Log and skip in release; panic in debug.
-                assert!(
-                    !cfg!(debug_assertions),
-                    "code {code} not found in shared allocator"
-                );
+                #[cfg(debug_assertions)]
+                panic!("code {code} not found in shared allocator");
+                #[cfg(not(debug_assertions))]
                 tracing::warn!(code, "namespace code not found in shared allocator");
             }
         }

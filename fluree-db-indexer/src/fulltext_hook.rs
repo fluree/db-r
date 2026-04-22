@@ -239,6 +239,7 @@ mod tests {
         FulltextHookConfig::default()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make_input(
         g_id: GraphId,
         p_id: u32,

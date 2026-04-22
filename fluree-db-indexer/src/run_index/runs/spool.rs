@@ -1756,10 +1756,6 @@ pub fn sort_remap_and_write_sorted_commit(
 // ============================================================================
 
 #[cfg(test)]
-#[allow(
-    clippy::decimal_bitwise_operands,
-    reason = "test sid64 literals read more clearly in decimal"
-)]
 mod tests {
     use super::*;
     use fluree_db_binary_index::format::run_record::LIST_INDEX_NONE;
