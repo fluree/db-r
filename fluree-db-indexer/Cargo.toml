@@ -55,3 +55,6 @@ rayon.workspace = true
 # For HLL tests (proper hash distribution)
 xxhash-rust.workspace = true
 tempfile = "3"
+
+[lints]
+workspace = true

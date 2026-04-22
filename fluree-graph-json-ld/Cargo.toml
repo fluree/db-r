@@ -15,3 +15,6 @@ fluree-vocab = { path = "../fluree-vocab" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
+
+[lints]
+workspace = true

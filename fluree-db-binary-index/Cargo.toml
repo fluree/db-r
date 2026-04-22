@@ -52,3 +52,6 @@ rust-stemmers = "1.2"
 
 [dev-dependencies]
 async-trait.workspace = true
+
+[lints]
+workspace = true

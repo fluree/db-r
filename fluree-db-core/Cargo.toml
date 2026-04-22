@@ -56,3 +56,6 @@ fluree-db-credential = { path = "../fluree-db-credential", optional = true }
 [dev-dependencies]
 tokio = { workspace = true }
 postcard = { workspace = true }
+
+[lints]
+workspace = true

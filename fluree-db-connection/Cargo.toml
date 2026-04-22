@@ -46,3 +46,6 @@ fs2 = "0.4"
 name = "aws_testcontainers_test"
 path = "tests/aws_testcontainers_test.rs"
 required-features = ["aws-testcontainers"]
+
+[lints]
+workspace = true

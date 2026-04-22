@@ -107,3 +107,6 @@ parking_lot = "0.12"
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
+
+[lints]
+workspace = true

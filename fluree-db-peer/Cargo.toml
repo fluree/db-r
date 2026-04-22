@@ -55,3 +55,6 @@ hex = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
+
+[lints]
+workspace = true

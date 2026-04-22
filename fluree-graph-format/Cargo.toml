@@ -15,3 +15,6 @@ thiserror = { workspace = true }
 [dev-dependencies]
 fluree-vocab = { path = "../fluree-vocab" }
 pretty_assertions = "1.4"
+
+[lints]
+workspace = true

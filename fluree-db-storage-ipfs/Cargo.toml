@@ -32,3 +32,6 @@ tokio = { workspace = true, features = ["full", "test-util"] }
 name = "it_kubo_block_api"
 path = "tests/it_kubo_block_api.rs"
 required-features = ["integration-tests"]
+
+[lints]
+workspace = true

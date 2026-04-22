@@ -16,3 +16,6 @@ regex = "1"
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[lints]
+workspace = true
