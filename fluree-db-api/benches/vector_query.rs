@@ -93,7 +93,7 @@ async fn setup_dataset(
     n_articles: usize,
 ) -> (BenchFluree, BenchLedger, JsonValue, JsonValue, usize) {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = format!("bench/vec-{}:main", n_articles);
+    let alias = format!("bench/vec-{n_articles}:main");
     let mut ledger = fluree.create_ledger(&alias).await.unwrap();
 
     let mut rng = StdRng::seed_from_u64(42);
@@ -215,7 +215,7 @@ async fn setup_dataset_indexed(
 ) {
     let (fluree, _ledger, query_all, query_filtered, n_recent) = setup_dataset(n_articles).await;
 
-    let ledger_id = format!("bench/vec-{}:main", n_articles);
+    let ledger_id = format!("bench/vec-{n_articles}:main");
 
     // Offline reindex from commit history (builds binary columnar index + publishes root).
     // Note: this is intentionally done once during setup, not inside the hot loop.
@@ -241,16 +241,13 @@ fn bench_vector_scan_all(c: &mut Criterion) {
     group.sample_size(10);
 
     for &n in DATASET_SIZES {
-        eprintln!(
-            "  [setup] Inserting {} articles with {}-dim vectors...",
-            n, VECTOR_DIM
-        );
+        eprintln!("  [setup] Inserting {n} articles with {VECTOR_DIM}-dim vectors...");
         let (fluree, ledger, query, _, _) = rt.block_on(setup_dataset(n));
         let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
 
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) }))
+            b.iter(|| rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) }));
         });
     }
 
@@ -269,8 +266,7 @@ fn bench_vector_scan_all_indexed(c: &mut Criterion) {
 
     for &n in DATASET_SIZES {
         eprintln!(
-            "  [setup] Inserting {} articles with {}-dim vectors + building index...",
-            n, VECTOR_DIM
+            "  [setup] Inserting {n} articles with {VECTOR_DIM}-dim vectors + building index..."
         );
         let (_fluree, snapshot, query, _, _) = rt.block_on(setup_dataset_indexed(n));
 
@@ -278,7 +274,7 @@ fn bench_vector_scan_all_indexed(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 rt.block_on(async { black_box(_fluree.query(&snapshot, &query).await.unwrap()) })
-            })
+            });
         });
     }
 
@@ -296,10 +292,7 @@ fn bench_vector_scan_filtered(c: &mut Criterion) {
     group.sample_size(10);
 
     for &n in DATASET_SIZES {
-        eprintln!(
-            "  [setup] Inserting {} articles with {}-dim vectors...",
-            n, VECTOR_DIM
-        );
+        eprintln!("  [setup] Inserting {n} articles with {VECTOR_DIM}-dim vectors...");
         let (fluree, ledger, _, query, n_recent) = rt.block_on(setup_dataset(n));
         let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
         eprintln!(
@@ -317,7 +310,7 @@ fn bench_vector_scan_filtered(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) })
-                })
+                });
             },
         );
     }
@@ -337,8 +330,7 @@ fn bench_vector_scan_filtered_indexed(c: &mut Criterion) {
 
     for &n in DATASET_SIZES {
         eprintln!(
-            "  [setup] Inserting {} articles with {}-dim vectors + building index...",
-            n, VECTOR_DIM
+            "  [setup] Inserting {n} articles with {VECTOR_DIM}-dim vectors + building index..."
         );
         let (_fluree, snapshot, _, query, n_recent) = rt.block_on(setup_dataset_indexed(n));
         eprintln!(
@@ -358,7 +350,7 @@ fn bench_vector_scan_filtered_indexed(c: &mut Criterion) {
                     rt.block_on(async {
                         black_box(_fluree.query(&snapshot, &query).await.unwrap())
                     })
-                })
+                });
             },
         );
     }

@@ -612,7 +612,7 @@ impl Materializer {
                     error = %e,
                     "resolve_subject_iri failed — fabricating placeholder IRI"
                 );
-                Arc::from(format!("_:unknown_{}", s_id))
+                Arc::from(format!("_:unknown_{s_id}"))
             }
         };
 
@@ -631,7 +631,7 @@ impl Materializer {
 
         let sid = match self.graph_view.resolve_subject_sid(s_id) {
             Ok(sid) => sid,
-            Err(_) => Sid::new(0, format!("_:unknown_{}", s_id)),
+            Err(_) => Sid::new(0, format!("_:unknown_{s_id}")),
         };
 
         self.sid_cache.insert(s_id, sid.clone());
@@ -651,7 +651,7 @@ impl Materializer {
                     p_id,
                     "resolve_predicate_iri failed — fabricating placeholder predicate"
                 );
-                Sid::new(0, format!("_:unknown_p_{}", p_id))
+                Sid::new(0, format!("_:unknown_p_{p_id}"))
             }
         };
 

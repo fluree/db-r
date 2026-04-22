@@ -30,7 +30,11 @@ pub fn format(
     };
 
     let max_bytes = config.max_bytes;
-    let total_row_hint = result.batches.iter().map(|b| b.len()).sum::<usize>();
+    let total_row_hint = result
+        .batches
+        .iter()
+        .map(fluree_db_query::Batch::len)
+        .sum::<usize>();
     let mut rows = Vec::with_capacity(if max_bytes.is_some() {
         total_row_hint.min(256) // don't over-allocate when truncating
     } else {
@@ -122,8 +126,7 @@ pub fn format(
     if has_more {
         let budget_str = max_bytes.map(|b| b.to_string()).unwrap_or_default();
         let mut msg = format!(
-            "Response truncated due to size limit of {} bytes. {} of {} total rows included.",
-            budget_str, row_count, total_row_hint
+            "Response truncated due to size limit of {budget_str} bytes. {row_count} of {total_row_hint} total rows included."
         );
 
         if let Some(ref ctx) = config.agent_json_context {
@@ -133,9 +136,8 @@ pub fn format(
                         generate_resume_query(sparql, t, row_count, ctx.resume_limit)
                     {
                         msg = format!(
-                            "Response truncated due to size limit of {} bytes. \
-                             Use the query below to retrieve the next batch.",
-                            budget_str
+                            "Response truncated due to size limit of {budget_str} bytes. \
+                             Use the query below to retrieve the next batch."
                         );
                         envelope.insert("resume".to_string(), JsonValue::String(resume));
                     }
@@ -298,11 +300,11 @@ fn generate_resume_query(sparql: &str, t: i64, row_count: usize, limit: usize) -
     } else {
         iri
     };
-    let pinned_iri = format!("{}@t:{}", base_iri, t);
+    let pinned_iri = format!("{base_iri}@t:{t}");
 
     // Rebuild query with pinned IRI
     let mut result = String::with_capacity(sparql.len() + 32);
-    result.push_str(&sparql[..open + 1]);
+    result.push_str(&sparql[..=open]);
     result.push_str(&pinned_iri);
     result.push_str(&sparql[close..]);
 
@@ -312,7 +314,7 @@ fn generate_resume_query(sparql: &str, t: i64, row_count: usize, limit: usize) -
 
     // Append new OFFSET and LIMIT
     let trimmed = result.trim_end();
-    format!("{} OFFSET {} LIMIT {}", trimmed, row_count, limit).into()
+    format!("{trimmed} OFFSET {row_count} LIMIT {limit}").into()
 }
 
 /// Remove a SPARQL clause like "OFFSET 10" or "LIMIT 50" (case insensitive).

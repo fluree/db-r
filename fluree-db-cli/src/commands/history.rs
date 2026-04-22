@@ -173,12 +173,12 @@ fn format_history_table(json: &serde_json::Value) -> CliResult<String> {
     for row in arr {
         let t = row
             .get("?t")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .map(|n| n.to_string())
             .unwrap_or_default();
         let op = row
             .get("?op")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .map(|b| if b { "+" } else { "-" })
             .unwrap_or("?");
         let val = format_value(row.get("?v"));
@@ -218,12 +218,12 @@ fn format_history_csv(json: &serde_json::Value) -> CliResult<String> {
     for row in arr {
         let t = row
             .get("?t")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .map(|n| n.to_string())
             .unwrap_or_default();
         let op = row
             .get("?op")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .map(|b| if b { "+" } else { "-" })
             .unwrap_or("?");
         let val = csv_escape(&format_value(row.get("?v")));

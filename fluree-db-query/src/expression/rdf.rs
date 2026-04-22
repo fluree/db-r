@@ -276,8 +276,7 @@ pub fn eval_bnode<R: RowAccess>(
                         label.hash(&mut hasher);
                         let hash = hasher.finish();
                         Ok(Some(ComparableValue::Iri(Arc::from(format!(
-                            "_:b{:x}",
-                            hash
+                            "_:b{hash:x}"
                         )))))
                     }
                     None => Ok(None),

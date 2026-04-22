@@ -107,7 +107,7 @@ impl SseClient {
 
         // Add Bearer token if configured
         if let Some(token) = self.config.load_token().map_err(SseError::TokenLoad)? {
-            request = request.header("Authorization", format!("Bearer {}", token));
+            request = request.header("Authorization", format!("Bearer {token}"));
         }
 
         // Set Accept header for SSE

@@ -1492,13 +1492,11 @@ async fn selectivity_calculation_is_correct() {
             let uid_sel_sub = unique_id_stats["selectivity-subject"].as_i64().unwrap();
             assert!(
                 (1..=2).contains(&uid_sel_val),
-                "uniqueId selectivity-value should be 1-2, got {}",
-                uid_sel_val
+                "uniqueId selectivity-value should be 1-2, got {uid_sel_val}"
             );
             assert!(
                 (1..=2).contains(&uid_sel_sub),
-                "uniqueId selectivity-subject should be 1-2, got {}",
-                uid_sel_sub
+                "uniqueId selectivity-subject should be 1-2, got {uid_sel_sub}"
             );
 
             let category_stats = props
@@ -1508,13 +1506,11 @@ async fn selectivity_calculation_is_correct() {
             let cat_sel_sub = category_stats["selectivity-subject"].as_i64().unwrap();
             assert!(
                 (4..=7).contains(&cat_sel_val),
-                "category selectivity-value should be 4-7 (10 flakes / ~2 values), got {}",
-                cat_sel_val
+                "category selectivity-value should be 4-7 (10 flakes / ~2 values), got {cat_sel_val}"
             );
             assert!(
                 (1..=2).contains(&cat_sel_sub),
-                "category selectivity-subject should be 1-2 (10 flakes / ~10 subjects), got {}",
-                cat_sel_sub
+                "category selectivity-subject should be 1-2 (10 flakes / ~10 subjects), got {cat_sel_sub}"
             );
         })
         .await;

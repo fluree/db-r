@@ -454,7 +454,7 @@ struct WhereCursorOperator<'a> {
     closed: bool,
 }
 
-impl<'a> WhereCursor<'a> {
+impl WhereCursor<'_> {
     /// Pull the next result batch. Returns `Ok(None)` when the operator is
     /// exhausted; further calls continue to return `Ok(None)`.
     pub async fn next_batch(&mut self) -> Result<Option<Batch>> {
@@ -504,7 +504,7 @@ impl<'a> WhereCursor<'a> {
     }
 }
 
-impl<'a> Drop for WhereCursor<'a> {
+impl Drop for WhereCursor<'_> {
     fn drop(&mut self) {
         self.close();
     }

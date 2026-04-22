@@ -22,8 +22,7 @@ async fn assert_query_bind_error(
     if let Err(err) = result {
         assert!(
             err.to_string().contains(expected),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }
@@ -1649,8 +1648,7 @@ async fn jsonld_uuid_returns_iri() {
     let val = arr[0].as_str().expect("uuid should be a string in jsonld");
     assert!(
         val.starts_with("urn:uuid:"),
-        "UUID() should return urn:uuid:..., got: {}",
-        val
+        "UUID() should return urn:uuid:..., got: {val}"
     );
 }
 
@@ -1808,7 +1806,7 @@ async fn jsonld_bind_arithmetic_in_select() {
         .as_array()
         .expect("array")
         .iter()
-        .filter_map(|v| v.as_i64())
+        .filter_map(serde_json::Value::as_i64)
         .collect();
     values.sort();
     assert_eq!(
@@ -1901,7 +1899,7 @@ async fn jsonld_bind_with_filter() {
         .as_array()
         .expect("array")
         .iter()
-        .filter_map(|v| v.as_i64())
+        .filter_map(serde_json::Value::as_i64)
         .collect();
     values.sort();
     assert_eq!(
@@ -1957,7 +1955,7 @@ async fn jsonld_bind_in_union() {
         .as_array()
         .expect("array")
         .iter()
-        .filter_map(|v| v.as_i64())
+        .filter_map(serde_json::Value::as_i64)
         .collect();
     values.sort();
     assert_eq!(

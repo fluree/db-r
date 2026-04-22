@@ -40,12 +40,12 @@ impl VendedCredentials {
         let access_key = config
             .get("s3.access-key-id")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let secret_key = config
             .get("s3.secret-access-key")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         // Both required for valid credentials
         let (access_key_id, secret_access_key) = match (access_key, secret_key) {
@@ -56,17 +56,17 @@ impl VendedCredentials {
         let session_token = config
             .get("s3.session-token")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let endpoint = config
             .get("s3.endpoint")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let region = config
             .get("s3.region")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let path_style = config
             .get("s3.path-style-access")

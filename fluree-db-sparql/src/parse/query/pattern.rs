@@ -9,7 +9,7 @@ use crate::span::SourceSpan;
 
 use super::expr::parse_expression;
 
-impl<'a> super::Parser<'a> {
+impl super::Parser<'_> {
     /// Parse a WHERE clause.
     pub(super) fn parse_where_clause(&mut self) -> Option<WhereClause> {
         let start = self.stream.current_span();

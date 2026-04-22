@@ -137,19 +137,21 @@ async fn request_span_has_expected_fields() {
         "request span should be INFO (the one exception)"
     );
     assert_eq!(
-        req.fields.get("operation").map(|s| s.as_str()),
+        req.fields.get("operation").map(std::string::String::as_str),
         Some("query")
     );
     assert_eq!(
-        req.fields.get("request_id").map(|s| s.as_str()),
+        req.fields
+            .get("request_id")
+            .map(std::string::String::as_str),
         Some("req-123")
     );
     assert_eq!(
-        req.fields.get("trace_id").map(|s| s.as_str()),
+        req.fields.get("trace_id").map(std::string::String::as_str),
         Some("trace-456")
     );
     assert_eq!(
-        req.fields.get("ledger_id").map(|s| s.as_str()),
+        req.fields.get("ledger_id").map(std::string::String::as_str),
         Some("mydb:main")
     );
 }
@@ -271,7 +273,6 @@ async fn error_code_is_empty_on_success() {
     let error_code = req.fields.get("error_code");
     assert!(
         error_code.is_none() || error_code == Some(&String::new()),
-        "error_code should be empty/absent on success path, got: {:?}",
-        error_code
+        "error_code should be empty/absent on success path, got: {error_code:?}"
     );
 }

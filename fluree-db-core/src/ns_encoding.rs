@@ -379,8 +379,7 @@ impl fmt::Display for NsAllocError {
         match self {
             Self::Overflow => write!(
                 f,
-                "namespace code overflow: all codes in {}..{} are exhausted",
-                USER_START, OVERFLOW
+                "namespace code overflow: all codes in {USER_START}..{OVERFLOW} are exhausted"
             ),
             Self::CodeConflict {
                 code,
@@ -388,8 +387,7 @@ impl fmt::Display for NsAllocError {
                 existing_prefix,
             } => write!(
                 f,
-                "namespace conflict: code {} maps to {:?} but {:?} was requested",
-                code, existing_prefix, new_prefix
+                "namespace conflict: code {code} maps to {existing_prefix:?} but {new_prefix:?} was requested"
             ),
             Self::PrefixConflict {
                 prefix,
@@ -397,8 +395,7 @@ impl fmt::Display for NsAllocError {
                 existing_code,
             } => write!(
                 f,
-                "namespace conflict: prefix {:?} maps to code {} but code {} was requested",
-                prefix, existing_code, new_code
+                "namespace conflict: prefix {prefix:?} maps to code {existing_code} but code {new_code} was requested"
             ),
         }
     }
@@ -491,7 +488,9 @@ impl NamespaceCodes {
     /// Look up the prefix for a code.
     #[inline]
     pub fn get_prefix(&self, code: u16) -> Option<&str> {
-        self.code_to_prefix.get(&code).map(|s| s.as_str())
+        self.code_to_prefix
+            .get(&code)
+            .map(std::string::String::as_str)
     }
 
     /// Allocate a new code for a prefix, or return the existing code if
@@ -1107,7 +1106,7 @@ mod tests {
         for &iri in iris {
             let (prefix, suffix) = canonical_split(iri, NsSplitMode::MostGranular);
             assert_eq!(
-                format!("{}{}", prefix, suffix),
+                format!("{prefix}{suffix}"),
                 iri,
                 "canonical_split round-trip failed for {:?}",
                 iri
@@ -1119,11 +1118,7 @@ mod tests {
                 .encode_iri(iri, NsSplitMode::MostGranular)
                 .expect("encode must succeed after allocate");
             let decoded = codes.decode_sid_strict(&sid).expect("decode must succeed");
-            assert_eq!(
-                decoded, iri,
-                "encode/decode round-trip failed for {:?}",
-                iri
-            );
+            assert_eq!(decoded, iri, "encode/decode round-trip failed for {iri:?}");
         }
     }
 
@@ -1140,7 +1135,7 @@ mod tests {
         for &iri in iris {
             let (prefix, suffix) = canonical_split(iri, NsSplitMode::HostPlusN(0));
             assert_eq!(
-                format!("{}{}", prefix, suffix),
+                format!("{prefix}{suffix}"),
                 iri,
                 "canonical_split round-trip failed for {:?}",
                 iri
@@ -1151,11 +1146,7 @@ mod tests {
                 .encode_iri(iri, NsSplitMode::HostPlusN(0))
                 .expect("encode must succeed after allocate");
             let decoded = codes.decode_sid_strict(&sid).expect("decode must succeed");
-            assert_eq!(
-                decoded, iri,
-                "encode/decode round-trip failed for {:?}",
-                iri
-            );
+            assert_eq!(decoded, iri, "encode/decode round-trip failed for {iri:?}");
         }
     }
 
@@ -1175,7 +1166,7 @@ mod tests {
         for &iri in iris {
             let (prefix, suffix) = canonical_split(iri, NsSplitMode::HostPlusN(1));
             assert_eq!(
-                format!("{}{}", prefix, suffix),
+                format!("{prefix}{suffix}"),
                 iri,
                 "canonical_split round-trip failed for {:?}",
                 iri
@@ -1186,11 +1177,7 @@ mod tests {
                 .encode_iri(iri, NsSplitMode::HostPlusN(1))
                 .expect("encode must succeed after allocate");
             let decoded = codes.decode_sid_strict(&sid).expect("decode must succeed");
-            assert_eq!(
-                decoded, iri,
-                "encode/decode round-trip failed for {:?}",
-                iri
-            );
+            assert_eq!(decoded, iri, "encode/decode round-trip failed for {iri:?}");
         }
     }
 }

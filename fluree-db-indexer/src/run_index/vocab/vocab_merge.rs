@@ -156,7 +156,7 @@ pub fn merge_subject_vocabs(
             // Write to forward dict.
             let prefix = namespace_codes
                 .get(&entry.ns_code)
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .unwrap_or("");
             let total_len = (prefix.len() + entry.suffix.len()) as u32;
             idx.push_len(total_len)?;
@@ -422,7 +422,7 @@ impl MmapRemapU32 {
         let value_u32: u32 = value.try_into().map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("string remap value overflow: {}", value),
+                format!("string remap value overflow: {value}"),
             )
         })?;
         if local_id >= self.len {
@@ -575,7 +575,7 @@ mod tests {
         for &(ns, name) in entries {
             dict.get_or_insert(ns, name);
         }
-        let path = dir.join(format!("chunk_{:05}.subjects.voc", chunk_id));
+        let path = dir.join(format!("chunk_{chunk_id:05}.subjects.voc"));
         dict.write_sorted_vocab(&path).unwrap();
         path
     }
@@ -586,7 +586,7 @@ mod tests {
         for &s in entries {
             dict.get_or_insert(s);
         }
-        let path = dir.join(format!("chunk_{:05}.strings.voc", chunk_id));
+        let path = dir.join(format!("chunk_{chunk_id:05}.strings.voc"));
         dict.write_sorted_vocab(&path).unwrap();
         path
     }

@@ -139,7 +139,11 @@ impl<'a, 'g> GraphQueryBuilder<'a, 'g> {
         // has_r2rml_mapping to detect graph sources without requiring
         // additional trait bounds beyond NameService.
         #[cfg(feature = "iceberg")]
-        if self.graph_source_fallback && result.as_ref().is_err_and(|e| e.is_not_found()) {
+        if self.graph_source_fallback
+            && result
+                .as_ref()
+                .is_err_and(super::error::ApiError::is_not_found)
+        {
             let ledger_id = &self.graph.ledger_id;
             let gs_id = fluree_db_core::normalize_ledger_id(ledger_id)
                 .unwrap_or_else(|_| ledger_id.to_string());

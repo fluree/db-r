@@ -183,8 +183,7 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitCodec
     let sig_count = u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap());
     if sig_count > MAX_SIG_COUNT {
         return Err(CommitCodecError::EnvelopeDecode(format!(
-            "signature count {} exceeds maximum {}",
-            sig_count, MAX_SIG_COUNT
+            "signature count {sig_count} exceeds maximum {MAX_SIG_COUNT}"
         )));
     }
 
@@ -195,23 +194,20 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitCodec
             u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap()) as usize;
         if signer_len > MAX_SIGNER_LEN {
             return Err(CommitCodecError::EnvelopeDecode(format!(
-                "signer length {} exceeds maximum {}",
-                signer_len, MAX_SIGNER_LEN
+                "signer length {signer_len} exceeds maximum {MAX_SIGNER_LEN}"
             )));
         }
 
         // signer
         let signer_bytes = read_exact(data, &mut pos, signer_len)?;
-        let signer = std::str::from_utf8(signer_bytes).map_err(|e| {
-            CommitCodecError::EnvelopeDecode(format!("invalid signer UTF-8: {}", e))
-        })?;
+        let signer = std::str::from_utf8(signer_bytes)
+            .map_err(|e| CommitCodecError::EnvelopeDecode(format!("invalid signer UTF-8: {e}")))?;
 
         // algo (u8)
         let algo = read_u8(data, &mut pos)?;
         if algo != ALGO_ED25519 {
             return Err(CommitCodecError::EnvelopeDecode(format!(
-                "unknown signature algorithm: 0x{:02x}",
-                algo
+                "unknown signature algorithm: 0x{algo:02x}"
             )));
         }
 
@@ -226,8 +222,7 @@ pub fn decode_sig_block(data: &[u8]) -> Result<Vec<CommitSignature>, CommitCodec
         let metadata = if meta_len > 0 {
             if meta_len > MAX_METADATA_LEN {
                 return Err(CommitCodecError::EnvelopeDecode(format!(
-                    "metadata length {} exceeds maximum {}",
-                    meta_len, MAX_METADATA_LEN
+                    "metadata length {meta_len} exceeds maximum {MAX_METADATA_LEN}"
                 )));
             }
             let meta = read_exact(data, &mut pos, meta_len)?.to_vec();

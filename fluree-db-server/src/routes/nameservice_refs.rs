@@ -142,7 +142,7 @@ async fn push_ref_inner(
     let result = ns
         .compare_and_set_ref(alias, kind, body.expected.as_ref(), &body.new)
         .await
-        .map_err(|e| ServerError::internal(format!("CAS operation failed: {}", e)))?;
+        .map_err(|e| ServerError::internal(format!("CAS operation failed: {e}")))?;
 
     match result {
         CasResult::Updated => {
@@ -186,7 +186,7 @@ pub async fn init_ledger(
     match ns.publish_ledger_init(&alias).await {
         Ok(()) => Ok(Json(InitResponse { created: true })),
         Err(NameServiceError::LedgerAlreadyExists(_)) => Ok(Json(InitResponse { created: false })),
-        Err(e) => Err(ServerError::internal(format!("Init failed: {}", e))),
+        Err(e) => Err(ServerError::internal(format!("Init failed: {e}"))),
     }
 }
 
@@ -208,14 +208,14 @@ pub async fn snapshot(
     let all_ledgers = ns
         .all_records()
         .await
-        .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {}", e)))?;
+        .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {e}")))?;
 
     if principal.storage_all {
         // Full access: return everything
         let graph_sources = ns
             .all_graph_source_records()
             .await
-            .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {}", e)))?;
+            .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {e}")))?;
 
         Ok(Json(SnapshotResponse {
             ledgers: all_ledgers,

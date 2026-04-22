@@ -102,8 +102,7 @@ impl crate::Fluree {
         {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
-                    "Graph source '{}' already exists",
-                    graph_source_id
+                    "Graph source '{graph_source_id}' already exists"
                 )));
             }
         }
@@ -386,7 +385,7 @@ impl crate::Fluree {
     pub(crate) fn should_use_chunked_format(&self) -> bool {
         let method = self
             .admin_storage()
-            .map(|s| s.storage_method())
+            .map(fluree_db_core::StorageMethod::storage_method)
             .unwrap_or("unknown");
         matches!(
             method,
@@ -406,10 +405,7 @@ impl crate::Fluree {
         index_t: i64,
     ) -> Result<ContentId> {
         let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid graph source ID '{}': {}",
-                graph_source_id, e
-            ))
+            crate::ApiError::config(format!("Invalid graph source ID '{graph_source_id}': {e}"))
         })?;
 
         let bytes = serde_json::to_vec(manifest)?;
@@ -467,11 +463,11 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         let index_cid = record.index_id.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No index for graph source: {}", graph_source_id))
+            crate::ApiError::NotFound(format!("No index for graph source: {graph_source_id}"))
         })?;
 
         let cs = self.content_store(graph_source_id);
@@ -521,8 +517,7 @@ impl crate::Fluree {
             .await?
             .ok_or_else(|| {
                 crate::ApiError::NotFound(format!(
-                    "No BM25 snapshot available for {} at t={}",
-                    graph_source_id, as_of_t
+                    "No BM25 snapshot available for {graph_source_id} at t={as_of_t}"
                 ))
             })?;
 
@@ -544,7 +539,7 @@ impl crate::Fluree {
     ) -> Result<Arc<fluree_db_query::bm25::Bm25Index>> {
         let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {graph_source_id}"))
         })?;
 
         let cs = self.content_store(graph_source_id);
@@ -666,7 +661,7 @@ impl crate::Fluree {
             if terms.is_empty() {
                 return Ok(Bm25SearchResult::empty(index_t));
             }
-            let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+            let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
             let scorer = Bm25Scorer::new(&index, &term_refs);
             let hits: Vec<SearchHit> = scorer
                 .top_k(limit)
@@ -760,7 +755,7 @@ impl crate::Fluree {
         // Assemble partial index and score
         let index = assemble_from_chunked_root(root, posting_lists);
         let effective_t = index.watermark.effective_t();
-        let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+        let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
         let scorer = Bm25Scorer::new(&index, &term_refs);
         let hits: Vec<SearchHit> = scorer
             .top_k(limit)
@@ -787,7 +782,7 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         // Get source ledger from dependencies
@@ -803,7 +798,7 @@ impl crate::Fluree {
         let mut ledger_t: Option<i64> = None;
         for dep in &record.dependencies {
             let ledger_record = self.nameservice().lookup(dep).await?.ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Source ledger not found: {}", dep))
+                crate::ApiError::NotFound(format!("Source ledger not found: {dep}"))
             })?;
             ledger_t = Some(match ledger_t {
                 Some(cur) => cur.min(ledger_record.commit_t),
@@ -849,14 +844,13 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         // Check if graph source has been dropped
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
-                "Cannot sync retracted graph source: {}",
-                graph_source_id
+                "Cannot sync retracted graph source: {graph_source_id}"
             )));
         }
 
@@ -888,7 +882,7 @@ impl crate::Fluree {
         // 3. Load existing index via manifest head
         let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {graph_source_id}"))
         })?;
         let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
@@ -976,7 +970,7 @@ impl crate::Fluree {
             for (prefix, ns) in &prefix_map {
                 if full_iri.starts_with(ns.as_str()) {
                     let local = &full_iri[ns.len()..];
-                    let prefixed = format!("{}:{}", prefix, local);
+                    let prefixed = format!("{prefix}:{local}");
                     affected_iris_expanded.insert(Arc::from(prefixed));
                 }
             }
@@ -1042,20 +1036,18 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
-                "Cannot sync retracted graph source: {}",
-                graph_source_id
+                "Cannot sync retracted graph source: {graph_source_id}"
             )));
         }
 
         if record.index_id.is_none() {
             return Err(crate::ApiError::NotFound(format!(
-                "No index for graph source: {}",
-                graph_source_id
+                "No index for graph source: {graph_source_id}"
             )));
         }
 
@@ -1076,7 +1068,7 @@ impl crate::Fluree {
         // 2. Load existing index via manifest head (to preserve config and property deps)
         let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {graph_source_id}"))
         })?;
         let cs = self.content_store(graph_source_id);
         let bytes = cs.get(&head.snapshot_id).await?;
@@ -1152,7 +1144,7 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         // Get source ledger to check staleness
@@ -1170,7 +1162,7 @@ impl crate::Fluree {
             .lookup(&source_ledger)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Source ledger not found: {}", source_ledger))
+                crate::ApiError::NotFound(format!("Source ledger not found: {source_ledger}"))
             })?;
 
         let index_t = record.index_t;
@@ -1193,7 +1185,7 @@ impl crate::Fluree {
         // Load the (possibly updated) index via manifest head
         let manifest = self.load_bm25_manifest(graph_source_id).await?;
         let head = manifest.head().ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No snapshots in manifest for: {}", graph_source_id))
+            crate::ApiError::NotFound(format!("No snapshots in manifest for: {graph_source_id}"))
         })?;
 
         let cs = self.content_store(graph_source_id);
@@ -1230,7 +1222,7 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         let config: JsonValue = serde_json::from_str(&record.config)?;
@@ -1238,8 +1230,14 @@ impl crate::Fluree {
             .get("query")
             .cloned()
             .unwrap_or(serde_json::json!({}));
-        let k1 = config.get("k1").and_then(|v| v.as_f64()).unwrap_or(1.2);
-        let b = config.get("b").and_then(|v| v.as_f64()).unwrap_or(0.75);
+        let k1 = config
+            .get("k1")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(1.2);
+        let b = config
+            .get("b")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.75);
 
         let source_ledger = record
             .dependencies
@@ -1379,8 +1377,7 @@ where {
             Some(r) => r,
             None => {
                 return Err(crate::ApiError::NotFound(format!(
-                    "Graph source not found: {}",
-                    graph_source_id
+                    "Graph source not found: {graph_source_id}"
                 )));
             }
         };

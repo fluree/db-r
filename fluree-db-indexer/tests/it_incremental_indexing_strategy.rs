@@ -236,7 +236,7 @@ fn reverse_dict_incremental_only_rewrites_affected_leaf_and_lookups_still_work()
 
     let mut entries: Vec<ReverseEntry> = (0..200u64)
         .map(|i| ReverseEntry {
-            key: format!("k{:04}", i).into_bytes(),
+            key: format!("k{i:04}").into_bytes(),
             id: i,
         })
         .collect();

@@ -14,7 +14,7 @@ fn parse(input: &str) -> ParseOutput<SparqlAst> {
 fn assert_parses(input: &str) -> SparqlAst {
     let result = parse(input);
     if result.has_errors() {
-        for diag in result.diagnostics.iter() {
+        for diag in &result.diagnostics {
             eprintln!("{}: {}", diag.code, diag.message);
         }
         panic!("Parse failed with errors");
@@ -233,7 +233,7 @@ fn test_minus_requires_left_pattern() {
 
 #[test]
 fn test_values_single_var() {
-    let ast = assert_parses(r#"SELECT * WHERE { VALUES ?x { 1 2 3 } }"#);
+    let ast = assert_parses(r"SELECT * WHERE { VALUES ?x { 1 2 3 } }");
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::Values { vars, data, .. } = &q.where_clause.pattern {
             assert_eq!(vars.len(), 1);
@@ -252,7 +252,7 @@ fn test_values_single_var() {
 
 #[test]
 fn test_values_multi_var() {
-    let ast = assert_parses(r#"SELECT * WHERE { VALUES (?x ?y) { (1 2) (3 4) } }"#);
+    let ast = assert_parses(r"SELECT * WHERE { VALUES (?x ?y) { (1 2) (3 4) } }");
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::Values { vars, data, .. } = &q.where_clause.pattern {
             assert_eq!(vars.len(), 2);
@@ -269,7 +269,7 @@ fn test_values_multi_var() {
 
 #[test]
 fn test_values_with_undef() {
-    let ast = assert_parses(r#"SELECT * WHERE { VALUES (?x ?y) { (1 UNDEF) (UNDEF 2) } }"#);
+    let ast = assert_parses(r"SELECT * WHERE { VALUES (?x ?y) { (1 UNDEF) (UNDEF 2) } }");
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::Values { vars, data, .. } = &q.where_clause.pattern {
             assert_eq!(vars.len(), 2);
@@ -289,7 +289,7 @@ fn test_values_with_undef() {
 #[test]
 fn test_values_with_iri() {
     let ast = assert_parses(
-        r#"SELECT * WHERE { VALUES ?x { <http://example.org/a> <http://example.org/b> } }"#,
+        r"SELECT * WHERE { VALUES ?x { <http://example.org/a> <http://example.org/b> } }",
     );
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::Values { vars, data, .. } = &q.where_clause.pattern {
@@ -325,7 +325,7 @@ fn test_values_with_strings() {
 #[test]
 fn test_values_in_group() {
     // VALUES after a triple pattern
-    let ast = assert_parses(r#"SELECT * WHERE { ?s ?p ?o . VALUES ?x { 1 } }"#);
+    let ast = assert_parses(r"SELECT * WHERE { ?s ?p ?o . VALUES ?x { 1 } }");
     if let QueryBody::Select(q) = &ast.body {
         if let GraphPattern::Group { patterns, .. } = &q.where_clause.pattern {
             assert_eq!(patterns.len(), 2);
@@ -347,7 +347,7 @@ fn test_subquery_simple() {
                 assert_eq!(vars.len(), 1);
                 match &vars[0] {
                     SelectVariable::Var(v) => assert_eq!(v.name.as_ref(), "x"),
-                    other => panic!("Expected Var, got {:?}", other),
+                    other => panic!("Expected Var, got {other:?}"),
                 }
             } else {
                 panic!("Expected Explicit variables, got Star");
@@ -736,7 +736,7 @@ fn test_filter_expression_comparison() {
                         _ => panic!("Expected binary comparison in FILTER"),
                     }
                 } else {
-                    panic!("Expected bracketed expression, got {:?}", expr);
+                    panic!("Expected bracketed expression, got {expr:?}");
                 }
             } else {
                 panic!("Expected Filter pattern");
@@ -778,8 +778,7 @@ fn test_filter_exists_expression() {
             if let GraphPattern::Filter { expr, .. } = &patterns[1] {
                 assert!(
                     matches!(expr, Expression::Exists { .. }),
-                    "Expected EXISTS expression, got {:?}",
-                    expr
+                    "Expected EXISTS expression, got {expr:?}"
                 );
             }
         }
@@ -796,8 +795,7 @@ fn test_filter_not_exists_expression() {
             if let GraphPattern::Filter { expr, .. } = &patterns[1] {
                 assert!(
                     matches!(expr, Expression::NotExists { .. }),
-                    "Expected NOT EXISTS expression, got {:?}",
-                    expr
+                    "Expected NOT EXISTS expression, got {expr:?}"
                 );
             }
         }
@@ -817,7 +815,7 @@ fn test_bind_expression() {
                     Expression::Binary { op, .. } => {
                         assert_eq!(*op, BinaryOp::Add);
                     }
-                    _ => panic!("Expected binary expression in BIND, got {:?}", expr),
+                    _ => panic!("Expected binary expression in BIND, got {expr:?}"),
                 }
             }
         }
@@ -838,7 +836,7 @@ fn test_bind_function_call() {
                         assert!(matches!(name, FunctionName::Str));
                         assert_eq!(args.len(), 1);
                     }
-                    _ => panic!("Expected function call in BIND, got {:?}", expr),
+                    _ => panic!("Expected function call in BIND, got {expr:?}"),
                 }
             }
         }
@@ -897,7 +895,7 @@ fn test_filter_bound_function() {
         panic!("Expected BRACKETED expression");
     };
     let Expression::FunctionCall { name, args, .. } = &**inner else {
-        panic!("Expected BOUND function call, got {:?}", inner);
+        panic!("Expected BOUND function call, got {inner:?}");
     };
     assert!(matches!(name, FunctionName::Bound));
     assert_eq!(args.len(), 1);
@@ -921,7 +919,7 @@ fn test_filter_in_expression() {
         panic!("Expected BRACKETED expression");
     };
     let Expression::In { negated, list, .. } = &**inner else {
-        panic!("Expected IN expression, got {:?}", inner);
+        panic!("Expected IN expression, got {inner:?}");
     };
     assert!(!negated);
     assert_eq!(list.len(), 3);
@@ -1568,7 +1566,7 @@ fn test_modify_delete_insert() {
                 crate::ast::GraphPattern::Bgp { patterns, .. } => {
                     assert_eq!(patterns.len(), 1, "expected one triple pattern");
                 }
-                other => panic!("Expected Bgp, got: {:?}", other),
+                other => panic!("Expected Bgp, got: {other:?}"),
             }
         }
         _ => panic!("Expected Modify operation"),
@@ -1789,7 +1787,7 @@ fn test_service_iri_endpoint() {
                     matches!(endpoint, ServiceEndpoint::Iri(iri) if matches!(&iri.value, IriValue::Full(s) if &**s == "http://example.org/sparql"))
                 );
             }
-            other => panic!("expected Service, got {:?}", other),
+            other => panic!("expected Service, got {other:?}"),
         }
     }
 }
@@ -1805,7 +1803,7 @@ fn test_service_var_endpoint() {
                 assert!(!silent);
                 assert!(matches!(endpoint, ServiceEndpoint::Var(v) if &*v.name == "endpoint"));
             }
-            other => panic!("expected Service, got {:?}", other),
+            other => panic!("expected Service, got {other:?}"),
         }
     }
 }
@@ -1819,7 +1817,7 @@ fn test_service_silent() {
             GraphPattern::Service { silent, .. } => {
                 assert!(silent);
             }
-            other => panic!("expected Service, got {:?}", other),
+            other => panic!("expected Service, got {other:?}"),
         }
     }
 }
@@ -1875,7 +1873,7 @@ fn test_service_fluree_ledger_endpoint() {
                     matches!(endpoint, ServiceEndpoint::Iri(iri) if matches!(&iri.value, IriValue::Full(s) if &**s == "fluree:ledger:people:main"))
                 );
             }
-            other => panic!("expected Service, got {:?}", other),
+            other => panic!("expected Service, got {other:?}"),
         }
     }
 }

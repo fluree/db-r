@@ -84,8 +84,7 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
 
     assert!(
         results.contains(&json!("ex:Ingredient")),
-        "y should be inferred as Ingredient via allValuesFrom on inverse property, got {:?}",
-        results
+        "y should be inferred as Ingredient via allValuesFrom on inverse property, got {results:?}"
     );
 
     // Also check z
@@ -105,8 +104,7 @@ async fn owl2rl_allvaluesfrom_with_inverse_property() {
 
     assert!(
         results2.contains(&json!("ex:Ingredient")),
-        "z should also be inferred as Ingredient, got {:?}",
-        results2
+        "z should also be inferred as Ingredient, got {results2:?}"
     );
 }
 
@@ -184,13 +182,11 @@ async fn owl2rl_multi_same_property_restrictions() {
 
     assert!(
         results.contains(&json!("ex:product1")),
-        "product1 should be DrugProduct (has both categorizations), got {:?}",
-        results
+        "product1 should be DrugProduct (has both categorizations), got {results:?}"
     );
     assert!(
         !results.contains(&json!("ex:product2")),
-        "product2 should NOT be DrugProduct (missing RouteOfAdmin), got {:?}",
-        results
+        "product2 should NOT be DrugProduct (missing RouteOfAdmin), got {results:?}"
     );
 }
 
@@ -496,8 +492,7 @@ async fn owl2rl_inverse_in_deeper_chain() {
 
     assert!(
         results.contains(&json!("ex:charlie")),
-        "alice should have grandparent charlie via chain, got {:?}",
-        results
+        "alice should have grandparent charlie via chain, got {results:?}"
     );
 
     // Also test that inverse property works
@@ -517,8 +512,7 @@ async fn owl2rl_inverse_in_deeper_chain() {
 
     assert!(
         results2.contains(&json!("ex:alice")),
-        "bob should have child alice via inverse, got {:?}",
-        results2
+        "bob should have child alice via inverse, got {results2:?}"
     );
 }
 
@@ -571,8 +565,7 @@ async fn owl2rl_double_inverse_normalization() {
 
     assert!(
         results.contains(&json!("ex:target")),
-        "double inverse should normalize: source->doubleInverseProp->target, got {:?}",
-        results
+        "double inverse should normalize: source->doubleInverseProp->target, got {results:?}"
     );
 
     // Also verify single inverse works in opposite direction
@@ -592,8 +585,7 @@ async fn owl2rl_double_inverse_normalization() {
 
     assert!(
         results2.contains(&json!("ex:source")),
-        "single inverse should work: target->inverseProp->source, got {:?}",
-        results2
+        "single inverse should work: target->inverseProp->source, got {results2:?}"
     );
 }
 
@@ -673,13 +665,11 @@ async fn owl2rl_partial_conditions_no_inference() {
 
     assert!(
         !results.contains(&json!("ex:partial1")),
-        "partial1 should NOT be ConjunctiveClass (missing hasC), got {:?}",
-        results
+        "partial1 should NOT be ConjunctiveClass (missing hasC), got {results:?}"
     );
     assert!(
         results.contains(&json!("ex:complete1")),
-        "complete1 should be ConjunctiveClass (has all conditions), got {:?}",
-        results
+        "complete1 should be ConjunctiveClass (has all conditions), got {results:?}"
     );
 }
 
@@ -746,7 +736,6 @@ async fn owl2rl_hasvalue_class_to_property_entailment() {
 
     assert!(
         results.contains(&json!("ex:kg")),
-        "mass1 should have inferred hasUnit kg via hasValue backward entailment, got {:?}",
-        results
+        "mass1 should have inferred hasUnit kg via hasValue backward entailment, got {results:?}"
     );
 }

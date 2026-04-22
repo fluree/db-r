@@ -126,8 +126,8 @@ async fn graph_crawl_applies_novelty_retractions() {
     // SPARQL SELECT (control): should return only the updated value.
     // -------------------------------------------------------------------------
     let sparql = format!(
-        r#"PREFIX ex: <http://example.org/>
-        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}"#,
+        r"PREFIX ex: <http://example.org/>
+        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}",
     );
     let sparql_result = support::query_sparql(&fluree, &receipt.ledger, &sparql)
         .await
@@ -229,8 +229,8 @@ async fn graph_crawl_applies_novelty_retractions_for_indexed_base_rows() {
 
     // SPARQL SELECT (control): should return only the updated value.
     let sparql = format!(
-        r#"PREFIX ex: <http://example.org/>
-        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}"#,
+        r"PREFIX ex: <http://example.org/>
+        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}",
     );
     let sparql_result = support::query_sparql(&fluree, &receipt.ledger, &sparql)
         .await
@@ -327,8 +327,8 @@ async fn graph_crawl_applies_novelty_retractions_for_list_indexed_values() {
 
     // SPARQL SELECT (control): should return only the updated value.
     let sparql = format!(
-        r#"PREFIX ex: <http://example.org/>
-        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}"#,
+        r"PREFIX ex: <http://example.org/>
+        SELECT ?desc WHERE {{ <{TASK_IRI}> ex:description ?desc }}",
     );
     let sparql_result = support::query_sparql(&fluree, &receipt.ledger, &sparql)
         .await

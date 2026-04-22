@@ -978,7 +978,7 @@ fn decode_encryption_key_base64(key_str: &str) -> Result<[u8; 32]> {
     use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(key_str)
-        .map_err(|e| ApiError::config(format!("Invalid base64 encryption key: {}", e)))?;
+        .map_err(|e| ApiError::config(format!("Invalid base64 encryption key: {e}")))?;
 
     if decoded.len() != 32 {
         return Err(ApiError::config(format!(
@@ -1010,12 +1010,18 @@ async fn build_s3_storage_from_config(
 
     let sdk_config = fluree_db_connection::aws::get_or_init_sdk_config()
         .await
-        .map_err(|e| ApiError::config(format!("Failed to get AWS SDK config: {}", e)))?;
+        .map_err(|e| ApiError::config(format!("Failed to get AWS SDK config: {e}")))?;
 
     let raw_config = RawS3Config {
         bucket: s3_config.bucket.to_string(),
-        prefix: s3_config.prefix.as_ref().map(|s| s.to_string()),
-        endpoint: s3_config.endpoint.as_ref().map(|s| s.to_string()),
+        prefix: s3_config
+            .prefix
+            .as_ref()
+            .map(std::string::ToString::to_string),
+        endpoint: s3_config
+            .endpoint
+            .as_ref()
+            .map(std::string::ToString::to_string),
         // Consolidate per-op timeouts to a single SDK operation timeout.
         // Use the maximum to avoid unexpectedly shortening slower operations.
         timeout_ms: {
@@ -1039,7 +1045,7 @@ async fn build_s3_storage_from_config(
 
     let storage = S3Storage::new(sdk_config, raw_config)
         .await
-        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {e}")))?;
 
     // Wrap with encryption if key is configured
     if let Some(key_str) = storage_config.aes256_key.as_ref() {
@@ -1080,8 +1086,7 @@ fn build_local_storage_from_config(
             "S3 storage in addressIdentifiers is only supported with 'aws' feature",
         )),
         StorageType::Unsupported { type_iri, .. } => Err(ApiError::config(format!(
-            "Unsupported storage type in addressIdentifiers: {}",
-            type_iri
+            "Unsupported storage type in addressIdentifiers: {type_iri}"
         ))),
     }
 }
@@ -1458,7 +1463,7 @@ impl FlureeBuilder {
         use base64::Engine;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(base64_key)
-            .map_err(|e| ApiError::config(format!("Invalid base64 encryption key: {}", e)))?;
+            .map_err(|e| ApiError::config(format!("Invalid base64 encryption key: {e}")))?;
 
         if decoded.len() != 32 {
             return Err(ApiError::config(format!(
@@ -1503,11 +1508,15 @@ impl FlureeBuilder {
     /// The key should be base64-encoded, 32 bytes when decoded.
     pub fn from_json_ld(json: &serde_json::Value) -> Result<Self> {
         let config = ConnectionConfig::from_json_ld(json)
-            .map_err(|e| ApiError::config(format!("Invalid JSON-LD config: {}", e)))?;
+            .map_err(|e| ApiError::config(format!("Invalid JSON-LD config: {e}")))?;
 
         // Extract path from storage config (used by typed file builds)
         #[cfg(feature = "native")]
-        let storage_path = config.index_storage.path.as_ref().map(|p| p.to_string());
+        let storage_path = config
+            .index_storage
+            .path
+            .as_ref()
+            .map(std::string::ToString::to_string);
 
         // Extract encryption key if configured
         let encryption_key = if let Some(key_str) = &config.index_storage.aes256_key {
@@ -1545,7 +1554,7 @@ impl FlureeBuilder {
         use base64::Engine;
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(key_str)
-            .map_err(|e| ApiError::config(format!("Invalid base64 encryption key: {}", e)))?;
+            .map_err(|e| ApiError::config(format!("Invalid base64 encryption key: {e}")))?;
 
         if decoded.len() != 32 {
             return Err(ApiError::config(format!(
@@ -1976,8 +1985,11 @@ impl FlureeBuilder {
             sdk_config,
             S3Config {
                 bucket: s3_cfg.bucket.to_string(),
-                prefix: s3_cfg.prefix.as_ref().map(|s| s.to_string()),
-                endpoint: s3_cfg.endpoint.as_ref().map(|s| s.to_string()),
+                prefix: s3_cfg.prefix.as_ref().map(std::string::ToString::to_string),
+                endpoint: s3_cfg
+                    .endpoint
+                    .as_ref()
+                    .map(std::string::ToString::to_string),
                 timeout_ms,
                 max_retries: s3_cfg.max_retries.map(|n| n as u32),
                 retry_base_delay_ms: s3_cfg.retry_base_delay_ms,
@@ -1985,7 +1997,7 @@ impl FlureeBuilder {
             },
         )
         .await
-        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {e}")))?;
 
         // Empty prefix: S3Storage already applies its own key prefix.
         let nameservice = StorageNameService::new(storage.clone(), "");
@@ -2049,8 +2061,11 @@ impl FlureeBuilder {
             sdk_config,
             S3Config {
                 bucket: s3_cfg.bucket.to_string(),
-                prefix: s3_cfg.prefix.as_ref().map(|s| s.to_string()),
-                endpoint: s3_cfg.endpoint.as_ref().map(|s| s.to_string()),
+                prefix: s3_cfg.prefix.as_ref().map(std::string::ToString::to_string),
+                endpoint: s3_cfg
+                    .endpoint
+                    .as_ref()
+                    .map(std::string::ToString::to_string),
                 timeout_ms,
                 max_retries: s3_cfg.max_retries.map(|n| n as u32),
                 retry_base_delay_ms: s3_cfg.retry_base_delay_ms,
@@ -2058,7 +2073,7 @@ impl FlureeBuilder {
             },
         )
         .await
-        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {}", e)))?;
+        .map_err(|e| ApiError::config(format!("Failed to create S3 storage: {e}")))?;
 
         // Wrap with encryption
         let encryption_key = EncryptionKey::new(key, 0);
@@ -2236,8 +2251,7 @@ impl FlureeBuilder {
                 "S3 storage requires the 'aws' feature on fluree-db-api",
             )),
             StorageType::Unsupported { type_iri, .. } => Err(ApiError::config(format!(
-                "Unsupported storage type: {}",
-                type_iri
+                "Unsupported storage type: {type_iri}"
             ))),
         }
     }
@@ -2380,7 +2394,7 @@ impl FlureeBuilder {
     fn wrap_address_identifiers(&self, base_storage: Arc<dyn Storage>) -> Result<Arc<dyn Storage>> {
         if let Some(addr_ids) = &self.config.address_identifiers {
             let mut identifier_map = std::collections::HashMap::new();
-            for (identifier, storage_config) in addr_ids.iter() {
+            for (identifier, storage_config) in addr_ids {
                 let id_storage = build_local_storage_from_config(storage_config)?;
                 identifier_map.insert(identifier.to_string(), id_storage);
             }
@@ -2402,7 +2416,7 @@ impl FlureeBuilder {
     ) -> Result<Arc<dyn Storage>> {
         if let Some(addr_ids) = &config.address_identifiers {
             let mut identifier_map = std::collections::HashMap::new();
-            for (identifier, storage_config) in addr_ids.iter() {
+            for (identifier, storage_config) in addr_ids {
                 let id_storage: Arc<dyn Storage> = match &storage_config.storage_type {
                     StorageType::S3(_) => build_s3_storage_from_config(storage_config).await?,
                     _ => build_local_storage_from_config(storage_config)?,
@@ -3066,7 +3080,7 @@ impl Fluree {
     pub fn spawn_maintenance(&self) -> Option<tokio::task::JoinHandle<()>> {
         self.ledger_manager
             .as_ref()
-            .map(|mgr| mgr.spawn_maintenance())
+            .map(ledger_manager::LedgerManager::spawn_maintenance)
     }
 }
 
@@ -3388,7 +3402,7 @@ mod tests {
 
         // Refresh unknown ledger should return None (not in nameservice)
         let result = fluree
-            .refresh("nonexistent:main", Default::default())
+            .refresh("nonexistent:main", RefreshOpts::default())
             .await
             .unwrap();
         assert_eq!(result, None);
@@ -3411,7 +3425,7 @@ mod tests {
 
         // Refresh should return NotLoaded (record exists but not cached)
         let result = fluree
-            .refresh("mydb:main", Default::default())
+            .refresh("mydb:main", RefreshOpts::default())
             .await
             .unwrap();
         assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
@@ -3426,7 +3440,7 @@ mod tests {
 
         // Refresh should return NotLoaded (caching disabled = no-op)
         let result = fluree
-            .refresh("mydb:main", Default::default())
+            .refresh("mydb:main", RefreshOpts::default())
             .await
             .unwrap();
         assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
@@ -3448,13 +3462,16 @@ mod tests {
             .unwrap();
 
         // Refresh with short alias should resolve to canonical
-        let result = fluree.refresh("mydb", Default::default()).await.unwrap();
+        let result = fluree
+            .refresh("mydb", RefreshOpts::default())
+            .await
+            .unwrap();
         // Should return NotLoaded since we haven't cached it
         assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
 
         // Refresh with full alias should also work
         let result = fluree
-            .refresh("mydb:main", Default::default())
+            .refresh("mydb:main", RefreshOpts::default())
             .await
             .unwrap();
         assert_eq!(result.map(|r| r.action), Some(NotifyResult::NotLoaded));
@@ -3475,7 +3492,7 @@ mod tests {
 
         // Refresh should return Current (cache matches NS)
         let result = fluree
-            .refresh("testdb:main", Default::default())
+            .refresh("testdb:main", RefreshOpts::default())
             .await
             .unwrap();
         assert_eq!(result.map(|r| r.action), Some(NotifyResult::Current));
@@ -3515,7 +3532,7 @@ mod tests {
 
         // Refresh should return Current (cache is up to date with NS)
         let result = fluree
-            .refresh("txdb:main", Default::default())
+            .refresh("txdb:main", RefreshOpts::default())
             .await
             .unwrap();
         assert_eq!(result.map(|r| r.action), Some(NotifyResult::Current));
@@ -3539,7 +3556,10 @@ mod tests {
 
         // Refresh via SHORT alias - should find the cached entry
         // If this returns NotLoaded, there's a cache key mismatch bug
-        let result = fluree.refresh("shortdb", Default::default()).await.unwrap();
+        let result = fluree
+            .refresh("shortdb", RefreshOpts::default())
+            .await
+            .unwrap();
         assert_eq!(
             result.map(|r| r.action),
             Some(NotifyResult::Current),
@@ -3548,7 +3568,7 @@ mod tests {
 
         // Also verify full alias refresh works
         let result_full = fluree
-            .refresh("shortdb:main", Default::default())
+            .refresh("shortdb:main", RefreshOpts::default())
             .await
             .unwrap();
         assert_eq!(

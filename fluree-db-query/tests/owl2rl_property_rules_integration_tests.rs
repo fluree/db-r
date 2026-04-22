@@ -276,8 +276,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     if domain_flakes.is_empty() {
         let last = overlay.psot_last_call.lock().unwrap().clone();
         panic!(
-            "Expected to read rdfs:domain axioms via range_with_overlay; overlay boundary logic may be incorrect. last Psot call = {:?}",
-            last
+            "Expected to read rdfs:domain axioms via range_with_overlay; overlay boundary logic may be incorrect. last Psot call = {last:?}"
         );
     }
 
@@ -309,7 +308,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
     let res_no = execute_with_overlay(source, &vars_a, &exec_no)
         .await
         .unwrap();
-    let total_rows_no: usize = res_no.iter().map(|b| b.len()).sum();
+    let total_rows_no: usize = res_no.iter().map(fluree_db_query::Batch::len).sum();
     assert_eq!(
         total_rows_no, 0,
         "Expected no results without owl2rl materialization"
@@ -343,7 +342,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
             let row = batch.row_view(row_idx).unwrap();
             match row.get(x) {
                 Some(Binding::Sid(sid)) => got.push(sid.clone()),
-                Some(other) => panic!("Expected Sid binding for ?x, got {:?}", other),
+                Some(other) => panic!("Expected Sid binding for ?x, got {other:?}"),
                 None => panic!("Expected binding for ?x"),
             }
         }
@@ -381,7 +380,7 @@ async fn owl2rl_domain_range_and_chain_visible_via_execute_with_overlay() {
             let row = batch.row_view(row_idx).unwrap();
             match row.get(o) {
                 Some(Binding::Sid(sid)) => got_o.push(sid.clone()),
-                Some(other) => panic!("Expected Sid binding for ?o, got {:?}", other),
+                Some(other) => panic!("Expected Sid binding for ?o, got {other:?}"),
                 None => panic!("Expected binding for ?o"),
             }
         }

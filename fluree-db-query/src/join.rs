@@ -41,7 +41,7 @@ fn lower_bound_s_id(
     let mut lo = start;
     let mut hi = end;
     while lo < hi {
-        let mid = (lo + hi) / 2;
+        let mid = usize::midpoint(lo, hi);
         if batch.s_id.get(mid) < target {
             lo = mid + 1;
         } else {
@@ -62,7 +62,7 @@ fn upper_bound_s_id(
     let mut lo = start;
     let mut hi = end;
     while lo < hi {
-        let mid = (lo + hi) / 2;
+        let mid = usize::midpoint(lo, hi);
         if batch.s_id.get(mid) <= target {
             lo = mid + 1;
         } else {
@@ -795,8 +795,7 @@ impl NestedLoopJoinOperator {
                                             "join failed to decode encoded object binding"
                                         );
                                         QueryError::dictionary_lookup(format!(
-                                            "join object binding decode: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
-                                            o_kind, o_key, p_id, dt_id, lang_id, e
+                                            "join object binding decode: o_kind={o_kind}, o_key={o_key}, p_id={p_id}, dt_id={dt_id}, lang_id={lang_id}: {e}"
                                         ))
                                     })?;
                                 pattern.o = Term::Value(val);
@@ -1496,12 +1495,12 @@ impl NestedLoopJoinOperator {
             let leaf_entry = &branch.leaves[leaf_idx];
             let leaf_bytes = store
                 .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
-                .map_err(|e| QueryError::Internal(format!("fetch leaf: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("fetch leaf: {e}")))?;
 
             let header = decode_leaf_header_v3(&leaf_bytes)
-                .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("read leaf header: {e}")))?;
             let dir = decode_leaf_dir_v3_with_base(&leaf_bytes, &header)
-                .map_err(|e| QueryError::Internal(format!("decode leaf dir: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("decode leaf dir: {e}")))?;
             let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.leaf_cid.to_bytes().as_ref());
 
             for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
@@ -1527,7 +1526,7 @@ impl NestedLoopJoinOperator {
                             QueryError::Internal("leaflet idx exceeds u32".to_string())
                         })?,
                     )
-                    .map_err(|e| QueryError::Internal(format!("load columns: {}", e)))?
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 } else {
                     use fluree_db_binary_index::read::column_loader::load_leaflet_columns;
                     load_leaflet_columns(
@@ -1537,7 +1536,7 @@ impl NestedLoopJoinOperator {
                         &fluree_db_binary_index::ColumnProjection::all(),
                         header.order,
                     )
-                    .map_err(|e| QueryError::Internal(format!("load columns: {}", e)))?
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 };
 
                 let row_count = batch.row_count;
@@ -1927,7 +1926,11 @@ impl NestedLoopJoinOperator {
 
         tracing::debug!(
             total_ms = (overall_start.elapsed().as_secs_f64() * 1000.0) as u64,
-            output_rows = self.batched_output.iter().map(|b| b.len()).sum::<usize>(),
+            output_rows = self
+                .batched_output
+                .iter()
+                .map(super::binding::Batch::len)
+                .sum::<usize>(),
             "join batched binary flush complete"
         );
 
@@ -2032,12 +2035,12 @@ impl NestedLoopJoinOperator {
             let leaf_entry = &branch.leaves[leaf_idx];
             let leaf_bytes = store
                 .get_leaf_bytes_sync(&leaf_entry.leaf_cid)
-                .map_err(|e| QueryError::Internal(format!("fetch leaf: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("fetch leaf: {e}")))?;
 
             let header = decode_leaf_header_v3(&leaf_bytes)
-                .map_err(|e| QueryError::Internal(format!("read leaf header: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("read leaf header: {e}")))?;
             let dir = decode_leaf_dir_v3_with_base(&leaf_bytes, &header)
-                .map_err(|e| QueryError::Internal(format!("decode leaf dir: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("decode leaf dir: {e}")))?;
             let leaf_id = xxhash_rust::xxh3::xxh3_128(leaf_entry.leaf_cid.to_bytes().as_ref());
 
             for (leaflet_idx, entry) in dir.entries.iter().enumerate() {
@@ -2089,7 +2092,7 @@ impl NestedLoopJoinOperator {
                             &core_proj,
                             header.order,
                         )
-                        .map_err(|e| QueryError::Internal(format!("load columns: {}", e)))?
+                        .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                     }
                 } else {
                     load_leaflet_columns(
@@ -2099,7 +2102,7 @@ impl NestedLoopJoinOperator {
                         &core_proj,
                         header.order,
                     )
-                    .map_err(|e| QueryError::Internal(format!("load columns: {}", e)))?
+                    .map_err(|e| QueryError::Internal(format!("load columns: {e}")))?
                 };
 
                 // OPST leaflets are ordered by (o_type, o_key, p_id, s_id, t...).

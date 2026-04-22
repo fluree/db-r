@@ -416,7 +416,7 @@ impl<'a> MappingExtractor<'a> {
 
     /// Convert a term to an IRI string
     fn term_to_iri(&self, term: &Term) -> Option<String> {
-        term.as_iri().map(|s| s.to_string())
+        term.as_iri().map(std::string::ToString::to_string)
     }
 
     /// Create a constant ObjectMap from a term
@@ -431,12 +431,12 @@ impl<'a> MappingExtractor<'a> {
                 value: ConstantValue::Literal {
                     value: value.lexical(),
                     datatype: None, // TODO: extract datatype
-                    language: language.as_ref().map(|l| l.to_string()),
+                    language: language.as_ref().map(std::string::ToString::to_string),
                 },
             },
             _ => ObjectMap::Constant {
                 value: ConstantValue::Literal {
-                    value: "".to_string(),
+                    value: String::new(),
                     datatype: None,
                     language: None,
                 },
@@ -575,8 +575,7 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("requires at least one rr:joinCondition"),
-            "Expected error about missing join condition, got: {}",
-            err
+            "Expected error about missing join condition, got: {err}"
         );
     }
 

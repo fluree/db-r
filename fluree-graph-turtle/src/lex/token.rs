@@ -176,7 +176,7 @@ impl std::fmt::Display for TokenKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TokenKind::Iri => write!(f, "<IRI>"),
-            TokenKind::IriEscaped(s) => write!(f, "<{}>", s),
+            TokenKind::IriEscaped(s) => write!(f, "<{s}>"),
             TokenKind::PrefixedNameNs => write!(f, "prefixedNs:"),
             TokenKind::PrefixedName => write!(f, "prefixed:name"),
             TokenKind::BlankNodeLabel => write!(f, "_:blank"),
@@ -184,10 +184,10 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Nil => write!(f, "()"),
             TokenKind::String => write!(f, "\"string\""),
             TokenKind::LongString => write!(f, "\"\"\"string\"\"\""),
-            TokenKind::StringEscaped(s) => write!(f, "\"{}\"", s),
-            TokenKind::Integer(n) => write!(f, "{}", n),
+            TokenKind::StringEscaped(s) => write!(f, "\"{s}\""),
+            TokenKind::Integer(n) => write!(f, "{n}"),
             TokenKind::Decimal => write!(f, "decimal"),
-            TokenKind::Double(n) => write!(f, "{:e}", n),
+            TokenKind::Double(n) => write!(f, "{n:e}"),
             TokenKind::LangTag => write!(f, "@lang"),
             TokenKind::KwPrefix => write!(f, "@prefix"),
             TokenKind::KwBase => write!(f, "@base"),

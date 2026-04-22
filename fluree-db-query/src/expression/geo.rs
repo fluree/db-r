@@ -96,11 +96,10 @@ mod tests {
         if let Some(ComparableValue::Double(d)) = result {
             assert!(
                 (d - 343_500.0).abs() < 5_000.0,
-                "Expected ~343 km, got {} m",
-                d
+                "Expected ~343 km, got {d} m"
             );
         } else {
-            panic!("Expected Double result, got {:?}", result);
+            panic!("Expected Double result, got {result:?}");
         }
     }
 
@@ -129,11 +128,10 @@ mod tests {
         if let Some(ComparableValue::Double(d)) = result {
             assert!(
                 (d - 343_500.0).abs() < 5_000.0,
-                "Expected ~343 km, got {} m",
-                d
+                "Expected ~343 km, got {d} m"
             );
         } else {
-            panic!("Expected Double result, got {:?}", result);
+            panic!("Expected Double result, got {result:?}");
         }
     }
 

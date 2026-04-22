@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_build_string_packs_small() {
         let entries: Vec<(u32, Vec<u8>)> = (0..100)
-            .map(|i| (i, format!("string_{}", i).into_bytes()))
+            .map(|i| (i, format!("string_{i}").into_bytes()))
             .collect();
         let refs: Vec<(u32, &[u8])> = entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();
 
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn test_build_string_packs_multi_page() {
         let entries: Vec<(u32, Vec<u8>)> = (0..10_000)
-            .map(|i| (i, format!("http://example.org/entity/{}", i).into_bytes()))
+            .map(|i| (i, format!("http://example.org/entity/{i}").into_bytes()))
             .collect();
         let refs: Vec<(u32, &[u8])> = entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();
 
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn test_build_string_packs_multi_pack() {
         let entries: Vec<(u32, Vec<u8>)> = (0..1000)
-            .map(|i| (i, format!("val_{}", i).into_bytes()))
+            .map(|i| (i, format!("val_{i}").into_bytes()))
             .collect();
         let refs: Vec<(u32, &[u8])> = entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();
 
@@ -205,7 +205,7 @@ mod tests {
     #[test]
     fn test_build_subject_packs() {
         let entries: Vec<(u64, Vec<u8>)> = (0..50)
-            .map(|i| (i as u64, format!("suffix/{}", i).into_bytes()))
+            .map(|i| (i as u64, format!("suffix/{i}").into_bytes()))
             .collect();
         let refs: Vec<(u64, &[u8])> = entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();
 

@@ -53,13 +53,13 @@ impl std::fmt::Display for BuilderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BuilderError::Missing { field, hint } => {
-                write!(f, "missing required field '{}': {}", field, hint)
+                write!(f, "missing required field '{field}': {hint}")
             }
             BuilderError::Conflict { field, message } => {
-                write!(f, "conflict on field '{}': {}", field, message)
+                write!(f, "conflict on field '{field}': {message}")
             }
             BuilderError::Invalid { field, message } => {
-                write!(f, "invalid field '{}': {}", field, message)
+                write!(f, "invalid field '{field}': {message}")
             }
         }
     }
@@ -85,7 +85,7 @@ impl std::fmt::Display for BuilderErrors {
             if i > 0 {
                 write!(f, "; ")?;
             }
-            write!(f, "{}", err)?;
+            write!(f, "{err}")?;
         }
         Ok(())
     }
@@ -378,9 +378,11 @@ impl ApiError {
             | ApiError::Json(_)
             | ApiError::Batch(_)
             | ApiError::Format(_) => 400,
-            ApiError::Transact(fluree_db_transact::TransactError::CommitConflict { .. })
-            | ApiError::Transact(fluree_db_transact::TransactError::CommitIdMismatch { .. })
-            | ApiError::Transact(fluree_db_transact::TransactError::PublishLostRace { .. }) => 409,
+            ApiError::Transact(
+                fluree_db_transact::TransactError::CommitConflict { .. }
+                | fluree_db_transact::TransactError::CommitIdMismatch { .. }
+                | fluree_db_transact::TransactError::PublishLostRace { .. },
+            ) => 409,
             // Other transaction errors are usually validation failures
             ApiError::Transact(_) => 400,
             // Internal/infrastructure errors

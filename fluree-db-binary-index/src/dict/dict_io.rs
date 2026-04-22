@@ -75,7 +75,7 @@ pub fn read_predicate_dict_from_bytes(data: &[u8]) -> io::Result<PredicateDict> 
         let s = std::str::from_utf8(&data[pos..pos + len]).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("predicate dict: invalid UTF-8: {}", e),
+                format!("predicate dict: invalid UTF-8: {e}"),
             )
         })?;
         dict.get_or_insert(s);
@@ -229,7 +229,7 @@ pub fn read_language_dict_from_bytes(data: &[u8]) -> io::Result<LanguageTagDict>
         let s = std::str::from_utf8(&data[pos..pos + len]).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("language dict: invalid UTF-8: {}", e),
+                format!("language dict: invalid UTF-8: {e}"),
             )
         })?;
         dict.get_or_insert(Some(s));
@@ -270,8 +270,7 @@ pub fn read_forward_entry(forward_mmap: &memmap2::Mmap, offset: u64, len: u32) -
     let bytes = &forward_mmap[start..end];
     debug_assert!(
         std::str::from_utf8(bytes).is_ok(),
-        "forward entry is not valid UTF-8 at offset {}",
-        offset,
+        "forward entry is not valid UTF-8 at offset {offset}",
     );
     // SAFETY: We wrote this data as valid UTF-8 strings. debug_assert catches
     // corruption during development without paying for validation in release.

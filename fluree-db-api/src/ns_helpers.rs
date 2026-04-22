@@ -34,7 +34,7 @@ pub fn sync_store_and_snapshot_ns(
     // 2. Augment the store with snapshot namespace codes (post-index allocations).
     store
         .augment_namespace_codes(snapshot.namespaces())
-        .map_err(|e| ApiError::internal(format!("augment namespace codes: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("augment namespace codes: {e}")))?;
 
     // 3. Reconcile store codes back into snapshot (validation + insert).
     //    Check both directions of the bimap to detect conflicts:
@@ -45,9 +45,8 @@ pub fn sync_store_and_snapshot_ns(
         if let Some(existing_prefix) = snapshot.namespaces().get(code) {
             if existing_prefix != prefix {
                 return Err(ApiError::internal(format!(
-                    "namespace reconciliation failure: index root ns code {} maps to {:?} \
-                     but commit chain has {:?} — possible indexer/publisher bug",
-                    code, prefix, existing_prefix
+                    "namespace reconciliation failure: index root ns code {code} maps to {prefix:?} \
+                     but commit chain has {existing_prefix:?} — possible indexer/publisher bug"
                 )));
             }
         }
@@ -55,15 +54,14 @@ pub fn sync_store_and_snapshot_ns(
         if let Some(&existing_code) = snapshot.namespace_reverse().get(prefix.as_str()) {
             if existing_code != *code {
                 return Err(ApiError::internal(format!(
-                    "namespace reconciliation failure: prefix {:?} has code {} in index root \
-                     but code {} in commit chain — possible indexer/publisher bug",
-                    prefix, code, existing_code
+                    "namespace reconciliation failure: prefix {prefix:?} has code {code} in index root \
+                     but code {existing_code} in commit chain — possible indexer/publisher bug"
                 )));
             }
         }
         snapshot
             .insert_namespace_code(*code, prefix.clone())
-            .map_err(|e| ApiError::internal(format!("namespace reconciliation: {}", e)))?;
+            .map_err(|e| ApiError::internal(format!("namespace reconciliation: {e}")))?;
     }
 
     Ok(())

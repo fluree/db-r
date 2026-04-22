@@ -142,13 +142,13 @@ impl<'a> ExportResolver<'a> {
                                 return Ok(suffix.to_string());
                             }
                             let prefix = self.store.namespace_prefix(ns_code)?;
-                            return Ok(format!("{}{}", prefix, suffix));
+                            return Ok(format!("{prefix}{suffix}"));
                         }
                     }
                 }
                 Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("subject s_id {} not found in store or DictNovelty", s_id),
+                    format!("subject s_id {s_id} not found in store or DictNovelty"),
                 ))
             }
         }
@@ -210,7 +210,7 @@ impl<'a> ExportResolver<'a> {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            format!("string id {} not found in store or DictNovelty", str_id),
+            format!("string id {str_id} not found in store or DictNovelty"),
         ))
     }
 
@@ -481,7 +481,7 @@ fn write_turtle_object<W: Write>(
         FlakeValue::Ref(sid) => {
             let iri = store
                 .sid_to_iri(sid)
-                .unwrap_or_else(|| format!("_:unknown_{}", sid));
+                .unwrap_or_else(|| format!("_:unknown_{sid}"));
             write_turtle_iri_or_bnode(w, &iri, prefixes)
         }
         // For all literal types, reuse the N-Triples formatting
@@ -719,7 +719,7 @@ fn flake_to_jsonld(
         FlakeValue::Ref(sid) => {
             let iri = store
                 .sid_to_iri(sid)
-                .unwrap_or_else(|| format!("_:unknown_{}", sid));
+                .unwrap_or_else(|| format!("_:unknown_{sid}"));
             let compact = compact_iri(&iri, prefixes);
             serde_json::json!({ "@id": compact })
         }
@@ -903,7 +903,7 @@ fn escape_json_string(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             c if c.is_control() => {
                 let cp = c as u32;
-                out.push_str(&format!("\\u{:04X}", cp));
+                out.push_str(&format!("\\u{cp:04X}"));
             }
             c => out.push(c),
         }
@@ -1052,7 +1052,7 @@ fn write_object<W: Write>(
         FlakeValue::Ref(sid) => {
             let iri = store
                 .sid_to_iri(sid)
-                .unwrap_or_else(|| format!("_:unknown_{}", sid));
+                .unwrap_or_else(|| format!("_:unknown_{sid}"));
             write_iri_or_bnode(w, &iri)
         }
 
@@ -1100,7 +1100,7 @@ fn write_object<W: Write>(
             } else if f.is_nan() {
                 "NaN".to_string()
             } else {
-                format!("{:E}", f)
+                format!("{f:E}")
             };
             write_typed_literal(w, &lexical, xsd::DOUBLE)
         }
@@ -1283,9 +1283,9 @@ fn write_escaped_ntriples_string<W: Write>(w: &mut W, s: &str) -> io::Result<()>
             c if c.is_control() => {
                 let cp = c as u32;
                 if cp <= 0xFFFF {
-                    write!(w, "\\u{:04X}", cp)?;
+                    write!(w, "\\u{cp:04X}")?;
                 } else {
-                    write!(w, "\\U{:08X}", cp)?;
+                    write!(w, "\\U{cp:08X}")?;
                 }
             }
             c => {
@@ -1318,7 +1318,7 @@ pub fn write_escaped_iri<W: Write>(w: &mut W, iri: &str) -> io::Result<()> {
             let mut buf = [0u8; 4];
             let encoded = ch.encode_utf8(&mut buf);
             for &b in encoded.as_bytes() {
-                write!(w, "%{:02X}", b)?;
+                write!(w, "%{b:02X}")?;
             }
         } else {
             let mut buf = [0u8; 4];
@@ -1341,7 +1341,7 @@ fn escape_iri_into(out: &mut String, iri: &str) {
             let encoded = ch.encode_utf8(&mut buf);
             for &b in encoded.as_bytes() {
                 out.push('%');
-                out.push_str(&format!("{:02X}", b));
+                out.push_str(&format!("{b:02X}"));
             }
         } else {
             out.push(ch);

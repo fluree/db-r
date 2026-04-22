@@ -392,8 +392,7 @@ mod tests {
         let (root_cid, root_addr) = cid_and_addr(ContentKind::IndexRoot, b"root_with_gc");
 
         let garbage_json = format!(
-            r#"{{"ledger_id": "{}", "t": 1, "garbage": ["{}"], "created_at_ms": 0}}"#,
-            LEDGER, old_leaf_cid
+            r#"{{"ledger_id": "{LEDGER}", "t": 1, "garbage": ["{old_leaf_cid}"], "created_at_ms": 0}}"#
         );
         storage
             .write_bytes(&garb_addr, garbage_json.as_bytes())

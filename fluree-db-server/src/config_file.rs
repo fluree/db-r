@@ -893,8 +893,8 @@ default_policy_class = "ex:DefaultPolicy"
 
         let idx = server.indexing.unwrap();
         assert_eq!(idx.enabled, Some(true));
-        assert_eq!(idx.reindex_min_bytes, Some(200000));
-        assert_eq!(idx.reindex_max_bytes, Some(2000000));
+        assert_eq!(idx.reindex_min_bytes, Some(200_000));
+        assert_eq!(idx.reindex_max_bytes, Some(2_000_000));
 
         let auth = server.auth.unwrap();
         let events = auth.events.unwrap();

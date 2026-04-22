@@ -816,7 +816,7 @@ async fn sparql_graph_pattern_concrete_iri() {
         .expect("build should succeed");
 
     // Query using GRAPH pattern with concrete IRI to access named graph
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name
         WHERE {
@@ -824,7 +824,7 @@ async fn sparql_graph_pattern_concrete_iri() {
                 ?person schema:name ?name
             }
         }
-    "#;
+    ";
 
     let result = fluree
         .query_dataset(&dataset, sparql)
@@ -863,7 +863,7 @@ async fn sparql_graph_pattern_variable_iteration() {
         .expect("build should succeed");
 
     // Query using GRAPH ?g to iterate over all named graphs
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?g ?name
         WHERE {
@@ -871,7 +871,7 @@ async fn sparql_graph_pattern_variable_iteration() {
                 ?entity schema:name ?name
             }
         }
-    "#;
+    ";
 
     let result = fluree
         .query_dataset(&dataset, sparql)
@@ -914,7 +914,7 @@ async fn sparql_graph_pattern_nonexistent_graph_returns_empty() {
         .expect("build should succeed");
 
     // Query a graph that doesn't exist in the dataset
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name
         WHERE {
@@ -922,7 +922,7 @@ async fn sparql_graph_pattern_nonexistent_graph_returns_empty() {
                 ?entity schema:name ?name
             }
         }
-    "#;
+    ";
 
     let result = fluree
         .query_dataset(&dataset, sparql)
@@ -958,13 +958,13 @@ async fn sparql_graph_pattern_default_vs_named() {
         .expect("build should succeed");
 
     // Query default graph (no GRAPH pattern) - should get people
-    let sparql_default = r#"
+    let sparql_default = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name
         WHERE {
             ?entity schema:name ?name
         }
-    "#;
+    ";
 
     let result_default = fluree
         .query_dataset(&dataset, sparql_default)
@@ -983,7 +983,7 @@ async fn sparql_graph_pattern_default_vs_named() {
     );
 
     // Query named graph via GRAPH pattern - should get orgs
-    let sparql_named = r#"
+    let sparql_named = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name
         WHERE {
@@ -991,7 +991,7 @@ async fn sparql_graph_pattern_default_vs_named() {
                 ?entity schema:name ?name
             }
         }
-    "#;
+    ";
 
     let result_named = fluree
         .query_dataset(&dataset, sparql_named)
@@ -1440,7 +1440,7 @@ async fn dataset_time_travel_alias_syntax_commit() {
     let _tx2 = fluree.insert(tx1.ledger, &insert2).await.unwrap();
 
     // Use @commit: alias syntax in "from" string
-    let alias_with_commit = format!("people:main@commit:{}", commit_prefix);
+    let alias_with_commit = format!("people:main@commit:{commit_prefix}");
     let query = json!({
         "@context": {"ex": "http://example.org/ns/", "schema": "http://schema.org/"},
         "from": alias_with_commit,
@@ -1490,8 +1490,7 @@ async fn dataset_time_travel_commit_not_found_errors() {
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("No commit found"),
-        "error should mention no commit found: {}",
-        err
+        "error should mention no commit found: {err}"
     );
 }
 
@@ -1517,8 +1516,7 @@ async fn dataset_time_travel_commit_too_short_errors() {
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("at least 6 characters"),
-        "error should mention minimum chars: {}",
-        err
+        "error should mention minimum chars: {err}"
     );
 }
 
@@ -1536,7 +1534,7 @@ async fn sparql_single_db_graph_matching_alias() {
     let ledger = seed_people_ledger(&fluree, "people:main").await;
 
     // Query using GRAPH with the matching alias (no dataset)
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name
         WHERE {
@@ -1544,7 +1542,7 @@ async fn sparql_single_db_graph_matching_alias() {
                 ?person schema:name ?name
             }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
@@ -1569,7 +1567,7 @@ async fn sparql_single_db_graph_non_matching_alias() {
     let ledger = seed_people_ledger(&fluree, "people:main").await;
 
     // Query using GRAPH with a different alias
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name
         WHERE {
@@ -1577,7 +1575,7 @@ async fn sparql_single_db_graph_non_matching_alias() {
                 ?person schema:name ?name
             }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
@@ -1599,7 +1597,7 @@ async fn sparql_single_db_graph_variable_unbound() {
     let ledger = seed_people_ledger(&fluree, "people:main").await;
 
     // Query using GRAPH ?g - should bind ?g to db alias
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?g ?name
         WHERE {
@@ -1607,7 +1605,7 @@ async fn sparql_single_db_graph_variable_unbound() {
                 ?person schema:name ?name
             }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
@@ -1814,7 +1812,7 @@ async fn sparql_from_time_travel_suffixes() {
     });
     let _ledger2_2 = fluree.insert(ledger2_1, &insert4).await.unwrap().ledger;
 
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name
         FROM <ledger1:main@t:1>
@@ -1822,7 +1820,7 @@ async fn sparql_from_time_travel_suffixes() {
         WHERE {
             ?person schema:name ?name
         }
-    "#;
+    ";
 
     let jsonld = fluree
         .query_from()

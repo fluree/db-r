@@ -652,7 +652,7 @@ impl BinaryIndexStore {
             DecodeKind::BlankNode => {
                 // Blank node: o_key is an opaque bnode integer, not a subject dict ID.
                 // Synthesize a blank node IRI `_:b{o_key}` and encode as a Sid.
-                let bnode_iri = format!("_:b{}", o_key);
+                let bnode_iri = format!("_:b{o_key}");
                 Ok(FlakeValue::Ref(Sid::new(0, &bnode_iri)))
             }
             DecodeKind::IriRef => {
@@ -761,7 +761,7 @@ impl BinaryIndexStore {
         let suffix = reader.forward_lookup_str(local_id)?.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("subject local_id {} not found in ns {}", local_id, ns_code),
+                format!("subject local_id {local_id} not found in ns {ns_code}"),
             )
         })?;
         if ns_code == namespaces::EMPTY || ns_code == namespaces::OVERFLOW {
@@ -774,7 +774,7 @@ impl BinaryIndexStore {
             )
         })?;
 
-        Ok(format!("{}{}", prefix, suffix))
+        Ok(format!("{prefix}{suffix}"))
     }
 
     /// Compare two subject IDs by lexicographic full IRI order without allocating.
@@ -891,7 +891,7 @@ impl BinaryIndexStore {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("string id {} not found in forward packs", str_id),
+                    format!("string id {str_id} not found in forward packs"),
                 )
             });
         if let Err(err) = &result {
@@ -942,7 +942,9 @@ impl BinaryIndexStore {
             if lang_id == 0 {
                 return None; // lang_id=0 means "no tag"
             }
-            self.language_tags.get(lang_id - 1).map(|s| s.as_str())
+            self.language_tags
+                .get(lang_id - 1)
+                .map(std::string::String::as_str)
         } else {
             None
         }
@@ -1245,7 +1247,7 @@ impl BinaryIndexStore {
         self.dicts
             .language_tags
             .resolve(lang_id)
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 
     /// Augment namespace codes with entries from novelty commits.
@@ -1272,8 +1274,7 @@ impl BinaryIndexStore {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "namespace conflict: code {} maps to {:?} but augment has {:?}",
-                            code, existing, prefix
+                            "namespace conflict: code {code} maps to {existing:?} but augment has {prefix:?}"
                         ),
                     ));
                 }
@@ -1285,8 +1286,7 @@ impl BinaryIndexStore {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "namespace conflict: prefix {:?} has code {} but augment has code {}",
-                            prefix, existing_code, code
+                            "namespace conflict: prefix {prefix:?} has code {existing_code} but augment has code {code}"
                         ),
                     ));
                 }
@@ -1323,7 +1323,7 @@ impl BinaryIndexStore {
         let mut map = HashMap::new();
         for (g_id, gi) in &self.graph_indexes {
             for (p_id, provider) in &gi.spatial {
-                let key = format!("{}:{}", g_id, p_id);
+                let key = format!("{g_id}:{p_id}");
                 map.insert(key, Arc::clone(provider));
             }
         }
@@ -1544,7 +1544,10 @@ impl NsLookup for BinaryIndexStore {
     }
 
     fn prefix_for_code(&self, code: u16) -> Option<&str> {
-        self.dicts.namespace_codes.get(&code).map(|s| s.as_str())
+        self.dicts
+            .namespace_codes
+            .get(&code)
+            .map(std::string::String::as_str)
     }
 }
 
@@ -1760,7 +1763,7 @@ impl BinaryGraphView {
             match dn.subjects.resolve_subject(s_id) {
                 Some((ns_code, suffix)) => self
                     .namespace_prefix(ns_code)
-                    .map(|prefix| format!("{}{}", prefix, suffix)),
+                    .map(|prefix| format!("{prefix}{suffix}")),
                 None => Err(store_err),
             }
         });
@@ -1860,7 +1863,7 @@ impl BinaryGraphView {
         // Novel — need full IRI string (prefix + suffix).
         match dn.subjects.resolve_subject(s_id) {
             Some((ns_code, suffix)) => match self.namespace_prefix(ns_code) {
-                Ok(prefix) => Some(Ok(format!("{}{}", prefix, suffix))),
+                Ok(prefix) => Some(Ok(format!("{prefix}{suffix}"))),
                 Err(e) => Some(Err(e)),
             },
             None => None, // Not in DictNovelty either — fall through to store
@@ -1889,7 +1892,9 @@ impl BinaryGraphView {
         if str_id <= dn.strings.watermark() {
             return None; // Persisted — let the store handle it
         }
-        dn.strings.resolve_string(str_id).map(|s| s.to_string())
+        dn.strings
+            .resolve_string(str_id)
+            .map(std::string::ToString::to_string)
     }
 }
 
@@ -2093,7 +2098,7 @@ async fn load_per_graph_arenas(
                         on_disk: std::sync::atomic::AtomicBool::new(true),
                     });
                 } else {
-                    let cache_path = cache_dir.join(format!("{}.vas", shard_cid));
+                    let cache_path = cache_dir.join(format!("{shard_cid}.vas"));
                     let exists = cache_path.exists();
                     shard_sources.push(crate::arena::vector::ShardSource {
                         cid_hash,

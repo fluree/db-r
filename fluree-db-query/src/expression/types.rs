@@ -17,7 +17,7 @@ pub fn eval_bound<R: RowAccess>(args: &[Expression], row: &R) -> Result<Option<C
     match &args[0] {
         Expression::Var(var) => Ok(Some(ComparableValue::Bool(!matches!(
             row.get(*var),
-            Some(Binding::Unbound) | Some(Binding::Poisoned) | None
+            Some(Binding::Unbound | Binding::Poisoned) | None
         )))),
         _ => Err(QueryError::InvalidFilter(
             "BOUND argument must be a variable".to_string(),

@@ -82,7 +82,7 @@ enum OutputFormat {
 
 fn main() {
     if let Err(e) = run() {
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         std::process::exit(1);
     }
 }
@@ -160,7 +160,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Output based on format
     match args.output {
         OutputFormat::Token => {
-            println!("{}", token);
+            println!("{token}");
         }
         OutputFormat::Json => {
             let output = json!({
@@ -191,8 +191,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             println!(
-                r#"curl -N -H "Authorization: Bearer {}" "http://localhost:8090/fluree/events?{}""#,
-                token, ledger_params
+                r#"curl -N -H "Authorization: Bearer {token}" "http://localhost:8090/fluree/events?{ledger_params}""#
             );
         }
     }
@@ -206,7 +205,7 @@ fn load_private_key(input: &str) -> Result<SigningKey, Box<dyn std::error::Error
     let key_str = if let Some(path) = input.strip_prefix('@') {
         let expanded = shellexpand::tilde(path);
         fs::read_to_string(expanded.as_ref())
-            .map_err(|e| format!("Failed to read key file '{}': {}", path, e))?
+            .map_err(|e| format!("Failed to read key file '{path}': {e}"))?
             .trim()
             .to_string()
     } else {
@@ -265,18 +264,14 @@ fn parse_duration(s: &str) -> Result<u64, Box<dyn std::error::Error>> {
     } else if let Some(n) = s.strip_suffix('d') {
         (n, 86400u64)
     } else if let Some(n) = s.strip_suffix('w') {
-        (n, 604800u64)
+        (n, 604_800_u64)
     } else {
-        return Err(format!(
-            "Invalid duration '{}'. Use format like 30s, 5m, 1h, 7d, 1w",
-            s
-        )
-        .into());
+        return Err(format!("Invalid duration '{s}'. Use format like 30s, 5m, 1h, 7d, 1w").into());
     };
 
     let num: u64 = num_str
         .parse()
-        .map_err(|_| format!("Invalid duration number in '{}'", s))?;
+        .map_err(|_| format!("Invalid duration number in '{s}'"))?;
 
     Ok(num * multiplier)
 }
@@ -303,11 +298,11 @@ fn create_jws(
     let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
     // Sign header.payload
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-    Ok(format!("{}.{}.{}", header_b64, payload_b64, sig_b64))
+    Ok(format!("{header_b64}.{payload_b64}.{sig_b64}"))
 }
 
 /// URL-encode a string for use in query parameters
@@ -324,7 +319,7 @@ fn url_encode(s: &str) -> String {
             // Encode everything else
             _ => {
                 for byte in c.to_string().as_bytes() {
-                    result.push_str(&format!("%{:02X}", byte));
+                    result.push_str(&format!("%{byte:02X}"));
                 }
             }
         }
@@ -341,8 +336,8 @@ mod tests {
         assert_eq!(parse_duration("30s").unwrap(), 30);
         assert_eq!(parse_duration("5m").unwrap(), 300);
         assert_eq!(parse_duration("1h").unwrap(), 3600);
-        assert_eq!(parse_duration("7d").unwrap(), 604800);
-        assert_eq!(parse_duration("1w").unwrap(), 604800);
+        assert_eq!(parse_duration("7d").unwrap(), 604_800);
+        assert_eq!(parse_duration("1w").unwrap(), 604_800);
         assert_eq!(parse_duration("3600").unwrap(), 3600);
     }
 
@@ -357,7 +352,7 @@ mod tests {
     fn test_create_jws_roundtrip() {
         let claims = json!({
             "iss": "did:key:z6MkTest",
-            "exp": 9999999999u64,
+            "exp": 9_999_999_999_u64,
             "sub": "test@example.com"
         });
         let key = SigningKey::from_bytes(&[0u8; 32]);

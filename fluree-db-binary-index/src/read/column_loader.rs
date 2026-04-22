@@ -52,7 +52,7 @@ pub fn load_leaflet_columns(
         let block_ref = find_ref(col_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("missing column block for {:?}", col_id),
+                format!("missing column block for {col_id:?}"),
             )
         })?;
         let mut adjusted = *block_ref;
@@ -76,7 +76,7 @@ pub fn load_leaflet_columns(
         let block_ref = find_ref(col_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("missing column block for {:?}", col_id),
+                format!("missing column block for {col_id:?}"),
             )
         })?;
         let mut adjusted = *block_ref;
@@ -100,7 +100,7 @@ pub fn load_leaflet_columns(
         let block_ref = find_ref(col_id).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("missing column block for {:?}", col_id),
+                format!("missing column block for {col_id:?}"),
             )
         })?;
         let mut adjusted = *block_ref;

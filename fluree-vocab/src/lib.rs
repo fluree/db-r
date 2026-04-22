@@ -2267,7 +2267,7 @@ pub mod datatype {
                 xsd_names::G_MONTH_DAY,
             ] {
                 let dt = KnownDatatype::from_xsd_local(local)
-                    .unwrap_or_else(|| panic!("KnownDatatype::from_xsd_local missed {:?}", local));
+                    .unwrap_or_else(|| panic!("KnownDatatype::from_xsd_local missed {local:?}"));
                 assert_eq!(dt.local_name(), local);
                 // Canonical form should also recognize it.
                 let canon = dt.canonical_form();
@@ -2376,9 +2376,7 @@ pub mod datatype {
                 assert_eq!(
                     KnownDatatype::from_canonical_form(canon),
                     Some(dt),
-                    "round-trip failed for {:?} (canonical form {:?})",
-                    dt,
-                    canon,
+                    "round-trip failed for {dt:?} (canonical form {canon:?})",
                 );
             }
         }

@@ -57,8 +57,7 @@ async fn commit_id_has_valid_sha256_format() {
     );
     assert!(
         digest_hex.chars().all(|c| c.is_ascii_hexdigit()),
-        "SHA-256 digest should contain only hex characters, got: {}",
-        digest_hex
+        "SHA-256 digest should contain only hex characters, got: {digest_hex}"
     );
 }
 

@@ -75,7 +75,7 @@ async fn pack_ledger_local(
     // Read and validate request body.
     let body_bytes = axum::body::to_bytes(request.into_body(), 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("failed to read request body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("failed to read request body: {e}")))?;
     let pack_request: PackRequest = serde_json::from_slice(&body_bytes)?;
 
     if let Err(msg) = validate_pack_request(&pack_request) {

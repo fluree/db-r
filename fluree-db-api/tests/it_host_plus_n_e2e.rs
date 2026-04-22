@@ -162,12 +162,12 @@ async fn host_plus_n_insert_index_reload_query() {
             );
 
             // Query shallow namespace (ex:).
-            let q_widgets = r#"
+            let q_widgets = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?name ?score
                 WHERE { ?w a ex:Widget ; ex:name ?name ; ex:score ?score }
                 ORDER BY ?name
-            "#;
+            ";
             let widgets = support::query_sparql(&fluree2, &ledger_reloaded, q_widgets)
                 .await
                 .unwrap()
@@ -180,12 +180,12 @@ async fn host_plus_n_insert_index_reload_query() {
             );
 
             // Query deep namespace (deep:).
-            let q_items = r#"
+            let q_items = r"
                 PREFIX deep: <http://example.org/deep/nested/>
                 SELECT ?label
                 WHERE { ?i a deep:Item ; deep:label ?label }
                 ORDER BY ?label
-            "#;
+            ";
             let items = support::query_sparql(&fluree2, &ledger_reloaded, q_items)
                 .await
                 .unwrap()
@@ -198,14 +198,14 @@ async fn host_plus_n_insert_index_reload_query() {
             );
 
             // Cross-namespace counts (verify both types survive reload).
-            let q_widget_count = r#"
+            let q_widget_count = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (COUNT(*) AS ?c) WHERE { ?x a ex:Widget }
-            "#;
-            let q_item_count = r#"
+            ";
+            let q_item_count = r"
                 PREFIX deep: <http://example.org/deep/nested/>
                 SELECT (COUNT(*) AS ?c) WHERE { ?x a deep:Item }
-            "#;
+            ";
             let widget_count = support::query_sparql(&fluree2, &ledger_reloaded, q_widget_count)
                 .await
                 .unwrap()

@@ -122,10 +122,10 @@ async fn import_pre_split_chunks_then_query() {
     let db_dir = tempfile::tempdir().expect("db tmpdir");
     let chunks_dir = tempfile::tempdir().expect("chunks tmpdir");
 
-    let prefix = r#"@prefix ex: <http://example.org/ns/> .
+    let prefix = r"@prefix ex: <http://example.org/ns/> .
 @prefix schema: <http://schema.org/> .
 @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
-"#;
+";
 
     // Chunk 0: two people
     let chunk0 = format!(
@@ -834,9 +834,9 @@ async fn import_then_insert_custom_ns_predicate_matches_sparql() {
         .await
         .expect("reload ledger");
 
-    let sparql = r#"SELECT ?o WHERE {
+    let sparql = r"SELECT ?o WHERE {
         <http://example.org/assoc1> <https://taxo.cbcrc.ca/ns/packageType> ?o
-    }"#;
+    }";
 
     let qr = support::query_sparql(&fluree, &ledger, sparql)
         .await
@@ -888,7 +888,7 @@ async fn import_jsonld_directory_with_malformed_file_errors() {
     // Malformed: not valid JSON at all
     std::fs::write(
         data_dir.path().join("02_bad.jsonld"),
-        r#"{ this is not valid json @@@ "#,
+        r"{ this is not valid json @@@ ",
     )
     .unwrap();
 
@@ -921,7 +921,7 @@ async fn import_single_malformed_jsonld_file_errors() {
     let data_dir = tempfile::tempdir().expect("data tmpdir");
 
     let bad_path = data_dir.path().join("bad.jsonld");
-    std::fs::write(&bad_path, r#"{ not json !!!"#).unwrap();
+    std::fs::write(&bad_path, r"{ not json !!!").unwrap();
 
     let fluree = FlureeBuilder::file(db_dir.path().to_string_lossy().to_string())
         .build()

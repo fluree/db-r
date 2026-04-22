@@ -348,7 +348,7 @@ pub fn deserialize_lang_dict(data: &[u8]) -> io::Result<LanguageTagDict> {
         let tag = std::str::from_utf8(&data[pos..pos + len]).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("run file: invalid UTF-8 in lang dict: {}", e),
+                format!("run file: invalid UTF-8 in lang dict: {e}"),
             )
         })?;
         dict.get_or_insert(Some(tag));

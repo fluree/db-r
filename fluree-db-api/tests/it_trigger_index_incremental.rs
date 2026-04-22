@@ -240,9 +240,9 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
                     let prefix = root
                         .namespace_codes
                         .get(ns_code)
-                        .map(|s| s.as_str())
+                        .map(std::string::String::as_str)
                         .unwrap_or("");
-                    let iri = format!("{}{}", prefix, suffix);
+                    let iri = format!("{prefix}{suffix}");
                     if iri == target_iri {
                         return p_id as u32;
                     }
@@ -312,8 +312,7 @@ async fn trigger_index_second_run_uses_incremental_not_full_rebuild() {
                 assert_eq!(
                     cids1.len(),
                     cids2.len(),
-                    "expected same leaf count for order {:?}",
-                    order
+                    "expected same leaf count for order {order:?}"
                 );
                 if cids1.is_empty() {
                     continue;

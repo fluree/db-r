@@ -450,7 +450,7 @@ mod tests {
     #[test]
     fn wire_roundtrip_run() {
         let rec = make_rec(
-            123456,
+            123_456,
             42,
             OType::XSD_INTEGER.as_u16(),
             999,
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn wire_roundtrip_spool() {
-        let mut rec = make_rec(123456, 42, OType::XSD_STRING.as_u16(), 888, 5, 10);
+        let mut rec = make_rec(123_456, 42, OType::XSD_STRING.as_u16(), 888, 5, 10);
         rec.g_id = 3;
         let mut buf = [0u8; SPOOL_V2_WIRE_SIZE];
         rec.write_spool_le(&mut buf);

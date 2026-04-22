@@ -139,12 +139,13 @@ impl Fluree {
 
         // 2) Decode commits and preflight strict sequencing.
         let decoded = decode_and_validate_commit_chain(base_state.ledger_id(), &request)
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
-        preflight_strict_next_t_and_prev(&current_ref, &decoded).map_err(|e| e.into_api_error())?;
+        preflight_strict_next_t_and_prev(&current_ref, &decoded)
+            .map_err(PushError::into_api_error)?;
 
         // 3) Validate referenced blobs are provided (if any) and pre-validate hashes.
-        validate_required_blobs(&decoded, &request.blobs).map_err(|e| e.into_api_error())?;
+        validate_required_blobs(&decoded, &request.blobs).map_err(PushError::into_api_error)?;
 
         // 4) Validate each commit against evolving server view.
         //
@@ -178,8 +179,7 @@ impl Fluree {
             base_state.snapshot.namespaces().clone(),
         )
         .map_err(|e| {
-            PushError::Invalid(format!("base snapshot namespace corruption: {}", e))
-                .into_api_error()
+            PushError::Invalid(format!("base snapshot namespace corruption: {e}")).into_api_error()
         })?;
 
         for c in &decoded {
@@ -215,7 +215,7 @@ impl Fluree {
                 &reverse_graph,
             )
             .await
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
             // 4.2 Policy enforcement: build policy context from opts against current state.
             let policy_ctx =
@@ -231,7 +231,7 @@ impl Fluree {
                 &routing.graph_sids,
             )
             .await
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
             // 4.4 SHACL (optional feature).
             //
@@ -289,11 +289,11 @@ impl Fluree {
             .ok_or_else(|| ApiError::config("push_commits requires a managed storage backend"))?;
         write_required_blobs(&storage, base_state.ledger_id(), &request.blobs, &decoded)
             .await
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
         let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
@@ -331,7 +331,7 @@ impl Fluree {
             &decoded,
             &stored_commits,
         )
-        .map_err(|e| e.into_api_error())?;
+        .map_err(PushError::into_api_error)?;
 
         let mut new_state = new_state;
         if crate::ns_helpers::binary_store_missing_snapshot_namespaces(&new_state) {
@@ -530,13 +530,12 @@ fn decode_and_validate_commit_chain(
     for (idx, b64) in request.commits.iter().enumerate() {
         let bytes = b64.0.clone();
         let commit = fluree_db_core::commit::codec::read_commit(&bytes)
-            .map_err(|e| PushError::Invalid(format!("invalid commit[{}]: {}", idx, e)))?;
+            .map_err(|e| PushError::Invalid(format!("invalid commit[{idx}]: {e}")))?;
 
         // Reject empty commits (no flakes) - keep semantics clear.
         if commit.flakes.is_empty() {
             return Err(PushError::Invalid(format!(
-                "invalid commit[{}]: empty commit (no flakes)",
-                idx
+                "invalid commit[{idx}]: empty commit (no flakes)"
             )));
         }
 
@@ -569,8 +568,7 @@ fn decode_and_validate_commit_chain(
                 .any(|r| r.id.digest_hex() == *prev_hash_hex);
             if !ok {
                 return Err(PushError::Invalid(format!(
-                    "commit chain previous mismatch at commit[{}]: expected previous digest '{}'",
-                    idx, prev_hash_hex
+                    "commit chain previous mismatch at commit[{idx}]: expected previous digest '{prev_hash_hex}'"
                 )));
             }
         }
@@ -611,8 +609,7 @@ fn preflight_strict_next_t_and_prev(
             .any(|r| r.id == *expected_id);
         if !ok {
             return Err(PushError::Conflict(format!(
-                "first commit previous mismatch: no parent matches expected head {:?}",
-                expected_id
+                "first commit previous mismatch: no parent matches expected head {expected_id:?}"
             )));
         }
     } else if !first.commit.previous_refs.is_empty() {
@@ -638,8 +635,7 @@ fn validate_required_blobs(
     for addr in &required {
         if !provided.contains_key(addr) {
             return Err(PushError::Invalid(format!(
-                "missing required blob for referenced address: {}",
-                addr
+                "missing required blob for referenced address: {addr}"
             )));
         }
     }
@@ -702,8 +698,7 @@ async fn assert_retractions_exist(
 
         if !is_currently_asserted(snapshot, overlay, to_t, f, reverse_graph).await? {
             return Err(PushError::Invalid(format!(
-                "retraction invariant violated at flake[{}]: retract targets non-existent assertion",
-                idx
+                "retraction invariant violated at flake[{idx}]: retract targets non-existent assertion"
             )));
         }
     }
@@ -726,9 +721,8 @@ async fn is_currently_asserted(
         None => 0,
         Some(g_sid) => *reverse_graph.get(g_sid).ok_or_else(|| {
             PushError::Internal(format!(
-                "is_currently_asserted: graph Sid {:?} not found in reverse_graph map \
+                "is_currently_asserted: graph Sid {g_sid:?} not found in reverse_graph map \
                  — derive_graph_routing should have included it",
-                g_sid,
             ))
         })?,
     };
@@ -754,7 +748,7 @@ async fn is_currently_asserted(
     let mut last_t: Option<i64> = None;
     let mut last_op: bool = false;
 
-    for f in found.into_iter() {
+    for f in found {
         // Exact match on graph + metadata. (RangeMatch does not include these fields.)
         if f.g != target.g || f.m != target.m {
             continue;
@@ -787,9 +781,9 @@ where
     }
 
     for addr in &required {
-        let txn_id: ContentId = addr.parse().map_err(|e| {
-            PushError::Invalid(format!("invalid txn CID reference '{}': {}", addr, e))
-        })?;
+        let txn_id: ContentId = addr
+            .parse()
+            .map_err(|e| PushError::Invalid(format!("invalid txn CID reference '{addr}': {e}")))?;
         if txn_id.codec() != CODEC_FLUREE_TXN {
             return Err(PushError::Invalid(format!(
                 "referenced txn CID has unexpected codec {}: {}",
@@ -800,15 +794,14 @@ where
 
         let bytes = provided
             .get(addr)
-            .ok_or_else(|| PushError::Invalid(format!("missing required blob: {}", addr)))?
+            .ok_or_else(|| PushError::Invalid(format!("missing required blob: {addr}")))?
             .0
             .clone();
 
         // Integrity: server MUST re-hash bytes and verify the derived CID.
         if !txn_id.verify(&bytes) {
             return Err(PushError::Invalid(format!(
-                "referenced txn CID does not match provided bytes: {}",
-                addr
+                "referenced txn CID does not match provided bytes: {addr}"
             )));
         }
 
@@ -885,7 +878,7 @@ fn apply_pushed_commits_to_state(
         }
         base.snapshot
             .apply_envelope_deltas(&merged_ns_delta, &all_graph_iris)
-            .map_err(|e| PushError::Internal(format!("apply_envelope_deltas failed: {}", e)))?;
+            .map_err(|e| PushError::Internal(format!("apply_envelope_deltas failed: {e}")))?;
     }
 
     // Build reverse_graph now that namespace_codes and graph_registry are complete.
@@ -926,16 +919,13 @@ fn apply_pushed_commits_to_state(
             flakes.iter(),
         )
         .map_err(|e| {
-            PushError::Internal(format!(
-                "populate_dict_novelty_safe failed at t={}: {}",
-                t, e
-            ))
+            PushError::Internal(format!("populate_dict_novelty_safe failed at t={t}: {e}"))
         })?;
         // Apply to novelty.
         novelty
             .apply_commit(flakes.clone(), *t, &reverse_graph)
             .map_err(|e| {
-                PushError::Internal(format!("novelty apply_commit failed at t={}: {}", t, e))
+                PushError::Internal(format!("novelty apply_commit failed at t={t}: {e}"))
             })?;
     }
 
@@ -1052,10 +1042,7 @@ impl Fluree {
             .get_ref(ledger_id, RefKind::CommitHead)
             .await?;
         let Some(head_ref) = head_ref else {
-            return Err(ApiError::NotFound(format!(
-                "Ledger not found: {}",
-                ledger_id
-            )));
+            return Err(ApiError::NotFound(format!("Ledger not found: {ledger_id}")));
         };
         let head_commit_id = head_ref
             .id
@@ -1071,7 +1058,7 @@ impl Fluree {
             cid.clone()
         } else if let Some(raw) = request.cursor.as_deref() {
             raw.parse::<ContentId>()
-                .map_err(|e| ApiError::http(400, format!("invalid cursor: {}", e)))?
+                .map_err(|e| ApiError::http(400, format!("invalid cursor: {e}")))?
         } else {
             head_commit_id.clone()
         };
@@ -1094,27 +1081,23 @@ impl Fluree {
 
             // Read raw commit bytes from ContentStore by CID.
             let raw_bytes = content_store.get(&current_cid).await.map_err(|e| {
-                ApiError::internal(format!("failed to read commit {}: {}", current_cid, e))
+                ApiError::internal(format!("failed to read commit {current_cid}: {e}"))
             })?;
 
             // Lightweight decode: header + envelope only (skip ops decompression).
             let header = CommitHeader::read_from(&raw_bytes).map_err(|e| {
-                ApiError::internal(format!("invalid commit header for {}: {}", current_cid, e))
+                ApiError::internal(format!("invalid commit header for {current_cid}: {e}"))
             })?;
 
             let envelope_start = HEADER_LEN;
             let envelope_end = envelope_start + header.envelope_len as usize;
             if envelope_end > raw_bytes.len() {
                 return Err(ApiError::internal(format!(
-                    "commit envelope extends past blob for {}",
-                    current_cid
+                    "commit envelope extends past blob for {current_cid}"
                 )));
             }
             let env = decode_envelope(&raw_bytes[envelope_start..envelope_end]).map_err(|e| {
-                ApiError::internal(format!(
-                    "failed to decode envelope for {}: {}",
-                    current_cid, e
-                ))
+                ApiError::internal(format!("failed to decode envelope for {current_cid}: {e}"))
             })?;
 
             // Track t range.
@@ -1131,7 +1114,7 @@ impl Fluree {
                 let txn_key = txn_cid.to_string();
                 if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone()) {
                     let txn_bytes = content_store.get(txn_cid).await.map_err(|e| {
-                        ApiError::internal(format!("failed to read txn blob {}: {}", txn_key, e))
+                        ApiError::internal(format!("failed to read txn blob {txn_key}: {e}"))
                     })?;
                     e.insert(Base64Bytes(txn_bytes));
                 }
@@ -1213,16 +1196,16 @@ impl Fluree {
             storage
                 .content_write_bytes(ContentKind::Commit, ledger_id, bytes)
                 .await
-                .map_err(|e| ApiError::internal(format!("failed to write commit blob: {}", e)))?;
+                .map_err(|e| ApiError::internal(format!("failed to write commit blob: {e}")))?;
             stored += 1;
         }
 
         // Write referenced txn blobs to local CAS.
         for (cid_str, b64) in &response.blobs {
             let bytes = &b64.0;
-            let txn_id: ContentId = cid_str.parse().map_err(|e| {
-                ApiError::http(422, format!("invalid txn CID '{}': {}", cid_str, e))
-            })?;
+            let txn_id: ContentId = cid_str
+                .parse()
+                .map_err(|e| ApiError::http(422, format!("invalid txn CID '{cid_str}': {e}")))?;
             if txn_id.codec() != CODEC_FLUREE_TXN {
                 return Err(ApiError::http(
                     422,
@@ -1237,14 +1220,14 @@ impl Fluree {
             if !txn_id.verify(bytes) {
                 return Err(ApiError::http(
                     422,
-                    format!("txn CID does not match provided bytes: {}", cid_str),
+                    format!("txn CID does not match provided bytes: {cid_str}"),
                 ));
             }
             let expected_hash = txn_id.digest_hex();
             storage
                 .content_write_bytes_with_hash(ContentKind::Txn, ledger_id, &expected_hash, bytes)
                 .await
-                .map_err(|e| ApiError::internal(format!("failed to write txn blob: {}", e)))?;
+                .map_err(|e| ApiError::internal(format!("failed to write txn blob: {e}")))?;
             blobs_stored += 1;
         }
 
@@ -1290,8 +1273,7 @@ impl Fluree {
             CasResult::Conflict { actual } => Err(ApiError::http(
                 409,
                 format!(
-                    "commit head changed during clone finalization (expected {:?}, actual {:?})",
-                    current_ref, actual
+                    "commit head changed during clone finalization (expected {current_ref:?}, actual {actual:?})"
                 ),
             )),
         }
@@ -1333,8 +1315,7 @@ impl Fluree {
             CasResult::Conflict { actual } => Err(ApiError::http(
                 409,
                 format!(
-                    "index head changed during transfer (expected {:?}, actual {:?})",
-                    current_ref, actual
+                    "index head changed during transfer (expected {current_ref:?}, actual {actual:?})"
                 ),
             )),
         }
@@ -1379,13 +1360,14 @@ impl Fluree {
 
         // 3) Decode and validate chain.
         let decoded = decode_and_validate_commit_chain(base_state.ledger_id(), &request)
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
         // 4) Ancestry preflight: verify first commit's previous_ref matches local head.
-        preflight_strict_next_t_and_prev(&current_ref, &decoded).map_err(|e| e.into_api_error())?;
+        preflight_strict_next_t_and_prev(&current_ref, &decoded)
+            .map_err(PushError::into_api_error)?;
 
         // 5) Validate referenced blobs are provided.
-        validate_required_blobs(&decoded, &request.blobs).map_err(|e| e.into_api_error())?;
+        validate_required_blobs(&decoded, &request.blobs).map_err(PushError::into_api_error)?;
 
         // 6) Write blobs + commit bytes to local CAS.
         let storage = self.backend().admin_storage_cloned().ok_or_else(|| {
@@ -1393,11 +1375,11 @@ impl Fluree {
         })?;
         write_required_blobs(&storage, base_state.ledger_id(), &request.blobs, &decoded)
             .await
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
         let stored_commits = write_commit_blobs(&storage, base_state.ledger_id(), &decoded)
             .await
-            .map_err(|e| e.into_api_error())?;
+            .map_err(PushError::into_api_error)?;
 
         let final_head = stored_commits.last().expect("non-empty stored_commits");
         let new_ref = RefValue {
@@ -1447,7 +1429,7 @@ impl Fluree {
 
         let new_state =
             apply_pushed_commits_to_state(base_state, &all_flakes, &decoded, &stored_commits)
-                .map_err(|e| e.into_api_error())?;
+                .map_err(PushError::into_api_error)?;
 
         // 9) Compute indexing status from the updated state.
         let index_config = self.default_index_config();

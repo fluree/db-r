@@ -12,7 +12,7 @@ use fluree_vocab::xsd;
 
 use super::{LowerError, LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     pub(super) fn lower_expression(&mut self, expr: &AstExpression) -> Result<Expression> {
         match expr {
             AstExpression::Var(v) => {
@@ -86,7 +86,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     }
                 }
                 Err(LowerError::not_implemented(
-                    format!("Aggregate function {:?}", function),
+                    format!("Aggregate function {function:?}"),
                     *span,
                 ))
             }

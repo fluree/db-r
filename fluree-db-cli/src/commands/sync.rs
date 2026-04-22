@@ -33,12 +33,12 @@ fn token_has_storage_permissions(token: &str) -> Option<bool> {
 
     let storage_all = claims
         .get("fluree.storage.all")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let storage_ledgers_len = claims
         .get("fluree.storage.ledgers")
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
+        .map(std::vec::Vec::len)
         .unwrap_or(0);
 
     Some(storage_all || storage_ledgers_len > 0)
@@ -67,7 +67,7 @@ fn format_human_bytes(bytes: u64) -> String {
     } else if b >= KIB {
         format!("{:.0} KiB", b / KIB)
     } else {
-        format!("{} bytes", bytes)
+        format!("{bytes} bytes")
     }
 }
 
@@ -163,7 +163,7 @@ pub async fn run_fetch(remote: &str, dirs: &FlureeDir) -> CliResult<()> {
         .get_remote(&RemoteName::new(remote))
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{remote}' not found")))?;
     if let Some(tok) = &remote_cfg.auth.token {
         if let Some(false) = token_has_storage_permissions(tok) {
             return Err(replication_permission_error(remote));
@@ -195,7 +195,7 @@ fn print_fetch_result(result: &FetchResult) {
         println!("{}", "Updated:".green().bold());
         for (ledger_id, tracking) in &result.updated {
             let t = tracking.commit_ref.as_ref().map(|r| r.t).unwrap_or(0);
-            println!("  {} -> t={}", ledger_id, t);
+            println!("  {ledger_id} -> t={t}");
         }
     }
 
@@ -267,7 +267,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
         .map_err(|e| CliError::Config(format!("pull failed (remote ledger info): {e}")))?;
     let remote_t = info
         .get("t")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .ok_or_else(|| CliError::Config("remote ledger-info response missing 't'".into()))?;
 
     // Resolve local head.
@@ -281,7 +281,7 @@ pub async fn run_pull(ledger: Option<&str>, no_indexes: bool, dirs: &FlureeDir) 
         .get_ref(&ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{ledger_id}' not found")))?;
 
     if remote_t <= local_ref.t {
         println!("{} '{}' is already up to date", "✓".green(), ledger_id);
@@ -644,7 +644,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
         .map_err(|e| CliError::Config(format!("push failed (remote ledger info): {e}")))?;
     let remote_t = info
         .get("t")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .ok_or_else(|| CliError::Config("remote ledger-info response missing 't'".into()))?;
     let remote_commit_id: Option<fluree_db_core::ContentId> = info
         .get("commitId")
@@ -658,7 +658,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
         .get_ref(&ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{ledger_id}' not found")))?;
 
     if local_ref.t < remote_t {
         return Err(CliError::Config(format!(
@@ -670,8 +670,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
     // Collect commits to push (oldest -> newest), ensuring the remote head is in our history.
     let local_head_cid = local_ref.id.clone().ok_or_else(|| {
         CliError::Config(format!(
-            "local ledger '{}' has no commit head; nothing to push",
-            ledger_id
+            "local ledger '{ledger_id}' has no commit head; nothing to push"
         ))
     })?;
 
@@ -754,8 +753,7 @@ pub async fn run_push(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> {
             if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone()) {
                 let txn_bytes = content_store.get(txn_cid).await.map_err(|e| {
                     CliError::Config(format!(
-                        "commit references txn blob '{}' but it is not readable locally: {}",
-                        txn_key, e
+                        "commit references txn blob '{txn_key}' but it is not readable locally: {e}"
                     ))
                 })?;
                 e.insert(fluree_db_api::Base64Bytes(txn_bytes));
@@ -806,14 +804,13 @@ pub async fn run_publish(
         .get_remote(&RemoteName::new(remote_name))
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote_name)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{remote_name}' not found")))?;
 
     let base_url = match &remote_cfg.endpoint {
         RemoteEndpoint::Http { base_url } => base_url.clone(),
         _ => {
             return Err(CliError::Config(format!(
-                "remote '{}' is not an HTTP remote",
-                remote_name
+                "remote '{remote_name}' is not an HTTP remote"
             )));
         }
     };
@@ -840,13 +837,15 @@ pub async fn run_publish(
             .ledger_info(&remote_ledger_id, None)
             .await
             .map_err(|e| CliError::Config(format!("failed to get remote ledger info: {e}")))?;
-        let remote_t = info.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+        let remote_t = info
+            .get("t")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
 
         if remote_t > 0 {
             return Err(CliError::Config(format!(
-                "remote ledger '{}' already has data (t={remote_t}). \
-                 Use `fluree push` instead, or choose a different remote ledger name with --remote-name.",
-                remote_ledger_id
+                "remote ledger '{remote_ledger_id}' already has data (t={remote_t}). \
+                 Use `fluree push` instead, or choose a different remote ledger name with --remote-name."
             )));
         }
         eprintln!("  Remote ledger exists (empty, t=0) — pushing commits...");
@@ -870,12 +869,11 @@ pub async fn run_publish(
         .get_ref(&ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{ledger_id}' not found")))?;
 
     let local_head_cid = local_ref.id.clone().ok_or_else(|| {
         CliError::Config(format!(
-            "local ledger '{}' has no commits; nothing to publish",
-            ledger_id
+            "local ledger '{ledger_id}' has no commits; nothing to publish"
         ))
     })?;
 
@@ -923,8 +921,7 @@ pub async fn run_publish(
             if let std::collections::hash_map::Entry::Vacant(e) = blobs.entry(txn_key.clone()) {
                 let txn_bytes = content_store.get(txn_cid).await.map_err(|e| {
                     CliError::Config(format!(
-                        "commit references txn blob '{}' but it is not readable locally: {}",
-                        txn_key, e
+                        "commit references txn blob '{txn_key}' but it is not readable locally: {e}"
                     ))
                 })?;
                 e.insert(fluree_db_api::Base64Bytes(txn_bytes));
@@ -998,7 +995,7 @@ pub async fn run_clone(
         .get_remote(&RemoteName::new(remote_name))
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote_name)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{remote_name}' not found")))?;
 
     if let Some(tok) = &remote_cfg.auth.token {
         if let Some(false) = token_has_storage_permissions(tok) {
@@ -1010,8 +1007,7 @@ pub async fn run_clone(
         RemoteEndpoint::Http { base_url } => base_url.clone(),
         _ => {
             return Err(CliError::Config(format!(
-                "remote '{}' is not an HTTP remote",
-                remote_name
+                "remote '{remote_name}' is not an HTTP remote"
             )));
         }
     };
@@ -1025,12 +1021,11 @@ pub async fn run_clone(
         .map_err(|e| CliError::Config(format!("clone failed (remote ledger info): {e}")))?;
 
     // t is informational — some servers may not include it in their response.
-    let remote_t = info.get("t").and_then(|v| v.as_i64());
+    let remote_t = info.get("t").and_then(serde_json::Value::as_i64);
 
     if remote_t == Some(0) {
         return Err(CliError::Config(format!(
-            "remote ledger '{}' is empty (t=0); nothing to clone",
-            ledger_id
+            "remote ledger '{ledger_id}' is empty (t=0); nothing to clone"
         )));
     }
 
@@ -1168,7 +1163,7 @@ pub async fn run_clone(
                                         let objects = result.commits_stored
                                             + result.txn_blobs_stored
                                             + result.index_artifacts_stored;
-                                        eprint!("  fetched {} object(s) via pack\r", objects);
+                                        eprint!("  fetched {objects} object(s) via pack\r");
                                     }
                                     Err(e) => {
                                         eprintln!(
@@ -1204,7 +1199,7 @@ pub async fn run_clone(
                 "warning:".yellow().bold()
             );
         }
-    };
+    }
 
     if !used_pack {
         let mut cursor: Option<String> = None;
@@ -1230,7 +1225,7 @@ pub async fn run_clone(
                 .map_err(|e| CliError::Config(format!("clone failed (import): {e}")))?;
 
             total_commits += page.count;
-            eprint!("  fetched {} commits...\r", total_commits);
+            eprint!("  fetched {total_commits} commits...\r");
 
             match page.next_cursor_id {
                 Some(cid) => cursor = Some(cid.to_string()),
@@ -1330,7 +1325,7 @@ pub async fn run_clone_origin(
         .fetch_ns_record(&ledger_id)
         .await
         .map_err(|e| CliError::Config(format!("clone failed (fetch ns record): {e}")))?
-        .ok_or_else(|| CliError::NotFound(format!("ledger '{}' not found on origin", ledger_id)))?;
+        .ok_or_else(|| CliError::NotFound(format!("ledger '{ledger_id}' not found on origin")))?;
 
     let head_t = ns_record.commit_t;
 
@@ -1467,7 +1462,7 @@ pub async fn run_clone_origin(
                             let objects = result.commits_stored
                                 + result.txn_blobs_stored
                                 + result.index_artifacts_stored;
-                            eprint!("  fetched {} object(s) via pack\r", objects);
+                            eprint!("  fetched {objects} object(s) via pack\r");
                             true
                         }
                         Err(e) => {
@@ -1540,7 +1535,7 @@ pub async fn run_clone_origin(
                     .map_err(|e| CliError::Config(format!("clone failed (store commit): {e}")))?;
 
                 commits_fetched += 1;
-                eprint!("  fetched {} commit(s)...\r", commits_fetched);
+                eprint!("  fetched {commits_fetched} commit(s)...\r");
 
                 bytes
             };
@@ -1686,7 +1681,7 @@ async fn run_pull_via_origins(
         .nameservice()
         .lookup(ledger_id)
         .await?
-        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{ledger_id}' not found")))?;
 
     let config_id = ns_record.config_id.ok_or_else(|| {
         CliError::Config(format!(
@@ -1722,16 +1717,12 @@ async fn run_pull_via_origins(
         .map_err(|e| CliError::Config(format!("pull failed (fetch ns record): {e}")))?
         .ok_or_else(|| {
             CliError::NotFound(format!(
-                "ledger '{}' not found on any configured origin",
-                ledger_id
+                "ledger '{ledger_id}' not found on any configured origin"
             ))
         })?;
 
     let remote_head_cid = remote_ns.commit_head_id.ok_or_else(|| {
-        CliError::Config(format!(
-            "remote ledger '{}' is empty (no commits)",
-            ledger_id
-        ))
+        CliError::Config(format!("remote ledger '{ledger_id}' is empty (no commits)"))
     })?;
     let remote_t = remote_ns.commit_t;
 
@@ -1741,7 +1732,7 @@ async fn run_pull_via_origins(
         .get_ref(ledger_id, RefKind::CommitHead)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("local ledger '{}' not found", ledger_id)))?;
+        .ok_or_else(|| CliError::NotFound(format!("local ledger '{ledger_id}' not found")))?;
 
     if remote_t <= local_ref.t {
         println!("{} '{}' is already up to date", "✓".green(), ledger_id);

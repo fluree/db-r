@@ -24,7 +24,7 @@
 //! - String remap: `Vec<u32>` (chunk-local u32 → global string ID)
 
 use crate::run_index::resolve::chunk_dict::{hash_subject, ChunkStringDict, ChunkSubjectDict};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 // ============================================================================
 // Subject merge
@@ -59,9 +59,9 @@ pub fn merge_subject_dicts(chunks: &[ChunkSubjectDict]) -> (SubjectMergeResult, 
     let total_local: usize = chunks.iter().map(|c| c.len() as usize).sum();
 
     let mut global_map: FxHashMap<u128, u64> =
-        FxHashMap::with_capacity_and_hasher(total_local, Default::default());
+        FxHashMap::with_capacity_and_hasher(total_local, FxBuildHasher);
     let mut ns_counters: FxHashMap<u16, u64> =
-        FxHashMap::with_capacity_and_hasher(64, Default::default());
+        FxHashMap::with_capacity_and_hasher(64, FxBuildHasher);
     let mut forward_entries = Vec::with_capacity(total_local);
     let mut forward_sids = Vec::with_capacity(total_local);
     let mut needs_wide = false;
@@ -133,7 +133,7 @@ pub fn merge_string_dicts(chunks: &[ChunkStringDict]) -> (StringMergeResult, Vec
     let total_local: usize = chunks.iter().map(|c| c.len() as usize).sum();
 
     let mut global_map: FxHashMap<u128, u32> =
-        FxHashMap::with_capacity_and_hasher(total_local, Default::default());
+        FxHashMap::with_capacity_and_hasher(total_local, FxBuildHasher);
     let mut next_id: u32 = 0;
     let mut forward_entries = Vec::with_capacity(total_local);
     let mut remap_tables = Vec::with_capacity(chunks.len());
@@ -213,7 +213,10 @@ pub fn persist_merge_artifacts(
 
     for &i in &perm {
         let (ns_code, suffix) = &subjects.forward_entries[i];
-        let prefix = ns_prefixes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+        let prefix = ns_prefixes
+            .get(ns_code)
+            .map(std::string::String::as_str)
+            .unwrap_or("");
         let total_len = prefix.len() + suffix.len();
         offsets.push(offset);
         lens.push(total_len as u32);

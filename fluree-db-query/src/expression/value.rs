@@ -429,7 +429,7 @@ impl ComparableValue {
                         .active_snapshot
                         .encode_iri_strict(&dt_iri)
                         .ok_or_else(|| {
-                            QueryError::InvalidFilter(format!("Unknown datatype IRI: {}", dt_iri))
+                            QueryError::InvalidFilter(format!("Unknown datatype IRI: {dt_iri}"))
                         })?;
                     Ok(Binding::lit(val, dt))
                 }

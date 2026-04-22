@@ -46,8 +46,7 @@ async fn run_set(
 
     if !remote_exists {
         return Err(CliError::NotFound(format!(
-            "remote '{}' not found; add it with: fluree remote add {} <url>",
-            remote, remote
+            "remote '{remote}' not found; add it with: fluree remote add {remote} <url>"
         )));
     }
 
@@ -86,8 +85,7 @@ async fn run_remove(store: &TomlSyncConfigStore, local: &str) -> CliResult<()> {
 
     if existing.is_none() {
         return Err(CliError::NotFound(format!(
-            "no upstream configured for '{}'",
-            local_alias
+            "no upstream configured for '{local_alias}'"
         )));
     }
 
@@ -96,7 +94,7 @@ async fn run_remove(store: &TomlSyncConfigStore, local: &str) -> CliResult<()> {
         .await
         .map_err(|e| CliError::Config(e.to_string()))?;
 
-    println!("Removed upstream for '{}'", local_alias);
+    println!("Removed upstream for '{local_alias}'");
     Ok(())
 }
 
@@ -127,6 +125,6 @@ async fn run_list(store: &TomlSyncConfigStore) -> CliResult<()> {
         ]);
     }
 
-    println!("{}", table);
+    println!("{table}");
     Ok(())
 }

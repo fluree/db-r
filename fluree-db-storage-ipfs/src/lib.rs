@@ -202,8 +202,7 @@ impl ContentStore for IpfsStorage {
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> fluree_db_core::error::Result<()> {
         if !id.verify(bytes) {
             return Err(fluree_db_core::error::Error::storage(format!(
-                "CID verification failed: provided CID {} does not match bytes",
-                id
+                "CID verification failed: provided CID {id} does not match bytes"
             )));
         }
 

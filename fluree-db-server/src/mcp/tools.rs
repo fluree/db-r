@@ -177,9 +177,8 @@ impl FlureeToolService {
                 // Add truncation notice if results were limited
                 let text = if truncated {
                     format!(
-                        "{}\n\n---\nNote: Results truncated. Showing {} of {} total rows. \
-                         Use SPARQL LIMIT and OFFSET clauses to paginate through results.",
-                        output, returned_rows, total_rows
+                        "{output}\n\n---\nNote: Results truncated. Showing {returned_rows} of {total_rows} total rows. \
+                         Use SPARQL LIMIT and OFFSET clauses to paginate through results."
                     )
                 } else {
                     output
@@ -198,8 +197,7 @@ impl FlureeToolService {
 
                 // Return error as tool error content (learnable by LLM)
                 Ok(CallToolResult::error(vec![Content::text(format!(
-                    "SPARQL query error: {}",
-                    e
+                    "SPARQL query error: {e}"
                 ))]))
             }
         }
@@ -230,7 +228,7 @@ impl FlureeToolService {
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, "Failed to build ledger info");
-                rmcp::ErrorData::internal_error(format!("Failed to load ledger: {}", e), None)
+                rmcp::ErrorData::internal_error(format!("Failed to load ledger: {e}"), None)
             })?;
 
         // Format as markdown for LLM consumption

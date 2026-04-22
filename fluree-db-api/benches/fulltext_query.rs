@@ -206,7 +206,7 @@ fn random_paragraph(rng: &mut impl Rng) -> String {
 /// everything needed to run benchmark queries.
 async fn setup_dataset(n_docs: usize) -> (BenchFluree, BenchLedger, JsonValue, JsonValue, usize) {
     let fluree = FlureeBuilder::memory().build_memory();
-    let alias = format!("bench/ft-{}:main", n_docs);
+    let alias = format!("bench/ft-{n_docs}:main");
     let mut ledger = fluree.create_ledger(&alias).await.unwrap();
 
     let mut rng = StdRng::seed_from_u64(42);
@@ -307,7 +307,7 @@ async fn setup_dataset_indexed(
 ) {
     let (fluree, _ledger, query_all, query_filtered, n_science) = setup_dataset(n_docs).await;
 
-    let ledger_id = format!("bench/ft-{}:main", n_docs);
+    let ledger_id = format!("bench/ft-{n_docs}:main");
 
     fluree
         .reindex(&ledger_id, ReindexOptions::default())
@@ -330,13 +330,13 @@ fn bench_fulltext_scan_all(c: &mut Criterion) {
     group.sample_size(10);
 
     for &n in DATASET_SIZES {
-        eprintln!("  [setup] Inserting {} @fulltext docs...", n);
+        eprintln!("  [setup] Inserting {n} @fulltext docs...");
         let (fluree, ledger, query, _, _) = rt.block_on(setup_dataset(n));
         let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
 
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
-            b.iter(|| rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) }))
+            b.iter(|| rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) }));
         });
     }
 
@@ -354,17 +354,14 @@ fn bench_fulltext_scan_all_indexed(c: &mut Criterion) {
     group.sample_size(10);
 
     for &n in DATASET_SIZES {
-        eprintln!(
-            "  [setup] Inserting {} @fulltext docs + building index...",
-            n
-        );
+        eprintln!("  [setup] Inserting {n} @fulltext docs + building index...");
         let (_fluree, snapshot, query, _, _) = rt.block_on(setup_dataset_indexed(n));
 
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 rt.block_on(async { black_box(_fluree.query(&snapshot, &query).await.unwrap()) })
-            })
+            });
         });
     }
 
@@ -382,7 +379,7 @@ fn bench_fulltext_scan_filtered(c: &mut Criterion) {
     group.sample_size(10);
 
     for &n in DATASET_SIZES {
-        eprintln!("  [setup] Inserting {} @fulltext docs...", n);
+        eprintln!("  [setup] Inserting {n} @fulltext docs...");
         let (fluree, ledger, _, query, n_science) = rt.block_on(setup_dataset(n));
         let db = fluree_db_api::GraphDb::from_ledger_state(&ledger);
         eprintln!(
@@ -399,7 +396,7 @@ fn bench_fulltext_scan_filtered(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     rt.block_on(async { black_box(fluree.query(&db, &query).await.unwrap()) })
-                })
+                });
             },
         );
     }
@@ -418,10 +415,7 @@ fn bench_fulltext_scan_filtered_indexed(c: &mut Criterion) {
     group.sample_size(10);
 
     for &n in DATASET_SIZES {
-        eprintln!(
-            "  [setup] Inserting {} @fulltext docs + building index...",
-            n
-        );
+        eprintln!("  [setup] Inserting {n} @fulltext docs + building index...");
         let (_fluree, snapshot, _, query, n_science) = rt.block_on(setup_dataset_indexed(n));
         eprintln!(
             "  {} of {} docs pass category filter (~{:.0}%)",
@@ -439,7 +433,7 @@ fn bench_fulltext_scan_filtered_indexed(c: &mut Criterion) {
                     rt.block_on(async {
                         black_box(_fluree.query(&snapshot, &query).await.unwrap())
                     })
-                })
+                });
             },
         );
     }

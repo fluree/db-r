@@ -103,7 +103,7 @@ impl SyncDriver {
     fn get_client(&self, remote: &RemoteName) -> Result<&Arc<dyn RemoteNameserviceClient>> {
         self.clients
             .get(remote.as_str())
-            .ok_or_else(|| SyncError::Config(format!("No client for remote '{}'", remote)))
+            .ok_or_else(|| SyncError::Config(format!("No client for remote '{remote}'")))
     }
 
     /// Fetch all records from a remote and update tracking refs.
@@ -353,8 +353,7 @@ impl SyncDriver {
             .map_err(SyncError::Nameservice)?;
         let Some(local_commit) = local_ref else {
             return Err(SyncError::Config(format!(
-                "Local ledger ID '{}' has no commit ref",
-                local_alias
+                "Local ledger ID '{local_alias}' has no commit ref"
             )));
         };
 
@@ -433,7 +432,7 @@ fn chrono_now() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    format!("{}Z", now)
+    format!("{now}Z")
 }
 
 #[cfg(test)]
@@ -606,7 +605,7 @@ mod tests {
                 assert_eq!(from.t, 1);
                 assert_eq!(to.t, 5);
             }
-            other => panic!("expected FastForwarded, got {:?}", other),
+            other => panic!("expected FastForwarded, got {other:?}"),
         }
 
         // Verify local is now at t=5
@@ -647,7 +646,7 @@ mod tests {
 
         match driver.pull_tracked("mydb:main").await.unwrap() {
             PullResult::Current { .. } => {}
-            other => panic!("expected Current, got {:?}", other),
+            other => panic!("expected Current, got {other:?}"),
         }
     }
 
@@ -689,7 +688,7 @@ mod tests {
                 assert_eq!(l.t, 10);
                 assert_eq!(r.t, 5);
             }
-            other => panic!("expected Diverged, got {:?}", other),
+            other => panic!("expected Diverged, got {other:?}"),
         }
     }
 
@@ -699,7 +698,7 @@ mod tests {
 
         match driver.pull_tracked("mydb:main").await.unwrap() {
             PullResult::NoUpstream { .. } => {}
-            other => panic!("expected NoUpstream, got {:?}", other),
+            other => panic!("expected NoUpstream, got {other:?}"),
         }
     }
 
@@ -726,7 +725,7 @@ mod tests {
             PushResult::Pushed { value, .. } => {
                 assert_eq!(value.t, 5);
             }
-            other => panic!("expected Pushed, got {:?}", other),
+            other => panic!("expected Pushed, got {other:?}"),
         }
     }
 
@@ -767,7 +766,7 @@ mod tests {
                 assert_eq!(l.t, 5);
                 assert_eq!(r.t, 1);
             }
-            other => panic!("expected Rejected, got {:?}", other),
+            other => panic!("expected Rejected, got {other:?}"),
         }
     }
 
@@ -782,7 +781,7 @@ mod tests {
 
         match driver.push_tracked("mydb:main").await.unwrap() {
             PushResult::NoUpstream { .. } => {}
-            other => panic!("expected NoUpstream, got {:?}", other),
+            other => panic!("expected NoUpstream, got {other:?}"),
         }
     }
 }

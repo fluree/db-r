@@ -1671,7 +1671,7 @@ fn update_where_delete_insert_json_ld() {
         .args([
             "query",
             "-e",
-            r#"SELECT ?age WHERE { <http://example.org/alice> <http://example.org/age> ?age }"#,
+            r"SELECT ?age WHERE { <http://example.org/alice> <http://example.org/age> ?age }",
             "--format",
             "json",
         ])

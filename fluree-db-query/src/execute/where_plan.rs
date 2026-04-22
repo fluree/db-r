@@ -436,7 +436,7 @@ pub(crate) fn collect_property_join_tail(
     let mut combined = required_triples.to_vec();
     let mut available_required_vars: HashSet<VarId> = required_triples
         .iter()
-        .flat_map(|tp| tp.variables())
+        .flat_map(super::super::triple::TriplePattern::variables)
         .collect();
 
     while let Some(Pattern::Optional(inner_patterns)) = patterns.get(i) {
@@ -526,7 +526,7 @@ pub(crate) fn analyze_property_join_plan(
 #[inline]
 fn require_child(operator: Option<BoxedOperator>, pattern_name: &str) -> Result<BoxedOperator> {
     operator
-        .ok_or_else(|| QueryError::InvalidQuery(format!("{} has no input operator", pattern_name)))
+        .ok_or_else(|| QueryError::InvalidQuery(format!("{pattern_name} has no input operator")))
 }
 
 /// Get an operator or create an empty seed if None.
@@ -786,8 +786,15 @@ fn build_property_join_block(
         }
     }
 
-    let mut available_vars: HashSet<VarId> = triples.iter().flat_map(|tp| tp.variables()).collect();
-    available_vars.extend(optional_triples.iter().flat_map(|tp| tp.variables()));
+    let mut available_vars: HashSet<VarId> = triples
+        .iter()
+        .flat_map(super::super::triple::TriplePattern::variables)
+        .collect();
+    available_vars.extend(
+        optional_triples
+            .iter()
+            .flat_map(super::super::triple::TriplePattern::variables),
+    );
 
     let (inline_ops, pending_binds, pending_filters) = build_inline_ops(
         pending_binds,
@@ -979,7 +986,11 @@ fn build_sequential_join_block(
         // longer contribute to liveness.
         let live_vars = base_vars.as_ref().map(|base| {
             let mut live: HashSet<VarId> = base.clone();
-            live.extend(triples[k + 1..].iter().flat_map(|t| t.variables()));
+            live.extend(
+                triples[k + 1..]
+                    .iter()
+                    .flat_map(super::super::triple::TriplePattern::variables),
+            );
             live.extend(pending_filters.iter().flat_map(|f| f.expr.variables()));
             live.extend(pending_binds.iter().flat_map(|b| b.expr.variables()));
             live.into_iter().collect::<Vec<VarId>>()
@@ -1232,7 +1243,7 @@ pub fn build_where_operators_seeded_with_needed(
     let needs_empty_seed = seed.is_none()
         && !matches!(
             patterns.first(),
-            Some(Pattern::Triple(_)) | Some(Pattern::Values { .. }) | Some(Pattern::Bind { .. })
+            Some(Pattern::Triple(_) | Pattern::Values { .. } | Pattern::Bind { .. })
         );
 
     // Start with provided seed, else start with empty operator if needed
@@ -1630,8 +1641,10 @@ pub fn build_where_operators_seeded_with_needed(
                 // Check if inner patterns reference outer vars that they don't produce
                 // (e.g., FILTER(?p = ?q) where ?p is outer-only). If so, the inner
                 // patterns can't be executed standalone — fall back to ExistsOperator.
-                let inner_all_vars: std::collections::HashSet<VarId> =
-                    inner_patterns.iter().flat_map(|p| p.variables()).collect();
+                let inner_all_vars: std::collections::HashSet<VarId> = inner_patterns
+                    .iter()
+                    .flat_map(super::super::ir::Pattern::variables)
+                    .collect();
                 let outer_schema: std::collections::HashSet<VarId> =
                     child.schema().iter().copied().collect();
                 let outer_only_consumed: bool = inner_all_vars
@@ -1977,7 +1990,7 @@ pub fn build_triple_operators(
         let live_vars = rwv_set.as_ref().map(|base| {
             let suffix_vars: HashSet<VarId> = triples_for_exec[k + 1..]
                 .iter()
-                .flat_map(|t| t.variables())
+                .flat_map(super::super::triple::TriplePattern::variables)
                 .collect();
             base.union(&suffix_vars).copied().collect::<Vec<VarId>>()
         });
@@ -2045,7 +2058,10 @@ mod tests {
         object_bounds: &HashMap<VarId, ObjectBounds>,
     ) -> Result<BoxedOperator> {
         // Preserve historical test behavior: keep all triple vars.
-        let needed: HashSet<VarId> = triples.iter().flat_map(|tp| tp.variables()).collect();
+        let needed: HashSet<VarId> = triples
+            .iter()
+            .flat_map(crate::triple::TriplePattern::variables)
+            .collect();
         let (counts, protected) = compute_where_var_stats(
             &triples
                 .iter()
@@ -2533,7 +2549,7 @@ mod tests {
                 ),
                 Expression::ne(
                     Expression::Var(name),
-                    Expression::Const(FilterValue::String("".to_string())),
+                    Expression::Const(FilterValue::String(String::new())),
                 ),
             ])),
             Pattern::Triple(make_pattern(s, "name", name)),

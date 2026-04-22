@@ -60,15 +60,13 @@ pub fn parse_table_identifier(table_id: &str) -> Result<TableIdentifier> {
         let parts: Vec<&str> = table_id.split('/').collect();
         if parts.len() < 2 {
             return Err(IcebergError::Config(format!(
-                "Invalid table identifier '{}': expected namespace/table",
-                table_id
+                "Invalid table identifier '{table_id}': expected namespace/table"
             )));
         }
         // Validate no empty parts
         if parts.iter().any(|p| p.is_empty()) {
             return Err(IcebergError::Config(format!(
-                "Invalid table identifier '{}': empty component",
-                table_id
+                "Invalid table identifier '{table_id}': empty component"
             )));
         }
         let namespace = parts[..parts.len() - 1].join(".");
@@ -80,8 +78,7 @@ pub fn parse_table_identifier(table_id: &str) -> Result<TableIdentifier> {
     if let Some(last_dot) = table_id.rfind('.') {
         if last_dot == 0 || last_dot == table_id.len() - 1 {
             return Err(IcebergError::Config(format!(
-                "Invalid table identifier '{}': namespace and table required",
-                table_id
+                "Invalid table identifier '{table_id}': namespace and table required"
             )));
         }
         let namespace = table_id[..last_dot].to_string();
@@ -90,8 +87,7 @@ pub fn parse_table_identifier(table_id: &str) -> Result<TableIdentifier> {
     }
 
     Err(IcebergError::Config(format!(
-        "Invalid table identifier '{}': must contain namespace separator (. or /)",
-        table_id
+        "Invalid table identifier '{table_id}': must contain namespace separator (. or /)"
     )))
 }
 
@@ -192,6 +188,6 @@ mod tests {
     #[test]
     fn test_table_identifier_display() {
         let id = TableIdentifier::new("ns", "table");
-        assert_eq!(format!("{}", id), "ns.table");
+        assert_eq!(format!("{id}"), "ns.table");
     }
 }

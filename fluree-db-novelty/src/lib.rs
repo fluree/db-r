@@ -240,7 +240,7 @@ impl Novelty {
         match &flake.g {
             None => Ok(0),
             Some(g_sid) => reverse_graph.get(g_sid).copied().ok_or_else(|| {
-                NoveltyError::InvalidGraph(format!("flake references unknown graph Sid: {}", g_sid))
+                NoveltyError::InvalidGraph(format!("flake references unknown graph Sid: {g_sid}"))
             }),
         }
     }
@@ -340,22 +340,22 @@ impl Novelty {
                 let parent_spot = parent.clone();
                 scope.spawn(move |_| {
                     let _p = parent_spot.enter();
-                    merge_batch_into_index(store, spot, batch_ids, IndexType::Spot)
+                    merge_batch_into_index(store, spot, batch_ids, IndexType::Spot);
                 });
                 let parent_psot = parent.clone();
                 scope.spawn(move |_| {
                     let _p = parent_psot.enter();
-                    merge_batch_into_index(store, psot, batch_ids, IndexType::Psot)
+                    merge_batch_into_index(store, psot, batch_ids, IndexType::Psot);
                 });
                 let parent_post = parent.clone();
                 scope.spawn(move |_| {
                     let _p = parent_post.enter();
-                    merge_batch_into_index(store, post, batch_ids, IndexType::Post)
+                    merge_batch_into_index(store, post, batch_ids, IndexType::Post);
                 });
                 let parent_opst = parent.clone();
                 scope.spawn(move |_| {
                     let _p = parent_opst.enter();
-                    merge_batch_into_index(store, opst, batch_ids, IndexType::Opst)
+                    merge_batch_into_index(store, opst, batch_ids, IndexType::Opst);
                 });
             });
         }
@@ -614,8 +614,8 @@ mod tests {
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64, op: bool) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,
@@ -633,8 +633,8 @@ mod tests {
         m: Option<FlakeMeta>,
     ) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,
@@ -645,9 +645,9 @@ mod tests {
 
     fn make_ref_flake(s: u16, p: u16, o_sid: u16, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
-            FlakeValue::Ref(Sid::new(o_sid, format!("s{}", o_sid))),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
+            FlakeValue::Ref(Sid::new(o_sid, format!("s{o_sid}"))),
             Sid::new(1, "id"), // $id datatype marks it as a ref
             t,
             true,
@@ -658,8 +658,8 @@ mod tests {
     /// Make a flake assigned to a named graph via its `g` field
     fn make_graph_flake(s: u16, p: u16, o: i64, t: i64, g_sid: Sid) -> Flake {
         let mut f = Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,
@@ -1013,8 +1013,7 @@ mod tests {
             assert_ne!(
                 cmp,
                 Ordering::Greater,
-                "SPOT index not sorted at position {}",
-                i
+                "SPOT index not sorted at position {i}"
             );
         }
     }
@@ -1074,7 +1073,7 @@ mod tests {
         let result = novelty.apply_commit(flakes, 1, &rg);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("unknown graph Sid"), "got: {}", err_msg);
+        assert!(err_msg.contains("unknown graph Sid"), "got: {err_msg}");
     }
 
     #[test]

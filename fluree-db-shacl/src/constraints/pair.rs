@@ -30,10 +30,10 @@ pub fn validate_equals(
 
         let mut msg_parts = Vec::new();
         if !missing.is_empty() {
-            msg_parts.push(format!("missing values from {}: {:?}", other_path, missing));
+            msg_parts.push(format!("missing values from {other_path}: {missing:?}"));
         }
         if !extra.is_empty() {
-            msg_parts.push(format!("extra values not in {}: {:?}", other_path, extra));
+            msg_parts.push(format!("extra values not in {other_path}: {extra:?}"));
         }
 
         return Some(ConstraintViolation {
@@ -75,8 +75,7 @@ pub fn validate_disjoint(
             }),
             value: intersection.first().map(|v| (**v).clone()),
             message: format!(
-                "Values must be disjoint from {}, but found common values: {:?}",
-                other_path, intersection
+                "Values must be disjoint from {other_path}, but found common values: {intersection:?}"
             ),
         });
     }
@@ -103,8 +102,7 @@ pub fn validate_less_than(
                     }),
                     value: Some(value.clone()),
                     message: format!(
-                        "Value {:?} is not less than {:?} from {}",
-                        value, other, other_path
+                        "Value {value:?} is not less than {other:?} from {other_path}"
                     ),
                 });
             }
@@ -117,8 +115,7 @@ pub fn validate_less_than(
                 }),
                 value: Some(value.clone()),
                 message: format!(
-                    "Cannot compare value {:?} with {:?} from {} (incompatible types)",
-                    value, other, other_path
+                    "Cannot compare value {value:?} with {other:?} from {other_path} (incompatible types)"
                 ),
             });
         }
@@ -146,8 +143,7 @@ pub fn validate_less_than_or_equals(
                     }),
                     value: Some(value.clone()),
                     message: format!(
-                        "Value {:?} is not less than or equal to {:?} from {}",
-                        value, other, other_path
+                        "Value {value:?} is not less than or equal to {other:?} from {other_path}"
                     ),
                 });
             }
@@ -160,8 +156,7 @@ pub fn validate_less_than_or_equals(
                 }),
                 value: Some(value.clone()),
                 message: format!(
-                    "Cannot compare value {:?} with {:?} from {} (incompatible types)",
-                    value, other, other_path
+                    "Cannot compare value {value:?} with {other:?} from {other_path} (incompatible types)"
                 ),
             });
         }

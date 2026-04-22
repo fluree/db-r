@@ -489,7 +489,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 .as_array()
                 .expect("array")
                 .iter()
-                .filter_map(|v| v.as_i64())
+                .filter_map(serde_json::Value::as_i64)
                 .collect();
             assert_eq!(ages, vec![30], "at t=1, Alice should be age 30");
 
@@ -508,7 +508,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 .as_array()
                 .expect("array")
                 .iter()
-                .filter_map(|v| v.as_i64())
+                .filter_map(serde_json::Value::as_i64)
                 .collect();
             assert_eq!(ages, vec![31], "at t=2, Alice should be age 31");
 
@@ -530,7 +530,7 @@ async fn time_travel_updates_across_index_novelty_boundary() {
                 .as_array()
                 .expect("array")
                 .iter()
-                .filter_map(|v| v.as_i64())
+                .filter_map(serde_json::Value::as_i64)
                 .collect();
             assert_eq!(ages, vec![31], "current Alice should be age 31");
         })
@@ -678,8 +678,7 @@ async fn time_travel_consistent_results_across_scenarios() {
 
                 assert_eq!(
                     names_a, names_b,
-                    "Results at t={} should be identical: novelty={:?} indexed={:?}",
-                    t, names_a, names_b
+                    "Results at t={t} should be identical: novelty={names_a:?} indexed={names_b:?}"
                 );
             }
 
@@ -751,7 +750,7 @@ async fn query_person_age(fluree: &MemoryFluree, from_spec: &str, person_id: &st
         .as_array()
         .expect("array")
         .iter()
-        .filter_map(|v| v.as_i64())
+        .filter_map(serde_json::Value::as_i64)
         .collect()
 }
 
@@ -858,8 +857,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
 
             assert!(
                 duplicates.is_empty(),
-                "Found duplicate names (indicates double-emission bug): {:?}",
-                duplicates
+                "Found duplicate names (indicates double-emission bug): {duplicates:?}"
             );
 
             assert_eq!(
@@ -871,7 +869,7 @@ async fn time_travel_no_duplicate_overlay_emission() {
 
             // Verify person0's age is 99 (the updated value)
             let ages = query_person_age(&fluree, &format!("{ledger_id}@t:2"), "ex:person0").await;
-            assert_eq!(ages, vec![99], "person0 should have age 99, got {:?}", ages);
+            assert_eq!(ages, vec![99], "person0 should have age 99, got {ages:?}");
         })
         .await;
 }

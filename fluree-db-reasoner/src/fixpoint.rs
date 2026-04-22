@@ -503,7 +503,7 @@ fn generate_same_as_flakes(frozen: &FrozenSameAs, t: i64) -> Vec<Flake> {
         let canonical = &members[0]; // Members are sorted, first is canonical
 
         // Generate flakes: canonical sameAs x, x sameAs canonical for each x
-        for member in members.iter() {
+        for member in members {
             if member != canonical {
                 // canonical sameAs member
                 flakes.push(Flake::new(

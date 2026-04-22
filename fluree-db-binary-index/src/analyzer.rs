@@ -413,9 +413,9 @@ pub fn analyze_to_term_freqs(text: &str) -> HashMap<String, u32> {
 
 fn parse_stopwords(file: &str) -> HashSet<String> {
     file.lines()
-        .map(|line| line.trim())
+        .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|s| s.to_lowercase())
+        .map(str::to_lowercase)
         .collect()
 }
 

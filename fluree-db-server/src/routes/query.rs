@@ -90,7 +90,7 @@ fn is_sparql_request(
 fn effective_identity(credential: &MaybeCredential, bearer: &MaybeDataBearer) -> Option<String> {
     credential
         .did()
-        .map(|d| d.to_string())
+        .map(std::string::ToString::to_string)
         .or_else(|| bearer.0.as_ref().and_then(|p| p.identity.clone()))
 }
 
@@ -318,7 +318,7 @@ pub async fn query(
                 tracing::info!(
                     status = "success",
                     query_kind = "sparql",
-                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                    result_count = result.as_array().map(std::vec::Vec::len).unwrap_or(0)
                 );
                 Ok((HeaderMap::new(), Json(result)).into_response())
             }
@@ -800,9 +800,9 @@ fn iri_to_string(iri: &fluree_db_sparql::ast::Iri) -> String {
         IriValue::Full(s) => s.to_string(),
         IriValue::Prefixed { prefix, local } => {
             if prefix.is_empty() {
-                format!(":{}", local)
+                format!(":{local}")
             } else {
-                format!("{}:{}", prefix, local)
+                format!("{prefix}:{local}")
             }
         }
     }
@@ -1111,7 +1111,7 @@ async fn execute_query(
             tracing::info!(
                 status = "success",
                 tracked = false,
-                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                result_count = result.as_array().map(std::vec::Vec::len).unwrap_or(0)
             );
             result
         }
@@ -1189,7 +1189,7 @@ async fn execute_query_proxy(
             tracing::info!(
                 status = "success",
                 tracked = false,
-                result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                result_count = result.as_array().map(std::vec::Vec::len).unwrap_or(0)
             );
             result
         }
@@ -1549,8 +1549,8 @@ async fn execute_sparql_ledger(
             if wants_rdf_xml {
                 let is_graph_query = matches!(
                     parsed.ast.as_ref().map(|a| &a.body),
-                    Some(fluree_db_sparql::ast::QueryBody::Construct(_))
-                        | Some(fluree_db_sparql::ast::QueryBody::Describe(_))
+                    Some(fluree_db_sparql::ast::QueryBody::Construct(_) |
+fluree_db_sparql::ast::QueryBody::Describe(_))
                 );
                 if !is_graph_query {
                     return Err(ServerError::not_acceptable(
@@ -1750,8 +1750,8 @@ async fn execute_sparql_ledger(
         if wants_rdf_xml {
             let is_graph_query = matches!(
                 parsed.ast.as_ref().map(|a| &a.body),
-                Some(fluree_db_sparql::ast::QueryBody::Construct(_))
-                    | Some(fluree_db_sparql::ast::QueryBody::Describe(_))
+                Some(fluree_db_sparql::ast::QueryBody::Construct(_) |
+fluree_db_sparql::ast::QueryBody::Describe(_))
             );
             if !is_graph_query {
                 return Err(ServerError::not_acceptable(
@@ -2178,7 +2178,7 @@ async fn execute_history_query(
                 tracing::info!(
                     status = "success",
                     query_kind = "history",
-                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                    result_count = result.as_array().map(std::vec::Vec::len).unwrap_or(0)
                 );
                 Ok((HeaderMap::new(), Json(result)).into_response())
             }
@@ -2280,7 +2280,7 @@ async fn execute_dataset_query(
                 tracing::info!(
                     status = "success",
                     query_kind = "dataset",
-                    result_count = result.as_array().map(|a| a.len()).unwrap_or(0)
+                    result_count = result.as_array().map(std::vec::Vec::len).unwrap_or(0)
                 );
                 Ok((HeaderMap::new(), Json(result)).into_response())
             }

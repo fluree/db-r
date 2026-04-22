@@ -67,7 +67,7 @@ fn normalize_object_arrays(value: &mut JsonValue) {
                 normalize_object_arrays(item);
             }
 
-            if arr.iter().all(|v| v.is_number()) {
+            if arr.iter().all(serde_json::Value::is_number) {
                 arr.sort_by(|a, b| {
                     a.as_f64()
                         .unwrap_or_default()
@@ -459,7 +459,7 @@ async fn jsonld_opts_strict_compact_iri_false_allows_undefined_prefix() {
         .expect("query select");
     let mut rows = r.to_jsonld(&loaded.snapshot).expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
-    arr.sort_by_key(|a| a.to_string());
+    arr.sort_by_key(std::string::ToString::to_string);
     assert_eq!(rows, json!([["foaf:bar", "Bar"], ["foo", "Foo"]]));
 }
 

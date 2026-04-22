@@ -844,14 +844,10 @@ impl std::fmt::Display for BatchError {
                 got,
                 column,
             } => {
-                write!(
-                    f,
-                    "Column {} has {} rows, expected {}",
-                    column, got, expected
-                )
+                write!(f, "Column {column} has {got} rows, expected {expected}")
             }
             BatchError::DuplicateVarId(id) => {
-                write!(f, "Duplicate VarId {:?} in schema", id)
+                write!(f, "Duplicate VarId {id:?} in schema")
             }
             BatchError::SchemaColumnMismatch {
                 schema_len,
@@ -859,8 +855,7 @@ impl std::fmt::Display for BatchError {
             } => {
                 write!(
                     f,
-                    "Schema has {} vars but {} columns provided",
-                    schema_len, columns_len
+                    "Schema has {schema_len} vars but {columns_len} columns provided"
                 )
             }
         }
@@ -905,7 +900,7 @@ impl Batch {
         }
 
         // Determine row count (from first column, or 0 if no columns)
-        let len = columns.first().map(|c| c.len()).unwrap_or(0);
+        let len = columns.first().map(std::vec::Vec::len).unwrap_or(0);
 
         // Check all columns have same length
         for (i, col) in columns.iter().enumerate() {
@@ -1009,7 +1004,7 @@ impl Batch {
 
     /// Get a column by index
     pub fn column_by_idx(&self, col: usize) -> Option<&[Binding]> {
-        self.columns.get(col).map(|c| c.as_slice())
+        self.columns.get(col).map(std::vec::Vec::as_slice)
     }
 
     /// Zero-copy view selecting specific columns
@@ -1259,7 +1254,7 @@ pub struct RowView<'a> {
     row: usize,
 }
 
-impl<'a> RowAccess for RowView<'a> {
+impl RowAccess for RowView<'_> {
     fn get(&self, var: VarId) -> Option<&Binding> {
         self.batch.get(self.row, var)
     }
@@ -1312,7 +1307,7 @@ impl<'a> BindingRow<'a> {
     }
 }
 
-impl<'a> RowAccess for BindingRow<'a> {
+impl RowAccess for BindingRow<'_> {
     fn get(&self, var: VarId) -> Option<&Binding> {
         self.schema
             .iter()

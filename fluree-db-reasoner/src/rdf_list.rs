@@ -72,8 +72,7 @@ pub async fn collect_list_elements(db: GraphDbRef<'_>, list_head: &Sid) -> Resul
         // Guard against malformed/cyclic lists
         if elements.len() >= MAX_LIST_LENGTH {
             return Err(ReasonerError::Internal(format!(
-                "RDF list exceeds maximum length of {} (possible cycle or malformed data)",
-                MAX_LIST_LENGTH
+                "RDF list exceeds maximum length of {MAX_LIST_LENGTH} (possible cycle or malformed data)"
             )));
         }
 
@@ -164,8 +163,7 @@ pub async fn collect_list_values(db: GraphDbRef<'_>, list_head: &Sid) -> Result<
 
         if elements.len() >= MAX_LIST_LENGTH {
             return Err(ReasonerError::Internal(format!(
-                "RDF list exceeds maximum length of {} (possible cycle or malformed data)",
-                MAX_LIST_LENGTH
+                "RDF list exceeds maximum length of {MAX_LIST_LENGTH} (possible cycle or malformed data)"
             )));
         }
 
@@ -264,8 +262,7 @@ pub async fn collect_chain_elements(
 
         if elements.len() >= MAX_LIST_LENGTH {
             return Err(ReasonerError::Internal(format!(
-                "RDF list exceeds maximum length of {} (possible cycle or malformed data)",
-                MAX_LIST_LENGTH
+                "RDF list exceeds maximum length of {MAX_LIST_LENGTH} (possible cycle or malformed data)"
             )));
         }
 
@@ -346,8 +343,7 @@ fn resolve_chain_element<'a>(
 
         if depth >= MAX_INVERSE_DEPTH {
             return Err(ReasonerError::Internal(format!(
-                "owl:inverseOf nesting exceeds maximum depth of {}",
-                MAX_INVERSE_DEPTH
+                "owl:inverseOf nesting exceeds maximum depth of {MAX_INVERSE_DEPTH}"
             )));
         }
 
@@ -419,8 +415,7 @@ fn resolve_property_expression_inner<'a>(
 
         if depth >= MAX_DEPTH {
             return Err(ReasonerError::Internal(format!(
-                "Property expression nesting exceeds maximum depth of {}",
-                MAX_DEPTH
+                "Property expression nesting exceeds maximum depth of {MAX_DEPTH}"
             )));
         }
 

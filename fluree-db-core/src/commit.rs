@@ -326,7 +326,7 @@ pub async fn load_commit_by_id<C: ContentStore>(store: &C, id: &ContentId) -> Re
     let data = store
         .get(id)
         .await
-        .map_err(|e| Error::storage(format!("Failed to read commit {}: {}", id, e)))?;
+        .map_err(|e| Error::storage(format!("Failed to read commit {id}: {e}")))?;
 
     let _span = tracing::debug_span!("load_commit", blob_bytes = data.len()).entered();
     let mut commit = codec::read_commit(&data).map_err(|e| Error::invalid_commit(e.to_string()))?;
@@ -411,7 +411,7 @@ pub async fn load_commit_envelope_by_id<C: ContentStore + ?Sized>(
     let probe = store
         .get_range(id, 0..ENVELOPE_PROBE_LEN)
         .await
-        .map_err(|e| Error::storage(format!("Failed to read commit envelope {}: {}", id, e)))?;
+        .map_err(|e| Error::storage(format!("Failed to read commit envelope {id}: {e}")))?;
 
     if probe.len() < HEADER_LEN {
         return Err(Error::invalid_commit(format!(
@@ -431,8 +431,7 @@ pub async fn load_commit_envelope_by_id<C: ContentStore + ?Sized>(
         // Oversized envelope — rare path. Fetch the full blob.
         store.get(id).await.map_err(|e| {
             Error::storage(format!(
-                "Failed to read oversized commit envelope {}: {}",
-                id, e
+                "Failed to read oversized commit envelope {id}: {e}"
             ))
         })?
     };
@@ -742,8 +741,8 @@ mod tests {
 
     fn make_test_flake(s: i64, p: i64, o: i64, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s as u16, format!("s{}", s)),
-            Sid::new(p as u16, format!("p{}", p)),
+            Sid::new(s as u16, format!("s{s}")),
+            Sid::new(p as u16, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,

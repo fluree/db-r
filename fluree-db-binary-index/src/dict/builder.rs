@@ -70,7 +70,7 @@ pub fn build_reverse_tree(
                 first_key: chunk.first().unwrap().key.clone(),
                 last_key: chunk.last().unwrap().key.clone(),
                 entry_count: chunk.len() as u32,
-                address: format!("pending:{}", hash),
+                address: format!("pending:{hash}"),
             });
 
             leaves.push(LeafArtifact {
@@ -125,7 +125,7 @@ pub fn finalize_branch(
                 None => {
                     return Err(io::Error::new(
                         io::ErrorKind::NotFound,
-                        format!("no CAS address for leaf hash {}", hash),
+                        format!("no CAS address for leaf hash {hash}"),
                     ));
                 }
             }
@@ -144,7 +144,7 @@ mod tests {
     fn test_build_reverse_tree() {
         let mut entries: Vec<ReverseEntry> = (0..100)
             .map(|i| ReverseEntry {
-                key: format!("key_{:04}", i).into_bytes(),
+                key: format!("key_{i:04}").into_bytes(),
                 id: i as u64,
             })
             .collect();
@@ -166,7 +166,7 @@ mod tests {
     fn test_finalize_branch() {
         let entries: Vec<ReverseEntry> = (0..10)
             .map(|i| ReverseEntry {
-                key: format!("key_{:04}", i).into_bytes(),
+                key: format!("key_{i:04}").into_bytes(),
                 id: i as u64,
             })
             .collect();

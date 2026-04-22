@@ -165,7 +165,7 @@ impl DictTreeReader {
             Some(cache) => Self::with_cache(branch, leaf_source, Arc::clone(cache)),
             None => Self::new(branch, leaf_source),
         };
-        reader.disk_cache_dir = disk_cache_dir.map(|p| p.to_path_buf());
+        reader.disk_cache_dir = disk_cache_dir.map(std::path::Path::to_path_buf);
         Ok(reader)
     }
 
@@ -452,7 +452,7 @@ impl DictTreeReader {
                 let path = map.get(address).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::NotFound,
-                        format!("dict tree: no local file for leaf {}", address),
+                        format!("dict tree: no local file for leaf {address}"),
                     )
                 })?;
 
@@ -512,7 +512,7 @@ impl DictTreeReader {
                 let cid = remote_cids.get(address).ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::NotFound,
-                        format!("dict tree: no CID mapping for leaf {}", address),
+                        format!("dict tree: no CID mapping for leaf {address}"),
                     )
                 })?;
 
@@ -587,7 +587,7 @@ impl DictTreeReader {
                 map.get(address).cloned().ok_or_else(|| {
                     io::Error::new(
                         io::ErrorKind::NotFound,
-                        format!("dict tree: no in-memory leaf for {}", address),
+                        format!("dict tree: no in-memory leaf for {address}"),
                     )
                 })
             }
@@ -696,7 +696,7 @@ mod tests {
     fn test_reverse_lookup() {
         let mut entries: Vec<ReverseEntry> = (0..100)
             .map(|i| ReverseEntry {
-                key: format!("key_{:04}", i).into_bytes(),
+                key: format!("key_{i:04}").into_bytes(),
                 id: i as u64,
             })
             .collect();

@@ -55,8 +55,7 @@ impl SexprToken {
         match self {
             SexprToken::Atom(s) => Ok(s),
             SexprToken::List(_) => Err(ParseError::InvalidSelect(format!(
-                "{} must be an atom, not a list",
-                context
+                "{context} must be an atom, not a list"
             ))),
         }
     }
@@ -66,8 +65,7 @@ impl SexprToken {
         match self {
             SexprToken::List(tokens) => Ok(tokens),
             SexprToken::Atom(a) => Err(ParseError::InvalidSelect(format!(
-                "{} must be a list, got atom: {}",
-                context, a
+                "{context} must be a list, got atom: {a}"
             ))),
         }
     }
@@ -123,11 +121,10 @@ fn tokenize_sexpr_inner(
                 if in_list {
                     chars.next(); // consume ')'
                     return Ok(tokens);
-                } else {
-                    return Err(ParseError::InvalidSelect(
-                        "unexpected ')' in S-expression".to_string(),
-                    ));
                 }
+                return Err(ParseError::InvalidSelect(
+                    "unexpected ')' in S-expression".to_string(),
+                ));
             }
             '"' => {
                 // Push any pending atom

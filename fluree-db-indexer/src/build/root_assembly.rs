@@ -103,8 +103,11 @@ pub(crate) async fn encode_and_write_root(
         }
 
         if !ctx.garbage_cids.is_empty() {
-            let garbage_strings: Vec<String> =
-                ctx.garbage_cids.iter().map(|c| c.to_string()).collect();
+            let garbage_strings: Vec<String> = ctx
+                .garbage_cids
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             let cid =
                 gc::write_garbage_record(content_store, ledger_id, root.index_t, garbage_strings)
                     .await
@@ -326,8 +329,11 @@ pub(crate) async fn encode_and_write_root_v6(
         }
 
         if !ctx.garbage_cids.is_empty() {
-            let garbage_strings: Vec<String> =
-                ctx.garbage_cids.iter().map(|c| c.to_string()).collect();
+            let garbage_strings: Vec<String> = ctx
+                .garbage_cids
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect();
             let cid = gc::write_garbage_record(
                 content_store,
                 &inputs.ledger_id,

@@ -299,7 +299,7 @@ fn stdin_is_tty() -> bool {
 /// Prompt for Y/n confirmation on stderr. Returns true for Y (default).
 fn prompt_yn(question: &str) -> bool {
     use std::io::Write;
-    eprint!("{} [Y/n] ", question);
+    eprint!("{question} [Y/n] ");
     let _ = std::io::stderr().flush();
 
     let mut input = String::new();
@@ -587,7 +587,7 @@ fn install_claude_code(fluree_bin: &str) -> CliResult<()> {
                 Use the `memory_recall` MCP tool at the start of tasks to retrieve project context.\n\
                 Use `memory_add` to store important facts, decisions, and constraints.\n\
                 See `fluree memory --help` for CLI usage.\n";
-            std::fs::write(claude_md, format!("{}{}", content, snippet))
+            std::fs::write(claude_md, format!("{content}{snippet}"))
                 .map_err(|e| CliError::Config(format!("failed to update CLAUDE.md: {e}")))?;
             println!("  Appended memory instructions to CLAUDE.md");
         }
@@ -685,8 +685,7 @@ fn install_zed(fluree_bin: &str) -> CliResult<()> {
             Err(_) => {
                 eprintln!("  .zed/settings.json contains JSONC (comments) — cannot safely merge.");
                 eprintln!(
-                    "  Add manually: \"context_servers\": {{ \"fluree-memory\": {{ \"command\": \"{}\", \"args\": [\"mcp\", \"serve\", \"--transport\", \"stdio\"] }} }}",
-                    fluree_bin
+                    "  Add manually: \"context_servers\": {{ \"fluree-memory\": {{ \"command\": \"{fluree_bin}\", \"args\": [\"mcp\", \"serve\", \"--transport\", \"stdio\"] }} }}"
                 );
                 return Ok(());
             }
@@ -727,8 +726,7 @@ fn run_mcp_install(ide: Option<&str>) -> CliResult<()> {
         "windsurf" => install_windsurf(&fluree_bin),
         "zed" => install_zed(&fluree_bin),
         other => Err(CliError::Usage(format!(
-            "unknown IDE '{}'; valid: claude-code, vscode, cursor, windsurf, zed",
-            other
+            "unknown IDE '{other}'; valid: claude-code, vscode, cursor, windsurf, zed"
         ))),
     }
 }
@@ -752,8 +750,7 @@ async fn run_add(
 ) -> CliResult<()> {
     let kind = MemoryKind::parse(&kind_str).ok_or_else(|| {
         CliError::Usage(format!(
-            "invalid memory kind '{}'; valid: fact, decision, constraint",
-            kind_str
+            "invalid memory kind '{kind_str}'; valid: fact, decision, constraint"
         ))
     })?;
 
@@ -809,8 +806,7 @@ async fn run_add(
         .map(|s| {
             fluree_db_memory::Severity::parse_str(&s).ok_or_else(|| {
                 CliError::Usage(format!(
-                    "invalid severity '{}'; valid: must, should, prefer",
-                    s
+                    "invalid severity '{s}'; valid: must, should, prefer"
                 ))
             })
         })
@@ -819,7 +815,7 @@ async fn run_add(
     let scope = scope
         .map(|s| {
             Scope::parse_str(&s)
-                .ok_or_else(|| CliError::Usage(format!("invalid scope '{}'; valid: repo, user", s)))
+                .ok_or_else(|| CliError::Usage(format!("invalid scope '{s}'; valid: repo, user")))
         })
         .transpose()?
         .unwrap_or_default();
@@ -855,13 +851,13 @@ async fn run_add(
             }
         }
         _ => {
-            println!("Stored memory: {}", id);
+            println!("Stored memory: {id}");
         }
     }
 
     // Surface related memories for housekeeping
     if let Some(related) = find_related_memories_cli(&store, &id, &recall_query).await {
-        print!("{}", related);
+        print!("{related}");
     }
 
     Ok(())
@@ -902,14 +898,14 @@ async fn run_recall(
     let kind_filter = kind
         .map(|s| {
             MemoryKind::parse(&s)
-                .ok_or_else(|| CliError::Usage(format!("invalid memory kind '{}'", s)))
+                .ok_or_else(|| CliError::Usage(format!("invalid memory kind '{s}'")))
         })
         .transpose()?;
 
     let scope_filter = scope
         .map(|s| {
             Scope::parse_str(&s)
-                .ok_or_else(|| CliError::Usage(format!("invalid scope '{}'; valid: repo, user", s)))
+                .ok_or_else(|| CliError::Usage(format!("invalid scope '{s}'; valid: repo, user")))
         })
         .transpose()?;
 
@@ -1025,7 +1021,7 @@ async fn run_update(
             }
         }
         _ => {
-            println!("Updated: {}", updated_id);
+            println!("Updated: {updated_id}");
         }
     }
 
@@ -1036,7 +1032,7 @@ async fn run_forget(id: &str, dirs: &FlureeDir) -> CliResult<()> {
     let store = build_store(dirs)?;
     store.ensure_synced().await.map_err(memory_err)?;
     store.forget(id).await.map_err(memory_err)?;
-    println!("Forgotten: {}", id);
+    println!("Forgotten: {id}");
     Ok(())
 }
 
@@ -1067,7 +1063,7 @@ async fn run_import(file: &std::path::Path, dirs: &FlureeDir) -> CliResult<()> {
     let store = build_store(dirs)?;
     store.ensure_synced().await.map_err(memory_err)?;
     let count = store.import(data).await.map_err(memory_err)?;
-    println!("Imported {} memories.", count);
+    println!("Imported {count} memories.");
     Ok(())
 }
 
@@ -1075,7 +1071,7 @@ async fn run_import(file: &std::path::Path, dirs: &FlureeDir) -> CliResult<()> {
 fn memory_err(e: fluree_db_memory::MemoryError) -> CliError {
     match e {
         fluree_db_memory::MemoryError::NotFound(id) => {
-            CliError::NotFound(format!("memory '{}' not found", id))
+            CliError::NotFound(format!("memory '{id}' not found"))
         }
         fluree_db_memory::MemoryError::Api(api_err) => CliError::Api(api_err),
         _ => CliError::Config(e.to_string()),

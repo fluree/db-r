@@ -41,14 +41,13 @@ pub fn validate_node_kind(
         NodeKind::IRI => matches!(actual_kind, Some(NodeKind::IRI)),
         NodeKind::Literal => matches!(actual_kind, Some(NodeKind::Literal)),
         NodeKind::BlankNodeOrIRI => {
-            matches!(actual_kind, Some(NodeKind::BlankNode) | Some(NodeKind::IRI))
+            matches!(actual_kind, Some(NodeKind::BlankNode | NodeKind::IRI))
         }
-        NodeKind::BlankNodeOrLiteral => matches!(
-            actual_kind,
-            Some(NodeKind::BlankNode) | Some(NodeKind::Literal)
-        ),
+        NodeKind::BlankNodeOrLiteral => {
+            matches!(actual_kind, Some(NodeKind::BlankNode | NodeKind::Literal))
+        }
         NodeKind::IRIOrLiteral => {
-            matches!(actual_kind, Some(NodeKind::IRI) | Some(NodeKind::Literal))
+            matches!(actual_kind, Some(NodeKind::IRI | NodeKind::Literal))
         }
     };
 
@@ -56,10 +55,7 @@ pub fn validate_node_kind(
         Some(ConstraintViolation {
             constraint: Constraint::NodeKind(expected_kind),
             value: Some(value.clone()),
-            message: format!(
-                "Expected node kind {:?} but found {:?}",
-                expected_kind, actual_kind
-            ),
+            message: format!("Expected node kind {expected_kind:?} but found {actual_kind:?}"),
         })
     } else {
         None

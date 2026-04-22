@@ -61,7 +61,7 @@ impl<'a> QueryPolicyExecutor<'a> {
     }
 }
 
-impl<'a> PolicyQueryExecutor for QueryPolicyExecutor<'a> {
+impl PolicyQueryExecutor for QueryPolicyExecutor<'_> {
     fn evaluate_policy_query<'b>(
         &'b self,
         query: &'b PolicyQuery,
@@ -71,7 +71,7 @@ impl<'a> PolicyQueryExecutor for QueryPolicyExecutor<'a> {
     }
 }
 
-impl<'a> QueryPolicyExecutor<'a> {
+impl QueryPolicyExecutor<'_> {
     /// Async implementation of policy query evaluation
     async fn evaluate_async(
         &self,
@@ -89,7 +89,7 @@ impl<'a> QueryPolicyExecutor<'a> {
         // - VALUES injected into WHERE for special variables (?$this, ?$identity, etc.)
         let mut query_json: serde_json::Value = serde_json::from_str(&query.json).map_err(|e| {
             fluree_db_policy::PolicyError::QueryExecution {
-                message: format!("Invalid policy query JSON: {}", e),
+                message: format!("Invalid policy query JSON: {e}"),
             }
         })?;
 
@@ -169,7 +169,7 @@ impl<'a> QueryPolicyExecutor<'a> {
 
         let parsed = crate::parse::parse_query(&query_json, self.snapshot, &mut vars, None)
             .map_err(|e| fluree_db_policy::PolicyError::QueryExecution {
-                message: format!("Failed to parse policy query: {}", e),
+                message: format!("Failed to parse policy query: {e}"),
             })?;
 
         let patterns = parsed.patterns;

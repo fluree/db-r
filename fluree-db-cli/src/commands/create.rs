@@ -27,9 +27,8 @@ pub async fn run(
     let store = config::TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     if store.get_tracked(ledger).is_some() {
         return Err(CliError::Usage(format!(
-            "alias '{}' is already used by a tracked ledger.\n  \
-             Run `fluree track remove {}` first, or choose a different name.",
-            ledger, ledger
+            "alias '{ledger}' is already used by a tracked ledger.\n  \
+             Run `fluree track remove {ledger}` first, or choose a different name."
         )));
     }
 
@@ -114,7 +113,7 @@ pub async fn run(
             // Create empty ledger
             fluree.create_ledger(ledger).await?;
             config::write_active_ledger(dirs.data_dir(), ledger)?;
-            println!("Created ledger '{}'", ledger);
+            println!("Created ledger '{ledger}'");
         }
     }
 
@@ -310,7 +309,7 @@ async fn run_bulk_import(
                 let mb = chunk_bytes as f64 / (1024.0 * 1024.0);
                 cb.set_length(total as u64);
                 cb.set_position(chunk.saturating_sub(1) as u64);
-                cb.set_message(format!("Parsing chunk {} ({:.0} MB)...", chunk, mb));
+                cb.set_message(format!("Parsing chunk {chunk} ({mb:.0} MB)..."));
             }
             ImportPhase::Scanning {
                 bytes_read,
@@ -321,9 +320,9 @@ async fn run_bulk_import(
                 sb.set_position(bytes_read);
                 let gb_read = bytes_read as f64 / (1024.0 * 1024.0 * 1024.0);
                 let gb_total = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-                sb.set_message(format!("{:.1} / {:.1} GB", gb_read, gb_total));
+                sb.set_message(format!("{gb_read:.1} / {gb_total:.1} GB"));
                 if bytes_read >= total_bytes {
-                    sb.finish_with_message(format!("{:.1} GB", gb_total));
+                    sb.finish_with_message(format!("{gb_total:.1} GB"));
                 }
             }
             ImportPhase::Committing {
@@ -351,7 +350,7 @@ async fn run_bulk_import(
                 } else {
                     0.0
                 };
-                cb.set_message(format!("{:.2} M flakes/s", rate));
+                cb.set_message(format!("{rate:.2} M flakes/s"));
             }
             ImportPhase::PreparingIndex { stage } => {
                 cb.finish();
@@ -380,7 +379,7 @@ async fn run_bulk_import(
                 } else {
                     0.0
                 };
-                ib.set_message(format!("{stage} {:.2} M flakes/s", rate));
+                ib.set_message(format!("{stage} {rate:.2} M flakes/s"));
             }
             ImportPhase::Done => {
                 ib.finish();
@@ -587,7 +586,7 @@ async fn run_flpack_import(
 
                 let total = commits_stored + txn_blobs_stored + index_artifacts_stored;
                 if total.is_multiple_of(100) {
-                    eprint!("  {} objects...\r", total);
+                    eprint!("  {total} objects...\r");
                 }
             }
             PackFrame::Manifest(json) => {
@@ -618,7 +617,7 @@ async fn run_flpack_import(
                 .map_err(|e| CliError::Config(format!("invalid commit CID in manifest: {e}")))?;
             let commit_t = manifest
                 .get("commit_t")
-                .and_then(|v| v.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0);
 
             fluree
@@ -634,7 +633,7 @@ async fn run_flpack_import(
                 .map_err(|e| CliError::Config(format!("invalid index CID in manifest: {e}")))?;
             let index_t = manifest
                 .get("index_t")
-                .and_then(|v| v.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0);
 
             fluree
@@ -679,7 +678,7 @@ fn format_human_bytes(bytes: u64) -> String {
     } else if b >= KIB {
         format!("{:.0} KiB", b / KIB)
     } else {
-        format!("{} bytes", bytes)
+        format!("{bytes} bytes")
     }
 }
 
@@ -875,10 +874,7 @@ pub async fn run_memory_import(
         }
 
         config::write_active_ledger(dirs.data_dir(), ledger)?;
-        println!(
-            "Created ledger '{}' from current memory state (no git history found)",
-            ledger,
-        );
+        println!("Created ledger '{ledger}' from current memory state (no git history found)");
         return Ok(());
     }
 
@@ -999,12 +995,10 @@ pub async fn run_memory_import(
     println!();
     println!("Query with time travel:");
     println!(
-        "  fluree query {} 'PREFIX mem: <https://ns.flur.ee/memory#> SELECT ?id ?content WHERE {{ ?id a mem:Fact ; mem:content ?content }} LIMIT 5'",
-        ledger
+        "  fluree query {ledger} 'PREFIX mem: <https://ns.flur.ee/memory#> SELECT ?id ?content WHERE {{ ?id a mem:Fact ; mem:content ?content }} LIMIT 5'"
     );
     println!(
-        "  fluree query {} --at-t 2 'PREFIX mem: <https://ns.flur.ee/memory#> SELECT ...'   # state at first commit",
-        ledger
+        "  fluree query {ledger} --at-t 2 'PREFIX mem: <https://ns.flur.ee/memory#> SELECT ...'   # state at first commit"
     );
 
     Ok(())

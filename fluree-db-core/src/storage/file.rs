@@ -65,7 +65,7 @@ impl FileStorage {
             return self.resolve_relative_path(path);
         }
         // Simple case: just a node ID, look for it as a .json file
-        self.resolve_relative_path(&format!("{}.json", address))
+        self.resolve_relative_path(&format!("{address}.json"))
     }
 
     fn resolve_relative_path(&self, path: &str) -> Result<std::path::PathBuf> {
@@ -82,8 +82,7 @@ impl FileStorage {
             })
         {
             return Err(crate::error::Error::storage(format!(
-                "Invalid storage path '{}': must be a relative path without '..'",
-                path
+                "Invalid storage path '{path}': must be a relative path without '..'"
             )));
         }
 
@@ -254,7 +253,7 @@ impl StorageRead for FileStorage {
                         // Check if it matches the file prefix (if any)
                         if file_prefix.is_empty() || relative_str.starts_with(path_prefix) {
                             // Return as fluree:file:// address
-                            results.push(format!("fluree:file://{}", relative_str));
+                            results.push(format!("fluree:file://{relative_str}"));
                         }
                     }
                 }

@@ -544,7 +544,7 @@ mod tests {
                 assert_eq!(vec.len(), 3);
                 assert!((vec[0] - 0.1).abs() < 0.001);
             }
-            other => panic!("Expected Success, got {:?}", other),
+            other => panic!("Expected Success, got {other:?}"),
         }
     }
 
@@ -562,7 +562,7 @@ mod tests {
             ExtractionResult::Success(vec) => {
                 assert_eq!(vec.len(), 3);
             }
-            other => panic!("Expected Success, got {:?}", other),
+            other => panic!("Expected Success, got {other:?}"),
         }
     }
 

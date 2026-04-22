@@ -85,7 +85,7 @@ where
     let ledger = temp_fluree
         .create_ledger("ns-query")
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to create temp ledger: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("Failed to create temp ledger: {e}")))?;
 
     // 7. Insert all records as JSON-LD transaction
     let txn_json = json!({ "@graph": all_records });
@@ -101,19 +101,19 @@ where
             &index_config,
         )
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to insert NS records: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("Failed to insert NS records: {e}")))?;
 
     // 8. Execute query against the populated ledger via normal GraphDb query path
     let db = GraphDb::from_ledger_state(&result.ledger);
     let query_result = temp_fluree
         .query(&db, query_json)
         .await
-        .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))?;
+        .map_err(|e| ApiError::query(format!("Nameservice query failed: {e}")))?;
 
     query_result
         .to_jsonld_async(db.as_graph_db_ref())
         .await
-        .map_err(|e| ApiError::query(format!("Nameservice query failed: {}", e)))
+        .map_err(|e| ApiError::query(format!("Nameservice query failed: {e}")))
 
     // temp_fluree is dropped here - automatic cleanup
 }

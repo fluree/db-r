@@ -264,8 +264,7 @@ fn json_to_single_txn_meta_value(
                 Ok(TxnMetaValue::Double(f))
             } else {
                 Err(TransactError::Parse(format!(
-                    "Unsupported number type in txn-meta: {}",
-                    n
+                    "Unsupported number type in txn-meta: {n}"
                 )))
             }
         }
@@ -374,14 +373,12 @@ fn parse_value_object(
                 Ok(TxnMetaValue::Double(f))
             } else {
                 Err(TransactError::Parse(format!(
-                    "Unsupported number in txn-meta @value: {}",
-                    n
+                    "Unsupported number in txn-meta @value: {n}"
                 )))
             }
         }
         _ => Err(TransactError::Parse(format!(
-            "Unsupported @value type in txn-meta: {:?}",
-            val
+            "Unsupported @value type in txn-meta: {val:?}"
         ))),
     }
 }
@@ -409,8 +406,7 @@ fn validate_limits(entries: &[TxnMetaEntry]) -> Result<()> {
 
     if estimated_bytes > MAX_TXN_META_BYTES {
         return Err(TransactError::Parse(format!(
-            "txn-meta estimated size {} bytes exceeds maximum {} bytes",
-            estimated_bytes, MAX_TXN_META_BYTES
+            "txn-meta estimated size {estimated_bytes} bytes exceeds maximum {MAX_TXN_META_BYTES} bytes"
         )));
     }
 
@@ -698,7 +694,7 @@ mod tests {
         let mut obj = serde_json::Map::new();
         obj.insert("@graph".to_string(), json!([]));
         for i in 0..300 {
-            obj.insert(format!("http://example.org/key{}", i), json!(i));
+            obj.insert(format!("http://example.org/key{i}"), json!(i));
         }
         let json = Value::Object(obj);
 
@@ -717,7 +713,7 @@ mod tests {
 
         let json = json!({
             "@graph": [],
-            "db:t": 999999
+            "db:t": 999_999
         });
 
         let result = extract_txn_meta(&json, &ctx, &mut ns, true);

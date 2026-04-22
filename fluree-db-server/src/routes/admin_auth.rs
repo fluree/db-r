@@ -204,11 +204,11 @@ mod test_helpers {
         let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
         let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
-        let signing_input = format!("{}.{}", header_b64, payload_b64);
+        let signing_input = format!("{header_b64}.{payload_b64}");
         let signature = signing_key.sign(signing_input.as_bytes());
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-        format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+        format!("{header_b64}.{payload_b64}.{sig_b64}")
     }
 }
 
@@ -556,7 +556,7 @@ mod tests_oidc {
         let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
         // Fake signature — won't get to verification since no JWKS cache
         let sig_b64 = URL_SAFE_NO_PAD.encode(b"fake-signature");
-        let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
+        let token = format!("{header_b64}.{payload_b64}.{sig_b64}");
 
         let admin_auth = AdminAuthConfig {
             mode: AdminAuthMode::Required,
@@ -572,8 +572,7 @@ mod tests_oidc {
         let err_msg = result.unwrap_err().to_string();
         assert!(
             err_msg.contains("OIDC issuer not configured"),
-            "Expected OIDC-specific error, got: {}",
-            err_msg
+            "Expected OIDC-specific error, got: {err_msg}"
         );
     }
 }

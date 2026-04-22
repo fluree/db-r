@@ -48,8 +48,7 @@ pub async fn run(
                 }
                 // Neither ledger nor graph source
                 return Err(CliError::NotFound(format!(
-                    "'{}' not found as a ledger or graph source",
-                    alias
+                    "'{alias}' not found as a ledger or graph source"
                 )));
             }
             Err(e) => Err(e),
@@ -82,22 +81,22 @@ pub async fn run(
                         .and_then(|v| v.as_str())
                         .unwrap_or(&local_alias)
                 );
-                if let Some(t) = info.get("t").and_then(|v| v.as_i64()) {
-                    println!("t:              {}", t);
+                if let Some(t) = info.get("t").and_then(serde_json::Value::as_i64) {
+                    println!("t:              {t}");
                 }
                 if let Some(commit) = info
                     .get("commitId")
                     .and_then(|v| v.as_str())
                     .or_else(|| info.get("commit_head_id").and_then(|v| v.as_str()))
                 {
-                    println!("Commit ID:      {}", commit);
+                    println!("Commit ID:      {commit}");
                 }
                 if let Some(index) = info
                     .get("indexId")
                     .and_then(|v| v.as_str())
                     .or_else(|| info.get("index_head_id").and_then(|v| v.as_str()))
                 {
-                    println!("Index ID:       {}", index);
+                    println!("Index ID:       {index}");
                 }
 
                 // Print full JSON if there are stats
@@ -137,7 +136,7 @@ pub async fn run(
                     record
                         .commit_head_id
                         .as_ref()
-                        .map(|id| id.to_string())
+                        .map(std::string::ToString::to_string)
                         .as_deref()
                         .unwrap_or("(none)")
                 );
@@ -147,7 +146,7 @@ pub async fn run(
                     record
                         .index_head_id
                         .as_ref()
-                        .map(|id| id.to_string())
+                        .map(std::string::ToString::to_string)
                         .as_deref()
                         .unwrap_or("(none)")
                 );
@@ -160,8 +159,7 @@ pub async fn run(
                 print_graph_source_info(&gs);
             } else {
                 return Err(CliError::NotFound(format!(
-                    "'{}' not found as a ledger or graph source",
-                    alias
+                    "'{alias}' not found as a ledger or graph source"
                 )));
             }
         }
@@ -185,7 +183,7 @@ fn print_remote_graph_source_info(info: &serde_json::Value) {
     println!("Type:           {gs_type}");
     println!("ID:             {gs_id}");
 
-    if let Some(t) = info.get("index_t").and_then(|v| v.as_i64()) {
+    if let Some(t) = info.get("index_t").and_then(serde_json::Value::as_i64) {
         println!("Index t:        {t}");
     }
     if let Some(id) = info.get("index_id").and_then(|v| v.as_str()) {
@@ -218,7 +216,7 @@ fn print_graph_source_info(gs: &fluree_db_nameservice::GraphSourceRecord) {
         "Index ID:       {}",
         gs.index_id
             .as_ref()
-            .map(|id| id.to_string())
+            .map(std::string::ToString::to_string)
             .as_deref()
             .unwrap_or("(none)")
     );

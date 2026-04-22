@@ -27,7 +27,7 @@ fn match_prefix(compact_iri: &str, context: &ParsedContext) -> Option<(String, C
     iri::parse_prefix(compact_iri).and_then(|(prefix, suffix)| {
         context.get(&prefix).and_then(|entry| {
             entry.id.as_ref().map(|prefix_iri| {
-                let full_iri = format!("{}{}", prefix_iri, suffix);
+                let full_iri = format!("{prefix_iri}{suffix}");
                 (full_iri, entry.clone())
             })
         })
@@ -53,7 +53,7 @@ fn match_default(
 
     default_match.and_then(|default| {
         if !iri::any_iri(compact_iri) && !compact_iri.starts_with('@') {
-            let full_iri = format!("{}{}", default, compact_iri);
+            let full_iri = format!("{default}{compact_iri}");
             Some((
                 full_iri.clone(),
                 ContextEntry {
@@ -341,9 +341,9 @@ fn parse_node_value(
                                     m.get("@value")
                                         .or_else(|| m.get("value"))
                                         .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string())
+                                        .map(std::string::ToString::to_string)
                                 } else {
-                                    val.as_str().map(|s| s.to_string())
+                                    val.as_str().map(std::string::ToString::to_string)
                                 };
 
                                 if let Some(s) = val_str {
@@ -413,7 +413,7 @@ fn parse_value_object(
         .get("@language")
         .or_else(|| map.get("language"))
         .and_then(|l| l.as_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .or_else(|| context.language.clone());
 
     // Build result

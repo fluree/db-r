@@ -79,8 +79,8 @@ impl CoercionError {
     /// Create an incompatible type error
     pub fn incompatible(value_desc: &str, target_type: &str, hint: Option<&str>) -> Self {
         let msg = match hint {
-            Some(h) => format!("Cannot coerce {} to {}. {}", value_desc, target_type, h),
-            None => format!("Cannot coerce {} to {}", value_desc, target_type),
+            Some(h) => format!("Cannot coerce {value_desc} to {target_type}. {h}"),
+            None => format!("Cannot coerce {value_desc} to {target_type}"),
         };
         Self::new(msg)
     }
@@ -88,8 +88,8 @@ impl CoercionError {
     /// Create a parse error
     pub fn parse_failed(value: &str, target_type: &str, detail: Option<&str>) -> Self {
         let msg = match detail {
-            Some(d) => format!("Cannot parse '{}' as {}: {}", value, target_type, d),
-            None => format!("Cannot parse '{}' as {}", value, target_type),
+            Some(d) => format!("Cannot parse '{value}' as {target_type}: {d}"),
+            None => format!("Cannot parse '{value}' as {target_type}"),
         };
         Self::new(msg)
     }
@@ -102,8 +102,7 @@ impl CoercionError {
         max: i128,
     ) -> Self {
         Self::new(format!(
-            "Value {} is out of range for {}: expected {} to {}",
-            value, target_type, min, max
+            "Value {value} is out of range for {target_type}: expected {min} to {max}"
         ))
     }
 }
@@ -143,27 +142,27 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
 
         // Number → String-like is invalid
         (FlakeValue::Long(n), dt) if xsd::is_string_like(dt) => Err(CoercionError::incompatible(
-            &format!("number {}", n),
+            &format!("number {n}"),
             dt,
-            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
+            Some(&format!("Use {{\"@value\": \"{n}\"}} instead.")),
         )),
         (FlakeValue::Double(n), dt) if xsd::is_string_like(dt) => Err(CoercionError::incompatible(
-            &format!("number {}", n),
+            &format!("number {n}"),
             dt,
-            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
+            Some(&format!("Use {{\"@value\": \"{n}\"}} instead.")),
         )),
         (FlakeValue::BigInt(n), dt) if xsd::is_string_like(dt) => Err(CoercionError::incompatible(
-            &format!("number {}", n),
+            &format!("number {n}"),
             dt,
-            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
+            Some(&format!("Use {{\"@value\": \"{n}\"}} instead.")),
         )),
 
         // Boolean → String-like is invalid
         (FlakeValue::Boolean(b), dt) if xsd::is_string_like(dt) => {
             Err(CoercionError::incompatible(
-                &format!("boolean {}", b),
+                &format!("boolean {b}"),
                 dt,
-                Some(&format!("Use {{\"@value\": \"{}\"}} instead.", b)),
+                Some(&format!("Use {{\"@value\": \"{b}\"}} instead.")),
             ))
         }
 
@@ -175,7 +174,7 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
                 || dt == xsd::FLOAT =>
         {
             Err(CoercionError::incompatible(
-                &format!("boolean {}", b),
+                &format!("boolean {b}"),
                 dt,
                 None,
             ))
@@ -205,13 +204,13 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
                 *n != 0
             );
             Err(CoercionError::incompatible(
-                &format!("number {}", n),
+                &format!("number {n}"),
                 "xsd:boolean",
                 Some(&hint),
             ))
         }
         (FlakeValue::Double(n), dt) if dt == xsd::BOOLEAN => Err(CoercionError::incompatible(
-            &format!("number {}", n),
+            &format!("number {n}"),
             "xsd:boolean",
             None,
         )),
@@ -223,7 +222,7 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
         // Non-integral Double → Integer types is invalid
         (FlakeValue::Double(d), dt) if xsd::is_integer_family(dt) && d.fract() != 0.0 => {
             Err(CoercionError::incompatible(
-                &format!("non-integer {}", d),
+                &format!("non-integer {d}"),
                 dt,
                 Some("Value must be a whole number."),
             ))
@@ -237,8 +236,7 @@ pub fn coerce_value(value: FlakeValue, datatype_iri: &str) -> CoercionResult<Fla
                 Ok(FlakeValue::Long(as_i64))
             } else {
                 Err(CoercionError::new(format!(
-                    "Number {} is out of range for integer type {}",
-                    d, dt
+                    "Number {d} is out of range for integer type {dt}"
                 )))
             }
         }
@@ -532,16 +530,16 @@ fn coerce_number_value(n: &serde_json::Number, datatype_iri: &str) -> CoercionRe
     // Number → String-like is invalid
     if xsd::is_string_like(datatype_iri) {
         return Err(CoercionError::incompatible(
-            &format!("number {}", n),
+            &format!("number {n}"),
             datatype_iri,
-            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", n)),
+            Some(&format!("Use {{\"@value\": \"{n}\"}} instead.")),
         ));
     }
 
     // Number → Boolean is invalid
     if datatype_iri == xsd::BOOLEAN {
         return Err(CoercionError::incompatible(
-            &format!("number {}", n),
+            &format!("number {n}"),
             "xsd:boolean",
             None,
         ));
@@ -550,7 +548,7 @@ fn coerce_number_value(n: &serde_json::Number, datatype_iri: &str) -> CoercionRe
     // Number → Temporal is invalid
     if xsd::is_temporal(datatype_iri) {
         return Err(CoercionError::incompatible(
-            &format!("number {}", n),
+            &format!("number {n}"),
             datatype_iri,
             Some("Use a string value instead."),
         ));
@@ -560,7 +558,7 @@ fn coerce_number_value(n: &serde_json::Number, datatype_iri: &str) -> CoercionRe
     if datatype_iri == xsd::DECIMAL {
         let f = n
             .as_f64()
-            .ok_or_else(|| CoercionError::new(format!("Cannot convert number {} to f64", n)))?;
+            .ok_or_else(|| CoercionError::new(format!("Cannot convert number {n} to f64")))?;
         return Ok(FlakeValue::Double(f));
     }
 
@@ -573,7 +571,7 @@ fn coerce_number_value(n: &serde_json::Number, datatype_iri: &str) -> CoercionRe
             // Check if it's an integer value
             if f.fract() != 0.0 {
                 return Err(CoercionError::incompatible(
-                    &format!("non-integer {}", f),
+                    &format!("non-integer {f}"),
                     datatype_iri,
                     Some("Value must be a whole number."),
                 ));
@@ -583,12 +581,10 @@ fn coerce_number_value(n: &serde_json::Number, datatype_iri: &str) -> CoercionRe
                 let as_i64 = f as i64;
                 validate_integer_range(as_i64, datatype_iri)?;
                 return Ok(FlakeValue::Long(as_i64));
-            } else {
-                return Err(CoercionError::new(format!(
-                    "Number {} is out of range for {}",
-                    f, datatype_iri
-                )));
             }
+            return Err(CoercionError::new(format!(
+                "Number {f} is out of range for {datatype_iri}"
+            )));
         }
     }
 
@@ -596,7 +592,7 @@ fn coerce_number_value(n: &serde_json::Number, datatype_iri: &str) -> CoercionRe
     if datatype_iri == xsd::DOUBLE || datatype_iri == xsd::FLOAT {
         let f = n
             .as_f64()
-            .ok_or_else(|| CoercionError::new(format!("Cannot convert number {} to f64", n)))?;
+            .ok_or_else(|| CoercionError::new(format!("Cannot convert number {n} to f64")))?;
         return Ok(FlakeValue::Double(f));
     }
 
@@ -606,7 +602,7 @@ fn coerce_number_value(n: &serde_json::Number, datatype_iri: &str) -> CoercionRe
     } else if let Some(f) = n.as_f64() {
         Ok(FlakeValue::Double(f))
     } else {
-        Err(CoercionError::new(format!("Unsupported number: {}", n)))
+        Err(CoercionError::new(format!("Unsupported number: {n}")))
     }
 }
 
@@ -615,9 +611,9 @@ fn coerce_bool_value(b: bool, datatype_iri: &str) -> CoercionResult<FlakeValue> 
     // Boolean → String-like is invalid
     if xsd::is_string_like(datatype_iri) {
         return Err(CoercionError::incompatible(
-            &format!("boolean {}", b),
+            &format!("boolean {b}"),
             datatype_iri,
-            Some(&format!("Use {{\"@value\": \"{}\"}} instead.", b)),
+            Some(&format!("Use {{\"@value\": \"{b}\"}} instead.")),
         ));
     }
 
@@ -628,7 +624,7 @@ fn coerce_bool_value(b: bool, datatype_iri: &str) -> CoercionResult<FlakeValue> 
         || datatype_iri == xsd::FLOAT
     {
         return Err(CoercionError::incompatible(
-            &format!("boolean {}", b),
+            &format!("boolean {b}"),
             datatype_iri,
             None,
         ));
@@ -637,7 +633,7 @@ fn coerce_bool_value(b: bool, datatype_iri: &str) -> CoercionResult<FlakeValue> 
     // Boolean → Temporal is invalid
     if xsd::is_temporal(datatype_iri) {
         return Err(CoercionError::incompatible(
-            &format!("boolean {}", b),
+            &format!("boolean {b}"),
             datatype_iri,
             None,
         ));
@@ -669,14 +665,13 @@ fn coerce_array_to_vector(arr: &[serde_json::Value]) -> CoercionResult<FlakeValu
         match item {
             serde_json::Value::Number(n) => {
                 let f = n.as_f64().ok_or_else(|| {
-                    CoercionError::new(format!("Vector element must be a number, got: {}", n))
+                    CoercionError::new(format!("Vector element must be a number, got: {n}"))
                 })?;
                 // Quantize to f32: reject non-finite and out-of-range values.
                 let f32_val = f as f32;
                 if !f32_val.is_finite() {
                     return Err(CoercionError::new(format!(
-                        "Vector element [{}] is not representable as f32: {}",
-                        i, f
+                        "Vector element [{i}] is not representable as f32: {f}"
                     )));
                 }
                 // Store the f32 bit pattern as f64 for exact round-trip.
@@ -684,8 +679,7 @@ fn coerce_array_to_vector(arr: &[serde_json::Value]) -> CoercionResult<FlakeValu
             }
             _ => {
                 return Err(CoercionError::new(format!(
-                    "Vector elements must be numbers, got: {:?}",
-                    item
+                    "Vector elements must be numbers, got: {item:?}"
                 )));
             }
         }

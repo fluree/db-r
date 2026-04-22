@@ -249,8 +249,8 @@ impl CachedRegion2 {
         let rows = self.dt_values.len();
         // dt(4) + t(4) = 8 bytes per row, plus sparse overhead
         let dense = rows * 8;
-        let lang_bytes = self.lang.as_ref().map_or(0, |c| c.byte_size());
-        let i_bytes = self.i_col.as_ref().map_or(0, |c| c.byte_size());
+        let lang_bytes = self.lang.as_ref().map_or(0, SparseU16Column::byte_size);
+        let i_bytes = self.i_col.as_ref().map_or(0, SparseIColumn::byte_size);
         dense + lang_bytes + i_bytes
     }
 

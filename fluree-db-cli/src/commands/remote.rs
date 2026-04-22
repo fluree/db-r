@@ -81,12 +81,9 @@ async fn run_add(
                         "info:".cyan().bold()
                     );
                     if let Some(ref issuer) = auth.issuer {
-                        eprintln!("  Issuer: {}", issuer);
+                        eprintln!("  Issuer: {issuer}");
                     }
-                    eprintln!(
-                        "  Run `fluree auth login --remote {}` to authenticate",
-                        name
-                    );
+                    eprintln!("  Run `fluree auth login --remote {name}` to authenticate");
                 }
             }
         }
@@ -238,7 +235,7 @@ pub(crate) async fn discover_remote(remote_url: &str) -> Result<Option<Discovere
                 // Parse optional redirect_port override
                 let redirect_port = auth_obj
                     .get("redirect_port")
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .and_then(|p| u16::try_from(p).ok());
 
                 out.auth = Some(RemoteAuth {
@@ -276,7 +273,7 @@ async fn run_remove(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
         .map_err(|e| CliError::Config(e.to_string()))?;
 
     if existing.is_none() {
-        return Err(CliError::NotFound(format!("remote '{}' not found", name)));
+        return Err(CliError::NotFound(format!("remote '{name}' not found")));
     }
 
     store
@@ -284,7 +281,7 @@ async fn run_remove(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
         .await
         .map_err(|e| CliError::Config(e.to_string()))?;
 
-    println!("Removed remote '{}'", name);
+    println!("Removed remote '{name}'");
     Ok(())
 }
 
@@ -306,8 +303,8 @@ async fn run_list(store: &TomlSyncConfigStore) -> CliResult<()> {
     for remote in remotes {
         let url = match &remote.endpoint {
             RemoteEndpoint::Http { base_url } => base_url.clone(),
-            RemoteEndpoint::Sse { events_url } => format!("(sse) {}", events_url),
-            RemoteEndpoint::Storage { prefix } => format!("(storage) {}", prefix),
+            RemoteEndpoint::Sse { events_url } => format!("(sse) {events_url}"),
+            RemoteEndpoint::Storage { prefix } => format!("(storage) {prefix}"),
         };
         let auth = auth_display_short(&remote.auth);
         table.add_row(vec![
@@ -317,7 +314,7 @@ async fn run_list(store: &TomlSyncConfigStore) -> CliResult<()> {
         ]);
     }
 
-    println!("{}", table);
+    println!("{table}");
     Ok(())
 }
 
@@ -327,7 +324,7 @@ async fn run_show(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
         .get_remote(&remote_name)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", name)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{name}' not found")))?;
 
     println!("{}", "Remote:".bold());
     println!("  Name: {}", remote.name.as_str().green());
@@ -335,15 +332,15 @@ async fn run_show(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
     match &remote.endpoint {
         RemoteEndpoint::Http { base_url } => {
             println!("  Type: HTTP");
-            println!("  URL:  {}", base_url);
+            println!("  URL:  {base_url}");
         }
         RemoteEndpoint::Sse { events_url } => {
             println!("  Type: SSE");
-            println!("  URL:  {}", events_url);
+            println!("  URL:  {events_url}");
         }
         RemoteEndpoint::Storage { prefix } => {
             println!("  Type: Storage");
-            println!("  Prefix: {}", prefix);
+            println!("  Prefix: {prefix}");
         }
     }
 
@@ -353,10 +350,10 @@ async fn run_show(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
         Some(RemoteAuthType::OidcDevice) => {
             println!("  Auth: {}", "oidc_device".cyan());
             if let Some(ref issuer) = auth.issuer {
-                println!("  Issuer: {}", issuer);
+                println!("  Issuer: {issuer}");
             }
             if let Some(ref client_id) = auth.client_id {
-                println!("  Client ID: {}", client_id);
+                println!("  Client ID: {client_id}");
             }
             if auth.token.is_some() {
                 println!("  Token: {}", "cached".green());
@@ -374,7 +371,7 @@ async fn run_show(store: &TomlSyncConfigStore, name: &str) -> CliResult<()> {
     }
 
     if let Some(interval) = remote.fetch_interval_secs {
-        println!("  Fetch interval: {}s", interval);
+        println!("  Fetch interval: {interval}s");
     }
 
     Ok(())

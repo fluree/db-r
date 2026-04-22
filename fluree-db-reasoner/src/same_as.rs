@@ -82,14 +82,17 @@ impl SameAsTracker {
         let rank_x = self.rank[&root_x];
         let rank_y = self.rank[&root_y];
 
-        if rank_x < rank_y {
-            self.parent.insert(root_x, root_y);
-        } else if rank_x > rank_y {
-            self.parent.insert(root_y, root_x);
-        } else {
-            // Equal rank: pick one and increment its rank
-            self.parent.insert(root_y, root_x.clone());
-            self.rank.insert(root_x, rank_x + 1);
+        match rank_x.cmp(&rank_y) {
+            std::cmp::Ordering::Less => {
+                self.parent.insert(root_x, root_y);
+            }
+            std::cmp::Ordering::Greater => {
+                self.parent.insert(root_y, root_x);
+            }
+            std::cmp::Ordering::Equal => {
+                self.parent.insert(root_y, root_x.clone());
+                self.rank.insert(root_x, rank_x + 1);
+            }
         }
 
         true
@@ -214,7 +217,7 @@ impl FrozenSameAs {
         if let Some(root) = self.canonical.get(&x) {
             self.members
                 .get(root)
-                .map(|arc| arc.as_ref())
+                .map(std::convert::AsRef::as_ref)
                 .unwrap_or(EMPTY_SIDS)
         } else {
             EMPTY_SIDS
@@ -262,7 +265,7 @@ mod tests {
     use super::*;
 
     fn sid(n: u16) -> Sid {
-        Sid::new(n, format!("test:{}", n))
+        Sid::new(n, format!("test:{n}"))
     }
 
     #[test]

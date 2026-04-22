@@ -948,7 +948,7 @@ impl RemoteLedgerClient {
                 .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))?;
             Ok(body
                 .get("exists")
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false))
         } else if resp.status() == StatusCode::NOT_FOUND {
             Ok(false)
@@ -967,7 +967,7 @@ impl RemoteLedgerClient {
                     .map_err(|e| RemoteLedgerError::InvalidResponse(e.to_string()))?;
                 Ok(body
                     .get("exists")
-                    .and_then(|v| v.as_bool())
+                    .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false))
             } else if resp2.status() == StatusCode::NOT_FOUND {
                 Ok(false)
@@ -1276,7 +1276,7 @@ impl RemoteLedgerClient {
         limit: usize,
     ) -> Result<ExportCommitsResponse, RemoteLedgerError> {
         let mut url = self.op_url("commits", ledger);
-        url.push_str(&format!("?limit={}", limit));
+        url.push_str(&format!("?limit={limit}"));
         if let Some(c) = cursor {
             url.push_str(&format!("&cursor={}", urlencoding::encode(c)));
         }
@@ -1370,7 +1370,7 @@ mod tests {
     #[test]
     fn test_client_debug_hides_token() {
         let client = RemoteLedgerClient::new("http://localhost:8090", Some("secret".to_string()));
-        let debug = format!("{:?}", client);
+        let debug = format!("{client:?}");
         assert!(debug.contains("RemoteLedgerClient"));
         assert!(debug.contains("localhost:8090"));
         assert!(!debug.contains("secret"));
@@ -1442,7 +1442,7 @@ mod tests {
                 exchange_url: "http://localhost:8090/auth/exchange".to_string(),
                 refresh_token: "rt_123".to_string(),
             });
-        let debug = format!("{:?}", client);
+        let debug = format!("{client:?}");
         assert!(debug.contains("has_refresh: true"));
     }
 }

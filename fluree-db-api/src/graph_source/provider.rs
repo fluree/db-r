@@ -102,7 +102,7 @@ impl Bm25IndexProvider for FlureeIndexProvider<'_> {
             .fluree
             .load_or_create_bm25_manifest(graph_source_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Manifest load error: {e}")))?;
 
         // Try to select best snapshot for as_of_t.
         //
@@ -120,13 +120,13 @@ impl Bm25IndexProvider for FlureeIndexProvider<'_> {
             let bytes = cs
                 .get(&entry.snapshot_id)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Storage error: {e}")))?;
 
             let index = self
                 .fluree
                 .load_bm25_from_bytes(graph_source_id, &bytes)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Deserialize error: {e}")))?;
 
             info!(
                 graph_source_id = %graph_source_id,
@@ -146,14 +146,14 @@ impl Bm25IndexProvider for FlureeIndexProvider<'_> {
             self.fluree
                 .sync_bm25_index(graph_source_id)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Sync error: {e}")))?;
 
             // Re-load manifest after sync
             let manifest = self
                 .fluree
                 .load_or_create_bm25_manifest(graph_source_id)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Manifest load error: {e}")))?;
 
             let selection = manifest.select_snapshot(effective_as_of_t);
 
@@ -162,13 +162,13 @@ impl Bm25IndexProvider for FlureeIndexProvider<'_> {
                 let bytes = cs
                     .get(&entry.snapshot_id)
                     .await
-                    .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
+                    .map_err(|e| QueryError::Internal(format!("Storage error: {e}")))?;
 
                 let index = self
                     .fluree
                     .load_bm25_from_bytes(graph_source_id, &bytes)
                     .await
-                    .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
+                    .map_err(|e| QueryError::Internal(format!("Deserialize error: {e}")))?;
 
                 info!(
                     graph_source_id = %graph_source_id,
@@ -181,8 +181,7 @@ impl Bm25IndexProvider for FlureeIndexProvider<'_> {
             }
 
             return Err(QueryError::InvalidQuery(format!(
-                "No BM25 snapshot available for {} at t={}. The earliest snapshot may be later than requested.",
-                graph_source_id, as_of_label
+                "No BM25 snapshot available for {graph_source_id} at t={as_of_label}. The earliest snapshot may be later than requested."
             )));
         }
 
@@ -198,8 +197,7 @@ impl Bm25IndexProvider for FlureeIndexProvider<'_> {
         };
 
         Err(QueryError::InvalidQuery(format!(
-            "No BM25 snapshot available for {} at t={}.{}",
-            graph_source_id, as_of_label, available
+            "No BM25 snapshot available for {graph_source_id} at t={as_of_label}.{available}"
         )))
     }
 }
@@ -279,7 +277,7 @@ impl Bm25SearchProvider for FlureeIndexProvider<'_> {
     }
 }
 
-impl<'a> FlureeIndexProvider<'a> {
+impl FlureeIndexProvider<'_> {
     /// Get deployment configuration for a graph source.
     ///
     /// Looks up the graph source record from nameservice and parses the deployment
@@ -295,7 +293,7 @@ impl<'a> FlureeIndexProvider<'a> {
             .nameservice()
             .lookup_graph_source(graph_source_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Nameservice error: {e}")))?;
 
         let Some(record) = gs_record else {
             // Graph source not found - return default embedded mode
@@ -328,7 +326,7 @@ impl FlureeIndexProvider<'_> {
             .fluree
             .load_or_create_bm25_manifest(graph_source_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Manifest load error: {e}")))?;
 
         let effective_as_of_t = as_of_t.unwrap_or(i64::MAX);
         let selection = manifest.select_snapshot(effective_as_of_t);
@@ -338,35 +336,33 @@ impl FlureeIndexProvider<'_> {
             let cs = self.fluree.content_store(graph_source_id);
             cs.get(&entry.snapshot_id)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
+                .map_err(|e| QueryError::Internal(format!("Storage error: {e}")))?
         } else if sync {
             let _ = timeout_ms;
             self.fluree
                 .sync_bm25_index(graph_source_id)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Sync error: {e}")))?;
 
             let manifest = self
                 .fluree
                 .load_or_create_bm25_manifest(graph_source_id)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Manifest load error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Manifest load error: {e}")))?;
 
             let entry = manifest.select_snapshot(effective_as_of_t).ok_or_else(|| {
                 QueryError::InvalidQuery(format!(
-                    "No BM25 snapshot available for {} after sync",
-                    graph_source_id
+                    "No BM25 snapshot available for {graph_source_id} after sync"
                 ))
             })?;
 
             let cs = self.fluree.content_store(graph_source_id);
             cs.get(&entry.snapshot_id)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?
+                .map_err(|e| QueryError::Internal(format!("Storage error: {e}")))?
         } else {
             return Err(QueryError::InvalidQuery(format!(
-                "No BM25 snapshot available for {}",
-                graph_source_id
+                "No BM25 snapshot available for {graph_source_id}"
             )));
         };
 
@@ -374,7 +370,7 @@ impl FlureeIndexProvider<'_> {
         self.fluree
             .search_bm25_selective(graph_source_id, &snapshot_bytes, query_text, limit)
             .await
-            .map_err(|e| QueryError::Internal(format!("Selective search error: {}", e)))
+            .map_err(|e| QueryError::Internal(format!("Selective search error: {e}")))
     }
 }
 
@@ -390,7 +386,7 @@ fn parse_deployment_from_gs_config(config_json: &str) -> QueryResult<SearchDeplo
 
     // Parse the full config JSON
     let config: serde_json::Value = serde_json::from_str(config_json).map_err(|e| {
-        QueryError::Internal(format!("Failed to parse graph source config JSON: {}", e))
+        QueryError::Internal(format!("Failed to parse graph source config JSON: {e}"))
     })?;
 
     // Look for "deployment" field
@@ -398,7 +394,7 @@ fn parse_deployment_from_gs_config(config_json: &str) -> QueryResult<SearchDeplo
         // Parse deployment config
         let deployment: SearchDeploymentConfig = serde_json::from_value(deployment_value.clone())
             .map_err(|e| {
-            QueryError::Internal(format!("Failed to parse deployment config: {}", e))
+            QueryError::Internal(format!("Failed to parse deployment config: {e}"))
         })?;
         return Ok(deployment);
     }
@@ -472,14 +468,14 @@ impl VectorIndexProvider for FlureeIndexProvider<'_> {
             .nameservice()
             .lookup_graph_source(graph_source_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Nameservice error: {e}")))?;
 
         Ok(record.is_some() && record.map(|r| !r.retracted).unwrap_or(false))
     }
 }
 
 #[cfg(feature = "vector")]
-impl<'a> FlureeIndexProvider<'a> {
+impl FlureeIndexProvider<'_> {
     /// Embedded vector search implementation (head-only).
     ///
     /// Vector indexes do not support time-travel. Loads the head snapshot
@@ -496,9 +492,8 @@ impl<'a> FlureeIndexProvider<'a> {
         // Vector indexes are head-only -- reject as_of_t requests
         if params.as_of_t.is_some() {
             return Err(QueryError::InvalidQuery(format!(
-                "Vector index '{}' does not support time-travel queries (as_of_t). \
-                 Only the latest snapshot is available.",
-                graph_source_id
+                "Vector index '{graph_source_id}' does not support time-travel queries (as_of_t). \
+                 Only the latest snapshot is available."
             )));
         }
 
@@ -508,10 +503,10 @@ impl<'a> FlureeIndexProvider<'a> {
             .nameservice()
             .lookup_graph_source(graph_source_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Nameservice error: {e}")))?;
 
         let record = record.ok_or_else(|| {
-            QueryError::InvalidQuery(format!("Graph source not found: {}", graph_source_id))
+            QueryError::InvalidQuery(format!("Graph source not found: {graph_source_id}"))
         })?;
 
         let index_id = match &record.index_id {
@@ -522,7 +517,7 @@ impl<'a> FlureeIndexProvider<'a> {
                     self.fluree
                         .sync_vector_index(graph_source_id)
                         .await
-                        .map_err(|e| QueryError::Internal(format!("Sync error: {}", e)))?;
+                        .map_err(|e| QueryError::Internal(format!("Sync error: {e}")))?;
 
                     // Re-lookup after sync
                     let record = self
@@ -530,24 +525,21 @@ impl<'a> FlureeIndexProvider<'a> {
                         .nameservice()
                         .lookup_graph_source(graph_source_id)
                         .await
-                        .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
+                        .map_err(|e| QueryError::Internal(format!("Nameservice error: {e}")))?
                         .ok_or_else(|| {
                             QueryError::Internal(format!(
-                                "Graph source disappeared after sync: {}",
-                                graph_source_id
+                                "Graph source disappeared after sync: {graph_source_id}"
                             ))
                         })?;
 
                     record.index_id.ok_or_else(|| {
                         QueryError::InvalidQuery(format!(
-                            "No vector index available for {} after sync",
-                            graph_source_id
+                            "No vector index available for {graph_source_id} after sync"
                         ))
                     })?
                 } else {
                     return Err(QueryError::InvalidQuery(format!(
-                        "No vector index available for {}. Try syncing first.",
-                        graph_source_id
+                        "No vector index available for {graph_source_id}. Try syncing first."
                     )));
                 }
             }
@@ -558,10 +550,10 @@ impl<'a> FlureeIndexProvider<'a> {
         let bytes = cs
             .get(&index_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Storage error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Storage error: {e}")))?;
 
         let index = deserialize(&bytes)
-            .map_err(|e| QueryError::Internal(format!("Deserialize error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Deserialize error: {e}")))?;
 
         // Check metric compatibility
         if index.metadata.metric != params.metric {
@@ -580,7 +572,7 @@ impl<'a> FlureeIndexProvider<'a> {
 
         let results = index
             .search(params.query_vector, params.limit)
-            .map_err(|e| QueryError::Internal(format!("Vector search error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Vector search error: {e}")))?;
 
         Ok(results
             .into_iter()

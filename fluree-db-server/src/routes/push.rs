@@ -94,7 +94,7 @@ async fn push_ledger_local(
     // Parse JSON body.
     let bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("failed to read request body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("failed to read request body: {e}")))?;
     let body: PushCommitsRequest = serde_json::from_slice(&bytes)?;
 
     let fluree = &state.fluree;

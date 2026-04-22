@@ -13,8 +13,7 @@ pub async fn run(transport: &str, dirs: &FlureeDir) -> CliResult<()> {
     match transport {
         "stdio" => run_stdio(dirs).await,
         other => Err(CliError::Usage(format!(
-            "unsupported MCP transport '{}'; valid: stdio",
-            other
+            "unsupported MCP transport '{other}'; valid: stdio"
         ))),
     }
 }
@@ -85,7 +84,7 @@ async fn run_stdio(dirs: &FlureeDir) -> CliResult<()> {
     let server = service
         .serve(transport)
         .await
-        .map_err(|e| CliError::Config(format!("failed to start MCP server: {}", e)))?;
+        .map_err(|e| CliError::Config(format!("failed to start MCP server: {e}")))?;
 
     tracing::info!("MCP server ready, waiting for client");
 
@@ -93,7 +92,7 @@ async fn run_stdio(dirs: &FlureeDir) -> CliResult<()> {
     server
         .waiting()
         .await
-        .map_err(|e| CliError::Config(format!("MCP server error: {}", e)))?;
+        .map_err(|e| CliError::Config(format!("MCP server error: {e}")))?;
 
     tracing::info!("MCP server shutting down");
 

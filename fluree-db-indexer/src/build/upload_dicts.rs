@@ -108,7 +108,11 @@ pub async fn upload_dicts_from_disk(
     let graphs_dict = run_index::dict_io::read_predicate_dict(&graphs_path)
         .map_err(|e| IndexerError::StorageRead(format!("read {}: {}", graphs_path.display(), e)))?;
     let graph_iris: Vec<String> = (0..graphs_dict.len())
-        .filter_map(|id| graphs_dict.resolve(id).map(|iri| iri.to_string()))
+        .filter_map(|id| {
+            graphs_dict
+                .resolve(id)
+                .map(std::string::ToString::to_string)
+        })
         .collect();
 
     let datatypes_path = run_dir.join("datatypes.dict");
@@ -116,7 +120,11 @@ pub async fn upload_dicts_from_disk(
         IndexerError::StorageRead(format!("read {}: {}", datatypes_path.display(), e))
     })?;
     let datatype_iris: Vec<String> = (0..datatypes_dict.len())
-        .filter_map(|id| datatypes_dict.resolve(id).map(|iri| iri.to_string()))
+        .filter_map(|id| {
+            datatypes_dict
+                .resolve(id)
+                .map(std::string::ToString::to_string)
+        })
         .collect();
 
     let languages_path = run_dir.join("languages.dict");
@@ -181,7 +189,7 @@ pub async fn upload_dicts_from_disk(
                 let iri = &subj_fwd_data[off as usize..(off as usize + len as usize)];
                 let prefix_bytes = namespace_codes
                     .get(&ns_code)
-                    .map(|s| s.as_bytes())
+                    .map(std::string::String::as_bytes)
                     .unwrap_or(b"");
                 if !prefix_bytes.is_empty() && iri.starts_with(prefix_bytes) {
                     ns_codes.push(ns_code);
@@ -253,8 +261,7 @@ pub async fn upload_dicts_from_disk(
                                             .map_err(
                                                 |e| {
                                                     IndexerError::StorageWrite(format!(
-                                                        "subject pack build: {}",
-                                                        e
+                                                        "subject pack build: {e}"
                                                     ))
                                                 },
                                             )?;
@@ -287,7 +294,7 @@ pub async fn upload_dicts_from_disk(
                                     DEFAULT_TARGET_PAGE_BYTES,
                                 )
                                 .map_err(|e| {
-                                    IndexerError::StorageWrite(format!("subject pack build: {}", e))
+                                    IndexerError::StorageWrite(format!("subject pack build: {e}"))
                                 })?;
                                 let cas_result = content_store
                                     .put(kind, &bytes)
@@ -320,8 +327,7 @@ pub async fn upload_dicts_from_disk(
                                             .map_err(
                                                 |e| {
                                                     IndexerError::StorageWrite(format!(
-                                                        "subject pack build: {}",
-                                                        e
+                                                        "subject pack build: {e}"
                                                     ))
                                                 },
                                             )?;
@@ -354,7 +360,7 @@ pub async fn upload_dicts_from_disk(
                                     DEFAULT_TARGET_PAGE_BYTES,
                                 )
                                 .map_err(|e| {
-                                    IndexerError::StorageWrite(format!("subject pack build: {}", e))
+                                    IndexerError::StorageWrite(format!("subject pack build: {e}"))
                                 })?;
                                 let cas_result = content_store
                                     .put(kind, &bytes)
@@ -381,7 +387,7 @@ pub async fn upload_dicts_from_disk(
                             DEFAULT_TARGET_PAGE_BYTES,
                         )
                         .map_err(|e| {
-                            IndexerError::StorageWrite(format!("subject pack build: {}", e))
+                            IndexerError::StorageWrite(format!("subject pack build: {e}"))
                         })?;
                         let cas_result = content_store
                             .put(kind, &bytes)
@@ -685,7 +691,7 @@ pub async fn upload_dicts_from_disk(
                                 DEFAULT_TARGET_PAGE_BYTES,
                             )
                             .map_err(|e| {
-                                IndexerError::StorageWrite(format!("string pack build: {}", e))
+                                IndexerError::StorageWrite(format!("string pack build: {e}"))
                             })?;
                             let cas_result = content_store
                                 .put(kind, &bytes)
@@ -709,7 +715,7 @@ pub async fn upload_dicts_from_disk(
                             DEFAULT_TARGET_PAGE_BYTES,
                         )
                         .map_err(|e| {
-                            IndexerError::StorageWrite(format!("string pack build: {}", e))
+                            IndexerError::StorageWrite(format!("string pack build: {e}"))
                         })?;
                         let cas_result = content_store
                             .put(kind, &bytes)
@@ -941,10 +947,10 @@ pub async fn upload_dicts_from_disk(
             let mut numbig: BTreeMap<String, BTreeMap<String, ContentId>> = BTreeMap::new();
             // Scan for g_{id}/numbig/ subdirectories
             for dir_entry in std::fs::read_dir(run_dir)
-                .map_err(|e| IndexerError::StorageRead(format!("read run_dir: {}", e)))?
+                .map_err(|e| IndexerError::StorageRead(format!("read run_dir: {e}")))?
             {
                 let dir_entry = dir_entry
-                    .map_err(|e| IndexerError::StorageRead(format!("read run_dir entry: {}", e)))?;
+                    .map_err(|e| IndexerError::StorageRead(format!("read run_dir entry: {e}")))?;
                 let dir_name = dir_entry.file_name();
                 let dir_name_str = dir_name.to_string_lossy();
                 if let Some(g_id_str) = dir_name_str.strip_prefix("g_") {
@@ -952,10 +958,10 @@ pub async fn upload_dicts_from_disk(
                     if nb_dir.exists() {
                         let mut per_pred = BTreeMap::new();
                         for entry in std::fs::read_dir(&nb_dir).map_err(|e| {
-                            IndexerError::StorageRead(format!("read numbig dir: {}", e))
+                            IndexerError::StorageRead(format!("read numbig dir: {e}"))
                         })? {
                             let entry = entry.map_err(|e| {
-                                IndexerError::StorageRead(format!("read numbig entry: {}", e))
+                                IndexerError::StorageRead(format!("read numbig entry: {e}"))
                             })?;
                             let name = entry.file_name();
                             let name_str = name.to_string_lossy();
@@ -987,10 +993,10 @@ pub async fn upload_dicts_from_disk(
             let mut vectors: BTreeMap<String, BTreeMap<String, VectorDictRef>> = BTreeMap::new();
             // Scan for g_{id}/vectors/ subdirectories
             for dir_entry in std::fs::read_dir(run_dir)
-                .map_err(|e| IndexerError::StorageRead(format!("read run_dir: {}", e)))?
+                .map_err(|e| IndexerError::StorageRead(format!("read run_dir: {e}")))?
             {
                 let dir_entry = dir_entry
-                    .map_err(|e| IndexerError::StorageRead(format!("read run_dir entry: {}", e)))?;
+                    .map_err(|e| IndexerError::StorageRead(format!("read run_dir entry: {e}")))?;
                 let dir_name = dir_entry.file_name();
                 let dir_name_str = dir_name.to_string_lossy();
                 if let Some(g_id_str) = dir_name_str.strip_prefix("g_") {
@@ -998,10 +1004,10 @@ pub async fn upload_dicts_from_disk(
                     if vec_dir.exists() {
                         let mut per_pred = BTreeMap::new();
                         for entry in std::fs::read_dir(&vec_dir).map_err(|e| {
-                            IndexerError::StorageRead(format!("read vectors dir: {}", e))
+                            IndexerError::StorageRead(format!("read vectors dir: {e}"))
                         })? {
                             let entry = entry.map_err(|e| {
-                                IndexerError::StorageRead(format!("read vectors entry: {}", e))
+                                IndexerError::StorageRead(format!("read vectors entry: {e}"))
                             })?;
                             let name = entry.file_name();
                             let name_str = name.to_string_lossy();
@@ -1011,8 +1017,7 @@ pub async fn upload_dicts_from_disk(
                                         let manifest_bytes =
                                             tokio::fs::read(entry.path()).await.map_err(|e| {
                                                 IndexerError::StorageRead(format!(
-                                                    "read vector manifest: {}",
-                                                    e
+                                                    "read vector manifest: {e}"
                                                 ))
                                             })?;
                                         let manifest =
@@ -1022,8 +1027,7 @@ pub async fn upload_dicts_from_disk(
                                             .map_err(
                                                 |e| {
                                                     IndexerError::StorageRead(format!(
-                                                        "parse vector manifest: {}",
-                                                        e
+                                                        "parse vector manifest: {e}"
                                                     ))
                                                 },
                                             )?;
@@ -1035,8 +1039,8 @@ pub async fn upload_dicts_from_disk(
                                         for (shard_idx, shard_info) in
                                             manifest.shards.iter().enumerate()
                                         {
-                                            let shard_path = vec_dir
-                                                .join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+                                            let shard_path =
+                                                vec_dir.join(format!("p_{p_id}_s_{shard_idx}.vas"));
                                             let shard_cid = upload_dict_file(
                                                 content_store,
                                                 &shard_path,
@@ -1063,17 +1067,15 @@ pub async fn upload_dicts_from_disk(
                                         )
                                         .map_err(|e| {
                                             IndexerError::StorageWrite(format!(
-                                                "serialize vector manifest: {}",
-                                                e
+                                                "serialize vector manifest: {e}"
                                             ))
                                         })?;
                                         let final_manifest_path =
-                                            vec_dir.join(format!("p_{}_final.vam", p_id));
+                                            vec_dir.join(format!("p_{p_id}_final.vam"));
                                         std::fs::write(&final_manifest_path, &manifest_json)
                                             .map_err(|e| {
                                                 IndexerError::StorageWrite(format!(
-                                                    "write final vector manifest: {}",
-                                                    e
+                                                    "write final vector manifest: {e}"
                                                 ))
                                             })?;
                                         let manifest_cid = upload_dict_file(

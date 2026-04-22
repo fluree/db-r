@@ -175,8 +175,7 @@ impl SubjectVocabReader {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "subject vocab: non-contiguous local IDs: max_local_id={}, entry_count={}",
-                    max_local_id, entry_count
+                    "subject vocab: non-contiguous local IDs: max_local_id={max_local_id}, entry_count={entry_count}"
                 ),
             ));
         }
@@ -348,8 +347,7 @@ impl StringVocabReader {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "string vocab: non-contiguous local IDs: max_local_id={}, entry_count={}",
-                    max_local_id, entry_count
+                    "string vocab: non-contiguous local IDs: max_local_id={max_local_id}, entry_count={entry_count}"
                 ),
             ));
         }
@@ -492,8 +490,7 @@ mod tests {
         let err = w.finish().unwrap_err();
         assert!(
             err.to_string().contains("non-contiguous"),
-            "expected non-contiguous error, got: {}",
-            err
+            "expected non-contiguous error, got: {err}"
         );
 
         std::fs::remove_file(&path).ok();
@@ -566,8 +563,7 @@ mod tests {
         let err = w.finish().unwrap_err();
         assert!(
             err.to_string().contains("non-contiguous"),
-            "expected non-contiguous error, got: {}",
-            err
+            "expected non-contiguous error, got: {err}"
         );
 
         std::fs::remove_file(&path).ok();

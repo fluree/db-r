@@ -116,8 +116,7 @@ impl Expression {
                         Self::decode_lookup_error(
                             "decode encoded literal",
                             format!(
-                                "o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}",
-                                o_kind, o_key, p_id, dt_id, lang_id
+                                "o_kind={o_kind}, o_key={o_key}, p_id={p_id}, dt_id={dt_id}, lang_id={lang_id}"
                             ),
                             e,
                         )
@@ -153,7 +152,7 @@ impl Expression {
                         ))),
                     }
                 }
-                Some(Binding::Unbound) | Some(Binding::Poisoned) | None => Ok(None),
+                Some(Binding::Unbound | Binding::Poisoned) | None => Ok(None),
                 Some(Binding::Grouped(_)) => {
                     debug_assert!(false, "Grouped binding in filter evaluation");
                     Ok(None)

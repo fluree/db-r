@@ -26,10 +26,13 @@ fn extract_sorted_strings(rows: &JsonValue) -> Vec<String> {
         .iter()
         .map(|r| {
             r.as_str()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| {
-                    r.as_array()
-                        .and_then(|a| a.first().and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    r.as_array().and_then(|a| {
+                        a.first()
+                            .and_then(|v| v.as_str())
+                            .map(std::string::ToString::to_string)
+                    })
                 })
                 .expect("each row should contain a string")
         })
@@ -115,7 +118,7 @@ async fn tutorial_step1_insert_and_query() {
     let ledger = result.ledger;
 
     // Verify: query all articles with SPARQL
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         PREFIX ex: <http://example.org/>
 
@@ -126,7 +129,7 @@ async fn tutorial_step1_insert_and_query() {
                  ex:visibility ?visibility .
         }
         ORDER BY ?title
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, sparql)
         .await

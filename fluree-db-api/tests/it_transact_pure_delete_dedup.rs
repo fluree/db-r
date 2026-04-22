@@ -52,7 +52,7 @@ async fn count_subjects_with_predicate(
         .await
         .expect("to_jsonld_async")
         .as_array()
-        .map(|a| a.len())
+        .map(std::vec::Vec::len)
         .unwrap_or(0)
 }
 

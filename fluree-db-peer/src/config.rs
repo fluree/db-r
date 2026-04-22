@@ -143,7 +143,7 @@ fn url_encode(s: &str) -> String {
             ':' => result.push(c), // Keep colons readable for aliases
             _ => {
                 for byte in c.to_string().as_bytes() {
-                    result.push_str(&format!("%{:02X}", byte));
+                    result.push_str(&format!("%{byte:02X}"));
                 }
             }
         }

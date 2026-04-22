@@ -22,14 +22,14 @@ use support::{
 
 /// Build the config-graph IRI for a ledger.
 fn config_graph_iri(ledger_id: &str) -> String {
-    format!("urn:fluree:{}#config", ledger_id)
+    format!("urn:fluree:{ledger_id}#config")
 }
 
 /// Helper: write enforce-unique config via TriG.
 fn unique_config_trig(ledger_id: &str) -> String {
     let config_iri = config_graph_iri(ledger_id);
     format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -38,7 +38,7 @@ fn unique_config_trig(ledger_id: &str) -> String {
             <urn:config:main> f:transactDefaults <urn:config:transact> .
             <urn:config:transact> f:uniqueEnabled true .
         }}
-    "#
+    "
     )
 }
 
@@ -457,12 +457,12 @@ async fn failed_unique_violation_no_corruption_after_indexing() {
                 .expect("subsequent insert should succeed");
 
             // Verify no duplication
-            let sparql = r#"
+            let sparql = r"
                 PREFIX ex: <http://example.org/>
                 SELECT ?u ?email
                 WHERE { ?u ex:email ?email }
                 ORDER BY ?email
-            "#;
+            ";
             let result = query_sparql(&fluree, &r3.ledger, sparql)
                 .await
                 .unwrap()

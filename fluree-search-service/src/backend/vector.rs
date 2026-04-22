@@ -269,9 +269,8 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
         if as_of_t.is_some() {
             return Err(ServiceError::InvalidRequest {
                 message: format!(
-                    "Vector index '{}' does not support time-travel queries (as_of_t). \
-                     Only the latest snapshot is available.",
-                    graph_source_id
+                    "Vector index '{graph_source_id}' does not support time-travel queries (as_of_t). \
+                     Only the latest snapshot is available."
                 ),
             });
         }
@@ -302,14 +301,13 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
             use fluree_db_query::vector::DistanceMetric;
             let requested =
                 DistanceMetric::parse(metric_str).ok_or_else(|| ServiceError::InvalidRequest {
-                    message: format!("Unknown distance metric: '{}'", metric_str),
+                    message: format!("Unknown distance metric: '{metric_str}'"),
                 })?;
             let index_metric = index.metric();
             if requested != index_metric {
                 return Err(ServiceError::InvalidRequest {
                     message: format!(
-                        "Metric mismatch for '{}': request asks for {} but index uses {}",
-                        graph_source_id, requested, index_metric
+                        "Metric mismatch for '{graph_source_id}': request asks for {requested} but index uses {index_metric}"
                     ),
                 });
             }
@@ -319,7 +317,7 @@ impl<L: VectorIndexLoader> SearchBackend for VectorBackend<L> {
         let results = index
             .search(query_vector, limit)
             .map_err(|e| ServiceError::Internal {
-                message: format!("Vector search error: {}", e),
+                message: format!("Vector search error: {e}"),
             })?;
 
         // Convert to SearchHit
@@ -473,8 +471,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             err.to_string().contains("does not support time-travel"),
-            "Error message should mention time-travel, got: {}",
-            err
+            "Error message should mention time-travel, got: {err}"
         );
     }
 

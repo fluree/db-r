@@ -253,7 +253,7 @@ impl ParsedContext {
             }
 
             _ => Err(JsonLdError::InvalidContext {
-                message: format!("Invalid context type: {:?}", context),
+                message: format!("Invalid context type: {context:?}"),
             }),
         }
     }
@@ -272,7 +272,7 @@ fn compute_vocab(
                 let base = context
                     .get("@base")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .or_else(|| base_context.base.clone());
                 Ok(base.map(|b| iri::add_trailing_slash(&b)))
             } else if !iri::is_absolute(s) {
@@ -292,7 +292,7 @@ fn compute_vocab(
         }
         JsonValue::Null => Ok(None),
         _ => Err(JsonLdError::InvalidContext {
-            message: format!("@vocab must be a string, got: {:?}", value),
+            message: format!("@vocab must be a string, got: {value:?}"),
         }),
     }
 }
@@ -302,7 +302,7 @@ fn parse_context_map(base: &ParsedContext, map: &Map<String, JsonValue>) -> Resu
     let mut result = base.clone();
 
     // First pass: extract @-prefixed keys
-    for (key, value) in map.iter() {
+    for (key, value) in map {
         if let Some(keyword) = key.strip_prefix('@') {
             match keyword {
                 "vocab" => {
@@ -316,7 +316,7 @@ fn parse_context_map(base: &ParsedContext, map: &Map<String, JsonValue>) -> Resu
                     }
                 }
                 "language" => {
-                    result.language = value.as_str().map(|s| s.to_string());
+                    result.language = value.as_str().map(std::string::ToString::to_string);
                 }
                 "version" => {
                     result.version = value.as_f64();
@@ -333,7 +333,7 @@ fn parse_context_map(base: &ParsedContext, map: &Map<String, JsonValue>) -> Resu
     let default_vocab = result.vocab.clone();
 
     // Second pass: parse term definitions
-    for (key, value) in map.iter() {
+    for (key, value) in map {
         if !key.starts_with('@') {
             let entry = parse_context_entry(key, value, map, base, default_vocab.as_deref())?;
 
@@ -420,17 +420,17 @@ fn resolve_compact_iri(
         // Try to resolve the prefix from the context
         if let Some(prefix_val) = context.get(&prefix) {
             if let Some(prefix_iri) = prefix_val.as_str() {
-                return format!("{}{}", prefix_iri, suffix);
+                return format!("{prefix_iri}{suffix}");
             } else if let Some(map) = prefix_val.as_object() {
                 if let Some(JsonValue::String(prefix_iri)) = map.get("@id") {
-                    return format!("{}{}", prefix_iri, suffix);
+                    return format!("{prefix_iri}{suffix}");
                 }
             }
         }
         // Try base context
         if let Some(entry) = base_context.terms.get(&prefix) {
             if let Some(ref prefix_iri) = entry.id {
-                return format!("{}{}", prefix_iri, suffix);
+                return format!("{prefix_iri}{suffix}");
             }
         }
     }
@@ -438,7 +438,7 @@ fn resolve_compact_iri(
     // Not a compact IRI, check if we should prepend vocab
     if !value.starts_with('@') && !iri::any_iri(value) {
         if let Some(vocab) = default_vocab {
-            return format!("{}{}", vocab, value);
+            return format!("{vocab}{value}");
         }
     }
 
@@ -464,7 +464,7 @@ fn parse_type_value(
         }
         JsonValue::Null => Ok(None),
         _ => Err(JsonLdError::InvalidContext {
-            message: format!("@type must be a string, got: {:?}", value),
+            message: format!("@type must be a string, got: {value:?}"),
         }),
     }
 }
@@ -480,14 +480,14 @@ fn parse_container(value: &JsonValue) -> Result<Vec<Container>> {
                     containers.push(parse_container_string(s)?);
                 } else {
                     return Err(JsonLdError::InvalidContext {
-                        message: format!("@container array items must be strings, got: {:?}", item),
+                        message: format!("@container array items must be strings, got: {item:?}"),
                     });
                 }
             }
             Ok(containers)
         }
         _ => Err(JsonLdError::InvalidContext {
-            message: format!("@container must be a string or array, got: {:?}", value),
+            message: format!("@container must be a string or array, got: {value:?}"),
         }),
     }
 }
@@ -499,7 +499,7 @@ fn parse_container_string(s: &str) -> Result<Container> {
         "@language" => Ok(Container::Language),
         "@index" => Ok(Container::Index),
         _ => Err(JsonLdError::InvalidContext {
-            message: format!("Unknown @container value: {}", s),
+            message: format!("Unknown @container value: {s}"),
         }),
     }
 }
@@ -529,7 +529,7 @@ fn parse_context_entry(
         JsonValue::Object(map) => {
             let mut entry = ContextEntry::default();
 
-            for (k, v) in map.iter() {
+            for (k, v) in map {
                 match k.as_str() {
                     "@id" => {
                         if let JsonValue::String(s) = v {
@@ -566,7 +566,7 @@ fn parse_context_entry(
                         if v.is_null() {
                             entry.language = Some(None); // Explicitly cleared
                         } else {
-                            entry.language = Some(v.as_str().map(|s| s.to_string()));
+                            entry.language = Some(v.as_str().map(std::string::ToString::to_string));
                         }
                     }
                     _ => {} // Ignore unknown keys
@@ -592,7 +592,7 @@ fn parse_context_entry(
         }
 
         _ => Err(JsonLdError::InvalidContext {
-            message: format!("Invalid context entry for key '{}': {:?}", key, value),
+            message: format!("Invalid context entry for key '{key}': {value:?}"),
         }),
     }
 }

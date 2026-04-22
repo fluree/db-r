@@ -110,7 +110,7 @@ async fn duplicate_ledger_creation() {
     assert!(result.is_err(), "Duplicate creation should fail");
 
     // Trying with explicit :main should also fail (same normalized alias)
-    let result = fluree.create_ledger(&format!("{}:main", ledger_name)).await;
+    let result = fluree.create_ledger(&format!("{ledger_name}:main")).await;
     assert!(
         result.is_err(),
         "Duplicate creation should fail for explicit branch too"
@@ -271,8 +271,7 @@ async fn fuel_integration_test() {
     // Fuel should be a positive decimal representing computational cost
     assert!(
         query_fuel > 0.0,
-        "Query fuel should be greater than 0, got: {}",
-        query_fuel
+        "Query fuel should be greater than 0, got: {query_fuel}"
     );
 
     // Fuel should roughly correspond to the number of flakes traversed
@@ -283,9 +282,7 @@ async fn fuel_integration_test() {
     if total_flakes > 0.0 {
         assert!(
             query_fuel <= total_flakes * 2.0, // Allow some overhead for query processing
-            "Query fuel ({}) should be reasonable compared to total flakes ({})",
-            query_fuel,
-            total_flakes
+            "Query fuel ({query_fuel}) should be reasonable compared to total flakes ({total_flakes})"
         );
     }
 
@@ -312,7 +309,6 @@ async fn fuel_integration_test() {
     let err_msg = limited_result.unwrap_err().to_string();
     assert!(
         err_msg.contains("Fuel limit exceeded") || err_msg.contains("fuel"),
-        "Error should mention fuel limit exceeded, got: {}",
-        err_msg
+        "Error should mention fuel limit exceeded, got: {err_msg}"
     );
 }

@@ -103,7 +103,7 @@ impl IncrementalRootBuilder {
 
         let mut replaced: Vec<ContentId> = old_cids.difference(&new_cids).cloned().collect();
         // Keep ordering deterministic for garbage manifest stability.
-        replaced.sort_by_key(|a| a.to_string());
+        replaced.sort_by_key(std::string::ToString::to_string);
         self.replaced_cids.extend(replaced);
         self.root.dict_refs = refs;
     }

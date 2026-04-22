@@ -633,7 +633,7 @@ pub fn eval_fulltext<R: RowAccess>(
             if !is_fulltext_dt {
                 return Ok(None);
             }
-            let gv = match ctx.and_then(|c| c.graph_view()) {
+            let gv = match ctx.and_then(super::super::context::ExecutionContext::graph_view) {
                 Some(gv) => gv,
                 None => return Ok(None),
             };
@@ -641,7 +641,7 @@ pub fn eval_fulltext<R: RowAccess>(
             let val = gv
                 .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                 .map_err(|e| {
-                    crate::error::QueryError::Internal(format!("fulltext decode_value: {}", e))
+                    crate::error::QueryError::Internal(format!("fulltext decode_value: {e}"))
                 })?;
 
             let text = match &val {
@@ -793,9 +793,7 @@ mod tests {
         let score_two = score_tf_saturation("cargo nextest runner", "cargo nextest");
         assert!(
             score_two > score_one,
-            "More matching terms should produce higher score: {} vs {}",
-            score_two,
-            score_one
+            "More matching terms should produce higher score: {score_two} vs {score_one}"
         );
     }
 
@@ -875,9 +873,7 @@ mod tests {
         // Doc 20 mentions "cargo" twice → higher TF
         assert!(
             score_20 > score_10,
-            "Doc with higher TF should score higher: {} vs {}",
-            score_20,
-            score_10
+            "Doc with higher TF should score higher: {score_20} vs {score_10}"
         );
     }
 
@@ -903,9 +899,7 @@ mod tests {
 
         assert!(
             (unified_score - arena_score).abs() < 1e-10,
-            "Unified scoring (no delta) should match arena.score_bm25: {} vs {}",
-            unified_score,
-            arena_score
+            "Unified scoring (no delta) should match arena.score_bm25: {unified_score} vs {arena_score}"
         );
     }
 
@@ -933,9 +927,7 @@ mod tests {
         // (it's now present in more documents), so the score should be lower
         assert!(
             score_with_delta < score_no_delta,
-            "Extra doc with 'cargo' should decrease IDF: with_delta={} no_delta={}",
-            score_with_delta,
-            score_no_delta
+            "Extra doc with 'cargo' should decrease IDF: with_delta={score_with_delta} no_delta={score_no_delta}"
         );
     }
 
@@ -959,9 +951,7 @@ mod tests {
 
         assert!(
             (indexed_score - novelty_score).abs() < 1e-10,
-            "Same content should produce same score: indexed={} novelty={}",
-            indexed_score,
-            novelty_score
+            "Same content should produce same score: indexed={indexed_score} novelty={novelty_score}"
         );
     }
 
@@ -980,7 +970,7 @@ mod tests {
         let df = effective_df("cargo", &arena, Some(&delta), stats.n);
 
         // df should be clamped to [0, N']
-        assert!(df >= 0.0, "df should be >= 0, got {}", df);
+        assert!(df >= 0.0, "df should be >= 0, got {df}");
         assert!(
             df <= stats.n,
             "df should be <= N', got {} (N'={})",

@@ -57,7 +57,7 @@ async fn query_fulltext(
     ledger: &support::MemoryLedger,
     query_text: &str,
 ) -> Vec<(String, f64)> {
-    let bind_expr = format!("(fulltext ?content \"{}\")", query_text);
+    let bind_expr = format!("(fulltext ?content \"{query_text}\")");
 
     let query = json!({
         "@context": fulltext_context(),
@@ -89,7 +89,7 @@ async fn query_fulltext(
                 .unwrap_or_default()
         }
         Err(e) => {
-            panic!("Fulltext query failed: {}", e);
+            panic!("Fulltext query failed: {e}");
         }
     }
 }
@@ -252,8 +252,7 @@ async fn fulltext_ranking_more_relevant_doc_scores_higher() {
             assert_eq!(
                 results.len(),
                 2,
-                "Should find exactly two matching docs, got: {:?}",
-                results
+                "Should find exactly two matching docs, got: {results:?}"
             );
 
             // The doc with more occurrences of "database" should rank higher
@@ -347,8 +346,7 @@ async fn fulltext_retraction_removes_doc_from_results() {
             assert_eq!(
                 results_after.len(),
                 1,
-                "Should find only one doc after retraction, got: {:?}",
-                results_after
+                "Should find only one doc after retraction, got: {results_after:?}"
             );
             assert_eq!(results_after[0].0, "Keeper");
         })
@@ -435,8 +433,7 @@ async fn fulltext_novelty_docs_scored_when_arena_exists() {
             assert_eq!(
                 results.len(),
                 3,
-                "Should find indexed AND novelty docs, got: {:?}",
-                results
+                "Should find indexed AND novelty docs, got: {results:?}"
             );
 
             // The novelty doc should appear with a positive score
@@ -551,7 +548,7 @@ async fn query_fulltext_plain(
     ledger: &support::MemoryLedger,
     query_text: &str,
 ) -> Vec<(String, f64)> {
-    let bind_expr = format!("(fulltext ?title \"{}\")", query_text);
+    let bind_expr = format!("(fulltext ?title \"{query_text}\")");
     let query = json!({
         "@context": fulltext_context(),
         "select": ["?id", "?score"],
@@ -612,7 +609,7 @@ async fn fulltext_configured_property_indexed_after_reindex() {
     //    lives alongside the data rather than being bolted on after.
     let config_iri = format!("urn:fluree:{ledger_id}#config");
     let config_trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix ex: <http://example.org/> .
@@ -625,7 +622,7 @@ async fn fulltext_configured_property_indexed_after_reindex() {
             <urn:config:ft:title> rdf:type f:FullTextProperty .
             <urn:config:ft:title> f:target ex:title .
         }}
-    "#
+    "
     );
     fluree
         .stage_owned(ledger)
@@ -774,7 +771,7 @@ async fn fulltext_configured_property_picked_up_by_build_index_for_ledger() {
     // 1) Write config + trigger the initial indexing pass via reindex.
     let config_iri = format!("urn:fluree:{ledger_id}#config");
     let config_trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix ex: <http://example.org/> .
@@ -786,7 +783,7 @@ async fn fulltext_configured_property_picked_up_by_build_index_for_ledger() {
             <urn:config:ft:title> rdf:type f:FullTextProperty .
             <urn:config:ft:title> f:target ex:title .
         }}
-    "#
+    "
     );
     ledger = fluree
         .stage_owned(ledger)

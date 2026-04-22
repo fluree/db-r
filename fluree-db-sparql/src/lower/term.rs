@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use super::{LowerError, LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     /// Register a SPARQL variable with the variable registry.
     pub(super) fn register_var(&mut self, v: &Var) -> VarId {
         self.vars.get_or_insert(&format!("?{}", v.name))
@@ -46,7 +46,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             SubjectTerm::Iri(iri) => self.lower_iri_ref(iri),
             SubjectTerm::BlankNode(bn) => match &bn.value {
                 BlankNodeValue::Labeled(label) => {
-                    let var_id = self.vars.get_or_insert(&format!("_:{}", label));
+                    let var_id = self.vars.get_or_insert(&format!("_:{label}"));
                     Ok(Ref::Var(var_id))
                 }
                 BlankNodeValue::Anon => {
@@ -89,7 +89,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             SparqlTerm::Literal(lit) => self.lower_literal(lit),
             SparqlTerm::BlankNode(bn) => match &bn.value {
                 BlankNodeValue::Labeled(label) => {
-                    let var_id = self.vars.get_or_insert(&format!("_:{}", label));
+                    let var_id = self.vars.get_or_insert(&format!("_:{label}"));
                     Ok(Term::Var(var_id))
                 }
                 BlankNodeValue::Anon => {
@@ -268,7 +268,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         let potential_prefix = &s[..colon_pos];
                         if let Some(ns) = self.prefixes.get(potential_prefix) {
                             let local = &s[colon_pos + 1..];
-                            let expanded = format!("{}{}", ns, local);
+                            let expanded = format!("{ns}{local}");
                             return Err(LowerError::misused_prefix_syntax(
                                 s.to_string(),
                                 expanded,
@@ -281,7 +281,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 // Handle relative IRIs
                 if let Some(base) = &self.base {
                     if !s.contains("://") && !s.starts_with('#') {
-                        return Ok(format!("{}{}", base, s));
+                        return Ok(format!("{base}{s}"));
                     }
                 }
                 Ok(s.to_string())
@@ -291,7 +291,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                     .prefixes
                     .get(prefix.as_ref())
                     .ok_or_else(|| LowerError::undefined_prefix(prefix.clone(), iri.span))?;
-                Ok(format!("{}{}", ns, local))
+                Ok(format!("{ns}{local}"))
             }
         }
     }

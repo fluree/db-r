@@ -35,15 +35,15 @@ pub async fn run(
             context::persist_refreshed_tokens(&client, &remote_name, dirs).await;
 
             let json = serde_json::to_string_pretty(&detail)
-                .map_err(|e| CliError::Input(format!("JSON serialization failed: {}", e)))?;
-            println!("{}", json);
+                .map_err(|e| CliError::Input(format!("JSON serialization failed: {e}")))?;
+            println!("{json}");
         }
         LedgerMode::Local { fluree, alias } => {
             let ledger_id = context::to_ledger_id(&alias);
 
             let detail = if let Some(t_str) = commit.strip_prefix("t:") {
                 let t: i64 = t_str.parse().map_err(|_| {
-                    CliError::Input(format!("Invalid transaction number: '{}'", t_str))
+                    CliError::Input(format!("Invalid transaction number: '{t_str}'"))
                 })?;
                 fluree
                     .graph(&ledger_id)
@@ -61,8 +61,8 @@ pub async fn run(
             };
 
             let json = serde_json::to_string_pretty(&detail)
-                .map_err(|e| CliError::Input(format!("JSON serialization failed: {}", e)))?;
-            println!("{}", json);
+                .map_err(|e| CliError::Input(format!("JSON serialization failed: {e}")))?;
+            println!("{json}");
         }
     }
 

@@ -113,10 +113,9 @@ pub async fn resolve_ledger_mode(
     // Not found locally or tracked
     let display = ledger_part;
     Err(CliError::NotFound(format!(
-        "ledger '{}' not found locally or in tracked config.\n  \
-         Use `fluree create {}` to create locally, `fluree track add {}` to track a remote,\n  \
-         or use remote/ledger syntax (e.g., origin/{}).",
-        display, display, display, display
+        "ledger '{display}' not found locally or in tracked config.\n  \
+         Use `fluree create {display}` to create locally, `fluree track add {display}` to track a remote,\n  \
+         or use remote/ledger syntax (e.g., origin/{display})."
     )))
 }
 
@@ -157,8 +156,7 @@ async fn try_compound_remote_syntax(
         RemoteEndpoint::Http { base_url } => base_url.clone(),
         _ => {
             return Err(CliError::Config(format!(
-                "remote '{}' is not an HTTP remote",
-                remote_name
+                "remote '{remote_name}' is not an HTTP remote"
             )));
         }
     };
@@ -221,14 +219,13 @@ pub async fn build_remote_mode(
         .get_remote(&remote_name)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote_name_str)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{remote_name_str}' not found")))?;
 
     let base_url = match &remote.endpoint {
         RemoteEndpoint::Http { base_url } => base_url.clone(),
         _ => {
             return Err(CliError::Config(format!(
-                "remote '{}' is not an HTTP remote",
-                remote_name_str
+                "remote '{remote_name_str}' is not an HTTP remote"
             )));
         }
     };
@@ -256,14 +253,13 @@ pub async fn build_remote_client(
         .get_remote(&remote_name)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", remote_name_str)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{remote_name_str}' not found")))?;
 
     let base_url = match &remote.endpoint {
         RemoteEndpoint::Http { base_url } => base_url.clone(),
         _ => {
             return Err(CliError::Config(format!(
-                "remote '{}' is not an HTTP remote",
-                remote_name_str
+                "remote '{remote_name_str}' is not an HTTP remote"
             )));
         }
     };

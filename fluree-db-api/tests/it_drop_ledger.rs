@@ -293,8 +293,8 @@ async fn drop_ledger_cancels_pending_indexing() {
             // Commits use raw alias: fluree:file://drop-cancel-test:main/commit/
             // Indexes use normalized: fluree:file://drop-cancel-test/main/index/
             let prefix = ledger_id_to_path_prefix(ledger_id).unwrap();
-            let commit_prefix = format!("fluree:file://{}/commit/", prefix);
-            let index_prefix = format!("fluree:file://{}/index/", prefix);
+            let commit_prefix = format!("fluree:file://{prefix}/commit/");
+            let index_prefix = format!("fluree:file://{prefix}/index/");
 
             let commit_files = fluree
                 .admin_storage()

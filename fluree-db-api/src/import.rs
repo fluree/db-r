@@ -411,15 +411,15 @@ pub enum ImportError {
 impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Api(e) => write!(f, "api: {}", e),
-            Self::Storage(msg) => write!(f, "storage: {}", msg),
-            Self::Transact(msg) => write!(f, "transact: {}", msg),
-            Self::RunGeneration(msg) => write!(f, "run generation: {}", msg),
-            Self::IndexBuild(msg) => write!(f, "index build: {}", msg),
-            Self::Upload(msg) => write!(f, "upload: {}", msg),
-            Self::Io(e) => write!(f, "I/O: {}", e),
-            Self::NoChunks(msg) => write!(f, "no chunks: {}", msg),
-            Self::MixedFormats(msg) => write!(f, "mixed formats: {}", msg),
+            Self::Api(e) => write!(f, "api: {e}"),
+            Self::Storage(msg) => write!(f, "storage: {msg}"),
+            Self::Transact(msg) => write!(f, "transact: {msg}"),
+            Self::RunGeneration(msg) => write!(f, "run generation: {msg}"),
+            Self::IndexBuild(msg) => write!(f, "index build: {msg}"),
+            Self::Upload(msg) => write!(f, "upload: {msg}"),
+            Self::Io(e) => write!(f, "I/O: {e}"),
+            Self::NoChunks(msg) => write!(f, "no chunks: {msg}"),
+            Self::MixedFormats(msg) => write!(f, "mixed formats: {msg}"),
         }
     }
 }
@@ -498,7 +498,7 @@ impl ChunkSource {
             Self::Streaming(reader) => {
                 let payload = reader
                     .recv_chunk()
-                    .map_err(|e| ImportError::NoChunks(format!("streaming read failed: {}", e)))?;
+                    .map_err(|e| ImportError::NoChunks(format!("streaming read failed: {e}")))?;
                 match payload {
                     Some((idx, raw)) => {
                         // Note: we return only the raw TTL data for this chunk
@@ -506,7 +506,7 @@ impl ChunkSource {
                         // path parses with a pre-extracted header prelude to
                         // avoid an extra full-chunk string copy.
                         let data = String::from_utf8(raw).map_err(|e| {
-                            ImportError::Transact(format!("chunk {} invalid UTF-8: {}", idx, e))
+                            ImportError::Transact(format!("chunk {idx} invalid UTF-8: {e}"))
                         })?;
                         Ok(Some((idx, data)))
                     }
@@ -617,7 +617,7 @@ fn resolve_chunk_source(
             reader_channel_capacity,
             scan_progress,
         )
-        .map_err(|e| ImportError::NoChunks(format!("turtle file split failed: {}", e)))?;
+        .map_err(|e| ImportError::NoChunks(format!("turtle file split failed: {e}")))?;
         tracing::info!(
             estimated_chunks = reader.estimated_chunk_count(),
             chunk_size_mb = config.effective_chunk_size_mb(),
@@ -888,7 +888,7 @@ fn discover_chunks(dir: &Path) -> std::result::Result<Vec<PathBuf>, ImportError>
     scan_directory_format(dir)?;
 
     let mut chunks: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| e.file_type().is_ok_and(|ft| ft.is_file()))
         .map(|e| e.path())
         .filter(|p| {
@@ -1402,7 +1402,7 @@ where
         let mut pending: std::collections::BTreeMap<usize, ParsedChunk> =
             std::collections::BTreeMap::new();
 
-        for recv_result in result_rx.iter() {
+        for recv_result in &result_rx {
             let (idx, parsed) = recv_result.map_err(ImportError::Transact)?;
             pending.insert(idx, parsed);
 
@@ -1755,7 +1755,7 @@ where
             let spool_config = Arc::clone(&spool_config);
 
             let handle = std::thread::Builder::new()
-                .name(format!("ttl-parser-{}", thread_idx))
+                .name(format!("ttl-parser-{thread_idx}"))
                 .spawn(move || {
                     let ctx = ParseChunkContext {
                         shared_alloc: &shared_alloc,
@@ -1776,8 +1776,8 @@ where
                         let ttl = match String::from_utf8(raw_bytes) {
                             Ok(s) => s,
                             Err(e) => {
-                                let _ = result_tx
-                                    .send(Err(format!("chunk {} invalid UTF-8: {}", idx, e)));
+                                let _ =
+                                    result_tx.send(Err(format!("chunk {idx} invalid UTF-8: {e}")));
                                 break;
                             }
                         };
@@ -1796,14 +1796,14 @@ where
                                 }
                             }
                             Err(e) => {
-                                let _ = result_tx
-                                    .send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                                let _ =
+                                    result_tx.send(Err(format!("parse chunk {idx} failed: {e}")));
                                 break;
                             }
                         }
                     }
                 })
-                .map_err(|e| ImportError::Transact(format!("spawn parser: {}", e)))?;
+                .map_err(|e| ImportError::Transact(format!("spawn parser: {e}")))?;
 
             parse_handles.push(handle);
         }
@@ -1847,7 +1847,7 @@ where
                 // Drop sender so workers exit when queue drained.
                 drop(work_tx);
             })
-            .map_err(|e| ImportError::Transact(format!("spawn forwarder: {}", e)))?;
+            .map_err(|e| ImportError::Transact(format!("spawn forwarder: {e}")))?;
 
         let next_expected = commit_parsed_chunks_in_order(
             result_rx,
@@ -1904,7 +1904,7 @@ where
                 let spool_config = Arc::clone(&spool_config);
 
                 let handle = std::thread::Builder::new()
-                    .name(format!("ttl-parser-{}", thread_idx))
+                    .name(format!("ttl-parser-{thread_idx}"))
                     .spawn(move || {
                         let ctx = ParseChunkContext {
                             shared_alloc: &shared_alloc,
@@ -1931,7 +1931,7 @@ where
                                 Err(e) => {
                                     let _ = permit_tx_ref.send(()); // release permit
                                     let _ = result_tx
-                                        .send(Err(format!("failed to read chunk {}: {}", idx, e)));
+                                        .send(Err(format!("failed to read chunk {idx}: {e}")));
                                     break;
                                 }
                             };
@@ -1947,13 +1947,13 @@ where
                                 Err(e) => {
                                     let _ = permit_tx_ref.send(());
                                     let _ = result_tx
-                                        .send(Err(format!("parse chunk {} failed: {}", idx, e)));
+                                        .send(Err(format!("parse chunk {idx} failed: {e}")));
                                     break;
                                 }
                             }
                         }
                     })
-                    .map_err(|e| ImportError::Transact(format!("spawn parser: {}", e)))?;
+                    .map_err(|e| ImportError::Transact(format!("spawn parser: {e}")))?;
 
                 parse_handles.push(handle);
             }
@@ -2005,7 +2005,7 @@ where
                     shared_alloc
                         .sync_from_registry(&state.ns_registry)
                         .map_err(|e| {
-                            ImportError::Transact(format!("namespace sync conflict: {}", e))
+                            ImportError::Transact(format!("namespace sync conflict: {e}"))
                         })?;
                     published_codes.extend(state.ns_registry.all_codes());
                     r
@@ -2306,7 +2306,7 @@ where
         let await_start = Instant::now();
         let info = handle
             .await
-            .map_err(|e| ImportError::RunGeneration(format!("sort/write task panicked: {}", e)))?
+            .map_err(|e| ImportError::RunGeneration(format!("sort/write task panicked: {e}")))?
             .map_err(ImportError::Io)?;
         tracing::info!(
             chunk = info.chunk_idx,
@@ -2326,7 +2326,7 @@ where
     if let Some(handle) = meta_chunk_handle {
         let meta_sorted_info = handle
             .await
-            .map_err(|e| ImportError::RunGeneration(format!("meta chunk task panicked: {}", e)))?
+            .map_err(|e| ImportError::RunGeneration(format!("meta chunk task panicked: {e}")))?
             .map_err(ImportError::Io)?;
         sorted_commit_infos.push(meta_sorted_info);
     }
@@ -2475,16 +2475,16 @@ where
 
     let subj_stats = subj_handle
         .await
-        .map_err(|e| ImportError::RunGeneration(format!("subject vocab merge panicked: {}", e)))?
+        .map_err(|e| ImportError::RunGeneration(format!("subject vocab merge panicked: {e}")))?
         .map_err(ImportError::Io)?;
     let str_stats = str_handle
         .await
-        .map_err(|e| ImportError::RunGeneration(format!("string vocab merge panicked: {}", e)))?
+        .map_err(|e| ImportError::RunGeneration(format!("string vocab merge panicked: {e}")))?
         .map_err(ImportError::Io)?;
     let (unified_lang_dict, lang_remaps) = lang_handle
         .await
-        .map_err(|e| ImportError::RunGeneration(format!("language vocab merge panicked: {}", e)))?
-        .map_err(|e| ImportError::RunGeneration(format!("lang remap: {}", e)))?;
+        .map_err(|e| ImportError::RunGeneration(format!("language vocab merge panicked: {e}")))?
+        .map_err(|e| ImportError::RunGeneration(format!("lang remap: {e}")))?;
 
     let total_unique_subjects = subj_stats.total_unique;
     let needs_wide = subj_stats.needs_wide;
@@ -2551,11 +2551,11 @@ where
                 if per_pred.is_empty() {
                     continue;
                 }
-                let nb_dir = run_dir.join(format!("g_{}", g_id)).join("numbig");
+                let nb_dir = run_dir.join(format!("g_{g_id}")).join("numbig");
                 std::fs::create_dir_all(&nb_dir)?;
                 for (&p_id, arena) in per_pred {
                     fluree_db_binary_index::arena::numbig::write_numbig_arena(
-                        &nb_dir.join(format!("p_{}.nba", p_id)),
+                        &nb_dir.join(format!("p_{p_id}.nba")),
                         arena,
                     )?;
                     total_predicates += 1;
@@ -2585,7 +2585,7 @@ where
                 if per_pred.is_empty() {
                     continue;
                 }
-                let vec_dir = run_dir.join(format!("g_{}", g_id)).join("vectors");
+                let vec_dir = run_dir.join(format!("g_{g_id}")).join("vectors");
                 std::fs::create_dir_all(&vec_dir)?;
                 for (&p_id, arena) in per_pred {
                     if arena.is_empty() {
@@ -2609,7 +2609,7 @@ where
                             })
                             .collect();
                     fluree_db_binary_index::arena::vector::write_vector_manifest(
-                        &vec_dir.join(format!("p_{}.vam", p_id)),
+                        &vec_dir.join(format!("p_{p_id}.vam")),
                         arena,
                         &shard_infos,
                     )?;
@@ -3014,7 +3014,7 @@ where
                         .map_err(|e| ImportError::IndexBuild(format!("build task panicked: {e}")))?
                         .map_err(|e| ImportError::IndexBuild(e.to_string()))?;
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
+                () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
                     let stage = stage_marker.load(std::sync::atomic::Ordering::Relaxed);
                     emit_index_progress(stage, &mut current_stage, &mut stage_start);
                 }
@@ -3246,7 +3246,7 @@ where
                     let (ns, name) = predicate_sids_v6
                         .get(p_id as usize)
                         .cloned()
-                        .unwrap_or((0u16, "".to_string()));
+                        .unwrap_or((0u16, String::new()));
                     is::PropertyStatEntry {
                         sid: (ns, name),
                         count: pa.count,
@@ -3424,7 +3424,7 @@ fn build_import_summary(
     let compact = |full_iri: &str| -> String {
         for &(ns_iri, short) in &iri_to_short {
             if let Some(suffix) = full_iri.strip_prefix(ns_iri) {
-                return format!("{}:{}", short, suffix);
+                return format!("{short}:{suffix}");
             }
         }
         full_iri.to_string()
@@ -3440,9 +3440,9 @@ fn build_import_summary(
             let (ns_code, suffix) = predicate_sids.get(p.p_id as usize)?;
             let ns_iri = namespace_codes
                 .get(ns_code)
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .unwrap_or("");
-            Some((compact(&format!("{}{}", ns_iri, suffix)), p.count))
+            Some((compact(&format!("{ns_iri}{suffix}")), p.count))
         })
         .collect();
 
@@ -3463,7 +3463,7 @@ fn build_import_summary(
         let ns_code = subj.ns_code();
         let prefix = namespace_codes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
         let sids_path = run_dir.join("subjects.sids");
         let idx_path = run_dir.join("subjects.idx");
@@ -3485,7 +3485,7 @@ fn build_import_summary(
         } else {
             iri
         };
-        Some(format!("{}{}", prefix, suffix))
+        Some(format!("{prefix}{suffix}"))
     };
 
     // Cache resolved IRIs to avoid repeated file I/O.
@@ -3531,11 +3531,11 @@ fn build_import_summary(
             let (ns_code, suffix) = predicate_sids.get(p_id as usize)?;
             let ns_iri = namespace_codes
                 .get(ns_code)
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .unwrap_or("");
             Some((
                 src_iri,
-                compact(&format!("{}{}", ns_iri, suffix)),
+                compact(&format!("{ns_iri}{suffix}")),
                 tgt_iri,
                 count,
             ))
@@ -3630,18 +3630,18 @@ where
 
     let context_json = serde_json::Value::Object(context_map);
     let context_bytes = serde_json::to_vec(&context_json)
-        .map_err(|e| ImportError::Storage(format!("serialize default context: {}", e)))?;
+        .map_err(|e| ImportError::Storage(format!("serialize default context: {e}")))?;
 
     // Write to CAS via ContentStore (returns CID)
     let cs = fluree_db_core::content_store_for(storage.clone(), alias);
     let cid = cs
         .put(ContentKind::LedgerConfig, &context_bytes)
         .await
-        .map_err(|e| ImportError::Storage(format!("write default context to CAS: {}", e)))?;
+        .map_err(|e| ImportError::Storage(format!("write default context to CAS: {e}")))?;
 
     tracing::info!(
         cid = %cid,
-        prefixes = context_json.as_object().map(|m| m.len()).unwrap_or(0),
+        prefixes = context_json.as_object().map(serde_json::Map::len).unwrap_or(0),
         "default context written to CAS"
     );
 
@@ -3649,7 +3649,7 @@ where
     let current_config = nameservice
         .get_config(alias)
         .await
-        .map_err(|e| ImportError::Storage(format!("get config: {}", e)))?;
+        .map_err(|e| ImportError::Storage(format!("get config: {e}")))?;
 
     let old_default_context = current_config
         .as_ref()
@@ -3665,7 +3665,7 @@ where
     nameservice
         .push_config(alias, current_config.as_ref(), &new_config)
         .await
-        .map_err(|e| ImportError::Storage(format!("push default context config: {}", e)))?;
+        .map_err(|e| ImportError::Storage(format!("push default context config: {e}")))?;
 
     tracing::info!("default context published to nameservice config");
 

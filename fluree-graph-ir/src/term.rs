@@ -472,8 +472,8 @@ impl Ord for Term {
 impl std::fmt::Display for Term {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Term::Iri(iri) => write!(f, "<{}>", iri),
-            Term::BlankNode(id) => write!(f, "{}", id),
+            Term::Iri(iri) => write!(f, "<{iri}>"),
+            Term::BlankNode(id) => write!(f, "{id}"),
             Term::Literal {
                 value,
                 datatype,
@@ -481,7 +481,7 @@ impl std::fmt::Display for Term {
             } => {
                 write!(f, "\"{}\"", value.lexical())?;
                 if let Some(lang) = language {
-                    write!(f, "@{}", lang)
+                    write!(f, "@{lang}")
                 } else if !datatype.is_xsd_string() {
                     write!(f, "^^<{}>", datatype.as_iri())
                 } else {
@@ -501,7 +501,7 @@ mod tests {
         let id = BlankId::new("b0");
         assert_eq!(id.as_str(), "b0");
         assert_eq!(id.to_ntriples(), "_:b0");
-        assert_eq!(format!("{}", id), "_:b0");
+        assert_eq!(format!("{id}"), "_:b0");
     }
 
     #[test]

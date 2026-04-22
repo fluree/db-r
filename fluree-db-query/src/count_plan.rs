@@ -1006,7 +1006,7 @@ mod tests {
             }) => {
                 assert_eq!(children.len(), 2);
             }
-            other => panic!("Expected Scalar(Sum(StarJoin)), got {:?}", other),
+            other => panic!("Expected Scalar(Sum(StarJoin)), got {other:?}"),
         }
     }
 
@@ -1030,7 +1030,7 @@ mod tests {
 
         match &plan.unwrap().root {
             CountPlanRoot::Scalar(ScalarNode::TotalRowCount { .. }) => {}
-            other => panic!("Expected TotalRowCount, got {:?}", other),
+            other => panic!("Expected TotalRowCount, got {other:?}"),
         }
     }
 
@@ -1059,7 +1059,7 @@ mod tests {
                 assert_eq!(fold.predicates.len(), 2);
                 assert!(matches!(fold.tail_weight, TailWeight::None));
             }
-            other => panic!("Expected Chain, got {:?}", other),
+            other => panic!("Expected Chain, got {other:?}"),
         }
     }
 
@@ -1098,7 +1098,7 @@ mod tests {
                 assert_eq!(optional_groups.len(), 1);
                 assert_eq!(optional_groups[0].len(), 1);
             }
-            other => panic!("Expected Sum(OptionalJoin), got {:?}", other),
+            other => panic!("Expected Sum(OptionalJoin), got {other:?}"),
         }
     }
 
@@ -1130,7 +1130,7 @@ mod tests {
             CountPlanRoot::Scalar(ScalarNode::Sum {
                 source: StreamNode::AntiJoin { .. },
             }) => {}
-            other => panic!("Expected Sum(AntiJoin), got {:?}", other),
+            other => panic!("Expected Sum(AntiJoin), got {other:?}"),
         }
     }
 
@@ -1174,10 +1174,7 @@ mod tests {
                 );
                 assert!(matches!(filter, KeySetNode::SubjectSet { .. }));
             }
-            other => panic!(
-                "Expected Sum(SemiJoin(StarJoin, SubjectSet)), got {:?}",
-                other
-            ),
+            other => panic!("Expected Sum(SemiJoin(StarJoin, SubjectSet)), got {other:?}"),
         }
     }
 
@@ -1219,7 +1216,7 @@ mod tests {
                 ));
                 assert!(matches!(excluded, KeySetNode::SubjectSet { .. }));
             }
-            other => panic!("Expected Sum(AntiJoin(Scan, SubjectSet)), got {:?}", other),
+            other => panic!("Expected Sum(AntiJoin(Scan, SubjectSet)), got {other:?}"),
         }
     }
 
@@ -1264,10 +1261,7 @@ mod tests {
                     matches!(filter, KeySetNode::IntersectSorted { children } if children.len() == 2)
                 );
             }
-            other => panic!(
-                "Expected Sum(SemiJoin(Scan, IntersectSorted)), got {:?}",
-                other
-            ),
+            other => panic!("Expected Sum(SemiJoin(Scan, IntersectSorted)), got {other:?}"),
         }
     }
 
@@ -1311,10 +1305,7 @@ mod tests {
                 assert!(matches!(source.as_ref(), StreamNode::OptionalJoin { .. }));
                 assert!(matches!(excluded, KeySetNode::SubjectSet { .. }));
             }
-            other => panic!(
-                "Expected Sum(AntiJoin(OptionalJoin, SubjectSet)), got {:?}",
-                other
-            ),
+            other => panic!("Expected Sum(AntiJoin(OptionalJoin, SubjectSet)), got {other:?}"),
         }
     }
 
@@ -1351,7 +1342,7 @@ mod tests {
                 assert_eq!(fold.predicates.len(), 2);
                 assert!(matches!(fold.tail_weight, TailWeight::Optional { .. }));
             }
-            other => panic!("Expected Chain with Optional tail, got {:?}", other),
+            other => panic!("Expected Chain with Optional tail, got {other:?}"),
         }
     }
 
@@ -1388,7 +1379,7 @@ mod tests {
                 assert_eq!(fold.predicates.len(), 2);
                 assert!(matches!(fold.tail_weight, TailWeight::Minus { .. }));
             }
-            other => panic!("Expected Chain with Minus tail, got {:?}", other),
+            other => panic!("Expected Chain with Minus tail, got {other:?}"),
         }
     }
 
@@ -1428,7 +1419,7 @@ mod tests {
                 assert_eq!(fold.predicates.len(), 2);
                 assert!(matches!(fold.tail_weight, TailWeight::Exists { .. }));
             }
-            other => panic!("Expected Chain with Exists tail, got {:?}", other),
+            other => panic!("Expected Chain with Exists tail, got {other:?}"),
         }
     }
 
@@ -1469,7 +1460,7 @@ mod tests {
                 // NOT EXISTS becomes MINUS semantics at the tail.
                 assert!(matches!(fold.tail_weight, TailWeight::Minus { .. }));
             }
-            other => panic!("Expected Chain with Minus tail, got {:?}", other),
+            other => panic!("Expected Chain with Minus tail, got {other:?}"),
         }
     }
 
@@ -1544,10 +1535,7 @@ mod tests {
                     matches!(excluded, KeySetNode::IntersectSorted { children } if children.len() == 2)
                 );
             }
-            other => panic!(
-                "Expected Sum(AntiJoin(Scan, IntersectSorted)), got {:?}",
-                other
-            ),
+            other => panic!("Expected Sum(AntiJoin(Scan, IntersectSorted)), got {other:?}"),
         }
     }
 
@@ -1621,10 +1609,7 @@ mod tests {
                 object_filter: KeySetNode::SubjectsSorted { .. },
                 ..
             }) => {}
-            other => panic!(
-                "Expected PostObjectFilteredSum with SubjectsSorted, got {:?}",
-                other
-            ),
+            other => panic!("Expected PostObjectFilteredSum with SubjectsSorted, got {other:?}"),
         }
     }
 
@@ -1658,8 +1643,7 @@ mod tests {
                 ..
             }) => {}
             other => panic!(
-                "Expected TotalMinusPostObjectFilteredSum with SubjectsSorted, got {:?}",
-                other
+                "Expected TotalMinusPostObjectFilteredSum with SubjectsSorted, got {other:?}"
             ),
         }
     }
@@ -1696,10 +1680,9 @@ mod tests {
             }) => {
                 assert!(matches!(object_set.as_ref(), KeySetNode::SubjectSet { .. }));
             }
-            other => panic!(
-                "Expected PostObjectFilteredSum with SubjectsWithObjectIn, got {:?}",
-                other
-            ),
+            other => {
+                panic!("Expected PostObjectFilteredSum with SubjectsWithObjectIn, got {other:?}")
+            }
         }
     }
 
@@ -1730,7 +1713,7 @@ mod tests {
         assert!(plan.is_some(), "Should detect 2-hop object-chain MINUS");
         match &plan.unwrap().root {
             CountPlanRoot::Scalar(ScalarNode::TotalMinusPostObjectFilteredSum { .. }) => {}
-            other => panic!("Expected TotalMinusPostObjectFilteredSum, got {:?}", other),
+            other => panic!("Expected TotalMinusPostObjectFilteredSum, got {other:?}"),
         }
     }
 
@@ -1760,7 +1743,7 @@ mod tests {
         assert!(plan.is_some(), "Should detect object-chain NOT EXISTS");
         match &plan.unwrap().root {
             CountPlanRoot::Scalar(ScalarNode::TotalMinusPostObjectFilteredSum { .. }) => {}
-            other => panic!("Expected TotalMinusPostObjectFilteredSum, got {:?}", other),
+            other => panic!("Expected TotalMinusPostObjectFilteredSum, got {other:?}"),
         }
     }
 
@@ -1796,10 +1779,7 @@ mod tests {
             }) => {
                 assert_eq!(children.len(), 2);
             }
-            other => panic!(
-                "Expected PostObjectFilteredSum with IntersectSorted, got {:?}",
-                other
-            ),
+            other => panic!("Expected PostObjectFilteredSum with IntersectSorted, got {other:?}"),
         }
     }
 }

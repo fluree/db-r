@@ -57,8 +57,8 @@ mod tests {
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64, op: bool) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,

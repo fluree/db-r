@@ -44,13 +44,13 @@ impl TriplePattern {
     pub fn variables(&self) -> Vec<&Var> {
         let mut vars = Vec::with_capacity(3);
         if let SubjectTerm::Var(v) = &self.subject {
-            vars.push(v)
+            vars.push(v);
         }
         if let PredicateTerm::Var(v) = &self.predicate {
-            vars.push(v)
+            vars.push(v);
         }
         if let Term::Var(v) = &self.object {
-            vars.push(v)
+            vars.push(v);
         }
         vars
     }

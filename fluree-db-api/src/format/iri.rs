@@ -251,7 +251,7 @@ impl IriCompactor {
         for (ns_iri, prefix_name) in &self.fallback_prefixes {
             if iri.starts_with(ns_iri.as_str()) {
                 let suffix = &iri[ns_iri.len()..];
-                return Some(format!("{}:{}", prefix_name, suffix));
+                return Some(format!("{prefix_name}:{suffix}"));
             }
         }
         None
@@ -351,7 +351,7 @@ fn build_fallback_prefixes(
         } else {
             let mut counter = 2u32;
             loop {
-                let candidate = format!("{}{}", base_name, counter);
+                let candidate = format!("{base_name}{counter}");
                 if !used_names.contains(&candidate) {
                     break candidate;
                 }
@@ -401,7 +401,7 @@ fn derive_prefix_name(ns_iri: &str) -> String {
     // Filter to alphanumeric, lowercase
     let name: String = effective
         .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .collect::<String>()
         .to_lowercase();
 
@@ -421,7 +421,7 @@ mod tests {
 
     fn make_test_namespaces() -> HashMap<u16, String> {
         let mut map = HashMap::new();
-        map.insert(0, "".to_string());
+        map.insert(0, String::new());
         map.insert(2, xsd::NS.to_string());
         map.insert(3, rdf::NS.to_string());
         map.insert(17, "http://schema.org/".to_string());
@@ -577,8 +577,8 @@ mod tests {
         let a = compactor.compact_for_display("http://a.org/foo/bar");
         let b = compactor.compact_for_display("http://b.org/foo/bar");
 
-        assert!(a.ends_with(":bar"), "expected prefix:bar, got {}", a);
-        assert!(b.ends_with(":bar"), "expected prefix:bar, got {}", b);
+        assert!(a.ends_with(":bar"), "expected prefix:bar, got {a}");
+        assert!(b.ends_with(":bar"), "expected prefix:bar, got {b}");
         assert_ne!(a, b, "should have different prefixes");
     }
 

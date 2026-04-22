@@ -115,7 +115,7 @@ impl RemoteTrackingStore for FileTrackingStore {
             }
         })
         .await
-        .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?
+        .map_err(|e| NameServiceError::storage(format!("Task join error: {e}")))?
     }
 
     async fn set_tracking(&self, record: &TrackingRecord) -> Result<()> {
@@ -153,7 +153,7 @@ impl RemoteTrackingStore for FileTrackingStore {
             Ok(())
         })
         .await
-        .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?
+        .map_err(|e| NameServiceError::storage(format!("Task join error: {e}")))?
     }
 
     async fn list_tracking(&self, remote: &RemoteName) -> Result<Vec<TrackingRecord>> {
@@ -177,7 +177,7 @@ impl RemoteTrackingStore for FileTrackingStore {
             let mut records = Vec::new();
             for entry in entries {
                 let entry = entry.map_err(|e| {
-                    NameServiceError::storage(format!("Failed to read directory entry: {}", e))
+                    NameServiceError::storage(format!("Failed to read directory entry: {e}"))
                 })?;
                 let path = entry.path();
                 if path.extension().is_some_and(|ext| ext == "json") {
@@ -214,7 +214,7 @@ impl RemoteTrackingStore for FileTrackingStore {
             Ok(records)
         })
         .await
-        .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?
+        .map_err(|e| NameServiceError::storage(format!("Task join error: {e}")))?
     }
 
     async fn remove_tracking(&self, remote: &RemoteName, ledger_id: &str) -> Result<()> {
@@ -234,7 +234,7 @@ impl RemoteTrackingStore for FileTrackingStore {
             }
         })
         .await
-        .map_err(|e| NameServiceError::storage(format!("Task join error: {}", e)))?
+        .map_err(|e| NameServiceError::storage(format!("Task join error: {e}")))?
     }
 }
 
@@ -307,8 +307,7 @@ mod tests {
         let expected_path = tmp.path().join("ns-sync/remotes/origin/mydb%3Amain.json");
         assert!(
             expected_path.exists(),
-            "File should exist at {:?}",
-            expected_path
+            "File should exist at {expected_path:?}"
         );
 
         // Verify ns@v2 directory does NOT exist

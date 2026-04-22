@@ -133,8 +133,7 @@ impl Bm25CreateConfig {
         if let Some(k1) = self.k1 {
             if k1 <= 0.0 {
                 return Err(crate::ApiError::config(format!(
-                    "k1 must be positive, got {}",
-                    k1
+                    "k1 must be positive, got {k1}"
                 )));
             }
             if k1 > 10.0 {
@@ -147,8 +146,7 @@ impl Bm25CreateConfig {
         if let Some(b) = self.b {
             if !(0.0..=1.0).contains(&b) {
                 return Err(crate::ApiError::config(format!(
-                    "b must be between 0 and 1, got {}",
-                    b
+                    "b must be between 0 and 1, got {b}"
                 )));
             }
         }
@@ -657,7 +655,7 @@ impl IcebergCreateConfig {
                 }
                 use fluree_db_iceberg::catalog::parse_table_identifier;
                 parse_table_identifier(&rest.table_identifier).map_err(|e| {
-                    crate::ApiError::config(format!("Invalid table identifier: {}", e))
+                    crate::ApiError::config(format!("Invalid table identifier: {e}"))
                 })?;
             }
             CatalogMode::Direct { table_location } => {
@@ -668,8 +666,7 @@ impl IcebergCreateConfig {
                 }
                 if !table_location.starts_with("s3://") && !table_location.starts_with("s3a://") {
                     return Err(crate::ApiError::config(format!(
-                        "Direct catalog table_location must be an S3 URI (s3:// or s3a://), got: {}",
-                        table_location
+                        "Direct catalog table_location must be an S3 URI (s3:// or s3a://), got: {table_location}"
                     )));
                 }
             }

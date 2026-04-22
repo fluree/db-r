@@ -92,26 +92,22 @@ pub async fn compute_missing_commits<C: ContentStore>(
 
             // Load envelope metadata only (no flake decompression).
             let raw_bytes = store.get(&current_id).await.map_err(|e| {
-                ApiError::internal(format!("failed to read commit {}: {}", current_id, e))
+                ApiError::internal(format!("failed to read commit {current_id}: {e}"))
             })?;
 
             let header = CommitHeader::read_from(&raw_bytes).map_err(|e| {
-                ApiError::internal(format!("invalid commit header for {}: {}", current_id, e))
+                ApiError::internal(format!("invalid commit header for {current_id}: {e}"))
             })?;
 
             let envelope_start = HEADER_LEN;
             let envelope_end = envelope_start + header.envelope_len as usize;
             if envelope_end > raw_bytes.len() {
                 return Err(ApiError::internal(format!(
-                    "commit envelope extends past blob for {}",
-                    current_id
+                    "commit envelope extends past blob for {current_id}"
                 )));
             }
             let env = decode_envelope(&raw_bytes[envelope_start..envelope_end]).map_err(|e| {
-                ApiError::internal(format!(
-                    "failed to decode envelope for {}: {}",
-                    current_id, e
-                ))
+                ApiError::internal(format!("failed to decode envelope for {current_id}: {e}"))
             })?;
 
             chain.push(current_id);
@@ -213,13 +209,10 @@ pub async fn compute_missing_index_artifacts<C: ContentStore>(
 ) -> Result<Vec<ContentId>> {
     // Load and parse the want root (FIR6).
     let want_bytes = store.get(want_root_id).await.map_err(|e| {
-        ApiError::internal(format!("failed to read index root {}: {}", want_root_id, e))
+        ApiError::internal(format!("failed to read index root {want_root_id}: {e}"))
     })?;
     let want_cas_ids = decode_root_cas_ids(&want_bytes).map_err(|e| {
-        ApiError::internal(format!(
-            "failed to parse index root {}: {}",
-            want_root_id, e
-        ))
+        ApiError::internal(format!("failed to parse index root {want_root_id}: {e}"))
     })?;
 
     // Expand named-graph branch manifests to include their leaf/sidecar CIDs.
@@ -369,9 +362,9 @@ async fn stream_pack_inner(
         if !content_store
             .has(want_cid)
             .await
-            .map_err(|e| format!("storage error checking want CID {}: {}", want_cid, e))?
+            .map_err(|e| format!("storage error checking want CID {want_cid}: {e}"))?
         {
-            return Err(format!("requested commit not found: {}", want_cid));
+            return Err(format!("requested commit not found: {want_cid}"));
         }
     }
 
@@ -379,7 +372,7 @@ async fn stream_pack_inner(
     let have_set: HashSet<ContentId> = request.have.iter().cloned().collect();
     let missing_commits = compute_missing_commits(&content_store, &request.want, &have_set)
         .await
-        .map_err(|e| format!("failed to compute missing commits: {}", e))?;
+        .map_err(|e| format!("failed to compute missing commits: {e}"))?;
 
     debug!(
         ledger = %ledger_id,
@@ -397,7 +390,7 @@ async fn stream_pack_inner(
             request.have_index_root_id.as_ref(),
         )
         .await
-        .map_err(|e| format!("failed to compute missing index artifacts: {}", e))?;
+        .map_err(|e| format!("failed to compute missing index artifacts: {e}"))?;
 
         debug!(
             ledger = %ledger_id,
@@ -441,7 +434,7 @@ async fn stream_pack_inner(
         let raw_bytes = content_store
             .get(commit_cid)
             .await
-            .map_err(|e| format!("failed to read commit {}: {}", commit_cid, e))?;
+            .map_err(|e| format!("failed to read commit {commit_cid}: {e}"))?;
 
         // Encode and send commit data frame.
         let mut buf = Vec::with_capacity(raw_bytes.len() + 64);
@@ -458,7 +451,7 @@ async fn stream_pack_inner(
 
         // Decode envelope to find txn blob CID.
         let header = CommitHeader::read_from(&raw_bytes)
-            .map_err(|e| format!("invalid commit header for {}: {}", commit_cid, e))?;
+            .map_err(|e| format!("invalid commit header for {commit_cid}: {e}"))?;
 
         let envelope_start = HEADER_LEN;
         let envelope_end = envelope_start + header.envelope_len as usize;
@@ -470,7 +463,7 @@ async fn stream_pack_inner(
                         let txn_bytes = content_store
                             .get(txn_cid)
                             .await
-                            .map_err(|e| format!("failed to read txn blob {}: {}", txn_cid, e))?;
+                            .map_err(|e| format!("failed to read txn blob {txn_cid}: {e}"))?;
 
                         let mut txn_buf = Vec::with_capacity(txn_bytes.len() + 64);
                         encode_data_frame(txn_cid, &txn_bytes, &mut txn_buf);
@@ -509,7 +502,7 @@ async fn stream_pack_inner(
             let artifact_bytes = content_store
                 .get(artifact_cid)
                 .await
-                .map_err(|e| format!("failed to read index artifact {}: {}", artifact_cid, e))?;
+                .map_err(|e| format!("failed to read index artifact {artifact_cid}: {e}"))?;
 
             let mut buf = Vec::with_capacity(artifact_bytes.len() + 64);
             encode_data_frame(artifact_cid, &artifact_bytes, &mut buf);

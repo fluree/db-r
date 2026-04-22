@@ -195,11 +195,10 @@ impl QueryGeomResolved {
         use std::str::FromStr;
         match self {
             QueryGeomResolved::Wkt(wkt) => wkt::Wkt::from_str(wkt)
-                .map_err(|e| format!("WKT parse error: {:?}", e))
+                .map_err(|e| format!("WKT parse error: {e:?}"))
                 .and_then(|w| {
-                    w.try_into().map_err(|e: wkt::conversion::Error| {
-                        format!("WKT conversion error: {:?}", e)
-                    })
+                    w.try_into()
+                        .map_err(|e: wkt::conversion::Error| format!("WKT conversion error: {e:?}"))
                 }),
             QueryGeomResolved::Point(lat, lng) => Ok(geo_types::Geometry::Point(
                 geo_types::Point::new(*lng, *lat),
@@ -221,8 +220,7 @@ impl Operator for S2SearchOperator {
         if let S2QueryGeom::Var(v) = &self.pattern.query_geom {
             if !self.child.schema().iter().any(|vv| vv == v) {
                 return Err(QueryError::InvalidQuery(format!(
-                    "S2Search query geometry variable {:?} is not bound by previous patterns",
-                    v
+                    "S2Search query geometry variable {v:?} is not bound by previous patterns"
                 )));
             }
         }
@@ -274,12 +272,12 @@ impl Operator for S2SearchOperator {
         let provider: &dyn SpatialIndexProvider = match &self.pattern.predicate {
             Some(pred_iri) => {
                 // Look up by graph-scoped key: "g{g_id}:{predicate}"
-                let key = format!("g{}:{}", g_id, pred_iri);
+                let key = format!("g{g_id}:{pred_iri}");
                 if let Some(p) = providers.get(&key) {
                     p.as_ref()
                 } else if g_id != 0 {
                     // Fallback: try default graph (g_id=0) for backwards compat
-                    let fallback_key = format!("g0:{}", pred_iri);
+                    let fallback_key = format!("g0:{pred_iri}");
                     if let Some(p) = providers.get(&fallback_key) {
                         tracing::debug!(
                             key = %key,
@@ -304,7 +302,7 @@ impl Operator for S2SearchOperator {
             }
             None => {
                 // No predicate specified - filter to current graph first
-                let graph_prefix = format!("g{}:", g_id);
+                let graph_prefix = format!("g{g_id}:");
                 let graph_keys: Vec<_> = providers
                     .keys()
                     .filter(|k| k.starts_with(&graph_prefix))
@@ -411,7 +409,7 @@ impl Operator for S2SearchOperator {
                         .query_radius(lat, lng, *radius_meters, ctx.to_t, self.pattern.limit)
                         .await
                         .map_err(|e| {
-                            QueryError::Internal(format!("S2 radius query failed: {}", e))
+                            QueryError::Internal(format!("S2 radius query failed: {e}"))
                         })?;
 
                     // Build output rows
@@ -449,14 +447,14 @@ impl Operator for S2SearchOperator {
 
                 S2SpatialOp::Within => {
                     let geom = query_geom.to_geometry().map_err(|e| {
-                        QueryError::InvalidQuery(format!("Invalid query geometry: {}", e))
+                        QueryError::InvalidQuery(format!("Invalid query geometry: {e}"))
                     })?;
 
                     let results = provider
                         .query_within(&geom, ctx.to_t, self.pattern.limit)
                         .await
                         .map_err(|e| {
-                            QueryError::Internal(format!("S2 within query failed: {}", e))
+                            QueryError::Internal(format!("S2 within query failed: {e}"))
                         })?;
 
                     for result in results {
@@ -480,14 +478,14 @@ impl Operator for S2SearchOperator {
 
                 S2SpatialOp::Contains => {
                     let geom = query_geom.to_geometry().map_err(|e| {
-                        QueryError::InvalidQuery(format!("Invalid query geometry: {}", e))
+                        QueryError::InvalidQuery(format!("Invalid query geometry: {e}"))
                     })?;
 
                     let results = provider
                         .query_contains(&geom, ctx.to_t, self.pattern.limit)
                         .await
                         .map_err(|e| {
-                            QueryError::Internal(format!("S2 contains query failed: {}", e))
+                            QueryError::Internal(format!("S2 contains query failed: {e}"))
                         })?;
 
                     for result in results {
@@ -511,14 +509,14 @@ impl Operator for S2SearchOperator {
 
                 S2SpatialOp::Intersects => {
                     let geom = query_geom.to_geometry().map_err(|e| {
-                        QueryError::InvalidQuery(format!("Invalid query geometry: {}", e))
+                        QueryError::InvalidQuery(format!("Invalid query geometry: {e}"))
                     })?;
 
                     let results = provider
                         .query_intersects(&geom, ctx.to_t, self.pattern.limit)
                         .await
                         .map_err(|e| {
-                            QueryError::Internal(format!("S2 intersects query failed: {}", e))
+                            QueryError::Internal(format!("S2 intersects query failed: {e}"))
                         })?;
 
                     for result in results {

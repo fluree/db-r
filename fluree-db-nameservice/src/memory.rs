@@ -141,8 +141,7 @@ impl NameService for MemoryNameService {
         // Increment source branch's child count and copy commit head
         let source = records.get_mut(&source_key).ok_or_else(|| {
             crate::NameServiceError::not_found(format!(
-                "source branch {}:{}",
-                ledger_name, source_branch
+                "source branch {ledger_name}:{source_branch}"
             ))
         })?;
         source.branches += 1;
@@ -918,17 +917,17 @@ mod tests {
 
         match ns.lookup_any("ledger:main").await.unwrap() {
             NsLookupResult::Ledger(r) => assert_eq!(r.name, "ledger"),
-            other => panic!("Expected Ledger, got {:?}", other),
+            other => panic!("Expected Ledger, got {other:?}"),
         }
 
         match ns.lookup_any("gs:main").await.unwrap() {
             NsLookupResult::GraphSource(r) => assert_eq!(r.name, "gs"),
-            other => panic!("Expected GraphSource, got {:?}", other),
+            other => panic!("Expected GraphSource, got {other:?}"),
         }
 
         match ns.lookup_any("nonexistent:main").await.unwrap() {
             NsLookupResult::NotFound => {}
-            other => panic!("Expected NotFound, got {:?}", other),
+            other => panic!("Expected NotFound, got {other:?}"),
         }
     }
 

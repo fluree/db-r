@@ -133,7 +133,7 @@ pub fn expand_prefixed_iri(iri: &str, prefix_map: &HashMap<String, String>) -> O
         let local = &iri[colon_pos + 1..];
 
         if let Some(namespace) = prefix_map.get(prefix) {
-            return Some(format!("{}{}", namespace, local));
+            return Some(format!("{namespace}{local}"));
         }
     }
 

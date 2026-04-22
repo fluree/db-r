@@ -104,7 +104,7 @@ fn compact_with(
                 }
                 continue;
             }
-            return format!("{}:{}", prefix_name, suffix);
+            return format!("{prefix_name}:{suffix}");
         }
     }
 
@@ -148,7 +148,7 @@ fn compact_with_tracking(
                     guard.insert(prefix_name.clone(), prefix_iri.clone());
                 }
             }
-            return format!("{}:{}", prefix_name, suffix);
+            return format!("{prefix_name}:{suffix}");
         }
     }
 
@@ -203,10 +203,10 @@ fn sorted_prefix_iris(flipped: &HashMap<String, String>) -> Vec<(String, String)
 /// Create a compaction function from a parsed context.
 ///
 /// For repeated compaction, prefer building a [`ContextCompactor`] directly.
-pub fn compact_fn<'a>(
-    context: &'a ParsedContext,
+pub fn compact_fn(
+    context: &ParsedContext,
     used: Option<Arc<Mutex<HashMap<String, String>>>>,
-) -> impl Fn(&str) -> String + 'a {
+) -> impl Fn(&str) -> String + '_ {
     let compactor = ContextCompactor::new(context);
     move |iri: &str| {
         compact_with_tracking(

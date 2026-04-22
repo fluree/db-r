@@ -124,7 +124,10 @@ impl std::fmt::Debug for CommitOpts {
             .field("graph_delta_count", &self.graph_delta.len())
             .field(
                 "namespace_delta",
-                &self.namespace_delta.as_ref().map(|d| d.len()),
+                &self
+                    .namespace_delta
+                    .as_ref()
+                    .map(std::collections::HashMap::len),
             )
             .field("skip_backpressure", &self.skip_backpressure)
             .field("skip_sequencing", &self.skip_sequencing)
@@ -363,7 +366,7 @@ where
         }
 
         // 4. Predictive sizing - would these flakes reach or exceed max?
-        let delta_bytes: usize = flakes.iter().map(|f| f.size_bytes()).sum();
+        let delta_bytes: usize = flakes.iter().map(fluree_db_core::Flake::size_bytes).sum();
         let current_bytes = base.novelty_size();
         let max_bytes = index_config.reindex_max_bytes;
         commit_span.record("flake_count", flakes.len());
@@ -409,8 +412,10 @@ where
 
         // Apply envelope deltas (namespace + graph) to the in-memory LedgerSnapshot.
         // This must happen before novelty apply so encode_iri() works for graph routing.
-        base.snapshot
-            .apply_envelope_deltas(&ns_delta, graph_delta.values().map(|s| s.as_str()))?;
+        base.snapshot.apply_envelope_deltas(
+            &ns_delta,
+            graph_delta.values().map(std::string::String::as_str),
+        )?;
 
         // Use caller-provided timestamp or default to wall clock.
         let timestamp = opt_timestamp.unwrap_or_else(|| Utc::now().to_rfc3339());

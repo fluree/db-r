@@ -17,22 +17,21 @@ pub fn run(action: PrefixAction, dirs: &FlureeDir) -> CliResult<()> {
             // Validate IRI (should end with / or #)
             if !iri.ends_with('/') && !iri.ends_with('#') {
                 eprintln!(
-                    "warning: IRI '{}' doesn't end with '/' or '#'; this may cause issues with IRI expansion",
-                    iri
+                    "warning: IRI '{iri}' doesn't end with '/' or '#'; this may cause issues with IRI expansion"
                 );
             }
 
             config::add_prefix(dirs.data_dir(), &prefix, &iri)?;
-            println!("Added prefix: {} = <{}>", prefix, iri);
+            println!("Added prefix: {prefix} = <{iri}>");
             Ok(())
         }
 
         PrefixAction::Remove { prefix } => {
             let removed = config::remove_prefix(dirs.data_dir(), &prefix)?;
             if removed {
-                println!("Removed prefix: {}", prefix);
+                println!("Removed prefix: {prefix}");
             } else {
-                return Err(CliError::NotFound(format!("prefix '{}' not found", prefix)));
+                return Err(CliError::NotFound(format!("prefix '{prefix}' not found")));
             }
             Ok(())
         }
@@ -50,7 +49,7 @@ pub fn run(action: PrefixAction, dirs: &FlureeDir) -> CliResult<()> {
                 sorted.sort_by_key(|(k, _)| *k);
 
                 for (prefix, iri) in sorted {
-                    println!("{}: <{}>", prefix, iri);
+                    println!("{prefix}: <{iri}>");
                 }
             }
             Ok(())

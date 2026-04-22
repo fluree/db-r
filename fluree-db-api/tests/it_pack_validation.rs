@@ -91,16 +91,14 @@ async fn stream_pack_rejects_empty_want_with_error_frame() {
         .any(|f| matches!(f, PackFrame::Error(msg) if msg.contains("want list must not be empty")));
     assert!(
         has_error,
-        "expected an Error frame for empty want, got frames: {:?}",
-        frames
+        "expected an Error frame for empty want, got frames: {frames:?}"
     );
 
     // The header-only silent-success path must not appear.
     let has_header = frames.iter().any(|f| matches!(f, PackFrame::Header(_)));
     assert!(
         !has_header,
-        "invalid request must not produce a Header frame (silent empty pack): {:?}",
-        frames
+        "invalid request must not produce a Header frame (silent empty pack): {frames:?}"
     );
 }
 

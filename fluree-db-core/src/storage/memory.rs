@@ -165,7 +165,7 @@ impl StorageCas for MemoryStorage {
         T: Send,
     {
         let mut data = self.data.write();
-        let current = data.get(address).map(|v| v.as_slice());
+        let current = data.get(address).map(std::vec::Vec::as_slice);
         match f(current)? {
             CasAction::Write(new_bytes) => {
                 data.insert(address.to_string(), new_bytes);
@@ -222,8 +222,7 @@ impl ContentStore for MemoryContentStore {
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
         if !id.verify(bytes) {
             return Err(crate::error::Error::storage(format!(
-                "CID verification failed: provided CID {} does not match bytes",
-                id
+                "CID verification failed: provided CID {id} does not match bytes"
             )));
         }
         self.data.write().insert(id.clone(), bytes.to_vec());

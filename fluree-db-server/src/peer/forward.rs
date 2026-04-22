@@ -53,7 +53,7 @@ impl ForwardingClient {
             "{}{}",
             self.base_url,
             uri.path_and_query()
-                .map(|pq| pq.as_str())
+                .map(http::uri::PathAndQuery::as_str)
                 .unwrap_or(uri.path())
         );
 
@@ -99,7 +99,7 @@ impl ForwardingClient {
         // Build response, forwarding headers (except hop-by-hop)
         let mut builder = Response::builder().status(status);
 
-        for (name, value) in response_headers.iter() {
+        for (name, value) in &response_headers {
             let name_str = name.as_str().to_ascii_lowercase();
             if !HOP_BY_HOP_HEADERS.contains(&name_str.as_str()) {
                 builder = builder.header(name.clone(), value.clone());
@@ -122,7 +122,7 @@ fn forward_headers(
     mut builder: reqwest::RequestBuilder,
     headers: &HeaderMap,
 ) -> reqwest::RequestBuilder {
-    for (name, value) in headers.iter() {
+    for (name, value) in headers {
         let name_str = name.as_str().to_ascii_lowercase();
         if !HOP_BY_HOP_HEADERS.contains(&name_str.as_str()) {
             builder = builder.header(name.clone(), value.clone());

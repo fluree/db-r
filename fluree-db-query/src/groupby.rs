@@ -82,7 +82,7 @@ impl GroupByOperator {
                 schema
                     .iter()
                     .position(|sv| sv == v)
-                    .unwrap_or_else(|| panic!("GROUP BY variable {:?} not in schema", v))
+                    .unwrap_or_else(|| panic!("GROUP BY variable {v:?} not in schema"))
             })
             .collect();
 

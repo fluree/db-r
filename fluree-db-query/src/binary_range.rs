@@ -174,7 +174,7 @@ impl RangeProvider for BinaryRangeProvider {
             ),
             test => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                format!("V3 range provider: unsupported RangeTest {:?}", test),
+                format!("V3 range provider: unsupported RangeTest {test:?}"),
             )),
         }
     }
@@ -468,7 +468,9 @@ fn binary_range_eq_v3(
                 .resolve_datatype_sid(o_type)
                 .unwrap_or_else(|| Sid::new(0, ""));
             // Language tag.
-            let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
+            let lang = store
+                .resolve_lang_tag(o_type)
+                .map(std::string::ToString::to_string);
             // List index.
             let meta = if lang.is_some() || o_i != u32::MAX {
                 Some(fluree_db_core::FlakeMeta {
@@ -922,7 +924,7 @@ fn binary_range_bounded_v3(
     if index != IndexType::Spot {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            format!("V3 range_bounded: only SPOT is supported, got {:?}", index),
+            format!("V3 range_bounded: only SPOT is supported, got {index:?}"),
         ));
     }
 
@@ -1109,7 +1111,9 @@ fn binary_range_bounded_v3(
             let dt = store
                 .resolve_datatype_sid(o_type)
                 .unwrap_or_else(|| Sid::new(0, ""));
-            let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
+            let lang = store
+                .resolve_lang_tag(o_type)
+                .map(std::string::ToString::to_string);
             let meta = if lang.is_some() || o_i != u32::MAX {
                 Some(fluree_db_core::FlakeMeta {
                     lang,

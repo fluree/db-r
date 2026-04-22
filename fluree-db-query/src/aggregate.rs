@@ -513,7 +513,7 @@ fn agg_median(values: &[Binding]) -> Binding {
 
     let len = numbers.len();
     let median = if len.is_multiple_of(2) {
-        (numbers[len / 2 - 1] + numbers[len / 2]) / 2.0
+        f64::midpoint(numbers[len / 2 - 1], numbers[len / 2])
     } else {
         numbers[len / 2]
     };

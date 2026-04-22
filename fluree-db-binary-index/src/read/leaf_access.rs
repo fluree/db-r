@@ -384,7 +384,7 @@ impl LeafHandle for RangeReadLeafHandle {
             }
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("missing column block for {:?}", col_id),
+                format!("missing column block for {col_id:?}"),
             ))
         };
 
@@ -415,7 +415,7 @@ impl LeafHandle for RangeReadLeafHandle {
             }
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("missing column block for {:?}", col_id),
+                format!("missing column block for {col_id:?}"),
             ))
         };
 
@@ -446,7 +446,7 @@ impl LeafHandle for RangeReadLeafHandle {
             }
             Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("missing column block for {:?}", col_id),
+                format!("missing column block for {col_id:?}"),
             ))
         };
 
@@ -795,8 +795,7 @@ mod tests {
         let reqs = fetcher.request_count();
         assert!(
             reqs >= 1,
-            "expected at least 1 range-read request, got {}",
-            reqs
+            "expected at least 1 range-read request, got {reqs}"
         );
     }
 

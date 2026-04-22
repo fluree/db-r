@@ -165,7 +165,7 @@ impl GeoSearchOperator {
         let branch_ref = store
             .branch_for_order(g_id, RunSortOrder::Post)
             .ok_or_else(|| {
-                QueryError::Internal(format!("GeoSearch: no POST branch for g_id={}", g_id))
+                QueryError::Internal(format!("GeoSearch: no POST branch for g_id={g_id}"))
             })?;
         let branch: Arc<BranchManifest> = Arc::clone(branch_ref);
 
@@ -347,8 +347,7 @@ impl Operator for GeoSearchOperator {
         if let GeoSearchCenter::Var(v) = &self.pattern.center {
             if !self.child.schema().iter().any(|vv| vv == v) {
                 return Err(QueryError::InvalidQuery(format!(
-                    "GeoSearch center variable {:?} is not bound by previous patterns",
-                    v
+                    "GeoSearch center variable {v:?} is not bound by previous patterns"
                 )));
             }
         }

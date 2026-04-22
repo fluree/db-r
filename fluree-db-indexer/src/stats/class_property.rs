@@ -287,8 +287,7 @@ pub async fn batch_lookup_subject_classes(
             }
             Err(e) => {
                 return Err(crate::error::IndexerError::InvalidConfig(format!(
-                    "batched class lookup failed: {}",
-                    e
+                    "batched class lookup failed: {e}"
                 )));
             }
         }
@@ -307,7 +306,7 @@ pub async fn batch_lookup_subject_classes(
     )
     .await
     .map_err(|e| {
-        crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {}", e))
+        crate::error::IndexerError::InvalidConfig(format!("PSOT range query failed: {e}"))
     })?;
 
     let mut result: HashMap<Sid, HashSet<Sid>> = HashMap::new();

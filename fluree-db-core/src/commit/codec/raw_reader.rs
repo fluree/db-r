@@ -421,8 +421,7 @@ fn decode_raw_op<'a>(
         let raw = decode_varint(data, pos)?;
         if raw > i32::MAX as u64 {
             return Err(CommitCodecError::InvalidOp(format!(
-                "list index {} exceeds i32::MAX",
-                raw
+                "list index {raw} exceeds i32::MAX"
             )));
         }
         Some(raw as i32)
@@ -564,7 +563,7 @@ fn decode_inline_str<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a str, Com
     let len = decode_varint(data, pos)? as usize;
     let bytes = read_exact(data, pos, len)?;
     let s = std::str::from_utf8(bytes)
-        .map_err(|e| CommitCodecError::InvalidOp(format!("invalid UTF-8: {}", e)))?;
+        .map_err(|e| CommitCodecError::InvalidOp(format!("invalid UTF-8: {e}")))?;
     Ok(s)
 }
 
@@ -649,7 +648,7 @@ mod tests {
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
-            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+            + dict_bytes.iter().map(std::vec::Vec::len).sum::<usize>()
             + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 

@@ -143,8 +143,7 @@ impl SubjectDict {
         let local_id = self.next_local_ids[ns_idx];
         if local_id > Self::MAX_LOCAL_ID {
             return Err(io::Error::other(format!(
-                "SubjectDict: local_id overflow for ns_code {} (exceeded 2^48)",
-                ns_code
+                "SubjectDict: local_id overflow for ns_code {ns_code} (exceeded 2^48)"
             )));
         }
         self.next_local_ids[ns_idx] = local_id + 1;
@@ -541,7 +540,10 @@ impl SharedDictAllocator {
 
     /// Forward resolve: id → IRI string.
     pub fn resolve(&self, id: u32) -> Option<String> {
-        self.inner.read().resolve(id).map(|s| s.to_string())
+        self.inner
+            .read()
+            .resolve(id)
+            .map(std::string::ToString::to_string)
     }
 
     /// Return all entries as `(id, value_bytes)` pairs.
@@ -1168,11 +1170,11 @@ impl GlobalDicts {
                 if per_pred.is_empty() {
                     continue;
                 }
-                let nb_dir = run_dir.join(format!("g_{}", g_id)).join("numbig");
+                let nb_dir = run_dir.join(format!("g_{g_id}")).join("numbig");
                 std::fs::create_dir_all(&nb_dir)?;
                 for (&p_id, arena) in per_pred {
                     fluree_db_binary_index::arena::numbig::write_numbig_arena(
-                        &nb_dir.join(format!("p_{}.nba", p_id)),
+                        &nb_dir.join(format!("p_{p_id}.nba")),
                         arena,
                     )?;
                     total_predicates += 1;
@@ -1197,7 +1199,7 @@ impl GlobalDicts {
                 if per_pred.is_empty() {
                     continue;
                 }
-                let vec_dir = run_dir.join(format!("g_{}", g_id)).join("vectors");
+                let vec_dir = run_dir.join(format!("g_{g_id}")).join("vectors");
                 std::fs::create_dir_all(&vec_dir)?;
                 for (&p_id, arena) in per_pred {
                     if arena.is_empty() {
@@ -1223,7 +1225,7 @@ impl GlobalDicts {
                             })
                             .collect();
                     fluree_db_binary_index::arena::vector::write_vector_manifest(
-                        &vec_dir.join(format!("p_{}.vam", p_id)),
+                        &vec_dir.join(format!("p_{p_id}.vam")),
                         arena,
                         &shard_infos,
                     )?;
@@ -1298,7 +1300,7 @@ mod tests {
         hasher.update(name.as_bytes());
         let hash = hasher.digest128();
 
-        let full_iri = format!("{}{}", prefix, name);
+        let full_iri = format!("{prefix}{name}");
         let id1 = dict
             .get_or_insert_with_hash(hash, ns, || full_iri.clone())
             .unwrap();
@@ -1366,7 +1368,7 @@ mod tests {
 
         // Insert u16::MAX + 1 subjects to trigger needs_wide
         for i in 0..=(u16::MAX as u64) {
-            let iri = format!("http://example.org/entity/{}", i);
+            let iri = format!("http://example.org/entity/{i}");
             dict.get_or_insert(&iri, ns).unwrap();
         }
         // At this point local_id went from 0 to 65535 (u16::MAX) → still narrow
@@ -1689,8 +1691,7 @@ mod tests {
             assert_eq!(
                 found,
                 Some(*expected_id),
-                "failed to find {} in reverse index",
-                expected_str
+                "failed to find {expected_str} in reverse index"
             );
         }
 
@@ -1787,9 +1788,7 @@ mod tests {
                     ids.push(alloc.get_or_insert("http://example.org/name"));
                     ids.push(alloc.get_or_insert("http://example.org/age"));
                     // Each thread inserts a unique entry
-                    ids.push(
-                        alloc.get_or_insert(&format!("http://example.org/prop_{}", thread_id)),
-                    );
+                    ids.push(alloc.get_or_insert(&format!("http://example.org/prop_{thread_id}")));
                     ids
                 })
             })
@@ -1811,7 +1810,7 @@ mod tests {
             "4 unique props should get 4 distinct IDs"
         );
         for &id in &unique_ids {
-            assert!(id >= 2, "unique IDs should start at 2, got {}", id);
+            assert!(id >= 2, "unique IDs should start at 2, got {id}");
         }
 
         assert_eq!(alloc.len(), 6); // 2 pre-seeded + 4 unique

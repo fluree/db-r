@@ -98,11 +98,8 @@ async fn query_nearby(
     center_lat: f64,
     radius_meters: f64,
 ) -> Vec<String> {
-    let bind_expr = format!(
-        "(geof:distance ?loc \"POINT({} {})\")",
-        center_lng, center_lat
-    );
-    let filter_expr = format!("(<= ?dist {})", radius_meters);
+    let bind_expr = format!("(geof:distance ?loc \"POINT({center_lng} {center_lat})\")");
+    let filter_expr = format!("(<= ?dist {radius_meters})");
 
     let query = json!({
         "@context": geo_search_context(),
@@ -129,10 +126,7 @@ async fn query_nearby(
                 .unwrap_or_default()
         }
         Err(e) => {
-            eprintln!(
-                "Query error (expected if binary index not available): {}",
-                e
-            );
+            eprintln!("Query error (expected if binary index not available): {e}");
             vec![]
         }
     }
@@ -148,11 +142,8 @@ async fn query_nearby_with_distance(
     center_lat: f64,
     radius_meters: f64,
 ) -> Vec<(String, f64)> {
-    let bind_expr = format!(
-        "(geof:distance ?loc \"POINT({} {})\")",
-        center_lng, center_lat
-    );
-    let filter_expr = format!("(<= ?dist {})", radius_meters);
+    let bind_expr = format!("(geof:distance ?loc \"POINT({center_lng} {center_lat})\")");
+    let filter_expr = format!("(<= ?dist {radius_meters})");
 
     let query = json!({
         "@context": geo_search_context(),
@@ -185,7 +176,7 @@ async fn query_nearby_with_distance(
                 .unwrap_or_default()
         }
         Err(e) => {
-            eprintln!("Query error: {}", e);
+            eprintln!("Query error: {e}");
             vec![]
         }
     }
@@ -245,7 +236,7 @@ async fn geo_search_time_travel_different_results_at_different_t() {
             // Note: This test verifies the query infrastructure works.
             // The actual time-travel filtering happens via cursor.set_to_t()
             // which is wired in GeoSearchOperator.
-            println!("Results at t={}: {:?}", t2, results_t2);
+            println!("Results at t={t2}: {results_t2:?}");
 
             // If binary index is available and working, we should get results
         })
@@ -301,7 +292,7 @@ async fn geo_search_retraction_removes_point_from_results() {
 
             // Query - should only find Paris (London's location was retracted)
             let results = query_nearby(&fluree, &loaded, 2.3522, 48.8566, 500_000.0).await;
-            println!("Results after retraction: {:?}", results);
+            println!("Results after retraction: {results:?}");
 
             // If working correctly:
             // - Paris should be in results
@@ -374,22 +365,20 @@ async fn geo_search_dedup_returns_min_distance_per_subject() {
             // Query from Paris city center with large radius to find both points
             let results =
                 query_nearby_with_distance(&fluree, &loaded, 2.3522, 48.8566, 200_000.0).await;
-            println!("Results with distance: {:?}", results);
+            println!("Results with distance: {results:?}");
 
             // Deduplication should return Paris once with the minimum distance (0m for city center)
             // Not twice (once for each location)
             let paris_count = results.iter().filter(|(name, _)| name == "Paris").count();
             assert!(
                 paris_count <= 1,
-                "Expected at most 1 result for Paris (dedup), got {}",
-                paris_count
+                "Expected at most 1 result for Paris (dedup), got {paris_count}"
             );
 
             if let Some((_, dist)) = results.iter().find(|(name, _)| name == "Paris") {
                 assert!(
                     *dist < 1000.0, // Should be ~0m for city center, not ~100km for far point
-                    "Expected min distance (~0m), got {}m",
-                    dist
+                    "Expected min distance (~0m), got {dist}m"
                 );
             }
         })
@@ -444,32 +433,26 @@ async fn geo_search_returns_correct_distances() {
             // Query from Paris with 1000km radius (should find Paris, London, and Berlin)
             let results =
                 query_nearby_with_distance(&fluree, &loaded, 2.3522, 48.8566, 1_000_000.0).await;
-            println!("Distance results: {:?}", results);
+            println!("Distance results: {results:?}");
 
             // Verify distances are approximately correct
             for (name, dist) in &results {
                 match name.as_str() {
                     "Paris" => {
-                        assert!(
-                            *dist < 1000.0,
-                            "Paris distance should be ~0m, got {}m",
-                            dist
-                        );
+                        assert!(*dist < 1000.0, "Paris distance should be ~0m, got {dist}m");
                     }
                     "London" => {
                         // Paris-London: ~343km
                         assert!(
                             (330_000.0..360_000.0).contains(dist),
-                            "London distance should be ~343km, got {}m",
-                            dist
+                            "London distance should be ~343km, got {dist}m"
                         );
                     }
                     "Berlin" => {
                         // Paris-Berlin: ~878km
                         assert!(
                             (860_000.0..900_000.0).contains(dist),
-                            "Berlin distance should be ~878km, got {}m",
-                            dist
+                            "Berlin distance should be ~878km, got {dist}m"
                         );
                     }
                     _ => {}
@@ -553,7 +536,7 @@ async fn geo_search_respects_limit_returns_nearest() {
                         })
                         .unwrap_or_default();
 
-                    println!("Limited results: {:?}", names);
+                    println!("Limited results: {names:?}");
                     assert!(
                         names.len() <= 2,
                         "Expected at most 2 results with limit=2, got {}",
@@ -563,7 +546,7 @@ async fn geo_search_respects_limit_returns_nearest() {
                     // London should be second (distance ~343km)
                 }
                 Err(e) => {
-                    eprintln!("Query error: {}", e);
+                    eprintln!("Query error: {e}");
                 }
             }
         })
@@ -683,7 +666,7 @@ async fn geo_search_respects_named_graph_boundaries() {
                         .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                         .unwrap_or_default();
 
-                    println!("Default graph results: {:?}", names);
+                    println!("Default graph results: {names:?}");
                     assert!(
                         names.contains(&"Paris"),
                         "Paris should be in default graph results"
@@ -702,10 +685,7 @@ async fn geo_search_respects_named_graph_boundaries() {
                     );
                 }
                 Err(e) => {
-                    eprintln!(
-                        "Default graph query error (expected if binary index issue): {}",
-                        e
-                    );
+                    eprintln!("Default graph query error (expected if binary index issue): {e}");
                 }
             }
         })
@@ -786,7 +766,7 @@ async fn sparql_geof_distance_uses_geo_index() {
             match result {
                 Ok(r) => {
                     let json_rows = r.to_jsonld(&loaded.snapshot).expect("jsonld");
-                    println!("SPARQL geof:distance results: {:?}", json_rows);
+                    println!("SPARQL geof:distance results: {json_rows:?}");
 
                     // Parse results
                     let results: Vec<(String, f64)> = json_rows
@@ -803,7 +783,7 @@ async fn sparql_geof_distance_uses_geo_index() {
                         })
                         .unwrap_or_default();
 
-                    println!("Parsed SPARQL results: {:?}", results);
+                    println!("Parsed SPARQL results: {results:?}");
 
                     // Should find Paris (distance ~0) and London (~343km)
                     // Should NOT find Berlin (~878km) or Tokyo (~9700km)
@@ -832,15 +812,13 @@ async fn sparql_geof_distance_uses_geo_index() {
                             "Paris" => {
                                 assert!(
                                     *dist < 1000.0,
-                                    "Paris distance should be ~0m, got {}m",
-                                    dist
+                                    "Paris distance should be ~0m, got {dist}m"
                                 );
                             }
                             "London" => {
                                 assert!(
                                     (330_000.0..360_000.0).contains(dist),
-                                    "London distance should be ~343km, got {}m",
-                                    dist
+                                    "London distance should be ~343km, got {dist}m"
                                 );
                             }
                             _ => {}
@@ -849,7 +827,7 @@ async fn sparql_geof_distance_uses_geo_index() {
                 }
                 Err(e) => {
                     // This is expected if SPARQL geof:distance lowering or rewrite isn't wired
-                    eprintln!("SPARQL geof:distance query error: {}", e);
+                    eprintln!("SPARQL geof:distance query error: {e}");
                 }
             }
         })

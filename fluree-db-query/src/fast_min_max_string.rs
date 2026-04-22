@@ -353,8 +353,7 @@ fn decode_numeric_as_f64(o_type: u16, o_key: u64) -> Result<f64> {
         DecodeKind::I64 => Ok(key.decode_i64() as f64),
         DecodeKind::F64 => Ok(key.decode_f64()),
         _ => Err(QueryError::execution(format!(
-            "unsupported numeric decode kind for AVG fast-path: {:?}",
-            ot
+            "unsupported numeric decode kind for AVG fast-path: {ot:?}"
         ))),
     }
 }

@@ -194,7 +194,7 @@ fn run_create(
     // Output based on format
     match output {
         TokenOutputFormat::Token => {
-            println!("{}", token);
+            println!("{token}");
         }
         TokenOutputFormat::Json => {
             let output = json!({
@@ -213,8 +213,7 @@ fn run_create(
                 permissions.graph_sources,
             );
             println!(
-                r#"curl -N -H "Authorization: Bearer {}" "http://localhost:8090/fluree/events?{}""#,
-                token, params
+                r#"curl -N -H "Authorization: Bearer {token}" "http://localhost:8090/fluree/events?{params}""#
             );
         }
     }
@@ -245,12 +244,12 @@ fn run_keygen(format: KeyFormat, output_path: Option<PathBuf>) -> CliResult<()> 
             if let Some(path) = output_path {
                 fs::write(&path, &priv_hex)?;
                 eprintln!("Private key written to: {}", path.display());
-                eprintln!("Public key: {}", pub_hex);
-                eprintln!("DID:        {}", did);
+                eprintln!("Public key: {pub_hex}");
+                eprintln!("DID:        {did}");
             } else {
-                println!("Private key: {}", priv_hex);
-                println!("Public key:  {}", pub_hex);
-                println!("DID:         {}", did);
+                println!("Private key: {priv_hex}");
+                println!("Public key:  {pub_hex}");
+                println!("DID:         {did}");
             }
         }
         KeyFormat::Base58 => {
@@ -267,12 +266,12 @@ fn run_keygen(format: KeyFormat, output_path: Option<PathBuf>) -> CliResult<()> 
             if let Some(path) = output_path {
                 fs::write(&path, &priv_b58)?;
                 eprintln!("Private key written to: {}", path.display());
-                eprintln!("Public key: {}", pub_b58);
-                eprintln!("DID:        {}", did);
+                eprintln!("Public key: {pub_b58}");
+                eprintln!("DID:        {did}");
             } else {
-                println!("Private key: {}", priv_b58);
-                println!("Public key:  {}", pub_b58);
-                println!("DID:         {}", did);
+                println!("Private key: {priv_b58}");
+                println!("Public key:  {pub_b58}");
+                println!("DID:         {did}");
             }
         }
         KeyFormat::Json => {
@@ -303,7 +302,7 @@ fn run_keygen(format: KeyFormat, output_path: Option<PathBuf>) -> CliResult<()> 
                 // Write only private key hex to file
                 fs::write(&path, &priv_hex)?;
                 eprintln!("Private key written to: {}", path.display());
-                eprintln!("DID: {}", did);
+                eprintln!("DID: {did}");
             } else {
                 println!("{}", serde_json::to_string_pretty(&output_json)?);
             }
@@ -329,10 +328,10 @@ fn run_inspect(token_input: &str, verify: bool, output: InspectOutputFormat) -> 
     // Decode header and payload
     let header_bytes = URL_SAFE_NO_PAD
         .decode(parts[0])
-        .map_err(|e| CliError::Input(format!("invalid header encoding: {}", e)))?;
+        .map_err(|e| CliError::Input(format!("invalid header encoding: {e}")))?;
     let payload_bytes = URL_SAFE_NO_PAD
         .decode(parts[1])
-        .map_err(|e| CliError::Input(format!("invalid payload encoding: {}", e)))?;
+        .map_err(|e| CliError::Input(format!("invalid payload encoding: {e}")))?;
 
     let header: serde_json::Value = serde_json::from_slice(&header_bytes)?;
     let payload: serde_json::Value = serde_json::from_slice(&payload_bytes)?;
@@ -354,7 +353,7 @@ fn run_inspect(token_input: &str, verify: bool, output: InspectOutputFormat) -> 
         .as_secs();
     let expired = payload
         .get("exp")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .map(|exp| exp < now)
         .unwrap_or(false);
 
@@ -410,13 +409,13 @@ fn load_private_key(input: &str) -> CliResult<SigningKey> {
         let mut buffer = String::new();
         io::stdin()
             .read_to_string(&mut buffer)
-            .map_err(|e| CliError::Input(format!("failed to read key from stdin: {}", e)))?;
+            .map_err(|e| CliError::Input(format!("failed to read key from stdin: {e}")))?;
         buffer.trim().to_string()
     } else if let Some(path) = input.strip_prefix('@') {
         // Handle @filepath
         let expanded = shellexpand::tilde(path);
         fs::read_to_string(expanded.as_ref())
-            .map_err(|e| CliError::Input(format!("failed to read key file '{}': {}", path, e)))?
+            .map_err(|e| CliError::Input(format!("failed to read key file '{path}': {e}")))?
             .trim()
             .to_string()
     } else {
@@ -427,7 +426,7 @@ fn load_private_key(input: &str) -> CliResult<SigningKey> {
     let hex_str = key_str.strip_prefix("0x").unwrap_or(&key_str);
     if hex_str.len() == 64 && hex_str.chars().all(|c| c.is_ascii_hexdigit()) {
         let bytes =
-            hex::decode(hex_str).map_err(|e| CliError::Input(format!("invalid hex key: {}", e)))?;
+            hex::decode(hex_str).map_err(|e| CliError::Input(format!("invalid hex key: {e}")))?;
         let mut key = [0u8; 32];
         key.copy_from_slice(&bytes);
         return Ok(SigningKey::from_bytes(&key));
@@ -464,12 +463,12 @@ fn load_token(input: &str) -> CliResult<String> {
         let mut buffer = String::new();
         io::stdin()
             .read_to_string(&mut buffer)
-            .map_err(|e| CliError::Input(format!("failed to read token from stdin: {}", e)))?;
+            .map_err(|e| CliError::Input(format!("failed to read token from stdin: {e}")))?;
         Ok(buffer.trim().to_string())
     } else if let Some(path) = input.strip_prefix('@') {
         let expanded = shellexpand::tilde(path);
         fs::read_to_string(expanded.as_ref())
-            .map_err(|e| CliError::Input(format!("failed to read token file '{}': {}", path, e)))?
+            .map_err(|e| CliError::Input(format!("failed to read token file '{path}': {e}")))?
             .trim()
             .to_string()
             .pipe(Ok)
@@ -497,17 +496,16 @@ fn parse_duration(s: &str) -> CliResult<u64> {
     } else if let Some(n) = s.strip_suffix('d') {
         (n, 86400u64)
     } else if let Some(n) = s.strip_suffix('w') {
-        (n, 604800u64)
+        (n, 604_800_u64)
     } else {
         return Err(CliError::Usage(format!(
-            "invalid duration '{}'; use format like 30s, 5m, 1h, 7d, 1w",
-            s
+            "invalid duration '{s}'; use format like 30s, 5m, 1h, 7d, 1w"
         )));
     };
 
     let num: u64 = num_str
         .parse()
-        .map_err(|_| CliError::Usage(format!("invalid duration number in '{}'", s)))?;
+        .map_err(|_| CliError::Usage(format!("invalid duration number in '{s}'")))?;
 
     Ok(num * multiplier)
 }
@@ -531,11 +529,11 @@ fn create_jws(claims: &serde_json::Value, signing_key: &SigningKey) -> CliResult
     let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
     // Sign header.payload
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = fluree_db_credential::sign_ed25519(signing_key, signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature);
 
-    Ok(format!("{}.{}.{}", header_b64, payload_b64, sig_b64))
+    Ok(format!("{header_b64}.{payload_b64}.{sig_b64}"))
 }
 
 /// Build URL params for curl output
@@ -574,7 +572,7 @@ fn url_encode(s: &str) -> String {
             // Encode everything else
             _ => {
                 for byte in c.to_string().as_bytes() {
-                    result.push_str(&format!("%{:02X}", byte));
+                    result.push_str(&format!("%{byte:02X}"));
                 }
             }
         }
@@ -597,12 +595,12 @@ fn format_timestamp(ts: u64) -> String {
         format_duration_human(diff, "ago")
     };
 
-    format!("{} ({})", ts, relative)
+    format!("{ts} ({relative})")
 }
 
 fn format_duration_human(secs: u64, suffix: &str) -> String {
     if secs < 60 {
-        format!("{} seconds {}", secs, suffix)
+        format!("{secs} seconds {suffix}")
     } else if secs < 3600 {
         format!("{} minutes {}", secs / 60, suffix)
     } else if secs < 86400 {
@@ -637,9 +635,9 @@ fn print_pretty_inspect(
         println!("Subject (sub):  {}", sub.as_str().unwrap_or(""));
     }
     if let Some(aud) = payload.get("aud") {
-        println!("Audience (aud): {}", aud);
+        println!("Audience (aud): {aud}");
     }
-    if let Some(exp) = payload.get("exp").and_then(|v| v.as_u64()) {
+    if let Some(exp) = payload.get("exp").and_then(serde_json::Value::as_u64) {
         let status = if expired {
             " [EXPIRED]".red().to_string()
         } else {
@@ -647,10 +645,10 @@ fn print_pretty_inspect(
         };
         println!("Expires (exp):  {}{}", format_timestamp(exp), status);
     }
-    if let Some(iat) = payload.get("iat").and_then(|v| v.as_u64()) {
+    if let Some(iat) = payload.get("iat").and_then(serde_json::Value::as_u64) {
         println!("Issued (iat):   {}", format_timestamp(iat));
     }
-    if let Some(nbf) = payload.get("nbf").and_then(|v| v.as_u64()) {
+    if let Some(nbf) = payload.get("nbf").and_then(serde_json::Value::as_u64) {
         println!("Not before:     {}", format_timestamp(nbf));
     }
 
@@ -665,18 +663,18 @@ fn print_pretty_inspect(
     if payload.get("fluree.events.all") == Some(&json!(true)) {
         println!("Events:         {} (all)", "✓".green());
     } else if let Some(ledgers) = payload.get("fluree.events.ledgers") {
-        println!("Events ledgers: {}", ledgers);
+        println!("Events ledgers: {ledgers}");
     }
 
     if let Some(gs) = payload.get("fluree.events.graph_sources") {
-        println!("Graph sources:  {}", gs);
+        println!("Graph sources:  {gs}");
     }
 
     // Storage permissions
     if payload.get("fluree.storage.all") == Some(&json!(true)) {
         println!("Storage:        {} (all)", "✓".green());
     } else if let Some(ledgers) = payload.get("fluree.storage.ledgers") {
-        println!("Storage ledgers: {}", ledgers);
+        println!("Storage ledgers: {ledgers}");
     }
 
     println!("\n{}", "=== Verification ===".bold());
@@ -684,12 +682,12 @@ fn print_pretty_inspect(
         if verified {
             println!("Signature: {} valid", "✓".green());
             if let Some(d) = did {
-                println!("Signer:    {}", d);
+                println!("Signer:    {d}");
             }
         } else {
             println!("Signature: {} invalid", "✗".red());
             if let Some(e) = verify_error {
-                println!("Error:     {}", e);
+                println!("Error:     {e}");
             }
         }
     } else {
@@ -754,7 +752,7 @@ fn print_table_inspect(
         Cell::new(if expired { "YES" } else { "no" }),
     ]);
 
-    println!("{}", table);
+    println!("{table}");
 }
 
 /// Pipe trait for method chaining
@@ -778,8 +776,8 @@ mod tests {
         assert_eq!(parse_duration("30s").unwrap(), 30);
         assert_eq!(parse_duration("5m").unwrap(), 300);
         assert_eq!(parse_duration("1h").unwrap(), 3600);
-        assert_eq!(parse_duration("7d").unwrap(), 604800);
-        assert_eq!(parse_duration("1w").unwrap(), 604800);
+        assert_eq!(parse_duration("7d").unwrap(), 604_800);
+        assert_eq!(parse_duration("1w").unwrap(), 604_800);
         assert_eq!(parse_duration("3600").unwrap(), 3600);
     }
 
@@ -806,7 +804,7 @@ mod tests {
     #[test]
     fn test_create_and_verify_jws() {
         let key = SigningKey::from_bytes(&[1u8; 32]);
-        let claims = json!({"sub": "test", "exp": 9999999999u64});
+        let claims = json!({"sub": "test", "exp": 9_999_999_999_u64});
         let jws = create_jws(&claims, &key).unwrap();
 
         let verified = verify_jws(&jws).unwrap();

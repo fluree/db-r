@@ -66,7 +66,7 @@ impl RemoteBm25SearchProvider {
             .connect_timeout(connect_timeout)
             .timeout(request_timeout)
             .build()
-            .map_err(|e| QueryError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Failed to create HTTP client: {e}")))?;
 
         Ok(Self {
             client,
@@ -142,11 +142,11 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
         // Send request
         let response = http_request.timeout(timeout).send().await.map_err(|e| {
             if e.is_timeout() {
-                QueryError::Internal(format!("Search request timeout: {}", e))
+                QueryError::Internal(format!("Search request timeout: {e}"))
             } else if e.is_connect() {
-                QueryError::Internal(format!("Failed to connect to search service: {}", e))
+                QueryError::Internal(format!("Failed to connect to search service: {e}"))
             } else {
-                QueryError::Internal(format!("Search request failed: {}", e))
+                QueryError::Internal(format!("Search request failed: {e}"))
             }
         })?;
 
@@ -162,15 +162,14 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
                     ErrorCode::GraphSourceNotFound
                     | ErrorCode::IndexNotBuilt
                     | ErrorCode::NoSnapshotForAsOfT => {
-                        QueryError::InvalidQuery(format!("{}: {}", code, msg))
+                        QueryError::InvalidQuery(format!("{code}: {msg}"))
                     }
                     ErrorCode::InvalidRequest => QueryError::InvalidQuery(msg),
-                    _ => QueryError::Internal(format!("{}: {}", code, msg)),
+                    _ => QueryError::Internal(format!("{code}: {msg}")),
                 });
             }
             return Err(QueryError::Internal(format!(
-                "Search service returned {}: {}",
-                status, body
+                "Search service returned {status}: {body}"
             )));
         }
 
@@ -178,7 +177,7 @@ impl Bm25SearchProvider for RemoteBm25SearchProvider {
         let search_response: SearchResponse = response
             .json()
             .await
-            .map_err(|e| QueryError::Internal(format!("Failed to parse search response: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Failed to parse search response: {e}")))?;
 
         Ok(Bm25SearchResult::new(
             search_response.index_t,
@@ -231,7 +230,7 @@ mod tests {
         let provider =
             RemoteBm25SearchProvider::new("http://localhost:9090").with_auth_token("secret-token");
 
-        let debug_output = format!("{:?}", provider);
+        let debug_output = format!("{provider:?}");
         assert!(debug_output.contains("has_auth_token: true"));
         assert!(!debug_output.contains("secret-token"));
     }

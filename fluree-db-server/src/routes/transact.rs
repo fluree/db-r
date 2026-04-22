@@ -105,7 +105,7 @@ fn raw_txn_from_credential(credential: &MaybeCredential) -> Option<JsonValue> {
     // Fallback for non-UTF8: store base64 string for auditability.
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(raw);
-    Some(JsonValue::String(format!("base64:{}", b64)))
+    Some(JsonValue::String(format!("base64:{b64}")))
 }
 
 /// Extract query params from request URI before consuming the request
@@ -260,7 +260,7 @@ fn effective_author(
 ) -> Option<String> {
     credential
         .did()
-        .map(|d| d.to_string())
+        .map(std::string::ToString::to_string)
         .or_else(|| bearer.and_then(|p| p.identity.clone()))
 }
 

@@ -79,7 +79,7 @@ impl std::str::FromStr for DistanceMetric {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s).ok_or_else(|| format!("unknown distance metric: {}", s))
+        Self::parse(s).ok_or_else(|| format!("unknown distance metric: {s}"))
     }
 }
 

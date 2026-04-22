@@ -175,7 +175,7 @@ impl StatsView {
 
         // Derive IRI-keyed property stats.
         // If a SID's namespace code is missing, skip it.
-        for (sid, data) in view.properties.iter() {
+        for (sid, data) in &view.properties {
             if let Some(prefix) = namespace_codes.get(&sid.namespace_code) {
                 let iri: Arc<str> = Arc::from(format!("{}{}", prefix, sid.name));
                 view.properties_by_iri.insert(iri, *data);
@@ -183,7 +183,7 @@ impl StatsView {
         }
 
         // Derive IRI-keyed class stats.
-        for (sid, count) in view.classes.iter() {
+        for (sid, count) in &view.classes {
             if let Some(prefix) = namespace_codes.get(&sid.namespace_code) {
                 let iri: Arc<str> = Arc::from(format!("{}{}", prefix, sid.name));
                 view.classes_by_iri.insert(iri, *count);

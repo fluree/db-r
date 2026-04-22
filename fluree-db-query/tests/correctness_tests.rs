@@ -27,7 +27,10 @@ struct SingleBatchOp {
 #[async_trait::async_trait]
 impl Operator for SingleBatchOp {
     fn schema(&self) -> &[VarId] {
-        self.batch.as_ref().map(|b| b.schema()).unwrap_or(&[])
+        self.batch
+            .as_ref()
+            .map(fluree_db_query::Batch::schema)
+            .unwrap_or(&[])
     }
 
     async fn open(&mut self, _: &ExecutionContext<'_>) -> fluree_db_query::Result<()> {

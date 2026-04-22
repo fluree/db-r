@@ -212,7 +212,7 @@ pub async fn build_policy_context_from_opts(
     // restrictions apply even when novelty adds properties without restating
     // the subject's `@type` in the same transaction.
     let stats: Option<IndexStats> = if let Some(novelty) = novelty_for_stats {
-        let indexed = snapshot.stats.as_ref().cloned().unwrap_or_default();
+        let indexed = snapshot.stats.clone().unwrap_or_default();
         let lookup = PolicyStatsLookup { overlay };
         Some(
             fluree_db_novelty::assemble_full_stats(
@@ -874,21 +874,21 @@ fn parse_inline_policy(
 
     for (idx, policy) in policies.iter().enumerate() {
         let obj = policy.as_object().ok_or_else(|| {
-            ApiError::query(format!("Invalid policy at index {}: expected object", idx))
+            ApiError::query(format!("Invalid policy at index {idx}: expected object"))
         })?;
 
         // Extract policy ID early for use in logging
         let id = obj
             .get("@id")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| format!("inline-policy-{}", idx));
+            .map(std::string::ToString::to_string)
+            .unwrap_or_else(|| format!("inline-policy-{idx}"));
 
         // Extract f:allow (optional). If absent, policy may be driven by f:query.
         let allow: Option<bool> = obj
             .get("f:allow")
             .or_else(|| obj.get(&format!("{}allow", fluree::DB)))
-            .and_then(|v| v.as_bool());
+            .and_then(serde_json::Value::as_bool);
 
         // Extract f:query (optional). For inline policies we accept:
         // - String: JSON query string
@@ -1026,7 +1026,7 @@ fn parse_inline_policy(
         let required = obj
             .get("f:required")
             .or_else(|| obj.get(&format!("{}required", fluree::DB)))
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         // f:exMessage
@@ -1034,7 +1034,7 @@ fn parse_inline_policy(
             .get("f:exMessage")
             .or_else(|| obj.get(&format!("{}exMessage", fluree::DB)))
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         // Determine target mode
         //
@@ -1160,18 +1160,16 @@ fn build_policy_values(
                     obj.get("@id")
                         .or_else(|| obj.get("@value"))
                         .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         .ok_or_else(|| {
                             ApiError::query(format!(
-                                "Invalid policy value for '{}': expected IRI",
-                                key
+                                "Invalid policy value for '{key}': expected IRI"
                             ))
                         })?
                 }
                 _ => {
                     return Err(ApiError::query(format!(
-                        "Invalid policy value for '{}': expected string or object with @id",
-                        key
+                        "Invalid policy value for '{key}': expected string or object with @id"
                     )))
                 }
             };

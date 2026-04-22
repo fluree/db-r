@@ -157,7 +157,7 @@ impl TokenStream {
         if self.check_keyword(kw) {
             Some(self.consume())
         } else {
-            self.error_at_current(&format!("expected '{}'", name));
+            self.error_at_current(&format!("expected '{name}'"));
             None
         }
     }
@@ -187,7 +187,7 @@ impl TokenStream {
         self.add_diagnostic(
             Diagnostic::error(
                 DiagCode::UnexpectedEof,
-                format!("unexpected end of input, expected {}", expected),
+                format!("unexpected end of input, expected {expected}"),
                 span,
             )
             .with_help("The query appears to be incomplete."),

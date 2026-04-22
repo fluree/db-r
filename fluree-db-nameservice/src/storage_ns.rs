@@ -146,7 +146,7 @@ impl<S> StorageNameService<S> {
                 id: ledger_name.to_string(),
             },
             branch: branch.to_string(),
-            commit_cid: commit_cid.map(|s| s.to_string()),
+            commit_cid: commit_cid.map(std::string::ToString::to_string),
             config_cid: None,
             t: commit_t,
             index: None,
@@ -184,7 +184,7 @@ where
     /// Get the storage key for the main ns record
     fn ns_key(&self, ledger_name: &str, branch: &str) -> String {
         if self.prefix.is_empty() {
-            format!("{}/{}/{}.json", NS_VERSION, ledger_name, branch)
+            format!("{NS_VERSION}/{ledger_name}/{branch}.json")
         } else {
             format!(
                 "{}/{}/{}/{}.json",
@@ -196,7 +196,7 @@ where
     /// Get the storage key for the index-only ns record
     fn index_key(&self, ledger_name: &str, branch: &str) -> String {
         if self.prefix.is_empty() {
-            format!("{}/{}/{}.index.json", NS_VERSION, ledger_name, branch)
+            format!("{NS_VERSION}/{ledger_name}/{branch}.index.json")
         } else {
             format!(
                 "{}/{}/{}/{}.index.json",
@@ -213,8 +213,7 @@ where
             Ok(bytes) => Ok(Self::is_graph_source_from_bytes(&bytes)),
             Err(CoreError::NotFound(_)) => Ok(false),
             Err(e) => Err(NameServiceError::storage(format!(
-                "Failed to read {}: {}",
-                key, e
+                "Failed to read {key}: {e}"
             ))),
         }
     }
@@ -321,8 +320,7 @@ where
             }
             Err(CoreError::NotFound(_)) => Ok(None),
             Err(e) => Err(NameServiceError::storage(format!(
-                "Failed to read {}: {}",
-                key, e
+                "Failed to read {key}: {e}"
             ))),
         }
     }
@@ -412,9 +410,7 @@ where
                 }
             })
             .await
-            .map_err(|e| {
-                NameServiceError::storage(format!("CAS update failed for {}: {}", key, e))
-            })?;
+            .map_err(|e| NameServiceError::storage(format!("CAS update failed for {key}: {e}")))?;
 
         match outcome {
             CasOutcome::Written | CasOutcome::Aborted(()) => Ok(()),
@@ -448,9 +444,7 @@ where
                 }
             })
             .await
-            .map_err(|e| {
-                NameServiceError::storage(format!("CAS update failed for {}: {}", key, e))
-            })?;
+            .map_err(|e| NameServiceError::storage(format!("CAS update failed for {key}: {e}")))?;
 
         match outcome {
             CasOutcome::Written => Ok(CasUpdateOutcome::Updated),
@@ -488,14 +482,14 @@ where
 
     async fn list_branches(&self, ledger_name: &str) -> Result<Vec<NsRecord>> {
         let prefix = if self.prefix.is_empty() {
-            format!("{}/{}/", NS_VERSION, ledger_name)
+            format!("{NS_VERSION}/{ledger_name}/")
         } else {
             format!("{}/{}/{}/", self.prefix, NS_VERSION, ledger_name)
         };
 
         let keys = StorageList::list_prefix(&self.storage, &prefix)
             .await
-            .map_err(|e| NameServiceError::storage(format!("Failed to list branches: {}", e)))?;
+            .map_err(|e| NameServiceError::storage(format!("Failed to list branches: {e}")))?;
 
         let mut records = Vec::new();
 
@@ -528,7 +522,7 @@ where
         // List all files under ns@v2
         let keys = StorageList::list_prefix(&self.storage, &prefix)
             .await
-            .map_err(|e| NameServiceError::storage(format!("Failed to list records: {}", e)))?;
+            .map_err(|e| NameServiceError::storage(format!("Failed to list records: {e}")))?;
 
         let mut records = Vec::new();
 
@@ -545,7 +539,7 @@ where
             // Parse ledger name and branch from key
             // Key format: {prefix}/ns@v2/{ledger-name}/{branch}.json
             let path_part = if self.prefix.is_empty() {
-                key.strip_prefix(&format!("{}/", NS_VERSION))
+                key.strip_prefix(&format!("{NS_VERSION}/"))
             } else {
                 key.strip_prefix(&format!("{}/{}/", self.prefix, NS_VERSION))
             };
@@ -580,10 +574,7 @@ where
             .load_record(ledger_name, source_branch)
             .await?
             .ok_or_else(|| {
-                NameServiceError::not_found(format!(
-                    "source branch {}:{}",
-                    ledger_name, source_branch
-                ))
+                NameServiceError::not_found(format!("source branch {ledger_name}:{source_branch}"))
             })?;
 
         let file = NsFileV2 {
@@ -594,7 +585,10 @@ where
                 id: ledger_name.to_string(),
             },
             branch: new_branch.to_string(),
-            commit_cid: source_record.commit_head_id.as_ref().map(|c| c.to_string()),
+            commit_cid: source_record
+                .commit_head_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
             config_cid: None,
             t: source_record.commit_t,
             index: None,
@@ -741,8 +735,7 @@ where
                             // Overwrite the retracted record with a fresh one
                             self.storage.write_bytes(&key, &bytes).await.map_err(|e| {
                                 NameServiceError::storage(format!(
-                                    "Failed to re-create ledger {}: {}",
-                                    normalized_address, e
+                                    "Failed to re-create ledger {normalized_address}: {e}"
                                 ))
                             })?;
                             // Clean up stale index sidecar
@@ -756,8 +749,7 @@ where
                 }
             }
             Err(e) => Err(NameServiceError::storage(format!(
-                "Failed to create ledger {}: {}",
-                normalized_address, e
+                "Failed to create ledger {normalized_address}: {e}"
             ))),
         }
     }
@@ -982,7 +974,7 @@ where
             RefKind::CommitHead => {
                 let key = self.ns_key(&ledger_name, &branch);
                 let new_cid = new.id.clone();
-                let new_cid_str = new.id.as_ref().map(|cid| cid.to_string());
+                let new_cid_str = new.id.as_ref().map(std::string::ToString::to_string);
                 let new_t = new.t;
                 let expected_id = expected.and_then(|e| e.id.clone());
                 let expect_exists = expected.is_some();
@@ -1043,7 +1035,7 @@ where
 
                         // Apply the update
                         let mut file = existing.unwrap();
-                        file.commit_cid = new_cid.as_ref().map(|cid| cid.to_string());
+                        file.commit_cid = new_cid.as_ref().map(std::string::ToString::to_string);
                         file.t = new_t;
                         CasUpdateDecision::Apply(file)
                     })
@@ -1078,7 +1070,7 @@ where
                                 return CasUpdateDecision::Apply(NsIndexFileV2 {
                                     context: ns_context(),
                                     index: IndexRef {
-                                        cid: new_cid.as_ref().map(|c| c.to_string()),
+                                        cid: new_cid.as_ref().map(std::string::ToString::to_string),
                                         t: new_t,
                                     },
                                 });
@@ -1104,7 +1096,7 @@ where
                                 return CasUpdateDecision::Apply(NsIndexFileV2 {
                                     context: ns_context(),
                                     index: IndexRef {
-                                        cid: new_cid.as_ref().map(|c| c.to_string()),
+                                        cid: new_cid.as_ref().map(std::string::ToString::to_string),
                                         t: new_t,
                                     },
                                 });
@@ -1132,7 +1124,7 @@ where
 
                         let mut file = existing.unwrap();
                         file.index = IndexRef {
-                            cid: new_cid.as_ref().map(|c| c.to_string()),
+                            cid: new_cid.as_ref().map(std::string::ToString::to_string),
                             t: new_t,
                         };
                         CasUpdateDecision::Apply(file)
@@ -1291,8 +1283,7 @@ where
             Err(CoreError::NotFound(_)) => return Ok(NsLookupResult::NotFound),
             Err(e) => {
                 return Err(NameServiceError::storage(format!(
-                    "Failed to read {}: {}",
-                    key, e
+                    "Failed to read {key}: {e}"
                 )))
             }
         }
@@ -1322,7 +1313,7 @@ where
         // List all files under ns@v2
         let keys = StorageList::list_prefix(&self.storage, &prefix)
             .await
-            .map_err(|e| NameServiceError::storage(format!("Failed to list records: {}", e)))?;
+            .map_err(|e| NameServiceError::storage(format!("Failed to list records: {e}")))?;
 
         let mut records = Vec::new();
 
@@ -1339,7 +1330,7 @@ where
             // Parse name and branch from key
             // Key format: {prefix}/ns@v2/{name}/{branch}.json
             let path_part = if self.prefix.is_empty() {
-                key.strip_prefix(&format!("{}/", NS_VERSION))
+                key.strip_prefix(&format!("{NS_VERSION}/"))
             } else {
                 key.strip_prefix(&format!("{}/{}/", self.prefix, NS_VERSION))
             };
@@ -1414,8 +1405,7 @@ where
             Err(CoreError::NotFound(_)) => return Ok(None),
             Err(e) => {
                 return Err(NameServiceError::storage(format!(
-                    "Failed to read {}: {}",
-                    key, e
+                    "Failed to read {key}: {e}"
                 )))
             }
         };
@@ -1490,7 +1480,7 @@ where
                 Ok(CasAction::Write(new_bytes))
             })
             .await
-            .map_err(|e| NameServiceError::storage(format!("Failed to update status: {}", e)))?;
+            .map_err(|e| NameServiceError::storage(format!("Failed to update status: {e}")))?;
 
         match outcome {
             CasOutcome::Written => Ok(StatusCasResult::Updated),
@@ -1513,8 +1503,7 @@ where
             Err(CoreError::NotFound(_)) => return Ok(None),
             Err(e) => {
                 return Err(NameServiceError::storage(format!(
-                    "Failed to read {}: {}",
-                    key, e
+                    "Failed to read {key}: {e}"
                 )))
             }
         };
@@ -1580,9 +1569,14 @@ where
                 file.config_v = Some(new.v);
 
                 if let Some(ref payload) = new.payload {
-                    file.default_context_cid =
-                        payload.default_context.as_ref().map(|c| c.to_string());
-                    file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
+                    file.default_context_cid = payload
+                        .default_context
+                        .as_ref()
+                        .map(std::string::ToString::to_string);
+                    file.config_cid = payload
+                        .config_id
+                        .as_ref()
+                        .map(std::string::ToString::to_string);
                     file.config_meta = if payload.extra.is_empty() {
                         None
                     } else {
@@ -1598,7 +1592,7 @@ where
                 Ok(CasAction::Write(new_bytes))
             })
             .await
-            .map_err(|e| NameServiceError::storage(format!("Failed to update config: {}", e)))?;
+            .map_err(|e| NameServiceError::storage(format!("Failed to update config: {e}")))?;
 
         match outcome {
             CasOutcome::Written => Ok(ConfigCasResult::Updated),
@@ -1621,9 +1615,10 @@ mod tests {
         match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
             CasResult::Updated => {}
             CasResult::Conflict { actual } => {
-                if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                    panic!("unexpected commit publish conflict: {actual:?}");
-                }
+                assert!(
+                    actual.as_ref().map(|r| r.t).unwrap_or(0) >= t,
+                    "unexpected commit publish conflict: {actual:?}"
+                );
             }
         }
     }
@@ -1633,7 +1628,7 @@ mod tests {
         // Create a mock storage for testing key generation
         // We can't easily test the full StorageNameService without a real storage impl
         let prefix = "ledgers";
-        let expected = format!("{}/ns@v2/mydb/main.json", prefix);
+        let expected = format!("{prefix}/ns@v2/mydb/main.json");
         assert_eq!(
             expected,
             format!("{}/{}/{}/{}.json", prefix, NS_VERSION, "mydb", "main")
@@ -1798,7 +1793,7 @@ mod tests {
             T: Send,
         {
             let mut data = self.data.write().unwrap();
-            let current = data.get(address).map(|v| v.as_slice());
+            let current = data.get(address).map(std::vec::Vec::as_slice);
             match f(current)? {
                 CasAction::Write(new_bytes) => {
                     data.insert(address.to_string(), new_bytes);
@@ -1920,7 +1915,7 @@ mod tests {
                 .swap(false, std::sync::atomic::Ordering::SeqCst)
             {
                 let data = self.inner.data.read().unwrap();
-                let current = data.get(address).map(|v| v.as_slice());
+                let current = data.get(address).map(std::vec::Vec::as_slice);
                 // Run closure but discard result (simulating a race)
                 let _ = f(current);
                 drop(data);

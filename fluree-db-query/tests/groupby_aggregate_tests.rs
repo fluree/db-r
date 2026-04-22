@@ -109,7 +109,7 @@ async fn test_group_by_with_count() {
     let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Expect 2 groups: NYC (count=2), LA (count=3)
-    let total_rows: usize = results.iter().map(|b| b.len()).sum();
+    let total_rows: usize = results.iter().map(fluree_db_query::Batch::len).sum();
     assert_eq!(total_rows, 2);
 
     // Collect results
@@ -267,7 +267,7 @@ async fn test_group_by_with_having() {
     let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Only LA should remain (count=3 > 2)
-    let total_rows: usize = results.iter().map(|b| b.len()).sum();
+    let total_rows: usize = results.iter().map(fluree_db_query::Batch::len).sum();
     assert_eq!(total_rows, 1);
 
     // Verify it's LA
@@ -315,7 +315,7 @@ async fn test_aggregates_without_group_by() {
     let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Should have 1 row with sum=60
-    let total_rows: usize = results.iter().map(|b| b.len()).sum();
+    let total_rows: usize = results.iter().map(fluree_db_query::Batch::len).sum();
     assert_eq!(total_rows, 1);
 
     let sum = results[0].get_by_col(0, 0);

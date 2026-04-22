@@ -59,15 +59,13 @@ pub fn split_ledger_id(ledger_id: &str) -> Result<(String, String), LedgerIdPars
             // Reject multiple colons (e.g., "name:branch:extra") - branch must not contain ':'.
             if branch.contains(':') {
                 return Err(LedgerIdParseError::new(format!(
-                    "Invalid ledger ID format '{}': expected 'name' or 'name:branch'",
-                    ledger_id
+                    "Invalid ledger ID format '{ledger_id}': expected 'name' or 'name:branch'"
                 )));
             }
             Ok((name.to_string(), branch.to_string()))
         }
         _ => Err(LedgerIdParseError::new(format!(
-            "Invalid ledger ID format '{}': expected 'name' or 'name:branch'",
-            ledger_id
+            "Invalid ledger ID format '{ledger_id}': expected 'name' or 'name:branch'"
         ))),
     }
 }
@@ -80,7 +78,7 @@ pub fn normalize_ledger_id(ledger_id: &str) -> Result<String, LedgerIdParseError
 
 /// Format a canonical `name:branch` ledger ID string.
 pub fn format_ledger_id(name: &str, branch: &str) -> String {
-    format!("{}:{}", name, branch)
+    format!("{name}:{branch}")
 }
 
 /// Parse a ledger ID with optional `@t:`, `@iso:`, or `@commit:` time-travel suffix.
@@ -112,9 +110,9 @@ pub fn split_time_travel_suffix(
             if val.is_empty() {
                 return Err(LedgerIdParseError::new("Missing value after '@t:'"));
             }
-            let t: i64 = val.parse().map_err(|_| {
-                LedgerIdParseError::new(format!("Invalid integer for @t: '{}'", val))
-            })?;
+            let t: i64 = val
+                .parse()
+                .map_err(|_| LedgerIdParseError::new(format!("Invalid integer for @t: '{val}'")))?;
             Some(LedgerIdTimeSpec::AtT(t))
         } else if let Some(val) = time_str.strip_prefix("iso:") {
             if val.is_empty() {
@@ -133,8 +131,7 @@ pub fn split_time_travel_suffix(
             Some(LedgerIdTimeSpec::AtCommit(val.to_string()))
         } else {
             return Err(LedgerIdParseError::new(format!(
-                "Invalid time travel format: '{}'. Expected @t:, @iso:, or @commit: prefix",
-                time_str
+                "Invalid time travel format: '{time_str}'. Expected @t:, @iso:, or @commit: prefix"
             )));
         };
 

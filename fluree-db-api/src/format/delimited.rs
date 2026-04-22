@@ -389,8 +389,7 @@ fn write_binding_cell(
             let store = gv.store();
             let iri = store.resolve_subject_iri(*s_id).map_err(|e| {
                 FormatError::InvalidBinding(format!(
-                    "Failed to resolve subject IRI for s_id {}: {}",
-                    s_id, e
+                    "Failed to resolve subject IRI for s_id {s_id}: {e}"
                 ))
             })?;
             let compacted = compactor.compact_vocab_iri(&iri);
@@ -401,8 +400,7 @@ fn write_binding_cell(
             let store = gv.store();
             let iri = store.resolve_predicate_iri(*p_id).ok_or_else(|| {
                 FormatError::InvalidBinding(format!(
-                    "Failed to resolve predicate IRI for p_id {}",
-                    p_id
+                    "Failed to resolve predicate IRI for p_id {p_id}"
                 ))
             })?;
             let compacted = compactor.compact_vocab_iri(iri);
@@ -423,15 +421,13 @@ fn write_binding_cell(
                     .write_string_value_bytes(*o_key as u32, cell)
                     .map_err(|e| {
                         FormatError::InvalidBinding(format!(
-                            "Failed to resolve string (kind={}, key={}): {}",
-                            o_kind, o_key, e
+                            "Failed to resolve string (kind={o_kind}, key={o_key}): {e}"
                         ))
                     })?;
             } else if *o_kind == ObjKind::REF_ID.as_u8() {
                 let iri = store.resolve_subject_iri(*o_key).map_err(|e| {
                     FormatError::InvalidBinding(format!(
-                        "Failed to resolve ref IRI for s_id {}: {}",
-                        o_key, e
+                        "Failed to resolve ref IRI for s_id {o_key}: {e}"
                     ))
                 })?;
                 let compacted = compactor.compact_vocab_iri(&iri);
@@ -441,8 +437,7 @@ fn write_binding_cell(
                     .decode_value_from_kind(*o_kind, *o_key, *p_id, *dt_id, *lang_id)
                     .map_err(|e| {
                         FormatError::InvalidBinding(format!(
-                            "Failed to decode value (kind={}, key={}, p_id={}): {}",
-                            o_kind, o_key, p_id, e
+                            "Failed to decode value (kind={o_kind}, key={o_key}, p_id={p_id}): {e}"
                         ))
                     })?;
                 write_flake_value(cell, &val, compactor);

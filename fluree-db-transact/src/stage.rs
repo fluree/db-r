@@ -58,8 +58,7 @@ fn resolve_flake_graph_id(flake: &Flake, reverse_graph: &HashMap<Sid, GraphId>) 
         None => Ok(0),
         Some(g_sid) => reverse_graph.get(g_sid).copied().ok_or_else(|| {
             TransactError::FlakeGeneration(format!(
-                "staged flake references unknown graph Sid: {}",
-                g_sid
+                "staged flake references unknown graph Sid: {g_sid}"
             ))
         }),
     }
@@ -584,8 +583,7 @@ async fn enforce_modify_policies(
                 .await
                 .map_err(|e| {
                     TransactError::Query(fluree_db_query::QueryError::Internal(format!(
-                        "Failed to populate class cache: {}",
-                        e
+                        "Failed to populate class cache: {e}"
                     )))
                 })?;
         }
@@ -763,7 +761,7 @@ async fn stream_where_into_accumulator(
                 sparql_where
                     .using_default_graph_iris
                     .iter()
-                    .map(|s| s.as_str())
+                    .map(std::string::String::as_str)
                     .collect()
             } else if let Some(with) = sparql_where.with_graph_iri.as_deref() {
                 vec![with]
@@ -771,7 +769,7 @@ async fn stream_where_into_accumulator(
                 Vec::new()
             }
         } else if let Some(iris) = txn.update_where_default_graph_iris.as_deref() {
-            iris.iter().map(|s| s.as_str()).collect()
+            iris.iter().map(std::string::String::as_str).collect()
         } else {
             Vec::new()
         };
@@ -1057,7 +1055,7 @@ fn materialize_encoded_bindings_for_txn(ledger: &LedgerState, batch: Batch) -> R
 
     let (schema, mut columns, len) = batch.into_parts();
 
-    for col in columns.iter_mut() {
+    for col in &mut columns {
         if !column_needs_materialization(col) {
             continue;
         }
@@ -1195,7 +1193,7 @@ fn lower_where_patterns(
 ) -> Result<Vec<Pattern>> {
     let mut pp_counter: u32 = 0;
     lower_unresolved_patterns(patterns, db, vars, &mut pp_counter)
-        .map_err(|e| TransactError::Parse(format!("WHERE pattern lowering: {}", e)))
+        .map_err(|e| TransactError::Parse(format!("WHERE pattern lowering: {e}")))
 }
 
 /// Generate a unique transaction ID for blank node skolemization
@@ -1205,7 +1203,7 @@ pub fn generate_txn_id() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{:x}", now)
+    format!("{now:x}")
 }
 
 /// Convert a Binding to a (FlakeValue, datatype Sid) pair for flake generation
@@ -1394,9 +1392,8 @@ async fn generate_upsert_deletions(
             Some(txn_g_id) => Some(
                 graph_sids.get(&txn_g_id).cloned().ok_or_else(|| {
                     TransactError::FlakeGeneration(format!(
-                        "upsert deletion generation references graph_id {} but no graph Sid was provided; \
-                         this indicates a bug in graph delta/sid wiring",
-                        txn_g_id
+                        "upsert deletion generation references graph_id {txn_g_id} but no graph Sid was provided; \
+                         this indicates a bug in graph delta/sid wiring"
                     ))
                 })?,
             ),
@@ -1415,7 +1412,7 @@ async fn generate_upsert_deletions(
             Materializer::new(view, JoinKeyMode::SingleLedger)
         });
 
-        for batch in batches.iter() {
+        for batch in &batches {
             for row in 0..batch.len() {
                 let flake_obj = batch
                     .get(row, o_var)
@@ -1968,7 +1965,7 @@ mod tests {
         // Add a lot of flakes to exceed the limit
         for i in 0..1000 {
             let flake = Flake::new(
-                Sid::new(1, format!("s{}", i)),
+                Sid::new(1, format!("s{i}")),
                 Sid::new(1, "p"),
                 FlakeValue::Long(i),
                 Sid::new(2, "long"),

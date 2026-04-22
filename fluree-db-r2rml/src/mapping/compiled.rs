@@ -83,7 +83,7 @@ impl CompiledR2rmlMapping {
 
     /// Get all TriplesMap IRIs
     pub fn triples_map_iris(&self) -> impl Iterator<Item = &str> {
-        self.triples_maps.keys().map(|s| s.as_str())
+        self.triples_maps.keys().map(std::string::String::as_str)
     }
 
     /// Get the number of TriplesMap definitions
@@ -172,17 +172,26 @@ impl CompiledR2rmlMapping {
 
     /// Get all unique table names referenced by the mapping
     pub fn table_names(&self) -> Vec<&str> {
-        self.table_to_maps.keys().map(|s| s.as_str()).collect()
+        self.table_to_maps
+            .keys()
+            .map(std::string::String::as_str)
+            .collect()
     }
 
     /// Get all unique class IRIs produced by the mapping
     pub fn class_iris(&self) -> Vec<&str> {
-        self.class_to_maps.keys().map(|s| s.as_str()).collect()
+        self.class_to_maps
+            .keys()
+            .map(std::string::String::as_str)
+            .collect()
     }
 
     /// Get all unique predicate IRIs produced by the mapping
     pub fn predicate_iris(&self) -> Vec<&str> {
-        self.predicate_to_maps.keys().map(|s| s.as_str()).collect()
+        self.predicate_to_maps
+            .keys()
+            .map(std::string::String::as_str)
+            .collect()
     }
 
     /// Get TriplesMap(s) that have RefObjectMaps pointing to a given parent

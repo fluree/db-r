@@ -263,8 +263,7 @@ impl Bm25SearchOperator {
                                     "BM25 failed to decode encoded literal target"
                                 );
                                 crate::error::QueryError::dictionary_lookup(format!(
-                                    "BM25 target decode: o_kind={}, o_key={}, p_id={}, dt_id={}, lang_id={}: {}",
-                                    o_kind, o_key, p_id, dt_id, lang_id, e
+                                    "BM25 target decode: o_kind={o_kind}, o_key={o_key}, p_id={p_id}, dt_id={dt_id}, lang_id={lang_id}: {e}"
                                 ))
                             })?;
                         Ok(Some(val.to_string()))
@@ -402,8 +401,7 @@ impl Operator for Bm25SearchOperator {
         if let IndexSearchTarget::Var(v) = &self.pattern.target {
             if !self.child.schema().iter().any(|vv| vv == v) {
                 return Err(QueryError::InvalidQuery(format!(
-                    "IndexSearch target variable {:?} is not bound by previous patterns",
-                    v
+                    "IndexSearch target variable {v:?} is not bound by previous patterns"
                 )));
             }
         }
@@ -529,7 +527,7 @@ impl Operator for Bm25SearchOperator {
                 if terms.is_empty() {
                     continue;
                 }
-                let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+                let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
                 let scorer = Bm25Scorer::new(index, &term_refs);
                 let results = scorer.top_k(limit);
 
@@ -617,7 +615,7 @@ impl Operator for Bm25SearchOperator {
             }
         }
 
-        if columns.first().map(|c| c.is_empty()).unwrap_or(true) {
+        if columns.first().map(std::vec::Vec::is_empty).unwrap_or(true) {
             return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 
@@ -668,8 +666,7 @@ mod tests {
         ) -> Result<Arc<Bm25Index>> {
             self.map.get(graph_source_id).cloned().ok_or_else(|| {
                 QueryError::InvalidQuery(format!(
-                    "No BM25 index for graph source alias {}",
-                    graph_source_id
+                    "No BM25 index for graph source alias {graph_source_id}"
                 ))
             })
         }

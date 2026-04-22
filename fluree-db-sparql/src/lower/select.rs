@@ -40,7 +40,7 @@ pub(super) struct LoweredModifiers {
     pub pre_group_binds: Vec<Pattern>,
 }
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     /// Lower SELECT clause to a list of VarIds.
     pub(super) fn lower_select_clause(&mut self, clause: &SelectClause) -> Result<Vec<VarId>> {
         match &clause.variables {

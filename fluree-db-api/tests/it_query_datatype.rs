@@ -513,8 +513,7 @@ async fn json_datatype_insert_query_and_filter() {
     let dt_str = doc1_dt.as_str().unwrap();
     assert!(
         dt_str == "@json" || dt_str.contains("JSON") || dt_str.contains("json"),
-        "should have @json datatype, got: {}",
-        dt_str
+        "should have @json datatype, got: {dt_str}"
     );
 
     // Check that doc2 has xsd:string datatype
@@ -528,8 +527,7 @@ async fn json_datatype_insert_query_and_filter() {
     let dt2_str = doc2_dt.as_str().unwrap();
     assert!(
         dt2_str == "xsd:string" || dt2_str.contains("string"),
-        "should have xsd:string datatype, got: {}",
-        dt2_str
+        "should have xsd:string datatype, got: {dt2_str}"
     );
 
     let q2 = json!({
@@ -671,9 +669,7 @@ async fn transaction_binding_at_t_variable() {
     // Alice (first insert after genesis) should have a smaller t than Bob (second insert)
     assert!(
         alice_t < bob_t,
-        "Alice's t should be less than Bob's t since she was inserted first. alice_t={}, bob_t={}",
-        alice_t,
-        bob_t
+        "Alice's t should be less than Bob's t since she was inserted first. alice_t={alice_t}, bob_t={bob_t}"
     );
 }
 
@@ -741,15 +737,13 @@ async fn decimal_string_input_becomes_bigdecimal_preserves_precision() {
     if let Some(s) = price1.as_str() {
         assert!(
             s.starts_with("123.45678901234567"),
-            "Should preserve precision: {}",
-            s
+            "Should preserve precision: {s}"
         );
     } else if let Some(obj) = price1.as_object() {
         let val = obj.get("@value").and_then(|v| v.as_str()).unwrap();
         assert!(
             val.starts_with("123.45678901234567"),
-            "Should preserve precision: {}",
-            val
+            "Should preserve precision: {val}"
         );
     }
 }
@@ -816,13 +810,11 @@ async fn decimal_json_number_input_becomes_double() {
     let dt2 = arr[1][2].as_str().unwrap();
     assert!(
         dt1.ends_with("#decimal") || dt1 == "xsd:decimal",
-        "3.13 should preserve xsd:decimal datatype, got: {}",
-        dt1
+        "3.13 should preserve xsd:decimal datatype, got: {dt1}"
     );
     assert!(
         dt2.ends_with("#decimal") || dt2 == "xsd:decimal",
-        "42 should preserve xsd:decimal datatype, got: {}",
-        dt2
+        "42 should preserve xsd:decimal datatype, got: {dt2}"
     );
 }
 
@@ -871,28 +863,23 @@ async fn decimal_sort_order_with_mixed_numeric_types() {
 
     assert_eq!(
         actual_ids[0], "ex:a",
-        "First should be ex:a (score 1), got {:?}",
-        actual_ids
+        "First should be ex:a (score 1), got {actual_ids:?}"
     );
     assert_eq!(
         actual_ids[1], "ex:d",
-        "Second should be ex:d (score 1.5), got {:?}",
-        actual_ids
+        "Second should be ex:d (score 1.5), got {actual_ids:?}"
     );
     assert_eq!(
         actual_ids[2], "ex:e",
-        "Third should be ex:e (score 2), got {:?}",
-        actual_ids
+        "Third should be ex:e (score 2), got {actual_ids:?}"
     );
     assert_eq!(
         actual_ids[3], "ex:b",
-        "Fourth should be ex:b (score 2.5), got {:?}",
-        actual_ids
+        "Fourth should be ex:b (score 2.5), got {actual_ids:?}"
     );
     assert_eq!(
         actual_ids[4], "ex:c",
-        "Fifth should be ex:c (score 3.0), got {:?}",
-        actual_ids
+        "Fifth should be ex:c (score 3.0), got {actual_ids:?}"
     );
 }
 
@@ -942,9 +929,9 @@ async fn decimal_equality_across_types() {
                 inner
                     .first()
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
             } else {
-                r.as_str().map(|s| s.to_string())
+                r.as_str().map(std::string::ToString::to_string)
             }
         })
         .collect();
@@ -952,18 +939,15 @@ async fn decimal_equality_across_types() {
     // All three should match since they're mathematically equal
     assert!(
         ids.contains("ex:long"),
-        "Long(3) should match, got: {:?}",
-        ids
+        "Long(3) should match, got: {ids:?}"
     );
     assert!(
         ids.contains("ex:double"),
-        "Double(3.0) should match, got: {:?}",
-        ids
+        "Double(3.0) should match, got: {ids:?}"
     );
     assert!(
         ids.contains("ex:decimal"),
-        "Decimal(3.00) should match, got: {:?}",
-        ids
+        "Decimal(3.00) should match, got: {ids:?}"
     );
 }
 
@@ -1007,7 +991,7 @@ async fn decimal_filter_comparison_across_types() {
     let arr = rows.as_array().unwrap();
 
     // Should return: 150.5, 200.00 (not 100 or 75.25)
-    assert_eq!(arr.len(), 2, "Should have 2 results, got: {:?}", arr);
+    assert_eq!(arr.len(), 2, "Should have 2 results, got: {arr:?}");
 
     // Collect IDs for verification
     let ids: std::collections::HashSet<&str> = arr.iter().map(|r| r[0].as_str().unwrap()).collect();
@@ -1046,8 +1030,7 @@ async fn decimal_invalid_string_should_error() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("coerce") || err_msg.contains("Coercion") || err_msg.contains("parse"),
-        "Error should mention coercion or parsing: {}",
-        err_msg
+        "Error should mention coercion or parsing: {err_msg}"
     );
 }
 
@@ -1086,8 +1069,7 @@ async fn decimal_non_integral_to_integer_should_error() {
         err_msg.contains("non-integer")
             || err_msg.contains("Coercion")
             || err_msg.contains("whole number"),
-        "Error should mention non-integer: {}",
-        err_msg
+        "Error should mention non-integer: {err_msg}"
     );
 }
 
@@ -1121,8 +1103,7 @@ async fn decimal_number_to_boolean_should_error() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("coerce") || err_msg.contains("Coercion") || err_msg.contains("boolean"),
-        "Error should mention coercion: {}",
-        err_msg
+        "Error should mention coercion: {err_msg}"
     );
 }
 
@@ -1165,19 +1146,14 @@ async fn values_typed_literal_string_to_integer_coercion() {
 
     // Should match ex:item1 because "42" coerced to Long(42)
     // Note: single-column results may be flattened to ["ex:item1"] not [["ex:item1"]]
-    assert_eq!(arr.len(), 1, "Should find one match, got: {:?}", arr);
+    assert_eq!(arr.len(), 1, "Should find one match, got: {arr:?}");
     let first = &arr[0];
     let id = if let Some(inner) = first.as_array() {
         inner[0].as_str()
     } else {
         first.as_str()
     };
-    assert_eq!(
-        id,
-        Some("ex:item1"),
-        "Should match ex:item1, got: {:?}",
-        arr
-    );
+    assert_eq!(id, Some("ex:item1"), "Should match ex:item1, got: {arr:?}");
 }
 
 #[tokio::test]
@@ -1255,19 +1231,14 @@ async fn values_decimal_string_becomes_bigdecimal() {
     let arr = rows.as_array().unwrap();
 
     // Should match because both are BigDecimal("19.99")
-    assert_eq!(arr.len(), 1, "Should find one match, got: {:?}", arr);
+    assert_eq!(arr.len(), 1, "Should find one match, got: {arr:?}");
     let first = &arr[0];
     let id = if let Some(inner) = first.as_array() {
         inner[0].as_str()
     } else {
         first.as_str()
     };
-    assert_eq!(
-        id,
-        Some("ex:item1"),
-        "Should match ex:item1, got: {:?}",
-        arr
-    );
+    assert_eq!(id, Some("ex:item1"), "Should match ex:item1, got: {arr:?}");
 }
 
 /// Regression test for fluree/db-r#142: JSON integer values with xsd:float or
@@ -1290,15 +1261,15 @@ async fn float_typed_integer_values_survive_indexing() {
                 "@id": "ex:campaign1",
                 "@type": "ex:Campaign",
                 "ex:name": "Alpha",
-                "ex:budget": {"@type": "xsd:float", "@value": 1350000},
-                "ex:revenue": {"@type": "xsd:double", "@value": 5000000}
+                "ex:budget": {"@type": "xsd:float", "@value": 1_350_000},
+                "ex:revenue": {"@type": "xsd:double", "@value": 5_000_000}
             },
             {
                 "@id": "ex:campaign2",
                 "@type": "ex:Campaign",
                 "ex:name": "Beta",
-                "ex:budget": {"@type": "xsd:float", "@value": 750000.50},
-                "ex:revenue": {"@type": "xsd:double", "@value": 2500000.75}
+                "ex:budget": {"@type": "xsd:float", "@value": 750_000.50},
+                "ex:revenue": {"@type": "xsd:double", "@value": 2_500_000.75}
             }
         ]
     });
@@ -1343,8 +1314,7 @@ async fn float_typed_integer_values_survive_indexing() {
     // Both should return the same values.
     assert_eq!(
         pre_index, post_index,
-        "Float values changed after indexing!\n  pre:  {}\n  post: {}",
-        pre_index, post_index,
+        "Float values changed after indexing!\n  pre:  {pre_index}\n  post: {post_index}",
     );
 
     // Verify the actual values are correct (not garbage subnormals).
@@ -1354,8 +1324,8 @@ async fn float_typed_integer_values_survive_indexing() {
     // Helper: extract f64 from either a bare number or {"@value": n, "@type": ...}
     let extract_f64 = |v: &JsonValue| -> f64 {
         v.as_f64()
-            .or_else(|| v.get("@value").and_then(|inner| inner.as_f64()))
-            .unwrap_or_else(|| panic!("expected a number, got: {}", v))
+            .or_else(|| v.get("@value").and_then(serde_json::Value::as_f64))
+            .unwrap_or_else(|| panic!("expected a number, got: {v}"))
     };
 
     // Rows ordered by name: Alpha (campaign1) first, Beta (campaign2) second.
@@ -1364,13 +1334,11 @@ async fn float_typed_integer_values_survive_indexing() {
     let revenue1 = extract_f64(&rows[0][2]);
     assert!(
         (budget1 - 1_350_000.0).abs() < 0.01,
-        "budget1 should be 1350000, got {}",
-        budget1
+        "budget1 should be 1350000, got {budget1}"
     );
     assert!(
         (revenue1 - 5_000_000.0).abs() < 0.01,
-        "revenue1 should be 5000000, got {}",
-        revenue1
+        "revenue1 should be 5000000, got {revenue1}"
     );
 
     // campaign2: budget=750000.50, revenue=2500000.75 (JSON floats → should be fine)
@@ -1378,12 +1346,10 @@ async fn float_typed_integer_values_survive_indexing() {
     let revenue2 = extract_f64(&rows[1][2]);
     assert!(
         (budget2 - 750_000.5).abs() < 0.01,
-        "budget2 should be 750000.5, got {}",
-        budget2
+        "budget2 should be 750000.5, got {budget2}"
     );
     assert!(
         (revenue2 - 2_500_000.75).abs() < 0.01,
-        "revenue2 should be 2500000.75, got {}",
-        revenue2
+        "revenue2 should be 2500000.75, got {revenue2}"
     );
 }

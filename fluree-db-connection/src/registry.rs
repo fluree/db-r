@@ -91,8 +91,14 @@ impl StorageRegistry {
 
         let raw_config = RawS3Config {
             bucket: s3_config.bucket.to_string(),
-            prefix: s3_config.prefix.as_ref().map(|s| s.to_string()),
-            endpoint: s3_config.endpoint.as_ref().map(|s| s.to_string()),
+            prefix: s3_config
+                .prefix
+                .as_ref()
+                .map(std::string::ToString::to_string),
+            endpoint: s3_config
+                .endpoint
+                .as_ref()
+                .map(std::string::ToString::to_string),
             timeout_ms,
             max_retries: s3_config.max_retries.map(|n| n as u32),
             retry_base_delay_ms: s3_config.retry_base_delay_ms,
@@ -101,7 +107,7 @@ impl StorageRegistry {
 
         let storage = S3Storage::new(sdk_config, raw_config)
             .await
-            .map_err(|e| ConnectionError::storage(format!("Failed to create S3 storage: {}", e)))?;
+            .map_err(|e| ConnectionError::storage(format!("Failed to create S3 storage: {e}")))?;
 
         let arc_storage = Arc::new(storage);
 

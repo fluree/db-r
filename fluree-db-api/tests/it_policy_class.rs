@@ -125,7 +125,7 @@ async fn policy_class_restricts_ssn_to_own_user() {
     let arr = rows.as_array().unwrap();
 
     // Should only have one result (Alice's SSN)
-    assert_eq!(arr.len(), 1, "Should only see Alice's SSN, got: {:?}", arr);
+    assert_eq!(arr.len(), 1, "Should only see Alice's SSN, got: {arr:?}");
 
     // The result should contain Alice's SSN
     let row = arr[0].as_array().unwrap();
@@ -232,7 +232,7 @@ async fn policy_class_allows_non_restricted_properties() {
     let arr = rows.as_array().unwrap();
 
     // Should see both users' names
-    assert_eq!(arr.len(), 2, "Should see both users' names, got: {:?}", arr);
+    assert_eq!(arr.len(), 2, "Should see both users' names, got: {arr:?}");
 }
 
 /// Test: Policy blocks query for another user's restricted SSN
@@ -333,7 +333,6 @@ async fn policy_class_blocks_other_user_ssn_in_where() {
     assert_eq!(
         arr.len(),
         0,
-        "Query for John's SSN should return empty, got: {:?}",
-        arr
+        "Query for John's SSN should return empty, got: {arr:?}"
     );
 }

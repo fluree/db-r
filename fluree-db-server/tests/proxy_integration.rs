@@ -34,7 +34,7 @@ fn did_from_pubkey(pubkey: &[u8; 32]) -> String {
     let mut bytes = vec![0xed, 0x01];
     bytes.extend_from_slice(pubkey);
     let encoded = bs58::encode(&bytes).into_string();
-    format!("did:key:z{}", encoded)
+    format!("did:key:z{encoded}")
 }
 
 /// Create a JWS token with storage proxy claims
@@ -72,11 +72,11 @@ fn create_storage_proxy_token(signing_key: &SigningKey, storage_all: bool) -> St
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
 
     // Sign header.payload
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-    format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+    format!("{header_b64}.{payload_b64}.{sig_b64}")
 }
 
 // =============================================================================
@@ -128,7 +128,7 @@ async fn proxy_peer_state(
     let telemetry = TelemetryConfig::with_server_config(&cfg);
     match AppState::new(cfg, telemetry).await {
         Ok(state) => Ok((tmp, Arc::new(state))),
-        Err(e) => Err(format!("Failed to create peer state: {}", e)),
+        Err(e) => Err(format!("Failed to create peer state: {e}")),
     }
 }
 
@@ -168,7 +168,7 @@ async fn test_storage_proxy_endpoints_enabled() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/nonexistent:ledger")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -239,17 +239,17 @@ async fn test_storage_proxy_requires_storage_permissions() {
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
-    let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
+    let token = format!("{header_b64}.{payload_b64}.{sig_b64}");
 
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/test:main")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -300,7 +300,7 @@ async fn test_storage_proxy_block_endpoint() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
         )
@@ -344,7 +344,7 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/ns:test")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -360,7 +360,10 @@ async fn test_storage_proxy_ns_record_for_existing_ledger() {
     );
     assert_eq!(json.get("name").and_then(|v| v.as_str()), Some("ns"));
     assert_eq!(json.get("branch").and_then(|v| v.as_str()), Some("test"));
-    assert_eq!(json.get("retracted").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        json.get("retracted").and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
 }
 
 /// Test that ledger-specific token scope is enforced
@@ -432,10 +435,10 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
-    let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
+    let token = format!("{header_b64}.{payload_b64}.{sig_b64}");
 
     // Should be able to access allowed:main
     let resp = app
@@ -444,7 +447,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/allowed:main")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -458,7 +461,7 @@ async fn test_storage_proxy_ledger_scope_enforcement() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/denied:main")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -540,7 +543,7 @@ async fn test_storage_proxy_disabled() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/test:main")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -609,10 +612,10 @@ async fn test_storage_proxy_block_authorization() {
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
-    let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
+    let token = format!("{header_b64}.{payload_b64}.{sig_b64}");
 
     // Try to fetch a block from unauthorized ledger
     let fake_cid = ContentId::new(ContentKind::Commit, b"auth-test").to_string();
@@ -626,7 +629,7 @@ async fn test_storage_proxy_block_authorization() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
         )
@@ -660,7 +663,7 @@ async fn test_storage_proxy_rejects_graph_source_cids() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
         )
@@ -693,7 +696,7 @@ async fn test_storage_proxy_rejects_invalid_cid() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
         )
@@ -745,17 +748,17 @@ async fn test_storage_proxy_rejects_expired_token() {
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
-    let token = format!("{}.{}.{}", header_b64, payload_b64, sig_b64);
+    let token = format!("{header_b64}.{payload_b64}.{sig_b64}");
 
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/test:main")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -845,7 +848,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/flkb:test")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -869,7 +872,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/x-fluree-flakes")
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
@@ -893,8 +896,7 @@ async fn test_block_content_negotiation_non_leaf_returns_raw_bytes() {
         .unwrap_or("");
     assert!(
         content_type.contains("application/octet-stream"),
-        "Non-leaf response should be octet-stream, got: {}",
-        content_type
+        "Non-leaf response should be octet-stream, got: {content_type}"
     );
 }
 
@@ -958,7 +960,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/octet:test")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -981,7 +983,7 @@ async fn test_block_content_negotiation_octet_stream_success() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/octet-stream")
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
@@ -1064,7 +1066,7 @@ async fn test_block_content_negotiation_default_accept() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/default:test")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1087,7 +1089,7 @@ async fn test_block_content_negotiation_default_accept() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 // No Accept header - should default to octet-stream
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
@@ -1162,7 +1164,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/storage/ns/json:test")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1185,7 +1187,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/x-fluree-flakes+json")
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
@@ -1208,8 +1210,7 @@ async fn test_block_content_negotiation_non_leaf_json_flakes_returns_raw() {
         .unwrap_or("");
     assert!(
         content_type.contains("application/octet-stream"),
-        "Non-leaf response should be octet-stream, got: {}",
-        content_type
+        "Non-leaf response should be octet-stream, got: {content_type}"
     );
 }
 
@@ -1245,11 +1246,11 @@ fn create_storage_proxy_token_no_identity(signing_key: &SigningKey, storage_all:
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-    format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+    format!("{header_b64}.{payload_b64}.{sig_b64}")
 }
 
 /// Test that binary FLI3 leaf blocks return FLKB format when requested.
@@ -1334,7 +1335,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/octet-stream")
                 .body(Body::from(root_body.to_string()))
                 .unwrap(),
@@ -1354,7 +1355,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/x-fluree-flakes")
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),
@@ -1367,7 +1368,7 @@ async fn test_block_content_negotiation_returns_flkb_for_leaf() {
     // Debug: print error message if not 200
     if status != StatusCode::OK {
         let error_msg = String::from_utf8_lossy(&bytes);
-        eprintln!("Error response: {}", error_msg);
+        eprintln!("Error response: {error_msg}");
     }
 
     // Verify 200 OK
@@ -1420,7 +1421,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
         .await
         .expect("bind to ephemeral port");
     let server_addr = listener.local_addr().expect("get local addr");
-    let server_url = format!("http://{}", server_addr);
+    let server_url = format!("http://{server_addr}");
 
     // Spawn the server in a background task
     let server_handle = tokio::spawn(async move {
@@ -1438,7 +1439,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
     // Create a ledger via HTTP (to have a valid alias for authorization)
     let client = reqwest::Client::new();
     let create_resp = client
-        .post(format!("{}/v1/fluree/create", server_url))
+        .post(format!("{server_url}/v1/fluree/create"))
         .header("content-type", "application/json")
         .body(r#"{"ledger": "peer:test"}"#)
         .send()
@@ -1452,7 +1453,7 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 
     // Create some data + reindex so we have a real leaf to fetch.
     let transact_resp = client
-        .post(format!("{}/v1/fluree/update", server_url))
+        .post(format!("{server_url}/v1/fluree/update"))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -1491,9 +1492,9 @@ async fn test_proxy_storage_read_bytes_hint_returns_flkb_for_leaf() {
 
     let token_for_http = token.clone();
     let root_resp = client
-        .post(format!("{}/v1/fluree/storage/block", server_url))
+        .post(format!("{server_url}/v1/fluree/storage/block"))
         .header("content-type", "application/json")
-        .header("Authorization", format!("Bearer {}", token_for_http))
+        .header("Authorization", format!("Bearer {token_for_http}"))
         .header("Accept", "application/octet-stream")
         .body(
             serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "peer:test" })
@@ -1573,7 +1574,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
         .await
         .expect("bind to ephemeral port");
     let server_addr = listener.local_addr().expect("get local addr");
-    let server_url = format!("http://{}", server_addr);
+    let server_url = format!("http://{server_addr}");
 
     // Spawn the server in a background task
     let server_handle = tokio::spawn(async move {
@@ -1591,7 +1592,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     // Create a ledger via HTTP
     let client = reqwest::Client::new();
     let create_resp = client
-        .post(format!("{}/v1/fluree/create", server_url))
+        .post(format!("{server_url}/v1/fluree/create"))
         .header("content-type", "application/json")
         .body(r#"{"ledger": "raw:test"}"#)
         .send()
@@ -1605,7 +1606,7 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
 
     // Transact + reindex to create real binary leaves (FLI3).
     let transact_resp = client
-        .post(format!("{}/v1/fluree/update", server_url))
+        .post(format!("{server_url}/v1/fluree/update"))
         .header("content-type", "application/json")
         .body(
             serde_json::json!({
@@ -1637,9 +1638,9 @@ async fn test_proxy_storage_read_bytes_leaf_returns_flkb_under_policy() {
     // Fetch DB root JSON so we can extract a real leaf CID.
     let token_for_http = token.clone();
     let root_resp = client
-        .post(format!("{}/v1/fluree/storage/block", server_url))
+        .post(format!("{server_url}/v1/fluree/storage/block"))
         .header("content-type", "application/json")
-        .header("Authorization", format!("Bearer {}", token_for_http))
+        .header("Authorization", format!("Bearer {token_for_http}"))
         .header("Accept", "application/octet-stream")
         .body(
             serde_json::json!({ "cid": reindex_result.root_id.to_string(), "ledger": "raw:test" })
@@ -1707,8 +1708,9 @@ async fn tx_server_state_with_policy(
         storage_proxy_enabled: true,
         storage_proxy_insecure_accept_any_issuer: true,
         // Configure policy defaults
-        storage_proxy_default_identity: default_identity.map(|s| s.to_string()),
-        storage_proxy_default_policy_class: default_policy_class.map(|s| s.to_string()),
+        storage_proxy_default_identity: default_identity.map(std::string::ToString::to_string),
+        storage_proxy_default_policy_class: default_policy_class
+            .map(std::string::ToString::to_string),
         ..Default::default()
     };
 
@@ -1864,7 +1866,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .unwrap();
 
     let (status, body) = json_body(resp).await;
-    assert_eq!(status, StatusCode::OK, "Transaction failed: {:?}", body);
+    assert_eq!(status, StatusCode::OK, "Transaction failed: {body:?}");
 
     // Step 3: Reindex to build the index
     // This creates real leaf nodes in storage
@@ -1892,7 +1894,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
         .expect("refresh should succeed");
 
     // Should have reloaded or updated index
-    println!("Refresh result after reindex: {:?}", refresh_result);
+    println!("Refresh result after reindex: {refresh_result:?}");
 
     // Step 4: Find a leaf address
     // The root_id points to the DB root file (contains index roots as nested objects).
@@ -1911,7 +1913,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/octet-stream")
                 .body(Body::from(db_root_body.to_string()))
                 .unwrap(),
@@ -1934,7 +1936,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/x-fluree-flakes")
                 .body(Body::from(leaf_block_body.to_string()))
                 .unwrap(),
@@ -1947,10 +1949,7 @@ async fn test_policy_filtered_flkb_has_fewer_flakes_than_raw() {
     // Debug: print error if not 200
     if status != StatusCode::OK {
         let error_msg = String::from_utf8_lossy(&filtered_bytes);
-        eprintln!(
-            "Filtered fetch failed with status {}: {}",
-            status, error_msg
-        );
+        eprintln!("Filtered fetch failed with status {status}: {error_msg}");
     }
 
     assert_eq!(status, StatusCode::OK, "Filtered leaf fetch failed");
@@ -2056,7 +2055,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/octet-stream")
                 .body(Body::from(db_root_body.to_string()))
                 .unwrap(),
@@ -2079,7 +2078,7 @@ async fn test_no_policy_flkb_returns_all_flakes() {
                 .method("POST")
                 .uri("/v1/fluree/storage/block")
                 .header("content-type", "application/json")
-                .header("Authorization", format!("Bearer {}", token))
+                .header("Authorization", format!("Bearer {token}"))
                 .header("Accept", "application/x-fluree-flakes")
                 .body(Body::from(block_body.to_string()))
                 .unwrap(),

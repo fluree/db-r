@@ -20,7 +20,7 @@ fn json_as_i64(v: &serde_json::Value) -> Option<i64> {
     v.as_i64().or_else(|| {
         v.as_object()
             .and_then(|o| o.get("@value"))
-            .and_then(|inner| inner.as_i64())
+            .and_then(serde_json::Value::as_i64)
     })
 }
 
@@ -29,7 +29,7 @@ fn json_as_f64(v: &serde_json::Value) -> Option<f64> {
     v.as_f64().or_else(|| {
         v.as_object()
             .and_then(|o| o.get("@value"))
-            .and_then(|inner| inner.as_f64())
+            .and_then(serde_json::Value::as_f64)
     })
 }
 
@@ -835,7 +835,7 @@ async fn test_sparql_graph_pattern_txn_meta() {
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Build dataset spec with txn-meta as a named graph
-            let txn_meta_graph = format!("{}#txn-meta", ledger_id);
+            let txn_meta_graph = format!("{ledger_id}#txn-meta");
             let spec = DatasetSpec::new()
                 .with_default(GraphSource::new(ledger_id))
                 .with_named(GraphSource::new(&txn_meta_graph));
@@ -849,14 +849,14 @@ async fn test_sparql_graph_pattern_txn_meta() {
 
             // SPARQL query using GRAPH pattern to access txn-meta
             let sparql = format!(
-                r#"
+                r"
                 SELECT ?batchId
                 WHERE {{
                     GRAPH <{txn_meta_graph}> {{
                         ?commit <http://example.org/batchId> ?batchId .
                     }}
                 }}
-            "#
+            "
             );
 
             let result = fluree
@@ -950,7 +950,7 @@ async fn test_txn_meta_time_travel_filtering() {
 
             // Query at t=1: should only see batch-1
             let view_t1 = fluree
-                .db_at_t(&format!("{}#txn-meta", ledger_id), 1)
+                .db_at_t(&format!("{ledger_id}#txn-meta"), 1)
                 .await
                 .expect("view at t=1");
 
@@ -985,13 +985,12 @@ async fn test_txn_meta_time_travel_filtering() {
             assert!(has_batch_1_at_t1, "query at t=1 should find batch-1");
             assert!(
                 !has_batch_2_at_t1,
-                "query at t=1 should NOT find batch-2 (it was added at t=2), results: {:?}",
-                arr_t1
+                "query at t=1 should NOT find batch-2 (it was added at t=2), results: {arr_t1:?}"
             );
 
             // Query at t=2: should see both batch-1 and batch-2
             let view_t2 = fluree
-                .db_at_t(&format!("{}#txn-meta", ledger_id), 2)
+                .db_at_t(&format!("{ledger_id}#txn-meta"), 2)
                 .await
                 .expect("view at t=2");
             let query_t2 = json!({
@@ -1106,18 +1105,15 @@ async fn test_commit_stats_available_in_novelty_before_indexing() {
 
     assert!(
         has_asserts,
-        "db:asserts should be present in txn-meta from novelty (before indexing), got: {:?}",
-        arr
+        "db:asserts should be present in txn-meta from novelty (before indexing), got: {arr:?}"
     );
     assert!(
         has_retracts,
-        "db:retracts should be present in txn-meta from novelty (before indexing), got: {:?}",
-        arr
+        "db:retracts should be present in txn-meta from novelty (before indexing), got: {arr:?}"
     );
     assert!(
         has_size,
-        "db:size should be present in txn-meta from novelty (before indexing), got: {:?}",
-        arr
+        "db:size should be present in txn-meta from novelty (before indexing), got: {arr:?}"
     );
 }
 
@@ -1189,8 +1185,7 @@ async fn test_commit_stats_survive_indexing() {
 
             assert_eq!(
                 asserts_count, 2,
-                "should find db:asserts for both commits (indexed + novelty), got: {:?}",
-                arr
+                "should find db:asserts for both commits (indexed + novelty), got: {arr:?}"
             );
         })
         .await;
@@ -1269,12 +1264,8 @@ async fn test_insert_with_txn_meta_preserves_graph_data() {
                         .unwrap_or(false)
             });
 
-            assert!(
-                has_alice,
-                "Alice should be in default graph, got: {:?}",
-                arr
-            );
-            assert!(has_bob, "Bob should be in default graph, got: {:?}", arr);
+            assert!(has_alice, "Alice should be in default graph, got: {arr:?}");
+            assert!(has_bob, "Bob should be in default graph, got: {arr:?}");
 
             // Also verify txn-meta was stored
             let meta_query = json!({
@@ -1302,8 +1293,7 @@ async fn test_insert_with_txn_meta_preserves_graph_data() {
             });
             assert!(
                 has_corr,
-                "txn-meta should contain correlationId, got: {:?}",
-                meta_arr
+                "txn-meta should contain correlationId, got: {meta_arr:?}"
             );
         })
         .await;
@@ -1364,7 +1354,7 @@ async fn test_upsert_with_txn_meta_preserves_graph_data() {
                         .unwrap_or(false)
             });
 
-            assert!(has_99, "upsert should have set score to 99, got: {:?}", arr);
+            assert!(has_99, "upsert should have set score to 99, got: {arr:?}");
         })
         .await;
 }
@@ -1449,8 +1439,7 @@ async fn test_insert_with_id_and_graph_and_txn_meta() {
             });
             assert!(
                 has_machine,
-                "txn-meta should contain machine=server-01, got: {:?}",
-                meta_arr
+                "txn-meta should contain machine=server-01, got: {meta_arr:?}"
             );
 
             // ── Part 2: contrast — envelope without @id ─────────────────────
@@ -1510,8 +1499,7 @@ async fn test_insert_with_id_and_graph_and_txn_meta() {
             });
             assert!(
                 has_alice,
-                "Without @id, Alice should be in default graph, got: {:?}",
-                data_arr
+                "Without @id, Alice should be in default graph, got: {data_arr:?}"
             );
         })
         .await;
@@ -1551,7 +1539,7 @@ async fn test_txn_meta_full_iri_in_from() {
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query using the full urn:fluree: IRI (same form the info endpoint reports)
-            let full_iri = format!("urn:fluree:{}#txn-meta", ledger_id);
+            let full_iri = format!("urn:fluree:{ledger_id}#txn-meta");
             let query = json!({
                 "from": full_iri,
                 "select": ["?p", "?o"],
@@ -1573,8 +1561,7 @@ async fn test_txn_meta_full_iri_in_from() {
             });
             assert!(
                 has_source,
-                "full urn:fluree: IRI in FROM should resolve txn-meta graph, got: {:?}",
-                arr
+                "full urn:fluree: IRI in FROM should resolve txn-meta graph, got: {arr:?}"
             );
 
             // Also verify the short alias form still works (regression guard)
@@ -1599,8 +1586,7 @@ async fn test_txn_meta_full_iri_in_from() {
             });
             assert!(
                 short_has_source,
-                "short alias form should still work, got: {:?}",
-                short_arr
+                "short alias form should still work, got: {short_arr:?}"
             );
         })
         .await;

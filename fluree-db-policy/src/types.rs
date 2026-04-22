@@ -80,7 +80,7 @@ pub enum PolicyDecision<'a> {
     },
 }
 
-impl<'a> PolicyDecision<'a> {
+impl PolicyDecision<'_> {
     /// Returns true if access was allowed
     pub fn is_allowed(&self) -> bool {
         matches!(self, PolicyDecision::Allowed { .. })

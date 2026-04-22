@@ -309,8 +309,7 @@ fn validate_pack_routing(packs: &[PackHandle]) -> io::Result<()> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "pack routing: pack {} first_id {} overlaps with previous last_id {}",
-                    i, curr_first, prev_last
+                    "pack routing: pack {i} first_id {curr_first} overlaps with previous last_id {prev_last}"
                 ),
             ));
         }
@@ -515,7 +514,7 @@ mod tests {
         let entries: Vec<(u64, Vec<u8>)> = (0..count)
             .map(|i| {
                 let id = first + i as u64;
-                (id, format!("val_{}", id).into_bytes())
+                (id, format!("val_{id}").into_bytes())
             })
             .collect();
         let refs: Vec<(u64, &[u8])> = entries.iter().map(|(id, v)| (*id, v.as_slice())).collect();

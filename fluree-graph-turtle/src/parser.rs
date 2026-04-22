@@ -834,11 +834,10 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             if matches!(self.current().kind, TokenKind::RParen) {
                 self.sink_emit_triple(current_node, rdf_rest, rdf_nil);
                 break;
-            } else {
-                let next_node = self.sink_term_blank(None);
-                self.sink_emit_triple(current_node, rdf_rest, next_node);
-                current_node = next_node;
             }
+            let next_node = self.sink_term_blank(None);
+            self.sink_emit_triple(current_node, rdf_rest, next_node);
+            current_node = next_node;
         }
 
         self.expect(&TokenKind::RParen)?;
@@ -877,8 +876,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             Some(b) => b,
             None => {
                 return Err(TurtleError::IriResolution(format!(
-                    "relative IRI '{}' without base",
-                    reference
+                    "relative IRI '{reference}' without base"
                 )));
             }
         };
@@ -897,40 +895,40 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
             let (ref_path, ref_query) = split_path_query(reference);
             (
                 base_scheme.to_string(),
-                base_authority.map(|s| s.to_string()),
+                base_authority.map(std::string::ToString::to_string),
                 remove_dot_segments(ref_path),
-                ref_query.map(|s| s.to_string()),
+                ref_query.map(std::string::ToString::to_string),
             )
         } else if let Some(query_rest) = reference.strip_prefix('?') {
             (
                 base_scheme.to_string(),
-                base_authority.map(|s| s.to_string()),
+                base_authority.map(std::string::ToString::to_string),
                 base_path.to_string(),
                 Some(query_rest.to_string()),
             )
         } else if reference.starts_with('#') {
             (
                 base_scheme.to_string(),
-                base_authority.map(|s| s.to_string()),
+                base_authority.map(std::string::ToString::to_string),
                 base_path.to_string(),
                 None,
             )
         } else {
             let (ref_path, ref_query) = split_path_query(reference);
             let merged = if base_authority.is_some() && base_path.is_empty() {
-                format!("/{}", ref_path)
+                format!("/{ref_path}")
             } else {
                 let base_dir = match base_path.rfind('/') {
                     Some(pos) => &base_path[..=pos],
                     None => "",
                 };
-                format!("{}{}", base_dir, ref_path)
+                format!("{base_dir}{ref_path}")
             };
             (
                 base_scheme.to_string(),
-                base_authority.map(|s| s.to_string()),
+                base_authority.map(std::string::ToString::to_string),
                 remove_dot_segments(&merged),
-                ref_query.map(|s| s.to_string()),
+                ref_query.map(std::string::ToString::to_string),
             )
         };
 
@@ -952,7 +950,7 @@ impl<'a, 'input, S: GraphSink> Parser<'a, 'input, S> {
     /// Expand a prefixed name to a full IRI.
     fn expand_prefixed_name(&self, prefix: &str, local: &str) -> Result<String> {
         if let Some(namespace) = self.prefixes.get(prefix) {
-            Ok(format!("{}{}", namespace, local))
+            Ok(format!("{namespace}{local}"))
         } else {
             Err(TurtleError::UndefinedPrefix(prefix.to_string()))
         }
@@ -1025,7 +1023,11 @@ fn parse_hier_part(s: &str) -> (String, String, Option<String>) {
     let rest = &s[auth_end..];
 
     let (path, query) = split_path_query(rest);
-    (authority, path.to_string(), query.map(|q| q.to_string()))
+    (
+        authority,
+        path.to_string(),
+        query.map(std::string::ToString::to_string),
+    )
 }
 
 fn split_path_query(s: &str) -> (&str, Option<&str>) {
@@ -1057,7 +1059,7 @@ fn remove_dot_segments(path: &str) -> String {
 
     let result = output.join("/");
     if path.starts_with('/') && !result.starts_with('/') {
-        format!("/{}", result)
+        format!("/{result}")
     } else {
         result
     }
@@ -1142,10 +1144,10 @@ mod tests {
 
     #[test]
     fn test_a_keyword() {
-        let input = r#"
+        let input = r"
             @prefix ex: <http://example.org/> .
             ex:alice a ex:Person .
-        "#;
+        ";
         let graph = parse_to_graph(input).unwrap();
 
         assert_eq!(graph.len(), 1);
@@ -1167,10 +1169,10 @@ mod tests {
 
     #[test]
     fn test_comma_syntax() {
-        let input = r#"
+        let input = r"
             @prefix ex: <http://example.org/> .
             ex:alice ex:knows ex:bob, ex:charlie .
-        "#;
+        ";
         let graph = parse_to_graph(input).unwrap();
 
         assert_eq!(graph.len(), 2);
@@ -1237,10 +1239,10 @@ mod tests {
 
     #[test]
     fn test_integer_literal() {
-        let input = r#"
+        let input = r"
             @prefix ex: <http://example.org/> .
             ex:alice ex:age 30 .
-        "#;
+        ";
         let graph = parse_to_graph(input).unwrap();
 
         assert_eq!(graph.len(), 1);
@@ -1258,10 +1260,10 @@ mod tests {
 
     #[test]
     fn test_boolean_literal() {
-        let input = r#"
+        let input = r"
             @prefix ex: <http://example.org/> .
             ex:alice ex:active true .
-        "#;
+        ";
         let graph = parse_to_graph(input).unwrap();
 
         assert_eq!(graph.len(), 1);
@@ -1279,10 +1281,10 @@ mod tests {
 
     #[test]
     fn test_collection() {
-        let input = r#"
+        let input = r"
             @prefix ex: <http://example.org/> .
             ex:alice ex:friends ( ex:bob ex:charlie ) .
-        "#;
+        ";
         let graph = parse_to_graph(input).unwrap();
 
         assert_eq!(graph.len(), 2);
@@ -1293,10 +1295,10 @@ mod tests {
 
     #[test]
     fn test_empty_collection() {
-        let input = r#"
+        let input = r"
             @prefix ex: <http://example.org/> .
             ex:alice ex:friends () .
-        "#;
+        ";
         let graph = parse_to_graph(input).unwrap();
 
         assert_eq!(graph.len(), 0);

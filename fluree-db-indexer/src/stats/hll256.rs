@@ -209,7 +209,7 @@ mod tests {
     #[test]
     fn test_insert_single_value() {
         let mut sketch = HllSketch256::new();
-        sketch.insert_hash(0x123456789abcdef0);
+        sketch.insert_hash(0x1234_5678_9abc_def0);
 
         assert!(!sketch.is_empty());
         assert_eq!(sketch.estimate(), 1);
@@ -235,8 +235,7 @@ mod tests {
         // Add some margin for no bias correction: [700, 1300]
         assert!(
             (700..=1300).contains(&estimate),
-            "estimate {} not in expected range [700, 1300] for 1000 values",
-            estimate
+            "estimate {estimate} not in expected range [700, 1300] for 1000 values"
         );
     }
 
@@ -246,7 +245,7 @@ mod tests {
 
         // Insert same value 100 times
         for _ in 0..100 {
-            sketch.insert_hash(0xdeadbeefcafebabe);
+            sketch.insert_hash(0xdead_beef_cafe_babe);
         }
 
         // Should still estimate as 1
@@ -276,8 +275,7 @@ mod tests {
         // Using 3σ bounds with margin: [700, 1300]
         assert!(
             (700..=1300).contains(&estimate),
-            "merged estimate {} not in expected range [700, 1300]",
-            estimate
+            "merged estimate {estimate} not in expected range [700, 1300]"
         );
     }
 
@@ -302,9 +300,7 @@ mod tests {
         // Merged estimate should be >= original (monotone)
         assert!(
             est1_after >= est1_before,
-            "merge decreased estimate: {} -> {}",
-            est1_before,
-            est1_after
+            "merge decreased estimate: {est1_before} -> {est1_after}"
         );
     }
 
@@ -347,8 +343,7 @@ mod tests {
         // Using 3σ bounds with margin: [7000, 13000]
         assert!(
             (7000..=13000).contains(&estimate),
-            "large estimate {} not in expected range [7000, 13000]",
-            estimate
+            "large estimate {estimate} not in expected range [7000, 13000]"
         );
     }
 
@@ -358,8 +353,8 @@ mod tests {
         let mut sketch1 = HllSketch256::new();
         let mut sketch2 = HllSketch256::new();
 
-        sketch1.insert_hash(0x123456789abcdef0);
-        sketch2.insert_hash(0x123456789abcdef0);
+        sketch1.insert_hash(0x1234_5678_9abc_def0);
+        sketch2.insert_hash(0x1234_5678_9abc_def0);
 
         assert_eq!(sketch1, sketch2);
     }

@@ -415,7 +415,7 @@ impl PropertyJoinOperator {
                 };
                 schema_vec.push(*obj_var);
                 emitted_required.push(predicate.required);
-            };
+            }
         }
         let output_schema: Arc<[VarId]> =
             Arc::from(extend_schema(&schema_vec, &inline_ops).into_boxed_slice());
@@ -545,11 +545,7 @@ impl PropertyJoinOperator {
             .enumerate()
             .fold(1usize, |acc, (idx, values)| {
                 let factor = if values.is_empty() {
-                    if emitted_required.get(idx).copied().unwrap_or(true) {
-                        0
-                    } else {
-                        1
-                    }
+                    usize::from(!emitted_required.get(idx).copied().unwrap_or(true))
                 } else {
                     values.len()
                 };
@@ -857,7 +853,7 @@ impl Operator for PropertyJoinOperator {
                         } else {
                             // Existence-only: only update presence bit for subjects already tracked,
                             // unless this is the first scan (map empty) where we can seed subjects.
-                            for subject in subjects.iter() {
+                            for subject in subjects {
                                 if let Some(key) = Self::subject_key(ctx, subject)? {
                                     if order_pos > 0 && !all_subject_values.is_empty() {
                                         if let Some(entry) = all_subject_values.get_mut(&key) {

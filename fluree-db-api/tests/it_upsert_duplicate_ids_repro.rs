@@ -155,42 +155,42 @@ async fn repro_upsert_repeated_ids_create_duplicate_subject_ids() {
             );
 
             // Queries: variable-bound patterns must not duplicate solutions.
-            let q_var = r#"
+            let q_var = r"
                 PREFIX msg: <https://ns.flur.ee/messaging/>
                 PREFIX hr: <https://ns.flur.ee/hr/>
                 SELECT (COUNT(*) AS ?c)
                 WHERE { ?m msg:userId hr:employee/e1 . }
-            "#;
-            let q_var_bindings = r#"
+            ";
+            let q_var_bindings = r"
                 PREFIX msg: <https://ns.flur.ee/messaging/>
                 PREFIX hr: <https://ns.flur.ee/hr/>
                 SELECT ?m
                 WHERE { ?m msg:userId hr:employee/e1 . }
-            "#;
-            let q_const = r#"
+            ";
+            let q_const = r"
                 PREFIX msg: <https://ns.flur.ee/messaging/>
                 PREFIX hr: <https://ns.flur.ee/hr/>
                 SELECT (COUNT(*) AS ?c)
                 WHERE { msg:member/m1 msg:userId hr:employee/e1 . }
-            "#;
-            let q_type = r#"
+            ";
+            let q_type = r"
                 PREFIX msg: <https://ns.flur.ee/messaging/>
                 SELECT (COUNT(*) AS ?c)
                 WHERE { ?m a msg:Member . }
-            "#;
-            let q_join = r#"
+            ";
+            let q_join = r"
                 PREFIX msg: <https://ns.flur.ee/messaging/>
                 PREFIX hr: <https://ns.flur.ee/hr/>
                 SELECT (COUNT(?m) AS ?count) (COUNT(DISTINCT ?m) AS ?distinctMembers)
                 WHERE { ?m a msg:Member ; msg:userId hr:employee/e1 . }
-            "#;
-            let q_graph = r#"
+            ";
+            let q_graph = r"
                 PREFIX msg: <https://ns.flur.ee/messaging/>
                 PREFIX hr: <https://ns.flur.ee/hr/>
                 SELECT ?g (COUNT(*) AS ?c)
                 WHERE { GRAPH ?g { msg:member/m1 msg:userId hr:employee/e1 . } }
                 GROUP BY ?g
-            "#;
+            ";
 
             let var_count = query_sparql(&fluree2, &ledger2_loaded, q_var)
                 .await
@@ -228,7 +228,11 @@ async fn repro_upsert_repeated_ids_create_duplicate_subject_ids() {
             let raw_bindings = query_sparql(&fluree2, &ledger2_loaded, q_var_bindings)
                 .await
                 .unwrap();
-            let row_count: usize = raw_bindings.batches.iter().map(|b| b.len()).sum();
+            let row_count: usize = raw_bindings
+                .batches
+                .iter()
+                .map(fluree_db_api::Batch::len)
+                .sum();
             assert_eq!(row_count, 1);
 
             let bg = raw_bindings.binary_graph.as_ref();

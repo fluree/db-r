@@ -64,7 +64,7 @@ async fn run_add(
                 .get_remote(&rn)
                 .await
                 .map_err(|e| CliError::Config(e.to_string()))?
-                .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", name)))?
+                .ok_or_else(|| CliError::NotFound(format!("remote '{name}' not found")))?
         }
         None => {
             if remotes.is_empty() {
@@ -97,9 +97,8 @@ async fn run_add(
     let local_ledger_id = &local_alias;
     if fluree.ledger_exists(local_ledger_id).await.unwrap_or(false) {
         return Err(CliError::Config(format!(
-            "ledger '{}' already exists locally. \
-             Remove it first, or use a different local alias with `--remote-alias`.",
-            local_alias
+            "ledger '{local_alias}' already exists locally. \
+             Remove it first, or use a different local alias with `--remote-alias`."
         )));
     }
 
@@ -166,11 +165,10 @@ async fn run_add(
 fn run_remove(store: &TomlSyncConfigStore, ledger: &str) -> CliResult<()> {
     let removed = store.remove_tracked(ledger)?;
     if removed {
-        println!("Removed tracking for '{}'", ledger);
+        println!("Removed tracking for '{ledger}'");
     } else {
         return Err(CliError::NotFound(format!(
-            "ledger '{}' is not tracked",
-            ledger
+            "ledger '{ledger}' is not tracked"
         )));
     }
     Ok(())
@@ -199,7 +197,7 @@ fn run_list(store: &TomlSyncConfigStore) -> CliResult<()> {
         ]);
     }
 
-    println!("{}", table);
+    println!("{table}");
     Ok(())
 }
 
@@ -208,7 +206,7 @@ async fn run_status(store: &TomlSyncConfigStore, ledger: Option<&str>) -> CliRes
         Some(alias) => {
             let t = store
                 .get_tracked(alias)
-                .ok_or_else(|| CliError::NotFound(format!("ledger '{}' is not tracked", alias)))?;
+                .ok_or_else(|| CliError::NotFound(format!("ledger '{alias}' is not tracked")))?;
             vec![t]
         }
         None => {
@@ -261,22 +259,22 @@ async fn run_status(store: &TomlSyncConfigStore, ledger: Option<&str>) -> CliRes
 
         match client.ledger_info(&t.remote_alias, None).await {
             Ok(info) => {
-                if let Some(t_val) = info.get("t").and_then(|v| v.as_i64()) {
-                    println!("  t: {}", t_val);
+                if let Some(t_val) = info.get("t").and_then(serde_json::Value::as_i64) {
+                    println!("  t: {t_val}");
                 }
                 if let Some(commit) = info
                     .get("commitId")
                     .and_then(|v| v.as_str())
                     .or_else(|| info.get("commit_head_id").and_then(|v| v.as_str()))
                 {
-                    println!("  commit: {}", commit);
+                    println!("  commit: {commit}");
                 }
                 if let Some(index) = info
                     .get("indexId")
                     .and_then(|v| v.as_str())
                     .or_else(|| info.get("index_head_id").and_then(|v| v.as_str()))
                 {
-                    println!("  index:  {}", index);
+                    println!("  index:  {index}");
                 }
                 println!("  status: {}", "reachable".green());
             }

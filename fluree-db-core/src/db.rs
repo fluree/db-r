@@ -318,15 +318,13 @@ impl LedgerSnapshot {
             } // default graph has no Sid
             let sid = self.encode_iri(iri).ok_or_else(|| {
                 Error::invalid_index(format!(
-                    "graph IRI '{}' (g_id={}) has no matching namespace prefix \
-                     — namespace_codes may be incomplete",
-                    iri, g_id
+                    "graph IRI '{iri}' (g_id={g_id}) has no matching namespace prefix \
+                     — namespace_codes may be incomplete"
                 ))
             })?;
             if let Some(prev_g_id) = map.insert(sid.clone(), g_id) {
                 return Err(Error::invalid_index(format!(
-                    "Sid collision: graph IRIs for g_id={} and g_id={} encode to same Sid '{}'",
-                    prev_g_id, g_id, sid
+                    "Sid collision: graph IRIs for g_id={prev_g_id} and g_id={g_id} encode to same Sid '{sid}'"
                 )));
             }
         }
@@ -391,9 +389,8 @@ impl LedgerSnapshot {
         if let Some(existing) = self.namespace_codes.get(&code) {
             if existing != &prefix {
                 return Err(Error::invalid_index(format!(
-                    "namespace bimap conflict: code {} already maps to {:?} \
-                     but {:?} was requested",
-                    code, existing, prefix
+                    "namespace bimap conflict: code {code} already maps to {existing:?} \
+                     but {prefix:?} was requested"
                 )));
             }
             return Ok(false);
@@ -401,9 +398,8 @@ impl LedgerSnapshot {
         if let Some(&existing_code) = self.namespace_reverse.get(&prefix) {
             if existing_code != code {
                 return Err(Error::invalid_index(format!(
-                    "namespace bimap conflict: prefix {:?} already maps to code {} \
-                     but code {} was requested",
-                    prefix, existing_code, code
+                    "namespace bimap conflict: prefix {prefix:?} already maps to code {existing_code} \
+                     but code {code} was requested"
                 )));
             }
             return Ok(false);
@@ -438,8 +434,7 @@ impl LedgerSnapshot {
             if let Some(existing) = self.namespace_codes.get(&code) {
                 if existing != prefix {
                     return Err(Error::invalid_index(format!(
-                        "namespace conflict: code {} maps to {:?} but delta has {:?}",
-                        code, existing, prefix
+                        "namespace conflict: code {code} maps to {existing:?} but delta has {prefix:?}"
                     )));
                 }
                 continue;
@@ -448,8 +443,7 @@ impl LedgerSnapshot {
             if let Some(&existing_code) = self.namespace_reverse.get(prefix.as_str()) {
                 if existing_code != code {
                     return Err(Error::invalid_index(format!(
-                        "namespace conflict: prefix {:?} has code {} but delta has code {}",
-                        prefix, existing_code, code
+                        "namespace conflict: prefix {prefix:?} has code {existing_code} but delta has code {code}"
                     )));
                 }
                 continue;

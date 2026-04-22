@@ -96,7 +96,7 @@ impl GeoPointBits {
 impl fmt::Debug for GeoPointBits {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (lat, lng) = ObjKey::from_u64(self.0).decode_geo_point();
-        write!(f, "GeoPointBits({:.6}, {:.6})", lat, lng)
+        write!(f, "GeoPointBits({lat:.6}, {lng:.6})")
     }
 }
 
@@ -104,7 +104,7 @@ impl fmt::Display for GeoPointBits {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // WKT format: POINT(lng lat) - note: longitude first!
         let (lat, lng) = ObjKey::from_u64(self.0).decode_geo_point();
-        write!(f, "POINT({} {})", lng, lat)
+        write!(f, "POINT({lng} {lat})")
     }
 }
 
@@ -963,36 +963,36 @@ impl fmt::Display for FlakeValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FlakeValue::Null => write!(f, "null"),
-            FlakeValue::Ref(sid) => write!(f, "ref:{}", sid),
-            FlakeValue::Boolean(b) => write!(f, "{}", b),
-            FlakeValue::Long(l) => write!(f, "{}", l),
-            FlakeValue::Double(d) => write!(f, "{}", d),
-            FlakeValue::BigInt(v) => write!(f, "{}", v),
-            FlakeValue::Decimal(v) => write!(f, "{}", v),
-            FlakeValue::DateTime(v) => write!(f, "{}", v),
-            FlakeValue::Date(v) => write!(f, "{}", v),
-            FlakeValue::Time(v) => write!(f, "{}", v),
-            FlakeValue::GYear(v) => write!(f, "{}", v),
-            FlakeValue::GYearMonth(v) => write!(f, "{}", v),
-            FlakeValue::GMonth(v) => write!(f, "{}", v),
-            FlakeValue::GDay(v) => write!(f, "{}", v),
-            FlakeValue::GMonthDay(v) => write!(f, "{}", v),
-            FlakeValue::YearMonthDuration(v) => write!(f, "{}", v),
-            FlakeValue::DayTimeDuration(v) => write!(f, "{}", v),
-            FlakeValue::Duration(v) => write!(f, "{}", v),
-            FlakeValue::String(s) => write!(f, "\"{}\"", s),
-            FlakeValue::Json(s) => write!(f, "@json:{}", s),
+            FlakeValue::Ref(sid) => write!(f, "ref:{sid}"),
+            FlakeValue::Boolean(b) => write!(f, "{b}"),
+            FlakeValue::Long(l) => write!(f, "{l}"),
+            FlakeValue::Double(d) => write!(f, "{d}"),
+            FlakeValue::BigInt(v) => write!(f, "{v}"),
+            FlakeValue::Decimal(v) => write!(f, "{v}"),
+            FlakeValue::DateTime(v) => write!(f, "{v}"),
+            FlakeValue::Date(v) => write!(f, "{v}"),
+            FlakeValue::Time(v) => write!(f, "{v}"),
+            FlakeValue::GYear(v) => write!(f, "{v}"),
+            FlakeValue::GYearMonth(v) => write!(f, "{v}"),
+            FlakeValue::GMonth(v) => write!(f, "{v}"),
+            FlakeValue::GDay(v) => write!(f, "{v}"),
+            FlakeValue::GMonthDay(v) => write!(f, "{v}"),
+            FlakeValue::YearMonthDuration(v) => write!(f, "{v}"),
+            FlakeValue::DayTimeDuration(v) => write!(f, "{v}"),
+            FlakeValue::Duration(v) => write!(f, "{v}"),
+            FlakeValue::String(s) => write!(f, "\"{s}\""),
+            FlakeValue::Json(s) => write!(f, "@json:{s}"),
             FlakeValue::Vector(v) => {
                 write!(f, "[")?;
                 for (i, val) in v.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", val)?;
+                    write!(f, "{val}")?;
                 }
                 write!(f, "]")
             }
-            FlakeValue::GeoPoint(bits) => write!(f, "{}", bits),
+            FlakeValue::GeoPoint(bits) => write!(f, "{bits}"),
         }
     }
 }
@@ -1127,7 +1127,7 @@ pub fn parse_integer_string(s: &str) -> Result<FlakeValue, String> {
                 FlakeValue::BigInt(Box::new(bi))
             }
         })
-        .map_err(|e| format!("Invalid integer '{}': {}", s, e))
+        .map_err(|e| format!("Invalid integer '{s}': {e}"))
 }
 
 /// Parse a decimal value, using f64 when safe, BigDecimal for exact representation.
@@ -1174,7 +1174,7 @@ pub fn parse_decimal_string(s: &str) -> Result<FlakeValue, String> {
     // Too many digits or special case — use BigDecimal
     s.parse::<BigDecimal>()
         .map(|bd| FlakeValue::Decimal(Box::new(bd)))
-        .map_err(|e| format!("Invalid decimal '{}': {}", s, e))
+        .map_err(|e| format!("Invalid decimal '{s}': {e}"))
 }
 
 /// Parse a double/float value.
@@ -1190,7 +1190,7 @@ pub fn parse_double(value: &serde_json::Value) -> Result<FlakeValue, String> {
         serde_json::Value::String(s) => s
             .parse::<f64>()
             .map(FlakeValue::Double)
-            .map_err(|e| format!("Invalid double '{}': {}", s, e)),
+            .map_err(|e| format!("Invalid double '{s}': {e}")),
         _ => Err("Expected number or string for double".to_string()),
     }
 }
@@ -1198,7 +1198,7 @@ pub fn parse_double(value: &serde_json::Value) -> Result<FlakeValue, String> {
 /// Count significant digits in a numeric string (for precision checking).
 fn count_significant_digits(s: &str) -> usize {
     s.chars()
-        .filter(|c| c.is_ascii_digit())
+        .filter(char::is_ascii_digit)
         .skip_while(|&c| c == '0') // Skip leading zeros
         .count()
 }
@@ -1474,14 +1474,17 @@ mod tests {
                 FlakeValue::Long(-1),
                 FlakeValue::Double(0.0),
                 FlakeValue::Double(1.0),
-                FlakeValue::String("".to_string()),
+                FlakeValue::String(String::new()),
                 FlakeValue::String("a".to_string()),
                 FlakeValue::String("b".to_string()),
                 FlakeValue::Ref(Sid::new(1, "test")),
                 FlakeValue::Ref(Sid::new(2, "test")),
             ];
 
-            let hashes: Vec<u64> = values.iter().map(|v| v.canonical_hash()).collect();
+            let hashes: Vec<u64> = values
+                .iter()
+                .map(super::super::FlakeValue::canonical_hash)
+                .collect();
 
             // Check for uniqueness (no collisions in this small set)
             let unique_count = {

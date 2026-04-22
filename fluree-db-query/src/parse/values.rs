@@ -159,8 +159,7 @@ fn parse_values_cell(cell: &JsonValue, ctx: &JsonLdParseCtx) -> Result<Unresolve
                 })
             } else {
                 Err(ParseError::InvalidWhere(format!(
-                    "Unsupported number type in values: {}",
-                    n
+                    "Unsupported number type in values: {n}"
                 )))
             }
         }
@@ -256,8 +255,7 @@ fn parse_literal_value(value_val: &JsonValue, dt_iri: Option<&str>) -> Result<Li
                 Ok(LiteralValue::Double(f))
             } else {
                 Err(ParseError::InvalidWhere(format!(
-                    "Unsupported number type in values: {}",
-                    n
+                    "Unsupported number type in values: {n}"
                 )))
             }
         }

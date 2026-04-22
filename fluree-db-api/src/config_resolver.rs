@@ -93,7 +93,7 @@ pub async fn resolve_ledger_config(
             .map(|sid| {
                 let iri = snapshot
                     .decode_sid(&sid)
-                    .unwrap_or_else(|| format!("<unknown:{:?}>", sid));
+                    .unwrap_or_else(|| format!("<unknown:{sid:?}>"));
                 (iri, sid)
             })
             .collect();

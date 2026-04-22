@@ -159,12 +159,10 @@ impl ServiceOperator {
                 if self.service.silent {
                     // SILENT: return empty result for unknown ledgers
                     return Ok(());
-                } else {
-                    return Err(QueryError::InvalidQuery(format!(
-                        "SERVICE endpoint references unknown ledger '{}' (no dataset configured)",
-                        full_ledger_ref
-                    )));
                 }
+                return Err(QueryError::InvalidQuery(format!(
+                    "SERVICE endpoint references unknown ledger '{full_ledger_ref}' (no dataset configured)"
+                )));
             }
             None // Signal to use ctx directly (self-reference)
         };
@@ -431,8 +429,7 @@ impl Operator for ServiceOperator {
                                 );
                             } else {
                                 return Err(QueryError::InvalidQuery(format!(
-                                    "Invalid fluree:ledger endpoint format: '{}'. Expected 'fluree:ledger:<alias>' or 'fluree:ledger:<alias>:<branch>'",
-                                    iri
+                                    "Invalid fluree:ledger endpoint format: '{iri}'. Expected 'fluree:ledger:<alias>' or 'fluree:ledger:<alias>:<branch>'"
                                 )));
                             }
                         } else if is_fluree_remote_endpoint(iri) {
@@ -452,8 +449,7 @@ impl Operator for ServiceOperator {
                                 );
                             } else {
                                 return Err(QueryError::InvalidQuery(format!(
-                                    "Invalid fluree:remote endpoint format: '{}'. Expected 'fluree:remote:<connection>/<ledger>'",
-                                    iri
+                                    "Invalid fluree:remote endpoint format: '{iri}'. Expected 'fluree:remote:<connection>/<ledger>'"
                                 )));
                             }
                         } else {
@@ -465,8 +461,7 @@ impl Operator for ServiceOperator {
                                 );
                             } else {
                                 return Err(QueryError::InvalidQuery(format!(
-                                    "External SERVICE endpoints not supported. Use 'fluree:ledger:<alias>' for local ledger queries or 'fluree:remote:<connection>/<ledger>' for remote Fluree instances. Got: '{}'",
-                                    iri
+                                    "External SERVICE endpoints not supported. Use 'fluree:ledger:<alias>' for local ledger queries or 'fluree:remote:<connection>/<ledger>' for remote Fluree instances. Got: '{iri}'"
                                 )));
                             }
                         }
@@ -497,8 +492,7 @@ impl Operator for ServiceOperator {
                                         );
                                     } else {
                                         return Err(QueryError::InvalidQuery(format!(
-                                            "Invalid fluree:ledger endpoint format: '{}'",
-                                            bound_iri
+                                            "Invalid fluree:ledger endpoint format: '{bound_iri}'"
                                         )));
                                     }
                                 } else if is_fluree_remote_endpoint(&bound_iri) {
@@ -520,8 +514,7 @@ impl Operator for ServiceOperator {
                                         );
                                     } else {
                                         return Err(QueryError::InvalidQuery(format!(
-                                            "Invalid fluree:remote endpoint format: '{}'",
-                                            bound_iri
+                                            "Invalid fluree:remote endpoint format: '{bound_iri}'"
                                         )));
                                     }
                                 } else if silent {
@@ -531,8 +524,7 @@ impl Operator for ServiceOperator {
                                     );
                                 } else {
                                     return Err(QueryError::InvalidQuery(format!(
-                                        "External SERVICE endpoints not supported: '{}'",
-                                        bound_iri
+                                        "External SERVICE endpoints not supported: '{bound_iri}'"
                                     )));
                                 }
                             }
@@ -547,8 +539,7 @@ impl Operator for ServiceOperator {
                                     .collect();
 
                                 for ledger_id in ledger_ides {
-                                    let endpoint_iri =
-                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_id);
+                                    let endpoint_iri = format!("{FLUREE_LEDGER_PREFIX}{ledger_id}");
                                     self.execute_against_ledger(
                                         ctx,
                                         &parent_batch,
@@ -563,8 +554,7 @@ impl Operator for ServiceOperator {
                                 // Also try default graphs
                                 for gref in ds.default_graphs() {
                                     let ledger_id = &gref.ledger_id;
-                                    let endpoint_iri =
-                                        format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_id);
+                                    let endpoint_iri = format!("{FLUREE_LEDGER_PREFIX}{ledger_id}");
                                     self.execute_against_ledger(
                                         ctx,
                                         &parent_batch,
@@ -578,7 +568,7 @@ impl Operator for ServiceOperator {
                             } else {
                                 // No dataset - use current db as only service
                                 let ledger_id = &ctx.active_snapshot.ledger_id;
-                                let endpoint_iri = format!("{}{}", FLUREE_LEDGER_PREFIX, ledger_id);
+                                let endpoint_iri = format!("{FLUREE_LEDGER_PREFIX}{ledger_id}");
                                 self.execute_against_ledger(
                                     ctx,
                                     &parent_batch,

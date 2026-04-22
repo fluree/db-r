@@ -6,7 +6,7 @@ use crate::lex::TokenKind;
 
 use super::expr::parse_expression;
 
-impl<'a> super::Parser<'a> {
+impl super::Parser<'_> {
     /// Parse a SELECT query.
     pub(super) fn parse_select_query(&mut self) -> Option<SelectQuery> {
         let start = self.stream.current_span();

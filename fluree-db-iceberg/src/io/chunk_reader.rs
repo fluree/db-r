@@ -143,7 +143,7 @@ impl<S: SendIcebergStorage + 'static> RangeBackedChunkReader<S> {
         // Check cache first
         {
             let cache = self.cache.lock().map_err(|e| {
-                parquet::errors::ParquetError::General(format!("Cache lock poisoned: {}", e))
+                parquet::errors::ParquetError::General(format!("Cache lock poisoned: {e}"))
             })?;
 
             for cached in cache.iter() {
@@ -192,15 +192,14 @@ impl<S: SendIcebergStorage + 'static> RangeBackedChunkReader<S> {
             .block_on(async move { storage.read_range(&path_for_fetch, range).await })
             .map_err(|e| {
                 parquet::errors::ParquetError::General(format!(
-                    "Failed to read range [{}, {}) from {}: {}",
-                    aligned_start, aligned_end, path_for_err, e
+                    "Failed to read range [{aligned_start}, {aligned_end}) from {path_for_err}: {e}"
                 ))
             })?;
 
         // Cache the aligned result
         {
             let mut cache = self.cache.lock().map_err(|e| {
-                parquet::errors::ParquetError::General(format!("Cache lock poisoned: {}", e))
+                parquet::errors::ParquetError::General(format!("Cache lock poisoned: {e}"))
             })?;
 
             // Evict oldest entry if cache is full

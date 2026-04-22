@@ -260,7 +260,7 @@ impl CellIndexBuilder {
         F: FnMut(&[u8]) -> Result<String>,
     {
         // Sort entries by index order
-        self.entries.sort_by(|a, b| a.cmp_index(b));
+        self.entries.sort_by(CellEntry::cmp_index);
 
         let mut leaflets = Vec::new();
         let entries_per_chunk = self.chunk_target_bytes / CellEntry::SIZE;
@@ -404,7 +404,7 @@ impl CellIndexReader {
         }
 
         // Total capacity hint
-        let total: usize = lists.iter().map(|l| l.len()).sum();
+        let total: usize = lists.iter().map(std::vec::Vec::len).sum();
         let mut result = Vec::with_capacity(total);
 
         // Heap of (entry, list_index, position_in_list)
@@ -451,8 +451,7 @@ impl CellIndexReader {
         let version = data[4];
         if version != LEAFLET_VERSION {
             return Err(SpatialError::FormatError(format!(
-                "unsupported leaflet version: {} (only v{} supported)",
-                version, LEAFLET_VERSION
+                "unsupported leaflet version: {version} (only v{LEAFLET_VERSION} supported)"
             )));
         }
 
@@ -474,8 +473,7 @@ impl CellIndexReader {
         let actual_crc_c = crc32fast::hash(compressed);
         if actual_crc_c != expected_crc_compressed {
             return Err(SpatialError::FormatError(format!(
-                "compressed CRC32 mismatch: expected {:08x}, got {:08x}",
-                expected_crc_compressed, actual_crc_c
+                "compressed CRC32 mismatch: expected {expected_crc_compressed:08x}, got {actual_crc_c:08x}"
             )));
         }
 
@@ -487,8 +485,7 @@ impl CellIndexReader {
         let actual_crc_u = crc32fast::hash(&decompressed);
         if actual_crc_u != expected_crc_uncompressed {
             return Err(SpatialError::FormatError(format!(
-                "uncompressed CRC32 mismatch: expected {:08x}, got {:08x}",
-                expected_crc_uncompressed, actual_crc_u
+                "uncompressed CRC32 mismatch: expected {expected_crc_uncompressed:08x}, got {actual_crc_u:08x}"
             )));
         }
 
@@ -549,7 +546,7 @@ mod tests {
 
         let manifest = builder
             .build(|data| {
-                let hash = format!("chunk-{}", chunk_id);
+                let hash = format!("chunk-{chunk_id}");
                 chunk_id += 1;
                 chunks.insert(hash.clone(), data.to_vec());
                 Ok(hash)

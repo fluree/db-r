@@ -10,7 +10,7 @@
 // ============================================================================
 
 /// Private-use multicodec base offset for Fluree.
-const FLUREE_CODEC_BASE: u64 = 0x300000;
+const FLUREE_CODEC_BASE: u64 = 0x0030_0000;
 
 /// Multicodec for Fluree commit blobs.
 pub const CODEC_FLUREE_COMMIT: u64 = FLUREE_CODEC_BASE + 1;

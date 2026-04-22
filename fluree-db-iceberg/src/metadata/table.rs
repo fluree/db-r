@@ -63,14 +63,14 @@ impl TableMetadata {
     /// Parse metadata from JSON bytes.
     pub fn from_json(json: &[u8]) -> crate::error::Result<Self> {
         serde_json::from_slice(json).map_err(|e| {
-            crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {}", e))
+            crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {e}"))
         })
     }
 
     /// Parse metadata from JSON string.
     pub fn from_json_str(json: &str) -> crate::error::Result<Self> {
         serde_json::from_str(json).map_err(|e| {
-            crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {}", e))
+            crate::error::IcebergError::Metadata(format!("Failed to parse metadata: {e}"))
         })
     }
 
@@ -318,10 +318,10 @@ mod tests {
         let metadata = TableMetadata::from_json_str(SAMPLE_METADATA).unwrap();
 
         let snap1 = metadata.snapshot(1).unwrap();
-        assert_eq!(snap1.timestamp_ms, 1699000000000);
+        assert_eq!(snap1.timestamp_ms, 1_699_000_000_000);
 
         let snap2 = metadata.snapshot(2).unwrap();
-        assert_eq!(snap2.timestamp_ms, 1700000000000);
+        assert_eq!(snap2.timestamp_ms, 1_700_000_000_000);
 
         assert!(metadata.snapshot(999).is_none());
     }

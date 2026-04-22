@@ -773,15 +773,11 @@ impl ServerConfig {
         let mut configs = Vec::new();
         for entry in &self.jwks_issuers {
             let (issuer, jwks_url) = entry.split_once('=').ok_or_else(|| {
-                format!(
-                    "Invalid --jwks-issuer format: '{}'. Expected 'issuer_url=jwks_url'",
-                    entry
-                )
+                format!("Invalid --jwks-issuer format: '{entry}'. Expected 'issuer_url=jwks_url'")
             })?;
             if issuer.is_empty() || jwks_url.is_empty() {
                 return Err(format!(
-                    "Invalid --jwks-issuer format: '{}'. Both issuer_url and jwks_url must be non-empty",
-                    entry
+                    "Invalid --jwks-issuer format: '{entry}'. Both issuer_url and jwks_url must be non-empty"
                 ));
             }
             configs.push(crate::jwks::JwksIssuerConfig {
@@ -940,7 +936,7 @@ impl ServerConfig {
         self.peer_events_url.clone().or_else(|| {
             self.tx_server_url
                 .as_ref()
-                .map(|base| format!("{}/v1/fluree/events", base))
+                .map(|base| format!("{base}/v1/fluree/events"))
         })
     }
 

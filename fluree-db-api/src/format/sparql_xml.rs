@@ -127,10 +127,9 @@ pub fn format(
                     )?;
                 }
                 break;
-            } else {
-                for row in disaggregated {
-                    append_result_row(result, &row, &head_vars, &result.vars, compactor, &mut out)?;
-                }
+            }
+            for row in disaggregated {
+                append_result_row(result, &row, &head_vars, &result.vars, compactor, &mut out)?;
             }
         }
         if select_one {

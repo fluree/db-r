@@ -114,20 +114,11 @@ async fn geo_point_roundtrip_preserves_wkt_format() {
         .expect("@type should be string");
 
     assert_eq!(loc_type, "geo:wktLiteral");
-    assert!(
-        loc.starts_with("POINT("),
-        "Expected POINT WKT, got: {}",
-        loc
-    );
-    assert!(
-        loc.contains("2.35"),
-        "Expected longitude ~2.35, got: {}",
-        loc
-    );
+    assert!(loc.starts_with("POINT("), "Expected POINT WKT, got: {loc}");
+    assert!(loc.contains("2.35"), "Expected longitude ~2.35, got: {loc}");
     assert!(
         loc.contains("48.85"),
-        "Expected latitude ~48.85, got: {}",
-        loc
+        "Expected latitude ~48.85, got: {loc}"
     );
 }
 
@@ -214,9 +205,8 @@ async fn geof_distance_in_bind_calculates_distances() {
 
     // Paris to London is approximately 343.5 km (343500 meters)
     assert!(
-        (distance - 343500.0).abs() < 5000.0,
-        "Expected ~343.5km, got {} meters",
-        distance
+        (distance - 343_500.0).abs() < 5000.0,
+        "Expected ~343.5km, got {distance} meters"
     );
 }
 
@@ -255,9 +245,8 @@ async fn geof_distance_with_literal_wkt_points() {
     // For single-variable select, the value is directly in rows[0] (not rows[0][0])
     let distance = rows[0].as_f64().expect("distance should be number");
     assert!(
-        (distance - 343500.0).abs() < 5000.0,
-        "Expected ~343.5km between Paris and London WKT literals, got {} meters",
-        distance
+        (distance - 343_500.0).abs() < 5000.0,
+        "Expected ~343.5km between Paris and London WKT literals, got {distance} meters"
     );
 }
 
@@ -319,8 +308,7 @@ async fn non_point_wkt_stored_as_string() {
     assert_eq!(path_type, "geo:wktLiteral");
     assert!(
         path.contains("LINESTRING"),
-        "Path should be LINESTRING, got: {}",
-        path
+        "Path should be LINESTRING, got: {path}"
     );
 }
 
@@ -331,7 +319,7 @@ async fn geof_distance_via_sparql() {
     let ledger = seed_cities(&fluree, "geo:sparql").await;
 
     // SPARQL query using geof:distance
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/>
         PREFIX geo: <http://www.opengis.net/ont/geosparql#>
         PREFIX geof: <http://www.opengis.net/def/function/geosparql/>
@@ -342,7 +330,7 @@ async fn geof_distance_via_sparql() {
             ex:london ex:location ?londonLoc .
             BIND(geof:distance(?parisLoc, ?londonLoc) AS ?distance)
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, sparql)
         .await
@@ -357,8 +345,7 @@ async fn geof_distance_via_sparql() {
 
     // Paris to London is approximately 343.5 km (343500 meters)
     assert!(
-        (distance - 343500.0).abs() < 5000.0,
-        "Expected ~343.5km via SPARQL, got {} meters",
-        distance
+        (distance - 343_500.0).abs() < 5000.0,
+        "Expected ~343.5km via SPARQL, got {distance} meters"
     );
 }

@@ -149,7 +149,7 @@ impl TrackedErrorResponse {
 impl QueryResult {
     /// Get total row count across all batches
     pub fn row_count(&self) -> usize {
-        self.batches.iter().map(|b| b.len()).sum()
+        self.batches.iter().map(fluree_db_query::Batch::len).sum()
     }
 
     /// Check if results are empty

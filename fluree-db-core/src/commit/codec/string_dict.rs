@@ -103,9 +103,8 @@ impl StringDict {
                     "string bytes extend past dictionary end".into(),
                 )
             })?;
-            let s = std::str::from_utf8(bytes).map_err(|e| {
-                CommitCodecError::InvalidDictionary(format!("invalid UTF-8: {}", e))
-            })?;
+            let s = std::str::from_utf8(bytes)
+                .map_err(|e| CommitCodecError::InvalidDictionary(format!("invalid UTF-8: {e}")))?;
             entries.push(s.to_string());
         }
 
@@ -120,13 +119,16 @@ impl StringDict {
             ));
         }
         let idx = (local_id - 1) as usize;
-        self.entries.get(idx).map(|s| s.as_str()).ok_or_else(|| {
-            CommitCodecError::InvalidDictionary(format!(
-                "local_id {} out of range (dict has {} entries)",
-                local_id,
-                self.entries.len()
-            ))
-        })
+        self.entries
+            .get(idx)
+            .map(std::string::String::as_str)
+            .ok_or_else(|| {
+                CommitCodecError::InvalidDictionary(format!(
+                    "local_id {} out of range (dict has {} entries)",
+                    local_id,
+                    self.entries.len()
+                ))
+            })
     }
 
     /// Number of entries in the dictionary.
@@ -235,7 +237,7 @@ mod tests {
     fn test_large_dict() {
         let mut builder = StringDictBuilder::new();
         for i in 0..1000 {
-            builder.insert(&format!("item/{}", i));
+            builder.insert(&format!("item/{i}"));
         }
         assert_eq!(builder.len(), 1000);
 

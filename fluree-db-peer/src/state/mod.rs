@@ -249,9 +249,9 @@ mod tests {
         LedgerRecord {
             ledger_id: ledger_id.to_string(),
             branch: Some("main".to_string()),
-            commit_head_id: Some(format!("commit-cid:{}", commit_t)),
+            commit_head_id: Some(format!("commit-cid:{commit_t}")),
             commit_t,
-            index_head_id: Some(format!("index-cid:{}", index_t)),
+            index_head_id: Some(format!("index-cid:{index_t}")),
             index_t,
             retracted: false,
         }
@@ -265,7 +265,7 @@ mod tests {
             source_type: Some("fulltext".to_string()),
             config: Some(r#"{"analyzer": "standard"}"#.to_string()),
             dependencies: vec![],
-            index_id: Some(format!("gs-cid:{}", index_t)),
+            index_id: Some(format!("gs-cid:{index_t}")),
             index_t,
             retracted: false,
         }

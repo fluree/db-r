@@ -54,7 +54,7 @@ pub fn format_data_model_markdown(alias: &str, info: &JsonValue) -> String {
             // Total instances (sum of all class counts)
             let total_instances: i64 = classes
                 .values()
-                .filter_map(|c| c.get("count").and_then(|v| v.as_i64()))
+                .filter_map(|c| c.get("count").and_then(serde_json::Value::as_i64))
                 .sum();
             lines.push(format!(
                 "- Total instances: {}",
@@ -68,10 +68,10 @@ pub fn format_data_model_markdown(alias: &str, info: &JsonValue) -> String {
         }
 
         // Flakes and size
-        if let Some(flakes) = stats.get("flakes").and_then(|v| v.as_i64()) {
+        if let Some(flakes) = stats.get("flakes").and_then(serde_json::Value::as_i64) {
             lines.push(format!("- Triples (flakes): {}", format_number(flakes)));
         }
-        if let Some(size) = stats.get("size").and_then(|v| v.as_i64()) {
+        if let Some(size) = stats.get("size").and_then(serde_json::Value::as_i64) {
             lines.push(format!("- Size: {}", format_bytes(size)));
         }
 
@@ -88,8 +88,14 @@ pub fn format_data_model_markdown(alias: &str, info: &JsonValue) -> String {
             // Sort classes by instance count descending
             let mut class_vec: Vec<_> = classes.iter().collect();
             class_vec.sort_by(|a, b| {
-                let count_a = a.1.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
-                let count_b = b.1.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+                let count_a =
+                    a.1.get("count")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0);
+                let count_b =
+                    b.1.get("count")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0);
                 count_b.cmp(&count_a)
             });
 
@@ -121,7 +127,7 @@ fn format_class(
 ) {
     let count = class_data
         .get("count")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
 
     lines.push(format!(
@@ -177,13 +183,13 @@ fn get_property_count(prop_data: &JsonValue) -> i64 {
     let types_count: i64 = prop_data
         .get("types")
         .and_then(|v| v.as_object())
-        .map(|types| types.values().filter_map(|v| v.as_i64()).sum())
+        .map(|types| types.values().filter_map(serde_json::Value::as_i64).sum())
         .unwrap_or(0);
 
     let refs_count: i64 = prop_data
         .get("ref-classes")
         .and_then(|v| v.as_object())
-        .map(|refs| refs.values().filter_map(|v| v.as_i64()).sum())
+        .map(|refs| refs.values().filter_map(serde_json::Value::as_i64).sum())
         .unwrap_or(0);
 
     types_count + refs_count
@@ -191,7 +197,7 @@ fn get_property_count(prop_data: &JsonValue) -> i64 {
 
 /// Format a single property within a class
 fn format_property(lines: &mut Vec<String>, index: usize, prop_iri: &str, prop_data: &JsonValue) {
-    lines.push(format!("{}. {}", index, prop_iri));
+    lines.push(format!("{index}. {prop_iri}"));
 
     let mut type_info: Vec<String> = Vec::new();
 
@@ -221,7 +227,7 @@ fn format_property(lines: &mut Vec<String>, index: usize, prop_iri: &str, prop_d
     if let Some(langs) = prop_data.get("langs").and_then(|v| v.as_object()) {
         let lang_info: Vec<_> = langs
             .iter()
-            .filter_map(|(lang, count)| count.as_i64().map(|c| format!("@{} ({})", lang, c)))
+            .filter_map(|(lang, count)| count.as_i64().map(|c| format!("@{lang} ({c})")))
             .collect();
         if !lang_info.is_empty() {
             type_info.push(format!("langString: {}", lang_info.join(", ")));
@@ -255,7 +261,7 @@ fn format_bytes(bytes: i64) -> String {
     const GB: i64 = MB * 1024;
 
     if bytes < KB {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes < MB {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else if bytes < GB {
@@ -275,8 +281,8 @@ mod tests {
         assert_eq!(format_number(0), "0");
         assert_eq!(format_number(999), "999");
         assert_eq!(format_number(1000), "1,000");
-        assert_eq!(format_number(1000000), "1,000,000");
-        assert_eq!(format_number(1234567890), "1,234,567,890");
+        assert_eq!(format_number(1_000_000), "1,000,000");
+        assert_eq!(format_number(1_234_567_890), "1,234,567,890");
     }
 
     #[test]
@@ -285,8 +291,8 @@ mod tests {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(1024), "1.0 KB");
         assert_eq!(format_bytes(1536), "1.5 KB");
-        assert_eq!(format_bytes(1048576), "1.0 MB");
-        assert_eq!(format_bytes(1073741824), "1.0 GB");
+        assert_eq!(format_bytes(1_048_576), "1.0 MB");
+        assert_eq!(format_bytes(1_073_741_824), "1.0 GB");
     }
 
     #[test]

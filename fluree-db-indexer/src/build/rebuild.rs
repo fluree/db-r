@@ -222,7 +222,7 @@ where
                         let store = fetch_store.clone();
                         async move {
                             let bytes = store.get(&cid).await.map_err(|e| {
-                                IndexerError::StorageRead(format!("read {}: {}", cid, e))
+                                IndexerError::StorageRead(format!("read {cid}: {e}"))
                             })?;
                             Ok::<_, IndexerError>((i, cid, bytes))
                         }
@@ -235,10 +235,16 @@ where
                 // If chunk is non-empty and near budget, flush before processing
                 // the next commit to avoid memory bloat on large commits.
                 if !chunk.is_empty() && chunk.flake_count() >= chunk_max_flakes {
-                    let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
+                    let spatial_end = shared
+                        .spatial_hook
+                        .as_ref()
+                        .map_or(0, super::super::spatial_hook::SpatialHook::entry_count);
                     spatial_chunk_ranges.push((spatial_cursor, spatial_end));
                     spatial_cursor = spatial_end;
-                    let fulltext_end = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                    let fulltext_end = shared
+                        .fulltext_hook
+                        .as_ref()
+                        .map_or(0, super::super::fulltext_hook::FulltextHook::entry_count);
                     fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
                     fulltext_cursor = fulltext_end;
                     chunks.push(std::mem::take(&mut chunk));
@@ -273,10 +279,16 @@ where
 
                 // Post-commit flush check.
                 if chunk.flake_count() >= chunk_max_flakes {
-                    let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
+                    let spatial_end = shared
+                        .spatial_hook
+                        .as_ref()
+                        .map_or(0, super::super::spatial_hook::SpatialHook::entry_count);
                     spatial_chunk_ranges.push((spatial_cursor, spatial_end));
                     spatial_cursor = spatial_end;
-                    let fulltext_end = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                    let fulltext_end = shared
+                        .fulltext_hook
+                        .as_ref()
+                        .map_or(0, super::super::fulltext_hook::FulltextHook::entry_count);
                     fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
                     fulltext_cursor = fulltext_end;
                     chunks.push(std::mem::take(&mut chunk));
@@ -285,9 +297,15 @@ where
 
             // Push final chunk if non-empty.
             if !chunk.is_empty() {
-                let spatial_end = shared.spatial_hook.as_ref().map_or(0, |h| h.entry_count());
+                let spatial_end = shared
+                    .spatial_hook
+                    .as_ref()
+                    .map_or(0, super::super::spatial_hook::SpatialHook::entry_count);
                 spatial_chunk_ranges.push((spatial_cursor, spatial_end));
-                let fulltext_end = shared.fulltext_hook.as_ref().map_or(0, |h| h.entry_count());
+                let fulltext_end = shared
+                    .fulltext_hook
+                    .as_ref()
+                    .map_or(0, super::super::fulltext_hook::FulltextHook::entry_count);
                 fulltext_chunk_ranges.push((fulltext_cursor, fulltext_end));
                 chunks.push(chunk);
             }
@@ -334,7 +352,7 @@ where
                 let mut all_entries = shared
                     .spatial_hook
                     .take()
-                    .map(|h| h.into_entries())
+                    .map(super::super::spatial_hook::SpatialHook::into_entries)
                     .unwrap_or_default();
 
                 for (ci, &(start, end)) in spatial_chunk_ranges.iter().enumerate() {
@@ -363,7 +381,7 @@ where
                 let mut all_entries = shared
                     .fulltext_hook
                     .take()
-                    .map(|h| h.into_entries())
+                    .map(super::super::fulltext_hook::FulltextHook::into_entries)
                     .unwrap_or_default();
 
                 for (ci, &(start, end)) in fulltext_chunk_ranges.iter().enumerate() {
@@ -540,12 +558,12 @@ where
                 if per_pred.is_empty() {
                     continue;
                 }
-                let nb_dir = run_dir.join(format!("g_{}", g_id)).join("numbig");
+                let nb_dir = run_dir.join(format!("g_{g_id}")).join("numbig");
                 std::fs::create_dir_all(&nb_dir)
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 for (&p_id, arena) in per_pred {
                     fluree_db_binary_index::arena::numbig::write_numbig_arena(
-                        &nb_dir.join(format!("p_{}.nba", p_id)),
+                        &nb_dir.join(format!("p_{p_id}.nba")),
                         arena,
                     )
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
@@ -557,7 +575,7 @@ where
                 if per_pred.is_empty() {
                     continue;
                 }
-                let vec_dir = run_dir.join(format!("g_{}", g_id)).join("vectors");
+                let vec_dir = run_dir.join(format!("g_{g_id}")).join("vectors");
                 std::fs::create_dir_all(&vec_dir)
                     .map_err(|e| IndexerError::StorageWrite(e.to_string()))?;
                 for (&p_id, arena) in per_pred {
@@ -583,7 +601,7 @@ where
                             })
                             .collect();
                     fluree_db_binary_index::arena::vector::write_vector_manifest(
-                        &vec_dir.join(format!("p_{}.vam", p_id)),
+                        &vec_dir.join(format!("p_{p_id}.vam")),
                         arena,
                         &shard_infos,
                     )
@@ -604,7 +622,12 @@ where
             // Build OTypeRegistry from custom datatype IRIs.
             let reserved = fluree_db_core::DatatypeDictId::RESERVED_COUNT as usize;
             let custom_dt_iris: Vec<String> = (reserved..shared.datatypes.len() as usize)
-                .filter_map(|i| shared.datatypes.resolve(i as u32).map(|s| s.to_string()))
+                .filter_map(|i| {
+                    shared
+                        .datatypes
+                        .resolve(i as u32)
+                        .map(std::string::ToString::to_string)
+                })
                 .collect();
             let registry = fluree_db_core::o_type_registry::OTypeRegistry::new(&custom_dt_iris);
 
@@ -887,8 +910,8 @@ where
 
             tracing::info!(
                 total_flakes = db_stats.flakes,
-                property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
-                graph_count = db_stats.graphs.as_ref().map_or(0, |g| g.len()),
+                property_count = db_stats.properties.as_ref().map_or(0, std::vec::Vec::len),
+                graph_count = db_stats.graphs.as_ref().map_or(0, std::vec::Vec::len),
                 "Phase D-V3 stats: collected"
             );
 
@@ -1062,5 +1085,5 @@ where
         })
     })
     .await
-    .map_err(|e| IndexerError::StorageWrite(format!("index build task panicked: {}", e)))?
+    .map_err(|e| IndexerError::StorageWrite(format!("index build task panicked: {e}")))?
 }

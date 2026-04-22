@@ -190,7 +190,7 @@ async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    panic!("S3 bucket was not available: {}", bucket);
+    panic!("S3 bucket was not available: {bucket}");
 }
 
 /// Write a string to an S3 key.
@@ -202,11 +202,11 @@ async fn put_s3_object(sdk_config: &aws_config::SdkConfig, bucket: &str, key: &s
         .body(ByteStream::from(body.as_bytes().to_vec()))
         .send()
         .await
-        .unwrap_or_else(|e| panic!("Failed to PUT s3://{}/{}: {}", bucket, key, e));
+        .unwrap_or_else(|e| panic!("Failed to PUT s3://{bucket}/{key}: {e}"));
 }
 
 fn table_location() -> String {
-    format!("s3://{}/{}", BUCKET, TABLE_PREFIX)
+    format!("s3://{BUCKET}/{TABLE_PREFIX}")
 }
 
 fn table_id() -> TableIdentifier {
@@ -240,14 +240,14 @@ async fn direct_catalog_full_lifecycle() {
     put_s3_object(
         &sdk_config,
         BUCKET,
-        &format!("{}/metadata/00001-abc1-0001.metadata.json", TABLE_PREFIX),
+        &format!("{TABLE_PREFIX}/metadata/00001-abc1-0001.metadata.json"),
         METADATA_V1,
     )
     .await;
     put_s3_object(
         &sdk_config,
         BUCKET,
-        &format!("{}/metadata/version-hint.text", TABLE_PREFIX),
+        &format!("{TABLE_PREFIX}/metadata/version-hint.text"),
         "00001-abc1-0001.metadata.json",
     )
     .await;
@@ -266,10 +266,7 @@ async fn direct_catalog_full_lifecycle() {
 
     assert_eq!(
         response.metadata_location,
-        format!(
-            "s3://{}/{}/metadata/00001-abc1-0001.metadata.json",
-            BUCKET, TABLE_PREFIX
-        ),
+        format!("s3://{BUCKET}/{TABLE_PREFIX}/metadata/00001-abc1-0001.metadata.json"),
         "Should resolve to v1 metadata"
     );
     assert!(
@@ -292,14 +289,14 @@ async fn direct_catalog_full_lifecycle() {
     put_s3_object(
         &sdk_config,
         BUCKET,
-        &format!("{}/metadata/00002-def2-0002.metadata.json", TABLE_PREFIX),
+        &format!("{TABLE_PREFIX}/metadata/00002-def2-0002.metadata.json"),
         METADATA_V2,
     )
     .await;
     put_s3_object(
         &sdk_config,
         BUCKET,
-        &format!("{}/metadata/version-hint.text", TABLE_PREFIX),
+        &format!("{TABLE_PREFIX}/metadata/version-hint.text"),
         "00002-def2-0002.metadata.json",
     )
     .await;
@@ -313,10 +310,7 @@ async fn direct_catalog_full_lifecycle() {
 
     assert_eq!(
         response2.metadata_location,
-        format!(
-            "s3://{}/{}/metadata/00002-def2-0002.metadata.json",
-            BUCKET, TABLE_PREFIX
-        ),
+        format!("s3://{BUCKET}/{TABLE_PREFIX}/metadata/00002-def2-0002.metadata.json"),
         "Should resolve to v2 metadata after append"
     );
 
@@ -355,8 +349,7 @@ async fn direct_catalog_missing_version_hint() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("version-hint.text"),
-        "Error should mention version-hint.text: {}",
-        err_msg
+        "Error should mention version-hint.text: {err_msg}"
     );
 }
 
@@ -393,7 +386,7 @@ fn direct_create_config_roundtrip() {
         fluree_db_iceberg::CatalogConfig::Direct { table_location } => {
             assert_eq!(table_location, "s3://bucket/warehouse/ns/table");
         }
-        other => panic!("Expected Direct, got {:?}", other),
+        other => panic!("Expected Direct, got {other:?}"),
     }
     assert!(!parsed.io.vended_credentials);
     assert_eq!(parsed.io.s3_region, Some("us-east-1".to_string()));

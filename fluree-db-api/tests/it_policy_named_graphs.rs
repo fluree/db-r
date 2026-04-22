@@ -53,7 +53,7 @@ async fn policy_applies_to_named_graph_queries() {
             let completion = handle.trigger(ledger_id, out1.receipt.t).await;
             match completion.wait().await {
                 fluree_db_api::IndexOutcome::Completed { .. } => {}
-                other => panic!("indexing failed: {:?}", other),
+                other => panic!("indexing failed: {other:?}"),
             }
 
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");

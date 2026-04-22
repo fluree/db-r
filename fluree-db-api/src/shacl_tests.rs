@@ -24,12 +24,10 @@ fn assert_shacl_violation(err: ApiError, expected: &str) {
         ApiError::Transact(TransactError::ShaclViolation(message)) => {
             assert!(
                 message.contains(expected),
-                "expected violation to contain '{}', got: {}",
-                expected,
-                message
+                "expected violation to contain '{expected}', got: {message}"
             );
         }
-        other => panic!("expected SHACL violation, got {:?}", other),
+        other => panic!("expected SHACL violation, got {other:?}"),
     }
 }
 
@@ -1217,7 +1215,7 @@ async fn shacl_class_constraint_subclass_reasoning_cross_graph() {
 
     // Data in a named graph. `ex:pratchett` is typed `ex:Novelist` here;
     // the `Novelist ⊑ Person` edge remains in the default graph.
-    let trig = r#"
+    let trig = r"
         @prefix ex: <http://example.org/ns/> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1226,7 +1224,7 @@ async fn shacl_class_constraint_subclass_reasoning_cross_graph() {
             ex:disc_world rdf:type ex:Book ;
                           ex:author ex:pratchett .
         }
-    "#;
+    ";
 
     // Route via the builder so TriG `GRAPH` blocks are parsed (the top-level
     // `upsert_turtle` uses the plain-Turtle parser which rejects `GRAPH`).

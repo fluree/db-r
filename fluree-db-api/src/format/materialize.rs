@@ -31,7 +31,7 @@ pub(crate) fn materialize_binding(result: &QueryResult, binding: &Binding) -> Re
     })?;
 
     materialize_encoded_binding(binding, gv).map_err(|e| {
-        FormatError::InvalidBinding(format!("Failed to materialize encoded binding: {}", e))
+        FormatError::InvalidBinding(format!("Failed to materialize encoded binding: {e}"))
     })
 }
 
@@ -50,7 +50,7 @@ fn materialize_encoded_binding(
             Some(iri) => Ok(Binding::Sid(store.encode_iri(iri))),
             None => Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Unknown predicate ID: {}", p_id),
+                format!("Unknown predicate ID: {p_id}"),
             )),
         },
         Binding::EncodedLit { .. } => materialize_encoded_lit(binding, gv),

@@ -81,9 +81,9 @@ async fn create_local(state: Arc<AppState>, request: Request) -> Result<impl Int
     // Read and parse body
     let body_bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
     let body: JsonValue = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {e}")))?;
 
     // Create request span
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
@@ -227,9 +227,9 @@ async fn drop_local(state: Arc<AppState>, request: Request) -> Result<Json<DropR
     // Read and parse body
     let body_bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
     let req: DropRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {e}")))?;
 
     // Create request span
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
@@ -334,14 +334,14 @@ pub async fn list_ledgers(State(state): State<Arc<AppState>>) -> Result<Json<Vec
         .nameservice()
         .all_records()
         .await
-        .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {}", e)))?;
+        .map_err(|e| ServerError::internal(format!("Failed to list ledgers: {e}")))?;
 
     let gs_records = state
         .fluree
         .nameservice()
         .all_graph_source_records()
         .await
-        .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {}", e)))?;
+        .map_err(|e| ServerError::internal(format!("Failed to list graph sources: {e}")))?;
 
     let mut entries = Vec::new();
 
@@ -560,7 +560,7 @@ pub async fn info(
         .map_err(|e| {
             set_span_error_code(&span, "error:InternalError");
             tracing::error!(error = %e, "failed to build ledger info");
-            ServerError::internal(format!("Failed to build ledger info: {}", e))
+            ServerError::internal(format!("Failed to build ledger info: {e}"))
         })?;
 
         if let Some(obj) = info.as_object_mut() {
@@ -825,9 +825,9 @@ async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<i
 
     let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
     let req: CreateBranchRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {e}")))?;
 
     let source = req.source.unwrap_or_else(|| "main".to_string());
     let ledger = req.ledger;
@@ -1029,9 +1029,9 @@ async fn drop_branch_local(
 
     let body_bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
     let req: DropBranchRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {e}")))?;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
     let trace_id = extract_trace_id(&headers.raw);
@@ -1137,13 +1137,13 @@ async fn rebase_local(state: Arc<AppState>, request: Request) -> Result<impl Int
 
     let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
     let req: RebaseBranchRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {e}")))?;
 
     let strategy = match req.strategy.as_deref() {
         Some(s) => fluree_db_api::ConflictStrategy::from_str_name(s)
-            .ok_or_else(|| ServerError::bad_request(format!("Unknown conflict strategy: {}", s)))?,
+            .ok_or_else(|| ServerError::bad_request(format!("Unknown conflict strategy: {s}")))?,
         None => fluree_db_api::ConflictStrategy::default(),
     };
 
@@ -1270,9 +1270,9 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
 
     let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
     let req: MergeBranchRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {e}")))?;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
     let trace_id = extract_trace_id(&headers.raw);
@@ -1290,7 +1290,7 @@ async fn merge_local(state: Arc<AppState>, request: Request) -> Result<impl Into
 
         let strategy = match req.strategy.as_deref() {
             Some(s) => fluree_db_api::ConflictStrategy::from_str_name(s).ok_or_else(|| {
-                ServerError::bad_request(format!("Unknown conflict strategy: {}", s))
+                ServerError::bad_request(format!("Unknown conflict strategy: {s}"))
             })?,
             None => fluree_db_api::ConflictStrategy::default(),
         };

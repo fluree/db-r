@@ -57,7 +57,7 @@ impl<'a> Lexer<'a> {
                     let c = any::<_, ContextError>.parse_next(&mut input).unwrap_or('?');
                     let end = input.current_token_start();
                     tokens.push(Token::new(
-                        TokenKind::Error(Arc::from(format!("unexpected character: '{}'", c))),
+                        TokenKind::Error(Arc::from(format!("unexpected character: '{c}'"))),
                         SourceSpan::new(start, end),
                     ));
                 }
@@ -270,9 +270,8 @@ fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKin
             }
             // Dot not followed by valid char - don't consume
             break;
-        } else {
-            break;
         }
+        break;
     }
 
     // Check if followed by a colon (prefixed name)
@@ -821,7 +820,11 @@ fn parse_lang_tag(input: &mut Input<'_>) -> ModalResult<TokenKind> {
     while input.starts_with('-') {
         // Peek ahead to check if there's alphanumeric after the hyphen
         let rest = &input.as_ref()[1..];
-        if rest.chars().next().map(|c| c.is_ascii_alphanumeric()) != Some(true) {
+        if rest
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric())
+        {
             break;
         }
 
@@ -1066,7 +1069,7 @@ mod tests {
     fn test_iri_escapes() {
         // Valid IRI with unicode escapes
         assert_eq!(
-            tok(r#"<http://example.org/\u00E9>"#),
+            tok(r"<http://example.org/\u00E9>"),
             vec![TokenKind::Iri(Arc::from("http://example.org/é"))]
         );
     }

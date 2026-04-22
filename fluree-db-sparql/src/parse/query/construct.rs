@@ -3,7 +3,7 @@
 use crate::ast::{ConstructQuery, ConstructTemplate, TriplePattern};
 use crate::lex::TokenKind;
 
-impl<'a> super::Parser<'a> {
+impl super::Parser<'_> {
     /// Parse a CONSTRUCT query.
     ///
     /// CONSTRUCT builds RDF triples from a template.

@@ -2725,8 +2725,7 @@ fn build_operator_tree_inner(
         for var in &options.group_by {
             if !where_schema.contains(var) {
                 return Err(QueryError::VariableNotFound(format!(
-                    "GROUP BY variable {:?} not found in query schema",
-                    var
+                    "GROUP BY variable {var:?} not found in query schema"
                 )));
             }
         }
@@ -2742,14 +2741,12 @@ fn build_operator_tree_inner(
             if let Some(input_var) = spec.input_var {
                 if !current_schema.contains(&input_var) {
                     return Err(QueryError::VariableNotFound(format!(
-                        "Aggregate input variable {:?} not found in schema",
-                        input_var
+                        "Aggregate input variable {input_var:?} not found in schema"
                     )));
                 }
                 if !options.group_by.is_empty() && group_by_set.contains(&input_var) {
                     return Err(QueryError::InvalidQuery(format!(
-                        "Aggregate input variable {:?} is a GROUP BY key and will not be grouped",
-                        input_var
+                        "Aggregate input variable {input_var:?} is a GROUP BY key and will not be grouped"
                     )));
                 }
                 if spec.output_var != input_var && current_schema.contains(&spec.output_var) {
@@ -2871,7 +2868,7 @@ fn build_operator_tree_inner(
                         variable_deps
                             .as_ref()
                             .and_then(|d| d.required_bind_vars.get(i))
-                            .map(|v| v.as_slice()),
+                            .map(std::vec::Vec::as_slice),
                     ),
             );
         }
@@ -2903,8 +2900,7 @@ fn build_operator_tree_inner(
             for var in vars {
                 if !post_group_schema.contains(var) {
                     return Err(QueryError::VariableNotFound(format!(
-                        "Selected variable {:?} not found in query schema",
-                        var
+                        "Selected variable {var:?} not found in query schema"
                     )));
                 }
             }

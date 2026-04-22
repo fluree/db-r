@@ -64,13 +64,12 @@ impl<S: IcebergStorage> DirectCatalogClient<S> {
         let hint_path = format!("{}/metadata/version-hint.text", self.table_location);
         let hint_bytes = self.storage.read(&hint_path).await.map_err(|e| {
             IcebergError::Metadata(format!(
-                "Failed to read version-hint.text at {}: {}",
-                hint_path, e
+                "Failed to read version-hint.text at {hint_path}: {e}"
             ))
         })?;
 
         let hint = std::str::from_utf8(&hint_bytes)
-            .map_err(|e| IcebergError::Metadata(format!("Invalid version-hint.text: {}", e)))?
+            .map_err(|e| IcebergError::Metadata(format!("Invalid version-hint.text: {e}")))?
             .trim();
 
         if hint.is_empty() {
@@ -159,13 +158,12 @@ impl<S: SendIcebergStorage> SendDirectCatalogClient<S> {
         let hint_path = format!("{}/metadata/version-hint.text", self.table_location);
         let hint_bytes = self.storage.read(&hint_path).await.map_err(|e| {
             IcebergError::Metadata(format!(
-                "Failed to read version-hint.text at {}: {}",
-                hint_path, e
+                "Failed to read version-hint.text at {hint_path}: {e}"
             ))
         })?;
 
         let hint = std::str::from_utf8(&hint_bytes)
-            .map_err(|e| IcebergError::Metadata(format!("Invalid version-hint.text: {}", e)))?
+            .map_err(|e| IcebergError::Metadata(format!("Invalid version-hint.text: {e}")))?
             .trim();
 
         if hint.is_empty() {
@@ -228,7 +226,7 @@ fn resolve_hint_to_metadata_path(hint: &str, table_location: &str) -> String {
     if hint.contains("://") {
         hint.to_string()
     } else {
-        format!("{}/metadata/{}", table_location, hint)
+        format!("{table_location}/metadata/{hint}")
     }
 }
 
@@ -273,7 +271,7 @@ mod tests {
         let result = client.load_table(&table_id, false).await;
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("version-hint.text"), "Error: {}", err_msg);
+        assert!(err_msg.contains("version-hint.text"), "Error: {err_msg}");
     }
 
     #[tokio::test]

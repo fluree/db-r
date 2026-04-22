@@ -114,9 +114,10 @@ pub fn eval_lang<R: RowAccess>(
     check_arity(args, 1, "LANG")?;
     let tag = match &args[0] {
         Expression::Var(var_id) => match row.get(*var_id) {
-            Some(Binding::Lit { dtc, .. }) => {
-                dtc.lang_tag().map(|l| l.to_string()).unwrap_or_default()
-            }
+            Some(Binding::Lit { dtc, .. }) => dtc
+                .lang_tag()
+                .map(std::string::ToString::to_string)
+                .unwrap_or_default(),
             Some(Binding::EncodedLit { lang_id, .. }) => {
                 if let Some(store) = ctx.and_then(|c| c.binary_store.as_deref()) {
                     store
@@ -266,9 +267,12 @@ pub fn eval_regex<R: RowAccess>(
     let pattern = args[1].eval_to_comparable(row, ctx)?;
     let flags = if args.len() > 2 {
         match args[2].eval_to_comparable(row, ctx)? {
-            Some(v) => v.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                QueryError::InvalidFilter("REGEX flags must be a string".to_string())
-            })?,
+            Some(v) => v
+                .as_str()
+                .map(std::string::ToString::to_string)
+                .ok_or_else(|| {
+                    QueryError::InvalidFilter("REGEX flags must be a string".to_string())
+                })?,
             None => return Ok(None),
         }
     } else {
@@ -378,9 +382,12 @@ pub fn eval_replace<R: RowAccess>(
     let replacement = args[2].eval_to_comparable(row, ctx)?;
     let flags = if args.len() > 3 {
         match args[3].eval_to_comparable(row, ctx)? {
-            Some(v) => v.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                QueryError::InvalidFilter("REPLACE flags must be a string".to_string())
-            })?,
+            Some(v) => v
+                .as_str()
+                .map(std::string::ToString::to_string)
+                .ok_or_else(|| {
+                    QueryError::InvalidFilter("REPLACE flags must be a string".to_string())
+                })?,
             None => return Ok(None),
         }
     } else {

@@ -124,11 +124,7 @@ impl<'a> FlakeGenerator<'a> {
         //   schema (vars present but 0 rows). In that case, there are **zero solution rows** and
         //   templates must produce **zero flakes** (no-op).
         let row_count = if bindings.is_empty() {
-            if bindings.schema().is_empty() {
-                1
-            } else {
-                0
-            }
+            usize::from(bindings.schema().is_empty())
         } else {
             bindings.len()
         };
@@ -153,12 +149,17 @@ impl<'a> FlakeGenerator<'a> {
         // Resolve each component
         let s = self.resolve_subject(&template.subject, bindings, row_idx)?;
         let p = self.resolve_predicate(&template.predicate, bindings, row_idx)?;
-        let explicit_dt = template.dtc.as_ref().map(|d| d.datatype());
+        let explicit_dt = template
+            .dtc
+            .as_ref()
+            .map(fluree_db_core::DatatypeConstraint::datatype);
         let (o, dt) = self.resolve_object(&template.object, explicit_dt, bindings, row_idx)?;
 
         let bound_lang = match &template.object {
             TemplateTerm::Var(var_id) => match bindings.get(row_idx, *var_id) {
-                Some(Binding::Lit { dtc, .. }) => dtc.lang_tag().map(|tag| tag.to_string()),
+                Some(Binding::Lit { dtc, .. }) => {
+                    dtc.lang_tag().map(std::string::ToString::to_string)
+                }
                 _ => None,
             },
             _ => None,
@@ -168,7 +169,7 @@ impl<'a> FlakeGenerator<'a> {
             .dtc
             .as_ref()
             .and_then(|d| d.lang_tag())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         // Language-tagged literals use rdf:langString datatype.
         let dt = if template_lang.is_some() || bound_lang.is_some() {
@@ -202,9 +203,8 @@ impl<'a> FlakeGenerator<'a> {
         let flake = if let Some(g_id) = template.graph_id {
             let g_sid = self.graph_sids.get(&g_id).ok_or_else(|| {
                 TransactError::FlakeGeneration(format!(
-                    "template references graph_id {} but no graph Sid was provided; \
-                     this indicates a bug in graph delta/sid wiring",
-                    g_id
+                    "template references graph_id {g_id} but no graph Sid was provided; \
+                     this indicates a bug in graph delta/sid wiring"
                 ))
             })?;
             Flake::new_in_graph(g_sid.clone(), s, p, o, dt, self.t, op, meta)
@@ -226,7 +226,7 @@ impl<'a> FlakeGenerator<'a> {
             TemplateTerm::Sid(sid) => Ok(Some(sid.clone())),
             TemplateTerm::Var(var_id) => {
                 if bindings.is_empty() {
-                    return Err(TransactError::UnboundVariable(format!("var_{:?}", var_id)));
+                    return Err(TransactError::UnboundVariable(format!("var_{var_id:?}")));
                 }
                 if let Some(binding) = bindings.get(row, *var_id) {
                     match binding {
@@ -277,7 +277,7 @@ impl<'a> FlakeGenerator<'a> {
             TemplateTerm::Sid(sid) => Ok(Some(sid.clone())),
             TemplateTerm::Var(var_id) => {
                 if bindings.is_empty() {
-                    return Err(TransactError::UnboundVariable(format!("var_{:?}", var_id)));
+                    return Err(TransactError::UnboundVariable(format!("var_{var_id:?}")));
                 }
                 if let Some(binding) = bindings.get(row, *var_id) {
                     match binding {
@@ -335,7 +335,7 @@ impl<'a> FlakeGenerator<'a> {
             }
             TemplateTerm::Var(var_id) => {
                 if bindings.is_empty() {
-                    return Err(TransactError::UnboundVariable(format!("var_{:?}", var_id)));
+                    return Err(TransactError::UnboundVariable(format!("var_{var_id:?}")));
                 }
                 if let Some(binding) = bindings.get(row, *var_id) {
                     match binding {

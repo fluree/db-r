@@ -137,7 +137,7 @@ impl R2rmlScanOperator {
             }
             RdfTerm::BlankNode(id) => {
                 // Blank nodes use _: prefix convention
-                let blank_iri = format!("_:{}", id);
+                let blank_iri = format!("_:{id}");
                 Ok(Binding::iri(blank_iri))
             }
             RdfTerm::Literal { value, dtc } => {
@@ -313,8 +313,7 @@ impl Operator for R2rmlScanOperator {
                 // Explicit TriplesMap IRI specified
                 let tm = mapping.get(tm_iri).ok_or_else(|| {
                     QueryError::InvalidQuery(format!(
-                        "TriplesMap '{}' not found in R2RML mapping",
-                        tm_iri
+                        "TriplesMap '{tm_iri}' not found in R2RML mapping"
                     ))
                 })?;
                 vec![tm]
@@ -382,7 +381,7 @@ impl Operator for R2rmlScanOperator {
                 let projection: Vec<String> = triples_map
                     .columns_for_predicate(self.pattern.predicate_filter.as_deref())
                     .into_iter()
-                    .map(|s| s.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect();
 
                 // Scan the table
@@ -423,7 +422,7 @@ impl Operator for R2rmlScanOperator {
                         let mut parent_join_cols: Vec<String> = rom
                             .parent_columns()
                             .into_iter()
-                            .map(|s| s.to_string())
+                            .map(std::string::ToString::to_string)
                             .collect();
                         parent_join_cols.sort(); // Normalize for consistent key
                         let lookup_key: LookupCacheKey =
@@ -636,7 +635,7 @@ impl Operator for R2rmlScanOperator {
                                     let child_columns: Vec<String> = rom
                                         .child_columns()
                                         .into_iter()
-                                        .map(|s| s.to_string())
+                                        .map(std::string::ToString::to_string)
                                         .collect();
 
                                     // Extract child join key from current row
@@ -653,7 +652,7 @@ impl Operator for R2rmlScanOperator {
                                     let mut parent_join_cols: Vec<String> = rom
                                         .parent_columns()
                                         .into_iter()
-                                        .map(|s| s.to_string())
+                                        .map(std::string::ToString::to_string)
                                         .collect();
                                     parent_join_cols.sort(); // Must match the key used when building
                                     let lookup_key =

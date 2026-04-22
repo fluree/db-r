@@ -319,7 +319,7 @@ impl PropertyPathOperator {
         }
 
         let mut out: Vec<(Sid, Sid)> = Vec::new();
-        for start in nodes.iter() {
+        for start in &nodes {
             // BFS from start using adjacency only (no DB calls).
             let mut visited: HashSet<Sid> = HashSet::new();
             let mut queue: VecDeque<Sid> = VecDeque::new();

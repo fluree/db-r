@@ -133,11 +133,7 @@ pub fn format_sparql_table_from_result(
     }
 
     let total_rows = if select_one {
-        if printed > 0 {
-            1
-        } else {
-            0
-        }
+        usize::from(printed > 0)
     } else {
         result.row_count()
     };
@@ -319,12 +315,12 @@ fn format_as_table(
 fn sparql_row_count(json: &serde_json::Value) -> usize {
     json.pointer("/results/bindings")
         .and_then(|v| v.as_array())
-        .map(|a| a.len())
+        .map(std::vec::Vec::len)
         .unwrap_or(0)
 }
 
 fn fql_row_count(json: &serde_json::Value) -> usize {
-    json.as_array().map(|a| a.len()).unwrap_or(0)
+    json.as_array().map(std::vec::Vec::len).unwrap_or(0)
 }
 
 fn format_sparql_table(json: &serde_json::Value, limit: Option<usize>) -> CliResult<FormatOutput> {
@@ -351,7 +347,7 @@ fn format_sparql_table(json: &serde_json::Value, limit: Option<usize>) -> CliRes
     table.set_header(&vars);
 
     let bindings = json.pointer("/results/bindings").and_then(|v| v.as_array());
-    let total_rows = bindings.map(|b| b.len()).unwrap_or(0);
+    let total_rows = bindings.map(std::vec::Vec::len).unwrap_or(0);
 
     if let Some(rows) = bindings {
         let display_rows: &[serde_json::Value] = match limit {

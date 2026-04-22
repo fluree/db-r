@@ -303,8 +303,7 @@ impl ReasoningModes {
                 ..Default::default()
             }),
             other => Err(format!(
-                "unknown reasoning mode '{}', expected: none, rdfs, owl2ql, datalog, owl2rl, owl-datalog",
-                other
+                "unknown reasoning mode '{other}', expected: none, rdfs, owl2ql, datalog, owl2rl, owl-datalog"
             )),
         }
     }
@@ -513,7 +512,10 @@ impl Diagnostics {
 /// )
 /// ```
 pub fn rewrite_patterns(patterns: &[Pattern], ctx: &PlanContext) -> (Vec<Pattern>, Diagnostics) {
-    let epoch = ctx.hierarchy.as_ref().map(|h| h.epoch());
+    let epoch = ctx
+        .hierarchy
+        .as_ref()
+        .map(fluree_db_core::SchemaHierarchy::epoch);
     let mut diag = Diagnostics::with_epoch(epoch);
 
     // No-op if entailment is disabled
@@ -1111,7 +1113,7 @@ mod tests {
         let mut vals = Vec::new();
         for i in 0..100 {
             vals.push(SchemaPredicateInfo {
-                id: interner.intern(100, &format!("SubClass{}", i)),
+                id: interner.intern(100, &format!("SubClass{i}")),
                 subclass_of: vec![animal.clone()],
                 parent_props: vec![],
                 child_props: vec![],
@@ -1211,7 +1213,7 @@ mod tests {
         // 30 subclasses of ClassA
         for i in 0..30 {
             vals.push(SchemaPredicateInfo {
-                id: interner.intern(100, &format!("SubA{}", i)),
+                id: interner.intern(100, &format!("SubA{i}")),
                 subclass_of: vec![class_a.clone()],
                 parent_props: vec![],
                 child_props: vec![],
@@ -1220,7 +1222,7 @@ mod tests {
         // 30 subclasses of ClassB
         for i in 0..30 {
             vals.push(SchemaPredicateInfo {
-                id: interner.intern(100, &format!("SubB{}", i)),
+                id: interner.intern(100, &format!("SubB{i}")),
                 subclass_of: vec![class_b.clone()],
                 parent_props: vec![],
                 child_props: vec![],
@@ -1432,7 +1434,7 @@ mod tests {
         let mut vals = Vec::new();
         for i in 0..100 {
             vals.push(SchemaPredicateInfo {
-                id: interner.intern(100, &format!("subProp{}", i)),
+                id: interner.intern(100, &format!("subProp{i}")),
                 subclass_of: vec![],
                 parent_props: vec![has_attr.clone()],
                 child_props: vec![],
@@ -1633,8 +1635,8 @@ mod tests {
         for spelling in &["owl2ql", "owl-ql", "owlql", "OWL2QL", "Owl-Ql"] {
             let value = serde_json::json!(spelling);
             let modes = ReasoningModes::from_json(&value).unwrap();
-            assert!(modes.owl2ql, "Failed for spelling: {}", spelling);
-            assert!(modes.rdfs, "OWL2QL should imply RDFS for: {}", spelling);
+            assert!(modes.owl2ql, "Failed for spelling: {spelling}");
+            assert!(modes.rdfs, "OWL2QL should imply RDFS for: {spelling}");
         }
     }
 
@@ -1643,7 +1645,7 @@ mod tests {
         for spelling in &["owl2rl", "owl-rl", "owlrl"] {
             let value = serde_json::json!(spelling);
             let modes = ReasoningModes::from_json(&value).unwrap();
-            assert!(modes.owl2rl, "Failed for spelling: {}", spelling);
+            assert!(modes.owl2rl, "Failed for spelling: {spelling}");
         }
     }
 

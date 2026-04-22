@@ -161,14 +161,14 @@ async fn ac1_sparql_query_waterfall() {
     drop(_guard);
     let (store, _guard) = span_capture::init_test_tracing();
 
-    let sparql = r#"
+    let sparql = r"
         PREFIX schema: <http://schema.org/>
         PREFIX ex: <http://example.org/ns/>
         SELECT ?name WHERE {
             ?s a ex:User .
             ?s schema:name ?name .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, sparql).await;
     assert!(
@@ -450,8 +450,7 @@ async fn ac5_zero_noise_at_info() {
     let all_spans = store.span_names();
     assert!(
         all_spans.is_empty(),
-        "At INFO level, zero spans should be captured from the API layer (all are debug_span!). Found: {:?}",
-        all_spans
+        "At INFO level, zero spans should be captured from the API layer (all are debug_span!). Found: {all_spans:?}"
     );
 }
 
@@ -499,7 +498,7 @@ async fn ac3_deferred_fields_recorded() {
         .unwrap()
         .parse()
         .expect("assertion_count should be a u64");
-    assert!(count > 0, "assertion_count should be > 0, got {}", count);
+    assert!(count > 0, "assertion_count should be > 0, got {count}");
 
     // Verify pattern_rewrite has patterns_after deferred field recorded
     // (patterns_after is set via Span::current().record())

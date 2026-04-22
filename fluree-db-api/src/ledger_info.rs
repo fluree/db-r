@@ -218,7 +218,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
     // Determine graph display name
     let graph_name = graph_display_name(g_id, binary_store.as_deref());
 
-    let indexed = ledger.snapshot.stats.as_ref().cloned().unwrap_or_default();
+    let indexed = ledger.snapshot.stats.clone().unwrap_or_default();
     let stats_lookup = LedgerInfoStatsLookup {
         store: binary_store.as_deref(),
         runtime_small_dicts: Some(&ledger.runtime_small_dicts),
@@ -250,7 +250,7 @@ pub async fn build_ledger_info_with_options<S: Storage + Clone>(
         let alias_prefix = ledger_id_to_path_prefix(&ledger.snapshot.ledger_id)
             .unwrap_or_else(|_| ledger.snapshot.ledger_id.replace(':', "/"));
         let manifest_addr_primary =
-            format!("fluree:file://{}/stats/pre-index-stats.json", alias_prefix);
+            format!("fluree:file://{alias_prefix}/stats/pre-index-stats.json");
         if let Ok(bytes) = storage.read_bytes(&manifest_addr_primary).await {
             match parse_pre_index_manifest(&bytes) {
                 Ok(graphs) => {
@@ -360,8 +360,7 @@ fn resolve_graph_selector(
                         .ok_or_else(|| LedgerInfoError::UnknownGraph(other.to_string()))
                 } else {
                     Err(LedgerInfoError::UnknownGraph(format!(
-                        "no binary index store available to resolve graph name '{}'",
-                        other
+                        "no binary index store available to resolve graph name '{other}'"
                     )))
                 }
             }
@@ -384,8 +383,7 @@ fn resolve_graph_selector(
                     .ok_or_else(|| LedgerInfoError::UnknownGraph(iri.clone()))
             } else {
                 Err(LedgerInfoError::UnknownGraph(format!(
-                    "no binary index store available to resolve graph IRI '{}'",
-                    iri
+                    "no binary index store available to resolve graph IRI '{iri}'"
                 )))
             }
         }
@@ -402,7 +400,7 @@ fn graph_display_name(g_id: GraphId, store: Option<&BinaryIndexStore>) -> String
             return iri.to_string();
         }
     }
-    format!("g:{}", g_id)
+    format!("g:{g_id}")
 }
 
 // ============================================================================
@@ -889,7 +887,7 @@ fn compute_selectivity(count: u64, ndv: u64) -> u64 {
 /// Parse a pre-index stats manifest (JSON) into `GraphStatsEntry` entries.
 pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphStatsEntry>, String> {
     let json: JsonValue =
-        serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON: {}", e))?;
+        serde_json::from_slice(bytes).map_err(|e| format!("invalid JSON: {e}"))?;
 
     let graphs_arr = json
         .get("graphs")
@@ -900,10 +898,16 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
     for g in graphs_arr {
         let g_id = g
             .get("g_id")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .ok_or_else(|| "missing g_id".to_string())? as GraphId;
-        let flakes = g.get("flakes").and_then(|v| v.as_u64()).unwrap_or(0);
-        let size = g.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let flakes = g
+            .get("flakes")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let size = g
+            .get("size")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
 
         let props_arr = g
             .get("properties")
@@ -915,14 +919,23 @@ pub fn parse_pre_index_manifest(bytes: &[u8]) -> std::result::Result<Vec<GraphSt
         for p in &props_arr {
             let p_id = p
                 .get("p_id")
-                .and_then(|v| v.as_u64())
+                .and_then(serde_json::Value::as_u64)
                 .ok_or_else(|| "missing p_id".to_string())? as u32;
-            let count = p.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-            let ndv_values = p.get("ndv_values").and_then(|v| v.as_u64()).unwrap_or(0);
-            let ndv_subjects = p.get("ndv_subjects").and_then(|v| v.as_u64()).unwrap_or(0);
+            let count = p
+                .get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let ndv_values = p
+                .get("ndv_values")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let ndv_subjects = p
+                .get("ndv_subjects")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
             let last_modified_t = p
                 .get("last_modified_t")
-                .and_then(|v| v.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .unwrap_or(0);
 
             let dt_arr = p
@@ -1074,13 +1087,13 @@ impl<'a> LedgerInfoBuilder<'a> {
             let index_id = ledger
                 .head_index_id
                 .as_ref()
-                .map(|c| c.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| {
                     ledger
                         .ns_record
                         .as_ref()
                         .and_then(|r| r.index_head_id.as_ref())
-                        .map(|c| c.to_string())
+                        .map(std::string::ToString::to_string)
                 })
                 .unwrap_or_default();
 
@@ -1134,7 +1147,7 @@ impl<'a> LedgerInfoBuilder<'a> {
             let json =
                 build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
                     .await
-                    .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))?;
+                    .map_err(|e| ApiError::internal(format!("ledger_info failed: {e}")))?;
 
             if let Ok(vec) = serde_json::to_vec(&json) {
                 cache.insert_ledger_info(cache_key, vec.into());
@@ -1150,7 +1163,7 @@ impl<'a> LedgerInfoBuilder<'a> {
             .ok_or_else(|| ApiError::config("ledger_info requires a managed storage backend"))?;
         build_ledger_info_with_options(&ledger, &storage, self.context, self.options)
             .await
-            .map_err(|e| ApiError::internal(format!("ledger_info failed: {}", e)))
+            .map_err(|e| ApiError::internal(format!("ledger_info failed: {e}")))
     }
 }
 

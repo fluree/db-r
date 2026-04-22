@@ -286,7 +286,7 @@ impl crate::Fluree {
         if let Err(e) = ns_result {
             // Log but don't fail - retract/purge may fail if truly not found
             warn!(ledger_id = %ledger_id, error = %e, "Nameservice retract warning");
-            report.warnings.push(format!("Nameservice retract: {}", e));
+            report.warnings.push(format!("Nameservice retract: {e}"));
         }
 
         // 6. Disconnect from ledger cache (if caching enabled)
@@ -335,7 +335,7 @@ impl crate::Fluree {
             .nameservice()
             .lookup(&ledger_id)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Branch not found: {}", ledger_id)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Branch not found: {ledger_id}")))?;
 
         if record.retracted {
             report.status = DropStatus::AlreadyRetracted;
@@ -480,11 +480,11 @@ impl crate::Fluree {
         let prefix = match ledger_id_to_path_prefix(ledger_id) {
             Ok(p) => p,
             Err(e) => {
-                warnings.push(format!("Invalid ledger ID '{}': {}", ledger_id, e));
+                warnings.push(format!("Invalid ledger ID '{ledger_id}': {e}"));
                 return (0, warnings);
             }
         };
-        let ledger_root = format!("fluree:{}://{}/", storage_method, prefix);
+        let ledger_root = format!("fluree:{storage_method}://{prefix}/");
 
         // Fast path: list everything under the ledger root and batch delete
         match storage.list_prefix(&ledger_root).await {
@@ -494,7 +494,7 @@ impl crate::Fluree {
                 for file in &files {
                     if let Err(e) = storage.delete(file).await {
                         warn!(file = %file, error = %e, "Failed to delete artifact");
-                        warnings.push(format!("Failed to delete {}: {}", file, e));
+                        warnings.push(format!("Failed to delete {file}: {e}"));
                     } else {
                         count += 1;
                     }
@@ -547,7 +547,7 @@ impl crate::Fluree {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "Failed to collect ledger CIDs for drop");
-                warnings.push(format!("CID collection failed: {}", e));
+                warnings.push(format!("CID collection failed: {e}"));
                 return (0, std::mem::take(warnings));
             }
         };
@@ -565,7 +565,7 @@ impl crate::Fluree {
                     tracing::debug!(cid = %cid, error = %e, "artifact already removed");
                 } else {
                     warn!(cid = %cid, error = %e, "unexpected error releasing artifact");
-                    warnings.push(format!("Release failed for {}: {}", cid, e));
+                    warnings.push(format!("Release failed for {cid}: {e}"));
                 }
             } else {
                 count += 1;
@@ -663,7 +663,7 @@ impl crate::Fluree {
         // 3. Retract from nameservice (always attempt, idempotent)
         if let Err(e) = self.publisher()?.retract_graph_source(name, branch).await {
             warn!(name = %name, branch = %branch, error = %e, "Nameservice graph source retract warning");
-            report.warnings.push(format!("Nameservice retract: {}", e));
+            report.warnings.push(format!("Nameservice retract: {e}"));
         }
 
         info!(name = %name, branch = %branch, status = ?report.status, "Graph source dropped");
@@ -690,7 +690,7 @@ impl crate::Fluree {
             .nameservice()
             .lookup(&ledger_id)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_id)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {ledger_id}")))?;
 
         // Get indexer status if available
         let (indexing_enabled, phase, pending_min_t, last_error) = match &self.indexing_mode {
@@ -755,12 +755,11 @@ impl crate::Fluree {
             .nameservice()
             .lookup(&ledger_id)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_id)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {ledger_id}")))?;
 
         if record.retracted {
             return Err(ApiError::NotFound(format!(
-                "Ledger is retracted: {}",
-                ledger_id
+                "Ledger is retracted: {ledger_id}"
             )));
         }
 
@@ -890,7 +889,7 @@ impl crate::Fluree {
             loop {
                 tokio::select! {
                     outcome = &mut wait_fut => finish_wait!(outcome),
-                    _ = &mut timeout_fut => {
+                    () = &mut timeout_fut => {
                         let elapsed_ms = wait_started.elapsed().as_millis() as u64;
                         if let Some(status) = handle.status(&ledger_id).await {
                             warn!(
@@ -965,12 +964,11 @@ impl crate::Fluree {
             .nameservice()
             .lookup(&ledger_id)
             .await?
-            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {}", ledger_id)))?;
+            .ok_or_else(|| ApiError::NotFound(format!("Ledger not found: {ledger_id}")))?;
 
         if record.retracted {
             return Err(ApiError::NotFound(format!(
-                "Ledger is retracted: {}",
-                ledger_id
+                "Ledger is retracted: {ledger_id}"
             )));
         }
 
@@ -1049,7 +1047,7 @@ impl crate::Fluree {
             .lookup(&ledger_id)
             .await?
             .ok_or_else(|| {
-                ApiError::NotFound(format!("Ledger disappeared during reindex: {}", ledger_id))
+                ApiError::NotFound(format!("Ledger disappeared during reindex: {ledger_id}"))
             })?;
 
         if final_record.commit_t != initial_commit_t {
@@ -1149,10 +1147,7 @@ impl crate::Fluree {
             ConfigCasResult::Conflict { .. } => {
                 return Err(ApiError::Http {
                     status: 409,
-                    message: format!(
-                        "config for '{}' was modified concurrently; retry",
-                        ledger_id
-                    ),
+                    message: format!("config for '{ledger_id}' was modified concurrently; retry"),
                 });
             }
         }

@@ -141,19 +141,19 @@ impl LiteralValue {
 impl std::fmt::Display for LiteralValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Boolean(v) => write!(f, "{}", v),
-            Self::Int32(v) => write!(f, "{}", v),
-            Self::Int64(v) => write!(f, "{}L", v),
-            Self::Float32(v) => write!(f, "{}f", v),
-            Self::Float64(v) => write!(f, "{}", v),
-            Self::String(v) => write!(f, "'{}'", v),
+            Self::Boolean(v) => write!(f, "{v}"),
+            Self::Int32(v) => write!(f, "{v}"),
+            Self::Int64(v) => write!(f, "{v}L"),
+            Self::Float32(v) => write!(f, "{v}f"),
+            Self::Float64(v) => write!(f, "{v}"),
+            Self::String(v) => write!(f, "'{v}'"),
             Self::Bytes(v) => write!(f, "bytes[{}]", v.len()),
-            Self::Date(v) => write!(f, "date({})", v),
-            Self::Timestamp(v) => write!(f, "ts({})", v),
+            Self::Date(v) => write!(f, "date({v})"),
+            Self::Timestamp(v) => write!(f, "ts({v})"),
             Self::Decimal {
                 unscaled, scale, ..
             } => {
-                write!(f, "decimal({}, {})", unscaled, scale)
+                write!(f, "decimal({unscaled}, {scale})")
             }
         }
     }
@@ -416,28 +416,36 @@ impl std::fmt::Display for Expression {
         match self {
             Expression::AlwaysTrue => write!(f, "TRUE"),
             Expression::AlwaysFalse => write!(f, "FALSE"),
-            Expression::Not(inner) => write!(f, "NOT ({})", inner),
+            Expression::Not(inner) => write!(f, "NOT ({inner})"),
             Expression::And(exprs) => {
-                let parts: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
+                let parts: Vec<String> =
+                    exprs.iter().map(std::string::ToString::to_string).collect();
                 write!(f, "({})", parts.join(" AND "))
             }
             Expression::Or(exprs) => {
-                let parts: Vec<String> = exprs.iter().map(|e| e.to_string()).collect();
+                let parts: Vec<String> =
+                    exprs.iter().map(std::string::ToString::to_string).collect();
                 write!(f, "({})", parts.join(" OR "))
             }
-            Expression::IsNull { column, .. } => write!(f, "{} IS NULL", column),
-            Expression::IsNotNull { column, .. } => write!(f, "{} IS NOT NULL", column),
+            Expression::IsNull { column, .. } => write!(f, "{column} IS NULL"),
+            Expression::IsNotNull { column, .. } => write!(f, "{column} IS NOT NULL"),
             Expression::Comparison {
                 column, op, value, ..
             } => {
-                write!(f, "{} {} {}", column, op, value)
+                write!(f, "{column} {op} {value}")
             }
             Expression::In { column, values, .. } => {
-                let vals: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+                let vals: Vec<String> = values
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect();
                 write!(f, "{} IN ({})", column, vals.join(", "))
             }
             Expression::NotIn { column, values, .. } => {
-                let vals: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+                let vals: Vec<String> = values
+                    .iter()
+                    .map(std::string::ToString::to_string)
+                    .collect();
                 write!(f, "{} NOT IN ({})", column, vals.join(", "))
             }
         }

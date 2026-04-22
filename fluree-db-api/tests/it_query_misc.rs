@@ -406,7 +406,7 @@ async fn s_p_o_full_db_queries_parity() {
     for row in rows {
         let obj = row.as_object().expect("graph crawl row object");
         let canon = canon_person(obj).expect("canonicalize person row");
-        assert!(expected.contains(&canon), "unexpected row: {:?}", row);
+        assert!(expected.contains(&canon), "unexpected row: {row:?}");
     }
 }
 
@@ -444,8 +444,7 @@ async fn commit_db_metadata_spo_queries_parity() {
     let rows = r_commit.as_array().expect("commit rows array");
     assert!(
         rows.len() >= 2,
-        "expected at least two commits, got: {:?}",
-        r_commit
+        "expected at least two commits, got: {r_commit:?}"
     );
     for row in rows {
         let arr = row.as_array().expect("commit row array");
@@ -453,8 +452,7 @@ async fn commit_db_metadata_spo_queries_parity() {
         let ledger_id = arr[1].as_str().unwrap_or_default();
         assert!(
             subject.starts_with("fluree:commit:"),
-            "unexpected commit subject: {}",
-            subject
+            "unexpected commit subject: {subject}"
         );
         assert_eq!(ledger_id, "misc/commit-metadata:main");
     }
@@ -478,8 +476,7 @@ async fn commit_db_metadata_spo_queries_parity() {
         let subject = arr[0].as_str().unwrap_or_default();
         assert!(
             subject.starts_with("fluree:commit:"),
-            "unexpected commit subject: {}",
-            subject
+            "unexpected commit subject: {subject}"
         );
         let t_val = &arr[1];
         let t_ok = if t_val.is_number() || t_val.is_string() {
@@ -493,15 +490,13 @@ async fn commit_db_metadata_spo_queries_parity() {
         };
         assert!(
             t_ok,
-            "expected t value to be number/string or typed literal, got: {:?}",
-            t_val
+            "expected t value to be number/string or typed literal, got: {t_val:?}"
         );
         commit_subjects.insert(subject.to_string());
     }
     assert!(
         commit_subjects.len() >= 2,
-        "expected at least two commit subjects, got: {:?}",
-        commit_subjects
+        "expected at least two commit subjects, got: {commit_subjects:?}"
     );
 }
 
@@ -524,8 +519,7 @@ async fn illegal_reference_queries_error_on_var_predicate_with_literals() {
         err_num
             .to_string()
             .contains("variable predicate requires object"),
-        "unexpected error: {}",
-        err_num
+        "unexpected error: {err_num}"
     );
 
     let q_str = json!({
@@ -540,8 +534,7 @@ async fn illegal_reference_queries_error_on_var_predicate_with_literals() {
         err_str
             .to_string()
             .contains("variable predicate requires object"),
-        "unexpected error: {}",
-        err_str
+        "unexpected error: {err_str}"
     );
 }
 
@@ -614,8 +607,7 @@ async fn type_handling_parity() {
     assert!(
         set_type.contains(&json!({"id":"ex:queen","type":"ex:Heart"}))
             && set_type.contains(&json!({"id":"ex:king","type":"ex:Heart"})),
-        "type query should return queen and king, got: {:?}",
-        set_type
+        "type query should return queen and king, got: {set_type:?}"
     );
 
     // Query with rdf:type in WHERE should also work
@@ -634,8 +626,7 @@ async fn type_handling_parity() {
     assert!(
         set_rdf.contains(&json!({"id":"ex:queen","type":"ex:Heart"}))
             && set_rdf.contains(&json!({"id":"ex:king","type":"ex:Heart"})),
-        "rdf:type query should return queen and king, got: {:?}",
-        set_rdf
+        "rdf:type query should return queen and king, got: {set_rdf:?}"
     );
 
     // Transact with rdf:type predicate should error unless aliased
@@ -656,8 +647,7 @@ async fn type_handling_parity() {
         err_db
             .to_string()
             .contains("Please use the JSON-LD \"@type\" keyword instead"),
-        "unexpected error: {}",
-        err_db
+        "unexpected error: {err_db}"
     );
 
     // Allow rdf:type when explicitly aliased to @type
@@ -886,14 +876,13 @@ async fn untyped_value_matching_parity() {
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
         .unwrap();
-    assert_eq!(r_typed.as_array().map(|a| a.len()), Some(1));
+    assert_eq!(r_typed.as_array().map(std::vec::Vec::len), Some(1));
     assert!(
         r_typed[0]
             .as_str()
             .unwrap_or_default()
             .starts_with("fluree:commit:"),
-        "expected commit IRI, got: {:?}",
-        r_typed
+        "expected commit IRI, got: {r_typed:?}"
     );
 
     let q_untyped = json!({
@@ -908,14 +897,13 @@ async fn untyped_value_matching_parity() {
         .unwrap()
         .to_jsonld(&ledger2.snapshot)
         .unwrap();
-    assert_eq!(r_untyped.as_array().map(|a| a.len()), Some(1));
+    assert_eq!(r_untyped.as_array().map(std::vec::Vec::len), Some(1));
     assert!(
         r_untyped[0]
             .as_str()
             .unwrap_or_default()
             .starts_with("fluree:commit:"),
-        "expected commit IRI, got: {:?}",
-        r_untyped
+        "expected commit IRI, got: {r_untyped:?}"
     );
 }
 
@@ -972,7 +960,7 @@ async fn indexed_untyped_value_matching_parity() {
                 .unwrap()
                 .to_jsonld(&indexed.snapshot)
                 .unwrap();
-            assert_eq!(r_typed.as_array().map(|a| a.len()), Some(1));
+            assert_eq!(r_typed.as_array().map(std::vec::Vec::len), Some(1));
 
             let q_untyped = json!({
                 "@context": {"f": "https://ns.flur.ee/db#"},
@@ -986,7 +974,7 @@ async fn indexed_untyped_value_matching_parity() {
                 .unwrap()
                 .to_jsonld(&indexed.snapshot)
                 .unwrap();
-            assert_eq!(r_untyped.as_array().map(|a| a.len()), Some(1));
+            assert_eq!(r_untyped.as_array().map(std::vec::Vec::len), Some(1));
         })
         .await;
 }

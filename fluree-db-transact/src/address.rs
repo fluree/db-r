@@ -29,7 +29,7 @@ pub fn parse_commit_id(address: &str) -> Option<String> {
 
     // Validate it looks like a hex hash
     if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-        Some(format!("sha256:{}", hash))
+        Some(format!("sha256:{hash}"))
     } else {
         None
     }

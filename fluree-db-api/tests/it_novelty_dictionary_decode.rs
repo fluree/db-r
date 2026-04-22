@@ -117,10 +117,10 @@ async fn novelty_only_strings_subjects_predicates_and_json_decode_with_existing_
             // 3) Query the novelty-only values immediately.
 
             // (a) Return the novelty-only string value.
-            let q1 = r#"
+            let q1 = r"
 PREFIX ex: <http://example.org/>
 SELECT ?o WHERE { ex:s ex:label ?o }
-"#;
+";
             let r1 = query_sparql(&fluree, &after, q1).await.expect("q1");
             let j1 = r1.to_sparql_json(&after.snapshot).expect("sparql json");
             let v1 = j1["results"]["bindings"][0]["o"]["value"]
@@ -198,10 +198,10 @@ SELECT ?s WHERE { ?s ex:label "Foo" }
             );
 
             // (d) Query a novelty-only predicate IRI (predicate not in persisted dict).
-            let q4 = r#"
+            let q4 = r"
 PREFIX ex: <http://example.org/>
 SELECT ?o WHERE { ex:s ex:newPred ?o }
-"#;
+";
             let r4 = query_sparql(&fluree, &after, q4).await.expect("q4");
             let j4 = r4.to_sparql_json(&after.snapshot).expect("sparql json");
             let v4 = j4["results"]["bindings"][0]["o"]["value"]
@@ -212,10 +212,10 @@ SELECT ?o WHERE { ex:s ex:newPred ?o }
             // (e) Return the novelty-only @json typed literal (sanity: no panics, datatype preserved).
             // We only assert the datatype string contains "json" to allow either shorthand (@json)
             // or full IRI forms.
-            let q5 = r#"
+            let q5 = r"
 PREFIX ex: <http://example.org/>
 SELECT ?o (DATATYPE(?o) AS ?dt) WHERE { ex:s ex:data ?o }
-"#;
+";
             let r5 = query_sparql(&fluree, &after, q5).await.expect("q5");
             let j5 = r5.to_sparql_json(&after.snapshot).expect("sparql json");
             let dt5 = j5["results"]["bindings"][0]["dt"]["value"]

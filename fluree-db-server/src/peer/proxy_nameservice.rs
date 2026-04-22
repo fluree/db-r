@@ -169,7 +169,7 @@ impl NameService for ProxyNameService {
             .send()
             .await
             .map_err(|e| {
-                NameServiceError::storage(format!("Nameservice proxy request failed: {}", e))
+                NameServiceError::storage(format!("Nameservice proxy request failed: {e}"))
             })?;
 
         let status = response.status();
@@ -177,22 +177,20 @@ impl NameService for ProxyNameService {
         match status {
             StatusCode::OK => {
                 let ns_response: NsRecordResponse = response.json().await.map_err(|e| {
-                    NameServiceError::storage(format!("Failed to parse NS response: {}", e))
+                    NameServiceError::storage(format!("Failed to parse NS response: {e}"))
                 })?;
                 Ok(Some(ns_response.into_ns_record(ledger_id)))
             }
             StatusCode::NOT_FOUND => Ok(None),
             StatusCode::UNAUTHORIZED => Err(NameServiceError::storage(format!(
-                "Nameservice proxy authentication failed for {}: check token validity",
-                ledger_id
+                "Nameservice proxy authentication failed for {ledger_id}: check token validity"
             ))),
             StatusCode::FORBIDDEN => {
                 // Not in token scope - treat as not found (no existence leak)
                 Ok(None)
             }
             _ => Err(NameServiceError::storage(format!(
-                "Nameservice proxy unexpected status {} for {}",
-                status, ledger_id
+                "Nameservice proxy unexpected status {status} for {ledger_id}"
             ))),
         }
     }
@@ -267,7 +265,7 @@ mod tests {
             "http://localhost:8090".to_string(),
             "test-token".to_string(),
         );
-        let debug = format!("{:?}", ns);
+        let debug = format!("{ns:?}");
         assert!(debug.contains("ProxyNameService"));
         assert!(debug.contains("localhost:8090"));
         // Token should NOT be in debug output

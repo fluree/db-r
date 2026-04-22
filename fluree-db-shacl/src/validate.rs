@@ -666,12 +666,11 @@ fn validate_structural_constraint<'a>(
                     if !has_violations {
                         any_conforms = true;
                         break;
-                    } else {
-                        // Collect messages for reporting if none match
-                        for r in nested_results {
-                            if r.severity == Severity::Violation {
-                                all_messages.push(format!("{}: {}", nested.id.name, r.message));
-                            }
+                    }
+                    // Collect messages for reporting if none match
+                    for r in nested_results {
+                        if r.severity == Severity::Violation {
+                            all_messages.push(format!("{}: {}", nested.id.name, r.message));
                         }
                     }
                 }
@@ -1029,9 +1028,8 @@ async fn validate_property_value_structural_constraint<'a>(
                     if conforms {
                         any_conforms = true;
                         break;
-                    } else {
-                        all_messages.push(nested.id.name.to_string());
                     }
+                    all_messages.push(nested.id.name.to_string());
                 }
 
                 if !any_conforms && !nested_shapes.is_empty() {
@@ -1115,8 +1113,7 @@ async fn validate_property_value_structural_constraint<'a>(
                         source_constraint: Some(prop_shape.id.clone()),
                         severity: prop_shape.severity,
                         message: format!(
-                            "Value {:?} does not conform to any shape in sh:xone",
-                            value
+                            "Value {value:?} does not conform to any shape in sh:xone"
                         ),
                         value: Some(value.clone()),
                         graph_id: None,
@@ -1129,8 +1126,7 @@ async fn validate_property_value_structural_constraint<'a>(
                         source_constraint: Some(prop_shape.id.clone()),
                         severity: prop_shape.severity,
                         message: format!(
-                            "Value {:?} conforms to {} shapes in sh:xone (must be exactly 1)",
-                            value, conforming_count
+                            "Value {value:?} conforms to {conforming_count} shapes in sh:xone (must be exactly 1)"
                         ),
                         value: Some(value.clone()),
                         graph_id: None,

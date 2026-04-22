@@ -147,7 +147,7 @@ impl<'a> GraphRef<'a> {
     }
 }
 
-impl<'a> fmt::Debug for GraphRef<'a> {
+impl fmt::Debug for GraphRef<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GraphRef")
             .field("db", &"<LedgerSnapshot>")
@@ -270,7 +270,7 @@ impl<'a> DataSet<'a> {
     }
 }
 
-impl<'a> Default for DataSet<'a> {
+impl Default for DataSet<'_> {
     fn default() -> Self {
         Self::new()
     }

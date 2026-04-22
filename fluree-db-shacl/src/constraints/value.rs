@@ -16,7 +16,7 @@ pub fn validate_has_value(
         Some(ConstraintViolation {
             constraint: Constraint::HasValue(expected.clone()),
             value: None,
-            message: format!("Required value {:?} not found", expected),
+            message: format!("Required value {expected:?} not found"),
         })
     }
 }
@@ -47,7 +47,7 @@ pub fn validate_min_inclusive(value: &FlakeValue, min: &FlakeValue) -> Option<Co
         _ => Some(ConstraintViolation {
             constraint: Constraint::MinInclusive(min.clone()),
             value: Some(value.clone()),
-            message: format!("Value {:?} is less than minimum {:?}", value, min),
+            message: format!("Value {value:?} is less than minimum {min:?}"),
         }),
     }
 }
@@ -59,7 +59,7 @@ pub fn validate_max_inclusive(value: &FlakeValue, max: &FlakeValue) -> Option<Co
         _ => Some(ConstraintViolation {
             constraint: Constraint::MaxInclusive(max.clone()),
             value: Some(value.clone()),
-            message: format!("Value {:?} exceeds maximum {:?}", value, max),
+            message: format!("Value {value:?} exceeds maximum {max:?}"),
         }),
     }
 }
@@ -71,7 +71,7 @@ pub fn validate_min_exclusive(value: &FlakeValue, min: &FlakeValue) -> Option<Co
         _ => Some(ConstraintViolation {
             constraint: Constraint::MinExclusive(min.clone()),
             value: Some(value.clone()),
-            message: format!("Value {:?} must be greater than {:?}", value, min),
+            message: format!("Value {value:?} must be greater than {min:?}"),
         }),
     }
 }
@@ -83,7 +83,7 @@ pub fn validate_max_exclusive(value: &FlakeValue, max: &FlakeValue) -> Option<Co
         _ => Some(ConstraintViolation {
             constraint: Constraint::MaxExclusive(max.clone()),
             value: Some(value.clone()),
-            message: format!("Value {:?} must be less than {:?}", value, max),
+            message: format!("Value {value:?} must be less than {max:?}"),
         }),
     }
 }

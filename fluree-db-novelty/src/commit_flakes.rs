@@ -332,8 +332,8 @@ mod tests {
     fn test_iso_to_epoch_ms() {
         let epoch_ms = iso_to_epoch_ms("2025-01-20T12:00:00Z");
         assert!(epoch_ms > 0);
-        assert!(epoch_ms > 1737000000000);
-        assert!(epoch_ms < 1738000000000);
+        assert!(epoch_ms > 1_737_000_000_000);
+        assert!(epoch_ms < 1_738_000_000_000);
 
         let invalid_ms = iso_to_epoch_ms("not-a-date");
         assert_eq!(invalid_ms, 0);

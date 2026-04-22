@@ -622,7 +622,9 @@ impl Operator for SortOperator {
                 let sort_execute_span = tracing::debug_span!(
                     "sort_execute",
                     total_rows = if use_streaming_topk {
-                        heap.as_ref().map(|h| h.len()).unwrap_or(0)
+                        heap.as_ref()
+                            .map(std::collections::BinaryHeap::len)
+                            .unwrap_or(0)
                     } else {
                         all_rows.len()
                     },
@@ -814,7 +816,12 @@ mod tests {
         }
 
         fn estimated_rows(&self) -> Option<usize> {
-            Some(self.batches.iter().map(|b| b.len()).sum())
+            Some(
+                self.batches
+                    .iter()
+                    .map(super::super::binding::Batch::len)
+                    .sum(),
+            )
         }
     }
 

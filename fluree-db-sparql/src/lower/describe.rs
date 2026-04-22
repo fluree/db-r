@@ -24,7 +24,7 @@ use fluree_db_query::var_registry::VarId;
 
 use super::{LowerError, LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     /// Lower a DESCRIBE query to a ParsedQuery.
     pub(super) fn lower_describe(&mut self, describe: &DescribeQuery) -> Result<ParsedQuery> {
         let ctx = self.build_jsonld_context()?;

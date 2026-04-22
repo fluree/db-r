@@ -307,7 +307,11 @@ fn count_union_star(
     extra_preds: &[Ref],
     mode: UnionCountMode,
 ) -> Result<Option<u64>> {
-    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
+    let overlay_has_rows = ctx
+        .overlay
+        .map(fluree_db_core::OverlayProvider::epoch)
+        .unwrap_or(0)
+        != 0;
     if union_preds.is_empty() {
         return Ok(Some(0));
     }
@@ -338,7 +342,7 @@ fn count_union_star(
         match mode {
             UnionCountMode::AllRows => union_streams_all.push(SubjectCountStreamV6::new(cursor)),
             UnionCountMode::SubjectEqObject => {
-                union_streams_eq.push(SubjectSelfLoopCountStreamV6::new(cursor))
+                union_streams_eq.push(SubjectSelfLoopCountStreamV6::new(cursor));
             }
         }
     }
@@ -370,7 +374,7 @@ fn count_union_star(
     let mut next_union = || -> Result<Option<(u64, u64)>> {
         match mode {
             UnionCountMode::AllRows => {
-                if union_curr_all.iter().all(|c| c.is_none()) {
+                if union_curr_all.iter().all(std::option::Option::is_none) {
                     return Ok(None);
                 }
                 let s_min = union_curr_all
@@ -390,7 +394,7 @@ fn count_union_star(
                 Ok(Some((s_min, sum)))
             }
             UnionCountMode::SubjectEqObject => {
-                if union_curr_eq.iter().all(|c| c.is_none()) {
+                if union_curr_eq.iter().all(std::option::Option::is_none) {
                     return Ok(None);
                 }
                 let s_min = union_curr_eq
@@ -454,7 +458,7 @@ fn count_union_star(
     // Helper: next `(s, product)` for subjects that have all extra predicates.
     let mut next_extra_product = || -> Result<Option<(u64, u64)>> {
         loop {
-            if extra_curr.iter().any(|c| c.is_none()) {
+            if extra_curr.iter().any(std::option::Option::is_none) {
                 return Ok(None);
             }
             let target = extra_curr.iter().map(|c| c.unwrap().0).max().unwrap();

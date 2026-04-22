@@ -306,7 +306,7 @@ impl FulltextArena {
         if version != FTA_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("FTA1: unsupported version {}", version),
+                format!("FTA1: unsupported version {version}"),
             ));
         }
 

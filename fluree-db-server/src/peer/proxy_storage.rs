@@ -203,8 +203,7 @@ impl ProxyStorage {
                     FetchOutcome::NotAcceptable => {
                         // Should not happen for octet-stream, but handle anyway
                         Err(CoreError::storage(format!(
-                            "Storage proxy: octet-stream also rejected for {}",
-                            address
+                            "Storage proxy: octet-stream also rejected for {address}"
                         )))
                     }
                     FetchOutcome::Error(e) => Err(e),
@@ -227,8 +226,7 @@ impl ProxyStorage {
             Some(pair) => pair,
             None => {
                 return FetchOutcome::Error(CoreError::storage(format!(
-                    "Cannot derive CID from address: {}",
-                    address
+                    "Cannot derive CID from address: {address}"
                 )));
             }
         };
@@ -246,17 +244,13 @@ impl ProxyStorage {
             Ok(r) => r,
             Err(e) => {
                 let err = if e.is_timeout() {
-                    CoreError::io(format!("Storage proxy timeout for {}: {}", address, e))
+                    CoreError::io(format!("Storage proxy timeout for {address}: {e}"))
                 } else if e.is_connect() {
                     CoreError::io(format!(
-                        "Storage proxy connection failed for {}: {}",
-                        address, e
+                        "Storage proxy connection failed for {address}: {e}"
                     ))
                 } else {
-                    CoreError::io(format!(
-                        "Storage proxy request failed for {}: {}",
-                        address, e
-                    ))
+                    CoreError::io(format!("Storage proxy request failed for {address}: {e}"))
                 };
                 return FetchOutcome::Error(err);
             }
@@ -268,8 +262,7 @@ impl ProxyStorage {
             StatusCode::OK => match response.bytes().await {
                 Ok(bytes) => FetchOutcome::Success(bytes.to_vec()),
                 Err(e) => FetchOutcome::Error(CoreError::io(format!(
-                    "Failed to read response body for {}: {}",
-                    address, e
+                    "Failed to read response body for {address}: {e}"
                 ))),
             },
             StatusCode::NOT_FOUND => FetchOutcome::Error(CoreError::not_found(address)),
@@ -278,20 +271,17 @@ impl ProxyStorage {
                 FetchOutcome::NotAcceptable
             }
             StatusCode::UNAUTHORIZED => FetchOutcome::Error(CoreError::storage(format!(
-                "Storage proxy authentication failed for {}: check token validity",
-                address
+                "Storage proxy authentication failed for {address}: check token validity"
             ))),
             StatusCode::FORBIDDEN => {
                 // Address not in token scope - treat as not found (no existence leak)
                 FetchOutcome::Error(CoreError::not_found(address))
             }
             s if s.is_server_error() => FetchOutcome::Error(CoreError::io(format!(
-                "Storage proxy server error for {}: {}",
-                address, status
+                "Storage proxy server error for {address}: {status}"
             ))),
             _ => FetchOutcome::Error(CoreError::storage(format!(
-                "Storage proxy unexpected status {} for {}",
-                status, address
+                "Storage proxy unexpected status {status} for {address}"
             ))),
         }
     }
@@ -384,7 +374,7 @@ impl ContentAddressedWrite for ProxyStorage {
 }
 
 impl fluree_db_core::StorageMethod for ProxyStorage {
-    fn storage_method(&self) -> &str {
+    fn storage_method(&self) -> &'static str {
         "proxy"
     }
 }
@@ -400,7 +390,7 @@ mod tests {
             "http://localhost:8090".to_string(),
             "test-token".to_string(),
         );
-        let debug = format!("{:?}", storage);
+        let debug = format!("{storage:?}");
         assert!(debug.contains("ProxyStorage"));
         assert!(debug.contains("localhost:8090"));
         // Token should NOT be in debug output

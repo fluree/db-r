@@ -229,13 +229,13 @@ impl<'a, 'g> CommitBuilder<'a, 'g> {
     /// When neither identity nor policy class is set, all flakes are returned
     /// (equivalent to root/admin access).
     pub fn identity(mut self, identity: Option<&str>) -> Self {
-        self.identity = identity.map(|s| s.to_string());
+        self.identity = identity.map(std::string::ToString::to_string);
         self
     }
 
     /// Set the default policy class for policy-based flake filtering.
     pub fn policy_class(mut self, policy_class: Option<&str>) -> Self {
-        self.policy_class = policy_class.map(|s| s.to_string());
+        self.policy_class = policy_class.map(std::string::ToString::to_string);
         self
     }
 
@@ -284,20 +284,18 @@ impl<'a, 'g> CommitBuilder<'a, 'g> {
         let content_store = self.graph.fluree.content_store(&self.graph.ledger_id);
         let blob = content_store.get(&commit_id).await.map_err(|e| {
             if matches!(e, fluree_db_core::error::Error::NotFound(_)) {
-                ApiError::NotFound(format!("Commit {} not found", commit_id))
+                ApiError::NotFound(format!("Commit {commit_id} not found"))
             } else {
                 ApiError::internal(format!(
-                    "Failed to read commit {} from storage: {}",
-                    commit_id, e
+                    "Failed to read commit {commit_id} from storage: {e}"
                 ))
             }
         })?;
         let blob_size = blob.len();
 
         // 5. Decode the commit
-        let mut commit = read_commit(&blob).map_err(|e| {
-            ApiError::internal(format!("Failed to decode commit {}: {}", commit_id, e))
-        })?;
+        let mut commit = read_commit(&blob)
+            .map_err(|e| ApiError::internal(format!("Failed to decode commit {commit_id}: {e}")))?;
 
         // 6. Apply policy filtering (if identity or policy_class is set).
         //    Calls policy_builder and enforcer directly to preserve ApiError
@@ -378,7 +376,7 @@ async fn resolve_commit_prefix(
 
     // Build scan range: [prefix, prefix~) where ~ sorts after all hex chars
     let start_sid = Sid::new(FLUREE_COMMIT, normalized);
-    let end_prefix = format!("{}~", normalized);
+    let end_prefix = format!("{normalized}~");
     let end_sid = Sid::new(FLUREE_COMMIT, &end_prefix);
 
     let start_bound = Flake::min_for_subject(start_sid);
@@ -420,14 +418,13 @@ async fn resolve_commit_prefix(
 
     match matches.len() {
         0 => Err(ApiError::NotFound(format!(
-            "No commit found with prefix: {}",
-            normalized
+            "No commit found with prefix: {normalized}"
         ))),
         1 => {
             // Reconstruct ContentId from hex digest
             let hex = &matches[0];
             let digest: [u8; 32] = hex::decode(hex)
-                .map_err(|e| ApiError::internal(format!("Invalid hex digest: {}", e)))?
+                .map_err(|e| ApiError::internal(format!("Invalid hex digest: {e}")))?
                 .try_into()
                 .map_err(|_| ApiError::internal("Digest not 32 bytes"))?;
             Ok(ContentId::from_sha256_digest(
@@ -470,14 +467,12 @@ async fn resolve_t_to_commit_id(
 
     if target_t < 1 {
         return Err(ApiError::query(format!(
-            "Transaction number must be >= 1, got {}",
-            target_t
+            "Transaction number must be >= 1, got {target_t}"
         )));
     }
     if target_t > current_t {
         return Err(ApiError::NotFound(format!(
-            "Transaction t={} not found (latest is t={})",
-            target_t, current_t
+            "Transaction t={target_t} not found (latest is t={current_t})"
         )));
     }
 
@@ -514,7 +509,7 @@ async fn resolve_t_to_commit_id(
         }
         let hex = flake.s.name.as_ref();
         let digest: [u8; 32] = hex::decode(hex)
-            .map_err(|e| ApiError::internal(format!("Invalid hex digest: {}", e)))?
+            .map_err(|e| ApiError::internal(format!("Invalid hex digest: {e}")))?
             .try_into()
             .map_err(|_| ApiError::internal("Digest not 32 bytes"))?;
         return Ok(ContentId::from_sha256_digest(
@@ -524,8 +519,7 @@ async fn resolve_t_to_commit_id(
     }
 
     Err(ApiError::NotFound(format!(
-        "No commit found for t={}",
-        target_t
+        "No commit found for t={target_t}"
     )))
 }
 
@@ -553,10 +547,10 @@ fn build_commit_detail(
     for flake in &commit.flakes {
         let s = compactor
             .compact_sid_for_display(&flake.s)
-            .map_err(|e| ApiError::internal(format!("Failed to resolve subject IRI: {}", e)))?;
+            .map_err(|e| ApiError::internal(format!("Failed to resolve subject IRI: {e}")))?;
         let p = compactor
             .compact_sid_for_display(&flake.p)
-            .map_err(|e| ApiError::internal(format!("Failed to resolve predicate IRI: {}", e)))?;
+            .map_err(|e| ApiError::internal(format!("Failed to resolve predicate IRI: {e}")))?;
 
         let (o, dt) = resolve_object_and_dt(compactor, &flake.o, &flake.dt)?;
 
@@ -565,7 +559,7 @@ fn build_commit_detail(
         let graph =
             match &flake.g {
                 Some(g_sid) => Some(compactor.compact_sid_for_display(g_sid).map_err(|e| {
-                    ApiError::internal(format!("Failed to resolve graph IRI: {}", e))
+                    ApiError::internal(format!("Failed to resolve graph IRI: {e}"))
                 })?),
                 None => None,
             };
@@ -610,7 +604,7 @@ fn resolve_object_and_dt(
         FlakeValue::Ref(ref_sid) => {
             let iri = compactor
                 .compact_sid_for_display(ref_sid)
-                .map_err(|e| ApiError::internal(format!("Failed to resolve ref IRI: {}", e)))?;
+                .map_err(|e| ApiError::internal(format!("Failed to resolve ref IRI: {e}")))?;
             Ok((ResolvedValue::String(iri), "@id".to_string()))
         }
         FlakeValue::Boolean(b) => {
@@ -632,7 +626,7 @@ fn resolve_object_and_dt(
         // All other types: render as lexical string
         other => {
             let dt = compact_dt(compactor, dt_sid)?;
-            Ok((ResolvedValue::Lexical(format!("{}", other)), dt))
+            Ok((ResolvedValue::Lexical(format!("{other}")), dt))
         }
     }
 }
@@ -641,5 +635,5 @@ fn resolve_object_and_dt(
 fn compact_dt(compactor: &IriCompactor, dt_sid: &fluree_db_core::Sid) -> Result<String> {
     compactor
         .compact_sid_for_display(dt_sid)
-        .map_err(|e| ApiError::internal(format!("Failed to resolve datatype IRI: {}", e)))
+        .map_err(|e| ApiError::internal(format!("Failed to resolve datatype IRI: {e}")))
 }

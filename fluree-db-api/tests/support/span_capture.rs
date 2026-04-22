@@ -243,7 +243,7 @@ struct FieldVisitor(HashMap<String, String>);
 impl tracing::field::Visit for FieldVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         self.0
-            .insert(field.name().to_string(), format!("{:?}", value));
+            .insert(field.name().to_string(), format!("{value:?}"));
     }
 
     fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {

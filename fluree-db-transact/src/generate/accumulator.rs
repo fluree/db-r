@@ -26,7 +26,7 @@
 //!   to 1 surviving retract, not 0).
 
 use fluree_db_core::{Flake, IndexType};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxBuildHasher, FxHashMap, FxHashSet};
 
 /// Accumulates flakes from one or more sources and produces a deterministic,
 /// deduplicated survivor set. See [module docs](self) for design notes.
@@ -59,7 +59,7 @@ impl FlakeAccumulator {
         Self {
             inner: AccInner::PureRetract(FxHashSet::with_capacity_and_hasher(
                 capacity_hint,
-                Default::default(),
+                FxBuildHasher,
             )),
             input_count: 0,
         }
@@ -70,7 +70,7 @@ impl FlakeAccumulator {
         Self {
             inner: AccInner::Mixed(FxHashMap::with_capacity_and_hasher(
                 capacity_hint,
-                Default::default(),
+                FxBuildHasher,
             )),
             input_count: 0,
         }
@@ -118,12 +118,11 @@ impl FlakeAccumulator {
                 // Guard: pure-delete callers must not generate assertions.
                 // Touch the iterator only enough to detect a non-empty source
                 // so an accidentally-fed empty Vec doesn't panic.
-                if flakes.into_iter().next().is_some() {
-                    panic!(
-                        "FlakeAccumulator::push_assertions called on a pure-DELETE \
-                         accumulator — this indicates an upstream wiring bug"
-                    );
-                }
+                assert!(
+                    !flakes.into_iter().next().is_some(),
+                    "FlakeAccumulator::push_assertions called on a pure-DELETE \
+                     accumulator — this indicates an upstream wiring bug"
+                );
             }
             AccInner::Mixed(map) => {
                 for f in flakes {
@@ -208,8 +207,8 @@ mod tests {
 
     fn flake(s: u16, p: u16, o: i64, t: i64, op: bool) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,

@@ -235,7 +235,7 @@ mod tests {
             id: id.to_string(),
             kind,
             content: content.to_string(),
-            tags: tags.iter().map(|t| t.to_string()).collect(),
+            tags: tags.iter().map(std::string::ToString::to_string).collect(),
             scope: Scope::Repo,
             severity: None,
             artifact_refs: Vec::new(),

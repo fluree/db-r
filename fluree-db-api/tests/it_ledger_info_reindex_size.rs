@@ -62,8 +62,10 @@ async fn ledger_info_size_is_not_reset_to_zero_by_reindex() {
     assert!(
         named_graphs1.iter().any(|g| {
             g["g-id"].as_u64() == Some(0)
-                && g.get("flakes").and_then(|v| v.as_u64()).is_some()
-                && g.get("size").and_then(|v| v.as_u64()).is_some()
+                && g.get("flakes")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some()
+                && g.get("size").and_then(serde_json::Value::as_u64).is_some()
         }),
         "expected default graph entry in ledger.named-graphs to include flakes/size: {info1}"
     );
@@ -95,8 +97,10 @@ async fn ledger_info_size_is_not_reset_to_zero_by_reindex() {
     assert!(
         named_graphs2.iter().any(|g| {
             g["g-id"].as_u64() == Some(0)
-                && g.get("flakes").and_then(|v| v.as_u64()).is_some()
-                && g.get("size").and_then(|v| v.as_u64()).is_some()
+                && g.get("flakes")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some()
+                && g.get("size").and_then(serde_json::Value::as_u64).is_some()
         }),
         "expected default graph entry in ledger.named-graphs to include flakes/size: {info2}"
     );

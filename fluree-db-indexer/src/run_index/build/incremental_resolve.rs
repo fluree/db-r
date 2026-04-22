@@ -178,7 +178,7 @@ pub async fn resolve_incremental_commits_v6(
     let (root, t_root_decode_ms) = {
         let t0 = Instant::now();
         let root = IndexRoot::decode(&root_bytes).map_err(|e| {
-            IncrementalResolveError::RootLoad(format!("failed to decode FIR6: {}", e))
+            IncrementalResolveError::RootLoad(format!("failed to decode FIR6: {e}"))
         })?;
         (root, t0.elapsed().as_millis() as u64)
     };
@@ -259,7 +259,7 @@ pub async fn resolve_incremental_commits_v6(
                 let arena =
                     fluree_db_binary_index::arena::numbig::read_numbig_arena_from_bytes(&bytes)
                         .map_err(|e| {
-                            IncrementalResolveError::RootLoad(format!("numbig arena decode: {}", e))
+                            IncrementalResolveError::RootLoad(format!("numbig arena decode: {e}"))
                         })?;
                 base_numbig_counts.insert((ga.g_id, *p_id), arena.len());
                 nb_map.insert(*p_id, arena);
@@ -280,8 +280,7 @@ pub async fn resolve_incremental_commits_v6(
                     fluree_db_binary_index::arena::vector::read_vector_manifest(&manifest_bytes)
                         .map_err(|e| {
                             IncrementalResolveError::RootLoad(format!(
-                                "vector manifest decode: {}",
-                                e
+                                "vector manifest decode: {e}"
                             ))
                         })?;
                 base_vector_counts.insert((ga.g_id, vref.p_id), manifest.total_count);
@@ -593,7 +592,7 @@ async fn walk_commit_chain_since(
         }
 
         let bytes = cs.get(&cid).await.map_err(|e| {
-            IncrementalResolveError::CommitChain(format!("failed to load commit {}: {}", cid, e))
+            IncrementalResolveError::CommitChain(format!("failed to load commit {cid}: {e}"))
         })?;
         cumulative_bytes += bytes.len();
         commits.push(WalkedCommit { cid, t, bytes });

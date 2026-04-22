@@ -84,7 +84,7 @@ impl Fluree {
                         .as_ref()
                         .and_then(|s| s.graph_id_for_iri(&iri))
                 })
-                .ok_or_else(|| ApiError::query(format!("Unknown named graph '#{}'", iri)))?,
+                .ok_or_else(|| ApiError::query(format!("Unknown named graph '#{iri}'")))?,
         };
 
         if g_id != DEFAULT_GRAPH_ID && view.binary_store.is_some() && view.dict_novelty.is_some() {
@@ -176,7 +176,7 @@ impl Fluree {
                 let bytes = cs
                     .get(&index_cid)
                     .await
-                    .map_err(|e| ApiError::internal(format!("read index root: {}", e)))?;
+                    .map_err(|e| ApiError::internal(format!("read index root: {e}")))?;
                 let cache_dir = std::env::temp_dir().join("fluree-cache");
                 let mut store = BinaryIndexStore::load_from_root_bytes(
                     cs,
@@ -185,7 +185,7 @@ impl Fluree {
                     Some(Arc::clone(&self.leaflet_cache)),
                 )
                 .await
-                .map_err(|e| ApiError::internal(format!("load binary index: {}", e)))?;
+                .map_err(|e| ApiError::internal(format!("load binary index: {e}")))?;
 
                 // Sync namespace codes between store and snapshot (bimap validation).
                 crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut snapshot.snapshot)?;
@@ -305,10 +305,7 @@ impl Fluree {
                 if let Some(index_cid) = record.index_head_id.as_ref() {
                     let cs = self.content_store(&record.ledger_id);
                     let bytes = cs.get(index_cid).await.map_err(|e| {
-                        ApiError::internal(format!(
-                            "failed to read index root {}: {}",
-                            index_cid, e
-                        ))
+                        ApiError::internal(format!("failed to read index root {index_cid}: {e}"))
                     })?;
                     let cache_dir = std::env::temp_dir().join("fluree-cache");
                     let mut store = BinaryIndexStore::load_from_root_bytes(
@@ -319,10 +316,7 @@ impl Fluree {
                     )
                     .await
                     .map_err(|e| {
-                        ApiError::internal(format!(
-                            "load binary index store from {}: {}",
-                            index_cid, e
-                        ))
+                        ApiError::internal(format!("load binary index store from {index_cid}: {e}"))
                     })?;
 
                     // Augment store with snapshot namespace codes and sync split mode.
@@ -333,9 +327,7 @@ impl Fluree {
                     // (the root is a materialized cache at index_t ≤ view.to_t).
                     store
                         .augment_namespace_codes(view.snapshot.namespaces())
-                        .map_err(|e| {
-                            ApiError::internal(format!("augment namespace codes: {}", e))
-                        })?;
+                        .map_err(|e| ApiError::internal(format!("augment namespace codes: {e}")))?;
                     store.set_ns_split_mode(view.snapshot.ns_split_mode());
 
                     // Populate dict novelty safely (persisted dict wins).
@@ -419,8 +411,7 @@ impl Fluree {
                 let current_t = ledger.t();
                 let dt = DateTime::parse_from_rfc3339(&iso).map_err(|e| {
                     ApiError::internal(format!(
-                        "Invalid ISO-8601 timestamp for time travel: {} ({})",
-                        iso, e
+                        "Invalid ISO-8601 timestamp for time travel: {iso} ({e})"
                     ))
                 })?;
                 // `ledger#time` flakes store epoch milliseconds. If the ISO timestamp includes

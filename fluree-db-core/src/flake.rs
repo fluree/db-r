@@ -373,10 +373,9 @@ impl Flake {
         };
 
         // Metadata size
-        let m_size = self
-            .m
-            .as_ref()
-            .map_or(0, |m| 8 + m.lang.as_ref().map_or(0, |l| l.len()) + 4);
+        let m_size = self.m.as_ref().map_or(0, |m| {
+            8 + m.lang.as_ref().map_or(0, std::string::String::len) + 4
+        });
 
         // t (8) + op (1)
         base + o_size + m_size + 9
@@ -434,7 +433,7 @@ impl Flake {
 
 /// Fast deterministic size estimate for a collection of flakes (stats)
 pub fn size_flakes_estimate(flakes: &[Flake]) -> u64 {
-    flakes.iter().map(|f| f.size_estimate_bytes()).sum()
+    flakes.iter().map(Flake::size_estimate_bytes).sum()
 }
 
 // === Equality based on fact identity (ignoring t and op) ===

@@ -298,7 +298,7 @@ fn assemble_fast_stats_inner(
                     class
                         .properties
                         .sort_by(|a, b| a.property_sid.cmp(&b.property_sid));
-                    for prop in class.properties.iter_mut() {
+                    for prop in &mut class.properties {
                         prop.datatypes.sort_by_key(|entry| entry.0);
                         prop.langs.sort_by(|a, b| a.0.cmp(&b.0));
                         prop.ref_classes

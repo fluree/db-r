@@ -115,8 +115,7 @@ pub fn derive_spatial_novelty(
         // to avoid collision with NOVELTY_HANDLE_FLAG
         if handle & NOVELTY_HANDLE_FLAG != 0 {
             return Err(crate::error::SpatialError::Internal(format!(
-                "novelty arena handle {} exceeds maximum (2^31-1)",
-                handle
+                "novelty arena handle {handle} exceeds maximum (2^31-1)"
             )));
         }
 
@@ -139,7 +138,7 @@ pub fn derive_spatial_novelty(
     }
 
     // Sort entries by index order
-    entries.sort_by(|a, b| a.cmp_index(b));
+    entries.sort_by(super::cell_index::CellEntry::cmp_index);
 
     Ok(DerivedNovelty { entries, arena })
 }

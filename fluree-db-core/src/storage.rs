@@ -534,8 +534,7 @@ impl<S: Storage + Send + Sync> ContentStore for StorageContentStore<S> {
     async fn put_with_id(&self, id: &ContentId, bytes: &[u8]) -> Result<()> {
         if !id.verify(bytes) {
             return Err(crate::error::Error::storage(format!(
-                "CID verification failed: provided CID {} does not match bytes",
-                id
+                "CID verification failed: provided CID {id} does not match bytes"
             )));
         }
         let address = self.cid_to_address(id)?;
@@ -840,36 +839,36 @@ pub fn ledger_id_prefix_for_path(ledger_id: &str) -> String {
 pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> String {
     let prefix = ledger_id_prefix_for_path(ledger_id);
     match kind {
-        ContentKind::Commit => format!("{}/commit/{}.fcv2", prefix, hash_hex),
-        ContentKind::Txn => format!("{}/txn/{}.json", prefix, hash_hex),
-        ContentKind::IndexRoot => format!("{}/index/roots/{}.fir6", prefix, hash_hex),
-        ContentKind::GarbageRecord => format!("{}/index/garbage/{}.json", prefix, hash_hex),
+        ContentKind::Commit => format!("{prefix}/commit/{hash_hex}.fcv2"),
+        ContentKind::Txn => format!("{prefix}/txn/{hash_hex}.json"),
+        ContentKind::IndexRoot => format!("{prefix}/index/roots/{hash_hex}.fir6"),
+        ContentKind::GarbageRecord => format!("{prefix}/index/garbage/{hash_hex}.json"),
         ContentKind::DictBlob { dict } => {
             // Dictionaries are global per ledger — shared across all branches.
             // Use the @shared namespace (can't collide with branch names since @ is forbidden).
             let shared = shared_prefix_for_path(ledger_id);
             let ext = dict_kind_extension(dict);
-            format!("{}/dicts/{}.{}", shared, hash_hex, ext)
+            format!("{shared}/dicts/{hash_hex}.{ext}")
         }
         ContentKind::IndexBranch => {
-            format!("{}/index/objects/branches/{}.fbr", prefix, hash_hex)
+            format!("{prefix}/index/objects/branches/{hash_hex}.fbr")
         }
-        ContentKind::IndexLeaf => format!("{}/index/objects/leaves/{}.fli", prefix, hash_hex),
-        ContentKind::LedgerConfig => format!("{}/config/{}.json", prefix, hash_hex),
-        ContentKind::StatsSketch => format!("{}/index/stats/{}.hll", prefix, hash_hex),
+        ContentKind::IndexLeaf => format!("{prefix}/index/objects/leaves/{hash_hex}.fli"),
+        ContentKind::LedgerConfig => format!("{prefix}/config/{hash_hex}.json"),
+        ContentKind::StatsSketch => format!("{prefix}/index/stats/{hash_hex}.hll"),
         ContentKind::GraphSourceSnapshot => {
-            format!("graph-sources/{}/snapshots/{}.gssnap", prefix, hash_hex)
+            format!("graph-sources/{prefix}/snapshots/{hash_hex}.gssnap")
         }
-        ContentKind::SpatialIndex => format!("{}/index/spatial/{}.bin", prefix, hash_hex),
+        ContentKind::SpatialIndex => format!("{prefix}/index/spatial/{hash_hex}.bin"),
         ContentKind::HistorySidecar => {
-            format!("{}/index/objects/history/{}.fhs1", prefix, hash_hex)
+            format!("{prefix}/index/objects/history/{hash_hex}.fhs1")
         }
         ContentKind::GraphSourceMapping => {
-            format!("graph-sources/{}/mapping/{}.ttl", prefix, hash_hex)
+            format!("graph-sources/{prefix}/mapping/{hash_hex}.ttl")
         }
         // Forward-compatibility: unknown kinds go to a generic blob directory
         #[allow(unreachable_patterns)]
-        _ => format!("{}/blob/{}.bin", prefix, hash_hex),
+        _ => format!("{prefix}/blob/{hash_hex}.bin"),
     }
 }
 
@@ -887,7 +886,7 @@ pub fn content_path(kind: ContentKind, ledger_id: &str, hash_hex: &str) -> Strin
 /// A Fluree address like `fluree:file://mydb/main/commit/{hash}.fcv2`
 pub fn content_address(method: &str, kind: ContentKind, ledger_id: &str, hash_hex: &str) -> String {
     let path = content_path(kind, ledger_id, hash_hex);
-    format!("fluree:{}://{}", method, path)
+    format!("fluree:{method}://{path}")
 }
 
 /// Deserialize a JSON byte slice into a typed value.

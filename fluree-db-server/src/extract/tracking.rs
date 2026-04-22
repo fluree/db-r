@@ -55,7 +55,7 @@ pub fn tracking_headers(tally: &TrackingTally) -> HeaderMap {
 }
 
 fn format_fuel(fuel: f64) -> String {
-    let s = format!("{:.3}", fuel);
+    let s = format!("{fuel:.3}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
     if trimmed.is_empty() {
         "0".to_string()

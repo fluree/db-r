@@ -43,9 +43,10 @@ async fn publish_commit(
     match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
         CasResult::Updated => {}
         CasResult::Conflict { actual } => {
-            if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                panic!("unexpected commit publish conflict: {actual:?}");
-            }
+            assert!(
+                actual.as_ref().map(|r| r.t).unwrap_or(0) >= t,
+                "unexpected commit publish conflict: {actual:?}"
+            );
         }
     }
 }
@@ -83,7 +84,7 @@ async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    panic!("S3 bucket was not available: {}", bucket);
+    panic!("S3 bucket was not available: {bucket}");
 }
 
 async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &str) {

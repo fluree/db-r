@@ -733,9 +733,7 @@ mod tests {
 
         assert!(
             (score_with_dupes - score_without_dupes).abs() < 1e-10,
-            "Duplicate query terms should be deduplicated: {} vs {}",
-            score_with_dupes,
-            score_without_dupes
+            "Duplicate query terms should be deduplicated: {score_with_dupes} vs {score_without_dupes}"
         );
     }
 
@@ -852,8 +850,7 @@ mod tests {
             assert_eq!(
                 exp_key, act_key,
                 "DocKey mismatch at position {i} for k={k}, query={query_terms:?}: \
-                 expected {:?}, got {:?}",
-                exp_key, act_key
+                 expected {exp_key:?}, got {act_key:?}"
             );
             assert_eq!(
                 exp_score.to_bits(),

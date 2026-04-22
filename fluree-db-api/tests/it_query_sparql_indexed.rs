@@ -120,12 +120,12 @@ async fn indexed_sparql_custom_predicate_without_type_returns_results() {
             let view = fluree.db(ledger_id).await.expect("load view");
 
             // Baseline: query WITH rdf:type pattern
-            let with_type = r#"
+            let with_type = r"
                 PREFIX cust: <http://example.org/custom/>
                 SELECT ?s ?o
                 WHERE { ?s a cust:CoveragePackage ; cust:anchor ?o . }
                 ORDER BY ?o
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(with_type))
                 .await
@@ -144,12 +144,12 @@ async fn indexed_sparql_custom_predicate_without_type_returns_results() {
             );
 
             // Bug: query WITHOUT rdf:type pattern
-            let without_type = r#"
+            let without_type = r"
                 PREFIX cust: <http://example.org/custom/>
                 SELECT ?s ?o
                 WHERE { ?s cust:anchor ?o . }
                 ORDER BY ?o
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(without_type))
                 .await
@@ -168,13 +168,13 @@ async fn indexed_sparql_custom_predicate_without_type_returns_results() {
             );
 
             // Also verify standard namespace predicate works (control)
-            let std_pred = r#"
+            let std_pred = r"
                 PREFIX cust: <http://example.org/custom/>
                 PREFIX skos: <http://www.w3.org/2008/05/skos#>
                 SELECT ?s ?o
                 WHERE { ?s skos:broader ?o . }
                 ORDER BY ?s
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(std_pred))
                 .await
@@ -347,11 +347,11 @@ async fn indexed_then_insert_novelty_custom_pred_returns_results() {
             let view = fluree.db(ledger_id).await.expect("load view");
 
             // Bug 1: custom NS predicate without rdf:type returns 0 rows
-            let query = r#"
+            let query = r"
                 PREFIX cust: <https://taxo.cbcrc.ca/ns/>
                 SELECT ?s ?o
                 WHERE { ?s cust:anchor ?o . }
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(query))
                 .await
@@ -361,8 +361,7 @@ async fn indexed_then_insert_novelty_custom_pred_returns_results() {
             assert_eq!(
                 rows.len(),
                 1,
-                "novelty-only custom NS predicate should return 1 row; got: {:?}",
-                jsonld
+                "novelty-only custom NS predicate should return 1 row; got: {jsonld:?}"
             );
         })
         .await;
@@ -465,8 +464,7 @@ async fn indexed_then_insert_graph_crawl_custom_type_returns_properties() {
             let obj = rows[0].as_object().expect("object");
             assert!(
                 obj.len() > 1,
-                "graph crawl should return properties, not just @id; got: {:?}",
-                obj
+                "graph crawl should return properties, not just @id; got: {obj:?}"
             );
         })
         .await;
@@ -532,10 +530,10 @@ async fn indexed_repeated_vars_in_triple_pattern_do_not_duplicate_schema() {
                 .expect("load indexed view");
 
             // 1) subject==object repeated var
-            let q1 = r#"
+            let q1 = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?x WHERE { ?x ex:self ?x }
-            "#;
+            ";
             let r1 = fluree
                 .query(&view, QueryInput::Sparql(q1))
                 .await
@@ -548,10 +546,10 @@ async fn indexed_repeated_vars_in_triple_pattern_do_not_duplicate_schema() {
             );
 
             // 2) subject==predicate repeated var
-            let q2 = r#"
+            let q2 = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?x ?o WHERE { ?x ?x ?o }
-            "#;
+            ";
             let r2 = fluree
                 .query(&view, QueryInput::Sparql(q2))
                 .await
@@ -621,11 +619,11 @@ async fn indexed_multicolumn_join_shared_object_var_executes() {
                 .await
                 .expect("load indexed view");
 
-            let q = r#"
+            let q = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (COUNT(*) AS ?count)
                 WHERE { ?s ex:p1 ?o . ?s ex:p2 ?o . }
-            "#;
+            ";
             let r = fluree
                 .query(&view, QueryInput::Sparql(q))
                 .await
@@ -696,11 +694,11 @@ async fn indexed_overlay_count_reflects_retract_and_reassert() {
                 assert_eq!(index_t, 1, "should index to t=1");
             }
 
-            let query = r#"
+            let query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (COUNT(*) AS ?cnt)
                 WHERE { ?p a ex:Person . }
-            "#;
+            ";
 
             let view1 = fluree
                 .db_at_t(ledger_id, ledger1.t())
@@ -829,14 +827,14 @@ async fn indexed_overlay_group_by_count_topk_reflects_overlay() {
                 assert_eq!(index_t, 1, "should index to t=1");
             }
 
-            let query = r#"
+            let query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?o (COUNT(?s) AS ?cnt)
                 WHERE { ?s ex:policyState ?o . }
                 GROUP BY ?o
                 ORDER BY DESC(?cnt)
                 LIMIT 2
-            "#;
+            ";
 
             let view1 = fluree
                 .db_at_t(ledger_id, ledger1.t())
@@ -971,12 +969,12 @@ async fn indexed_novelty_only_subject_returns_data() {
             // Phase 3: Query the novelty-only subject by IRI.
             let view = fluree.db(ledger_id).await.expect("load view");
 
-            let query = r#"
+            let query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?p ?o
                 WHERE { ex:bob ?p ?o . }
                 ORDER BY ?p
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(query))
                 .await
@@ -991,12 +989,12 @@ async fn indexed_novelty_only_subject_returns_data() {
             );
 
             // Verify the indexed subject (ex:alice) still works too.
-            let query_alice = r#"
+            let query_alice = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?p ?o
                 WHERE { ex:alice ?p ?o . }
                 ORDER BY ?p
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(query_alice))
                 .await
@@ -1493,11 +1491,11 @@ async fn indexed_numeric_sum_fast_paths_work_for_identity_and_add_self() {
                 .await
                 .expect("load indexed-only view");
 
-            let baseline_query = r#"
+            let baseline_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (SUM(?o) AS ?sum)
                 WHERE { ?s ex:n ?o }
-            "#;
+            ";
             let baseline_result = fluree
                 .query(&view, QueryInput::Sparql(baseline_query))
                 .await
@@ -1511,11 +1509,11 @@ async fn indexed_numeric_sum_fast_paths_work_for_identity_and_add_self() {
                 "indexed SUM(?o) should add integer values directly"
             );
 
-            let add_query = r#"
+            let add_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (SUM(?o + ?o) AS ?sum)
                 WHERE { ?s ex:n ?o }
-            "#;
+            ";
             let add_result = fluree
                 .query(&view, QueryInput::Sparql(add_query))
                 .await
@@ -1583,14 +1581,14 @@ async fn indexed_numeric_count_fast_path_handles_threshold_filters() {
                 .await
                 .expect("load indexed-only view");
 
-            let ge_query = r#"
+            let ge_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (COUNT(?s) AS ?count)
                 WHERE {
                   ?s ex:n ?o .
                   FILTER (?o >= 2)
                 }
-            "#;
+            ";
             let ge_result = fluree
                 .query(&view, QueryInput::Sparql(ge_query))
                 .await
@@ -1602,14 +1600,14 @@ async fn indexed_numeric_count_fast_path_handles_threshold_filters() {
                 "indexed COUNT with ?o >= 2 should count qualifying rows"
             );
 
-            let gt_query = r#"
+            let gt_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (COUNT(?s) AS ?count)
                 WHERE {
                   ?s ex:n ?o .
                   FILTER (?o > 2)
                 }
-            "#;
+            ";
             let gt_result = fluree
                 .query(&view, QueryInput::Sparql(gt_query))
                 .await
@@ -1677,11 +1675,11 @@ async fn indexed_numeric_avg_min_max_fast_paths_work() {
                 .await
                 .expect("load indexed-only view");
 
-            let avg_query = r#"
+            let avg_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (AVG(?o) AS ?avg)
                 WHERE { ?s ex:n ?o }
-            "#;
+            ";
             let avg_result = fluree
                 .query(&view, QueryInput::Sparql(avg_query))
                 .await
@@ -1693,11 +1691,11 @@ async fn indexed_numeric_avg_min_max_fast_paths_work() {
                 "indexed AVG(?o) should average numeric values directly"
             );
 
-            let min_query = r#"
+            let min_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (MIN(?o) AS ?min)
                 WHERE { ?s ex:n ?o }
-            "#;
+            ";
             let min_result = fluree
                 .query(&view, QueryInput::Sparql(min_query))
                 .await
@@ -1709,11 +1707,11 @@ async fn indexed_numeric_avg_min_max_fast_paths_work() {
                 "indexed MIN(?o) should use numeric leaflet boundaries"
             );
 
-            let max_query = r#"
+            let max_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT (MAX(?o) AS ?max)
                 WHERE { ?s ex:n ?o }
-            "#;
+            ";
             let max_result = fluree
                 .query(&view, QueryInput::Sparql(max_query))
                 .await
@@ -1870,11 +1868,11 @@ async fn indexed_novelty_only_ref_object_returns_data() {
             // Phase 3: Query filtering on the novelty-only ref object.
             let view = fluree.db(ledger_id).await.expect("load view");
 
-            let query = r#"
+            let query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?s
                 WHERE { ?s ex:knows ex:diana . }
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(query))
                 .await
@@ -1888,11 +1886,11 @@ async fn indexed_novelty_only_ref_object_returns_data() {
             );
 
             // Verify indexed ref object still works.
-            let query_indexed = r#"
+            let query_indexed = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?s
                 WHERE { ?s ex:knows ex:bob . }
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(query_indexed))
                 .await
@@ -1988,14 +1986,14 @@ async fn indexed_iri_ref_and_blank_node_resolve_correctly() {
             // Test 1: IRI-valued bindings resolve correctly through binary index.
             // `ex:knows` points to IRIs (stored as OType::IRI_REF), including both
             // named IRIs (ex:bob) and blank nodes (the anonymous friend).
-            let iri_query = r#"
+            let iri_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?s ?friend
                 WHERE {
                     ?s ex:knows ?friend .
                 }
                 ORDER BY ?s
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(iri_query))
                 .await
@@ -2030,14 +2028,14 @@ async fn indexed_iri_ref_and_blank_node_resolve_correctly() {
 
             // Test 2: Blank node subjects are queryable through binary index.
             // Bob's anonymous friend has a blank node ID.
-            let bnode_query = r#"
+            let bnode_query = r"
                 PREFIX ex: <http://example.org/ns/>
                 SELECT ?bnode ?name
                 WHERE {
                     ?bnode ex:name ?name .
                     FILTER(isBlank(?bnode))
                 }
-            "#;
+            ";
             let result = fluree
                 .query(&view, QueryInput::Sparql(bnode_query))
                 .await

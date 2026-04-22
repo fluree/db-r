@@ -342,7 +342,7 @@ impl SidInterner {
             // The Arc<str> content is shared, so don't double count
             // But add Arc overhead
             size += std::mem::size_of::<usize>() * 2; // Arc refcount + ptr
-            let _ = value; // silence unused warning
+            let () = value; // silence unused warning
         }
         size
     }
@@ -514,7 +514,7 @@ mod tests {
                 Sid::new(200, "Person"),
             ];
 
-            let hashes: Vec<u64> = sids.iter().map(|s| s.canonical_hash()).collect();
+            let hashes: Vec<u64> = sids.iter().map(super::super::Sid::canonical_hash).collect();
 
             // Check for uniqueness
             let unique_count = {

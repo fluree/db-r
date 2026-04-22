@@ -313,7 +313,7 @@ fn parse_update(json: &Value, opts: TxnOpts, ns_registry: &mut NamespaceRegistry
             &mut nested_counter,
             object_var_parsing,
         )
-        .map_err(|e| TransactError::Parse(format!("WHERE clause: {}", e)))?;
+        .map_err(|e| TransactError::Parse(format!("WHERE clause: {e}")))?;
 
         query.patterns
     } else {
@@ -515,7 +515,7 @@ fn parse_update_where_named_graphs(
                     let explicit_alias = obj
                         .get("alias")
                         .and_then(|a| a.as_str())
-                        .map(|s| s.to_string());
+                        .map(std::string::ToString::to_string);
                     let graph_val = obj.get("graph").ok_or_else(|| {
                         TransactError::Parse(
                             "fromNamed objects must include a 'graph' field".to_string(),
@@ -524,7 +524,7 @@ fn parse_update_where_named_graphs(
                     // If no alias provided, use the raw graph selector string as an implicit alias.
                     // This makes `fromNamed: ["ex:g2"]` usable as `["graph", "ex:g2", ...]`
                     // in WHERE patterns even though GRAPH names are not expanded via @context.
-                    let implicit_alias = graph_val.as_str().map(|s| s.to_string());
+                    let implicit_alias = graph_val.as_str().map(std::string::ToString::to_string);
                     let iri = expand_update_graph_iri(graph_val, context, strict)?;
                     out.push(crate::ir::UpdateNamedGraph {
                         iri,
@@ -532,7 +532,7 @@ fn parse_update_where_named_graphs(
                     });
                 } else {
                     // String shorthand (or other selector shape): treat as graph IRI
-                    let implicit_alias = item.as_str().map(|s| s.to_string());
+                    let implicit_alias = item.as_str().map(std::string::ToString::to_string);
                     let iri = expand_update_graph_iri(&item, context, strict)?;
                     out.push(crate::ir::UpdateNamedGraph {
                         iri,
@@ -597,11 +597,11 @@ fn expand_update_graph_iri(v: &Value, context: &ParsedContext, strict: bool) -> 
             .and_then(|x| x.as_object())
             .and_then(|o| o.get("@id"))
             .and_then(|id| id.as_str())
-            .map(|s| s.to_string()),
+            .map(std::string::ToString::to_string),
         Value::Object(o) => o
             .get("@id")
             .and_then(|id| id.as_str())
-            .map(|s| s.to_string()),
+            .map(std::string::ToString::to_string),
         _ => None,
     }
     .ok_or_else(|| TransactError::Parse("graph selector must expand to an @id IRI".to_string()))?;
@@ -658,11 +658,11 @@ fn parse_update_default_graph(
             .and_then(|x| x.as_object())
             .and_then(|o| o.get("@id"))
             .and_then(|id| id.as_str())
-            .map(|s| s.to_string()),
+            .map(std::string::ToString::to_string),
         Value::Object(o) => o
             .get("@id")
             .and_then(|id| id.as_str())
-            .map(|s| s.to_string()),
+            .map(std::string::ToString::to_string),
         _ => None,
     }
     .ok_or_else(|| TransactError::Parse("graph must expand to an @id IRI".to_string()))?;
@@ -912,8 +912,7 @@ fn validate_type_fields(v: &Value) -> Result<()> {
                 };
                 if !valid {
                     return Err(TransactError::Parse(format!(
-                        "@type must be a string or array of strings, got: {:?}",
-                        t
+                        "@type must be a string or array of strings, got: {t:?}"
                     )));
                 }
             }
@@ -1025,8 +1024,7 @@ fn parse_values_cell(
                 Ok(TemplateTerm::Value(FlakeValue::Double(f)))
             } else {
                 Err(TransactError::Parse(format!(
-                    "Unsupported number type in values: {}",
-                    n
+                    "Unsupported number type in values: {n}"
                 )))
             }
         }
@@ -1074,21 +1072,18 @@ fn parse_values_cell(
                         Ok(TemplateTerm::Value(FlakeValue::Double(f)))
                     } else {
                         Err(TransactError::Parse(format!(
-                            "Unsupported number type in values: {}",
-                            n
+                            "Unsupported number type in values: {n}"
                         )))
                     }
                 }
                 Value::Bool(b) => Ok(TemplateTerm::Value(FlakeValue::Boolean(*b))),
                 _ => Err(TransactError::Parse(format!(
-                    "Unsupported @value type in values: {:?}",
-                    value_val
+                    "Unsupported @value type in values: {value_val:?}"
                 ))),
             }
         }
         _ => Err(TransactError::Parse(format!(
-            "Unsupported values cell: {:?}",
-            cell
+            "Unsupported values cell: {cell:?}"
         ))),
     }
 }
@@ -1165,7 +1160,7 @@ fn parse_expanded_object_with_ctx(
         // Generate a blank node if no @id
         let n = ctx.blank_counter;
         ctx.blank_counter += 1;
-        TemplateTerm::BlankNode(format!("_:b{}", n))
+        TemplateTerm::BlankNode(format!("_:b{n}"))
     };
 
     // Parse each predicate-object pair
@@ -1200,8 +1195,7 @@ fn parse_expanded_object_with_ctx(
                     templates.push(t);
                 } else {
                     return Err(TransactError::Parse(format!(
-                        "Invalid @type value: expected IRI string, got: {:?}",
-                        type_val
+                        "Invalid @type value: expected IRI string, got: {type_val:?}"
                     )));
                 }
             }
@@ -1210,8 +1204,7 @@ fn parse_expanded_object_with_ctx(
 
         if key == TYPE {
             return Err(TransactError::Parse(format!(
-                "\"{}\" is not a valid predicate IRI. Please use the JSON-LD \"@type\" keyword instead.",
-                TYPE
+                "\"{TYPE}\" is not a valid predicate IRI. Please use the JSON-LD \"@type\" keyword instead."
             )));
         }
 
@@ -1275,8 +1268,7 @@ fn parse_expanded_id_with_ctx(
             }
         }
         _ => Err(TransactError::Parse(format!(
-            "Expected string for @id, got: {:?}",
-            value
+            "Expected string for @id, got: {value:?}"
         ))),
     }
 }
@@ -1476,8 +1468,7 @@ fn parse_expanded_value_with_ctx(
                 Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::Double(f))))
             } else {
                 Err(TransactError::Parse(format!(
-                    "Unsupported number format: {}",
-                    n
+                    "Unsupported number format: {n}"
                 )))
             }
         }
@@ -1485,8 +1476,7 @@ fn parse_expanded_value_with_ctx(
             *b,
         )))),
         _ => Err(TransactError::Parse(format!(
-            "Unsupported value: {:?}",
-            value
+            "Unsupported value: {value:?}"
         ))),
     }
 }
@@ -1545,7 +1535,7 @@ fn parse_literal_value_with_meta(
                 let json_string = match val {
                     Value::String(s) => s.clone(),
                     _ => serde_json::to_string(val).map_err(|e| {
-                        TransactError::Parse(format!("Failed to serialize @json value: {}", e))
+                        TransactError::Parse(format!("Failed to serialize @json value: {e}"))
                     })?,
                 };
                 let datatype_sid = ns_registry.sid_for_iri(rdf::JSON);
@@ -1604,8 +1594,7 @@ fn parse_literal_value_with_meta(
                 Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::Double(f))))
             } else {
                 Err(TransactError::Parse(format!(
-                    "Unsupported number in @value: {}",
-                    n
+                    "Unsupported number in @value: {n}"
                 )))
             }
         }
@@ -1613,8 +1602,7 @@ fn parse_literal_value_with_meta(
             *b,
         )))),
         _ => Err(TransactError::Parse(format!(
-            "Unsupported @value type: {:?}",
-            val
+            "Unsupported @value type: {val:?}"
         ))),
     }
 }
@@ -1825,8 +1813,7 @@ fn parse_single_list_item_with_ctx(
                 Ok(ParsedValue::new(TemplateTerm::Value(FlakeValue::Double(f))))
             } else {
                 Err(TransactError::Parse(format!(
-                    "Unsupported number in list: {}",
-                    n
+                    "Unsupported number in list: {n}"
                 )))
             }
         }
@@ -1834,8 +1821,7 @@ fn parse_single_list_item_with_ctx(
             *b,
         )))),
         _ => Err(TransactError::Parse(format!(
-            "Unsupported list item type: {:?}",
-            item
+            "Unsupported list item type: {item:?}"
         ))),
     }
 }
@@ -2400,8 +2386,7 @@ mod tests {
         unique.dedup();
         assert!(
             unique.len() >= 2,
-            "Expected at least 2 distinct blank node labels, got: {:?}",
-            unique
+            "Expected at least 2 distinct blank node labels, got: {unique:?}"
         );
     }
 
@@ -2508,8 +2493,7 @@ mod tests {
             .collect();
         assert!(
             bnode_subjects.len() >= 2,
-            "Expected at least 2 distinct blank node subjects, got: {:?}",
-            bnode_subjects
+            "Expected at least 2 distinct blank node subjects, got: {bnode_subjects:?}"
         );
     }
 
@@ -2557,8 +2541,7 @@ mod tests {
         assert_eq!(
             bnode_subjects.len(),
             2,
-            "Expected 2 distinct blank node subjects, got: {:?}",
-            bnode_subjects
+            "Expected 2 distinct blank node subjects, got: {bnode_subjects:?}"
         );
     }
 }

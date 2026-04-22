@@ -118,8 +118,7 @@ impl ConfigValue {
                 // No value found
                 let var_name = env_var.as_deref().unwrap_or("(unspecified)");
                 Err(IcebergError::Config(format!(
-                    "Environment variable '{}' not set and no default provided",
-                    var_name
+                    "Environment variable '{var_name}' not set and no default provided"
                 )))
             }
         }

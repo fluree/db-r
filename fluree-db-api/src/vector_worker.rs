@@ -219,7 +219,7 @@ impl VectorWorkerHandle {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         self.state
@@ -488,7 +488,7 @@ impl<'a> VectorMaintenanceWorker<'a> {
                 }
 
                 // Debounce tick / stop-check tick
-                _ = &mut sleep_fut => {}
+                () = &mut sleep_fut => {}
             }
         }
 

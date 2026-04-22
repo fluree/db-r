@@ -256,7 +256,7 @@ fn decode_unverified_claims(token: &str) -> Option<DecodedClaims> {
             .get("fluree.identity")
             .and_then(|v| v.as_str())
             .map(String::from),
-        expires_at: claims.get("exp").and_then(|v| v.as_u64()),
+        expires_at: claims.get("exp").and_then(serde_json::Value::as_u64),
     })
 }
 

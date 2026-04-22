@@ -41,7 +41,7 @@ fn generate_hexagon(center_lat: f64, center_lng: f64, size_deg: f64) -> String {
         let angle = (i as f64) * std::f64::consts::PI / 3.0;
         let x = center_lng + r * angle.cos();
         let y = center_lat + r * angle.sin();
-        coords.push(format!("{} {}", x, y));
+        coords.push(format!("{x} {y}"));
     }
     coords.push(coords[0].clone()); // Close the ring
     format!("POLYGON(({}))", coords.join(", "))
@@ -159,7 +159,7 @@ fn bench_covering_generation(c: &mut Criterion) {
     }
 
     // Test circle covering (for radius queries)
-    for radius in [1000.0, 10000.0, 100000.0] {
+    for radius in [1000.0, 10000.0, 100_000.0] {
         let config = S2CoveringConfig::default();
 
         group.bench_with_input(
@@ -204,7 +204,7 @@ fn bench_query_operations(c: &mut Criterion) {
     let write_result = result
         .write_to_cas(|bytes| {
             counter += 1;
-            let hash = format!("sha256:{:08x}", counter);
+            let hash = format!("sha256:{counter:08x}");
             cas_write
                 .write()
                 .unwrap()
@@ -217,7 +217,7 @@ fn bench_query_operations(c: &mut Criterion) {
     let cas_read = cas.clone();
     let snapshot = SpatialIndexSnapshot::load_from_cas(write_result.root.clone(), move |hash| {
         cas_read.read().unwrap().get(hash).cloned().ok_or_else(|| {
-            fluree_db_spatial::error::SpatialError::FormatError(format!("hash not found: {}", hash))
+            fluree_db_spatial::error::SpatialError::FormatError(format!("hash not found: {hash}"))
         })
     })
     .unwrap();
@@ -262,7 +262,7 @@ fn bench_query_operations(c: &mut Criterion) {
         let (results, stats) = snapshot
             .query_within_with_stats(&query_geom, 100, None)
             .unwrap();
-        println!("within {} ({}°):", name, size);
+        println!("within {name} ({size}°):");
         println!(
             "  covering_cells: {}, ranges: {}",
             stats.covering_cells, stats.ranges_scanned
@@ -287,7 +287,7 @@ fn bench_query_operations(c: &mut Criterion) {
         let (results, stats) = snapshot
             .query_intersects_with_stats(&query_geom, 100, None)
             .unwrap();
-        println!("intersects {} ({}°):", name, size);
+        println!("intersects {name} ({size}°):");
         println!(
             "  covering_cells: {}, ranges: {}",
             stats.covering_cells, stats.ranges_scanned
@@ -435,7 +435,7 @@ fn bench_novelty_overlay(c: &mut Criterion) {
     let write_result = result
         .write_to_cas(|bytes| {
             counter += 1;
-            let hash = format!("sha256:{:08x}", counter);
+            let hash = format!("sha256:{counter:08x}");
             cas_write
                 .write()
                 .unwrap()
@@ -450,8 +450,7 @@ fn bench_novelty_overlay(c: &mut Criterion) {
         SpatialIndexSnapshot::load_from_cas(write_result.root.clone(), move |hash| {
             cas_read.read().unwrap().get(hash).cloned().ok_or_else(|| {
                 fluree_db_spatial::error::SpatialError::FormatError(format!(
-                    "hash not found: {}",
-                    hash
+                    "hash not found: {hash}"
                 ))
             })
         })
@@ -562,11 +561,11 @@ fn bench_edge_cases(c: &mut Criterion) {
                     println!("{}: {} cells, {} ranges", name, cells.len(), ranges.len());
                 }
                 Err(e) => {
-                    println!("{}: covering failed: {}", name, e);
+                    println!("{name}: covering failed: {e}");
                 }
             },
             Err(e) => {
-                println!("{}: parse failed: {}", name, e);
+                println!("{name}: parse failed: {e}");
             }
         }
     }
@@ -633,7 +632,7 @@ fn bench_covering_config_analysis(c: &mut Criterion) {
 
     for (name, wkt) in &test_geoms {
         let geom = fluree_db_spatial::geometry::parse_wkt(wkt).unwrap();
-        println!("{}:", name);
+        println!("{name}:");
 
         for &max_cells in &max_cells_configs {
             let config = S2CoveringConfig {

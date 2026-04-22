@@ -53,7 +53,7 @@ pub async fn lookup_subject_classes(
             }
             Err(e) => {
                 return Err(PolicyError::ClassLookup {
-                    message: format!("Batched class lookup failed: {}", e),
+                    message: format!("Batched class lookup failed: {e}"),
                 });
             }
         }
@@ -69,7 +69,7 @@ pub async fn lookup_subject_classes(
             .range(fluree_db_core::IndexType::Spot, RangeTest::Eq, range_match)
             .await
             .map_err(|e| PolicyError::ClassLookup {
-                message: format!("Failed to look up classes for subject: {}", e),
+                message: format!("Failed to look up classes for subject: {e}"),
             })?;
 
         let mut classes: Vec<Sid> = flakes

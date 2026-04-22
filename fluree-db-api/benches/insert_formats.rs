@@ -358,7 +358,7 @@ fn format_flakes_per_sec(flakes: u64, ms: f64) -> String {
     } else if per_sec >= 1_000.0 {
         format!("{:.1}K", per_sec / 1_000.0)
     } else {
-        format!("{:.0}", per_sec)
+        format!("{per_sec:.0}")
     }
 }
 
@@ -453,8 +453,7 @@ fn bench_insert_formats(c: &mut Criterion) {
             let total_nodes = txn_count * nodes_per_txn;
 
             eprintln!(
-                "  [pregen] {} txns x {} nodes/txn = {} total nodes ...",
-                txn_count, nodes_per_txn, total_nodes
+                "  [pregen] {txn_count} txns x {nodes_per_txn} nodes/txn = {total_nodes} total nodes ..."
             );
             let data = pregen(&rt, &fluree, &index_config, txn_count, nodes_per_txn);
 
@@ -489,7 +488,7 @@ fn bench_insert_formats(c: &mut Criterion) {
                                 .await,
                             )
                         })
-                    })
+                    });
                 },
             );
 
@@ -513,7 +512,7 @@ fn bench_insert_formats(c: &mut Criterion) {
                                 .await,
                             )
                         })
-                    })
+                    });
                 },
             );
 

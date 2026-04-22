@@ -154,7 +154,7 @@ impl BlankNodeVarNamer {
 
     fn var_name(&mut self, bn: &BlankNodeValue) -> Arc<str> {
         match bn {
-            BlankNodeValue::Labeled(label) => Arc::from(format!("_:{}", label)),
+            BlankNodeValue::Labeled(label) => Arc::from(format!("_:{label}")),
             BlankNodeValue::Anon => {
                 let name: Arc<str> = Arc::from(format!("_:b{}", self.anon_counter));
                 self.anon_counter += 1;
@@ -275,7 +275,7 @@ fn lower_insert_data(
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
-        graph_delta: Default::default(),
+        graph_delta: FxHashMap::default(),
     })
 }
 
@@ -305,7 +305,7 @@ fn lower_delete_data(
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
-        graph_delta: Default::default(),
+        graph_delta: FxHashMap::default(),
     })
 }
 
@@ -384,7 +384,7 @@ fn lower_delete_where(
         opts,
         vars: mem::take(vars),
         txn_meta: Vec::new(),
-        graph_delta: Default::default(),
+        graph_delta: FxHashMap::default(),
     })
 }
 
@@ -775,7 +775,7 @@ fn subject_to_template(
         }
         SubjectTerm::BlankNode(bn) => {
             let label = match &bn.value {
-                BlankNodeValue::Labeled(l) => format!("_:{}", l),
+                BlankNodeValue::Labeled(l) => format!("_:{l}"),
                 BlankNodeValue::Anon => bnodes.next(),
             };
             Ok(TemplateTerm::BlankNode(label))
@@ -830,7 +830,7 @@ fn object_to_template(
         Term::Literal(lit) => Ok(literal_to_template(lit, prologue, ns)?.term),
         Term::BlankNode(bn) => {
             let label = match &bn.value {
-                BlankNodeValue::Labeled(l) => format!("_:{}", l),
+                BlankNodeValue::Labeled(l) => format!("_:{l}"),
                 BlankNodeValue::Anon => bnodes.next(),
             };
             Ok(TemplateTerm::BlankNode(label))

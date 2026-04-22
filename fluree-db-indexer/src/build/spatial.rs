@@ -54,7 +54,7 @@ pub(crate) async fn build_and_upload_spatial_indexes<S: Storage>(
         let pred_iri = predicates.resolve(p_id).unwrap_or("unknown").to_string();
 
         let config = fluree_db_spatial::SpatialCreateConfig::new(
-            format!("spatial:g{}p{}", g_id, p_id),
+            format!("spatial:g{g_id}p{p_id}"),
             ledger_id.to_string(),
             pred_iri.clone(),
         );
@@ -77,7 +77,7 @@ pub(crate) async fn build_and_upload_spatial_indexes<S: Storage>(
 
         let build_result = builder
             .build()
-            .map_err(|e| IndexerError::Other(format!("spatial build error: {}", e)))?;
+            .map_err(|e| IndexerError::Other(format!("spatial build error: {e}")))?;
 
         if build_result.entries.is_empty() {
             continue;
@@ -93,14 +93,14 @@ pub(crate) async fn build_and_upload_spatial_indexes<S: Storage>(
                 pending_blobs.push((hash_hex.clone(), bytes.to_vec()));
                 Ok(hash_hex)
             })
-            .map_err(|e| IndexerError::Other(format!("spatial build: {}", e)))?;
+            .map_err(|e| IndexerError::Other(format!("spatial build: {e}")))?;
 
         // Phase 2: Upload all collected blobs to CAS.
         for (expected_hash, blob_bytes) in &pending_blobs {
             let cas_result = storage
                 .content_write_bytes(ContentKind::SpatialIndex, ledger_id, blob_bytes)
                 .await
-                .map_err(|e| IndexerError::StorageWrite(format!("spatial CAS write: {}", e)))?;
+                .map_err(|e| IndexerError::StorageWrite(format!("spatial CAS write: {e}")))?;
             debug_assert_eq!(
                 &cas_result.content_hash, expected_hash,
                 "CAS content_hash mismatch for spatial blob"
@@ -130,18 +130,18 @@ pub(crate) async fn build_and_upload_spatial_indexes<S: Storage>(
             .iter()
             .map(|hash| {
                 ContentId::from_hex_digest(spatial_codec, hash).ok_or_else(|| {
-                    IndexerError::Other(format!("invalid spatial leaflet hash: {}", hash))
+                    IndexerError::Other(format!("invalid spatial leaflet hash: {hash}"))
                 })
             })
             .collect::<Result<Vec<_>>>()?;
 
         // Serialize SpatialIndexRoot as JSON and write to CAS.
         let root_json = serde_json::to_vec(&write_result.root)
-            .map_err(|e| IndexerError::Other(format!("spatial root serialize: {}", e)))?;
+            .map_err(|e| IndexerError::Other(format!("spatial root serialize: {e}")))?;
         let root_cas = storage
             .content_write_bytes(ContentKind::SpatialIndex, ledger_id, &root_json)
             .await
-            .map_err(|e| IndexerError::StorageWrite(format!("spatial root CAS write: {}", e)))?;
+            .map_err(|e| IndexerError::StorageWrite(format!("spatial root CAS write: {e}")))?;
         let root_cid = ContentId::from_hex_digest(spatial_codec, &root_cas.content_hash)
             .ok_or_else(|| {
                 IndexerError::Other(format!(

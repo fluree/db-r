@@ -41,7 +41,7 @@ impl<'a> ReasoningOverlay<'a> {
     }
 }
 
-impl<'a> OverlayProvider for ReasoningOverlay<'a> {
+impl OverlayProvider for ReasoningOverlay<'_> {
     fn as_any(&self) -> &dyn std::any::Any {
         self.base.as_any()
     }
@@ -66,12 +66,12 @@ impl<'a> OverlayProvider for ReasoningOverlay<'a> {
 
         self.base
             .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, &mut |f| {
-                base_flakes.push(f.clone())
+                base_flakes.push(f.clone());
             });
 
         self.derived
             .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, &mut |f| {
-                derived_flakes.push(f.clone())
+                derived_flakes.push(f.clone());
             });
 
         // Linear merge of two sorted sequences - O(n) instead of O(n log n)

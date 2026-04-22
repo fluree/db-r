@@ -209,8 +209,7 @@ fn test_field_type_variants() {
         };
         assert_eq!(
             type_str, expected_name,
-            "Field type mismatch for {:?}",
-            field_type
+            "Field type mismatch for {field_type:?}"
         );
     }
 }

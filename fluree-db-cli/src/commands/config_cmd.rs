@@ -82,7 +82,7 @@ fn list_toml(config_path: &Path) -> CliResult<()> {
 
     // A file with only comments parses as an empty table — treat it
     // the same as an empty file.
-    if doc.as_table().is_some_and(|t| t.is_empty()) {
+    if doc.as_table().is_some_and(toml::map::Map::is_empty) {
         println!("(no configuration set)");
         return Ok(());
     }
@@ -272,7 +272,7 @@ fn set_json_key(doc: &mut serde_json::Value, key: &str, value: &str) -> CliResul
     // Navigate to the parent object, creating intermediate objects as needed
     let mut current = doc;
     for part in &parts[..parts.len() - 1] {
-        if !current.get(part).is_some_and(|v| v.is_object()) {
+        if !current.get(part).is_some_and(serde_json::Value::is_object) {
             current[part] = serde_json::json!({});
         }
         current = current.get_mut(part).unwrap();
@@ -398,12 +398,11 @@ pub async fn run_set_origins(ledger: &str, file: &Path, dirs: &FlureeDir) -> Cli
         ConfigCasResult::Updated => {}
         ConfigCasResult::Conflict { .. } => {
             return Err(CliError::Config(format!(
-                "config for '{}' was modified concurrently; retry",
-                ledger_id
+                "config for '{ledger_id}' was modified concurrently; retry"
             )));
         }
     }
 
-    println!("Config set for '{}' (CID: {})", ledger_id, cid);
+    println!("Config set for '{ledger_id}' (CID: {cid})");
     Ok(())
 }

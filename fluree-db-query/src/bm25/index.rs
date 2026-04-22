@@ -422,7 +422,7 @@ impl PropertyDeps {
                 // Look up prefix in context
                 if let Some(ctx) = context {
                     if let Some(base) = ctx.get(prefix).and_then(|v| v.as_str()) {
-                        return Some(Arc::from(format!("{}{}", base, local)));
+                        return Some(Arc::from(format!("{base}{local}")));
                     }
                 }
             }
@@ -1341,7 +1341,7 @@ mod tests {
         assert_eq!(index_a.terms.len(), index_b.terms.len());
         for (term, entry_a) in &index_a.terms {
             let entry_b = index_b.terms.get(term).unwrap();
-            assert_eq!(entry_a.idx, entry_b.idx, "term_idx mismatch for {}", term);
+            assert_eq!(entry_a.idx, entry_b.idx, "term_idx mismatch for {term}");
         }
 
         // Posting lists should be identical
@@ -1355,15 +1355,13 @@ mod tests {
             assert_eq!(
                 pl_a.postings.len(),
                 pl_b.postings.len(),
-                "posting list len mismatch at idx {}",
-                i
+                "posting list len mismatch at idx {i}"
             );
             for (pa, pb) in pl_a.postings.iter().zip(pl_b.postings.iter()) {
-                assert_eq!(pa.doc_id, pb.doc_id, "doc_id mismatch at term_idx {}", i);
+                assert_eq!(pa.doc_id, pb.doc_id, "doc_id mismatch at term_idx {i}");
                 assert_eq!(
                     pa.term_freq, pb.term_freq,
-                    "term_freq mismatch at term_idx {}",
-                    i
+                    "term_freq mismatch at term_idx {i}"
                 );
             }
         }

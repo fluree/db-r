@@ -104,8 +104,8 @@ impl Bm25IndexBuilder {
                 .get("@id")
                 .and_then(|v| v.as_str())
                 .map(Arc::from)
-                .ok_or_else(|| BuilderError::InvalidIdType(format!("{:?}", obj)))?,
-            Some(other) => return Err(BuilderError::InvalidIdType(format!("{:?}", other))),
+                .ok_or_else(|| BuilderError::InvalidIdType(format!("{obj:?}")))?,
+            Some(other) => return Err(BuilderError::InvalidIdType(format!("{other:?}"))),
             None => {
                 // Fall back to a top-level variable binding like "?x": {"@id": "..."}.
                 let mut found: Option<Arc<str>> = None;

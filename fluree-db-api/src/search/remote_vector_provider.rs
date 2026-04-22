@@ -74,7 +74,7 @@ impl RemoteVectorSearchProvider {
             .connect_timeout(connect_timeout)
             .timeout(request_timeout)
             .build()
-            .map_err(|e| QueryError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Failed to create HTTP client: {e}")))?;
 
         Ok(Self {
             client,
@@ -156,11 +156,11 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
         // Send request
         let response = http_request.timeout(timeout).send().await.map_err(|e| {
             if e.is_timeout() {
-                QueryError::Internal(format!("Vector search request timeout: {}", e))
+                QueryError::Internal(format!("Vector search request timeout: {e}"))
             } else if e.is_connect() {
-                QueryError::Internal(format!("Failed to connect to search service: {}", e))
+                QueryError::Internal(format!("Failed to connect to search service: {e}"))
             } else {
-                QueryError::Internal(format!("Vector search request failed: {}", e))
+                QueryError::Internal(format!("Vector search request failed: {e}"))
             }
         })?;
 
@@ -176,15 +176,14 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
                     ErrorCode::GraphSourceNotFound
                     | ErrorCode::IndexNotBuilt
                     | ErrorCode::NoSnapshotForAsOfT => {
-                        QueryError::InvalidQuery(format!("{}: {}", code, msg))
+                        QueryError::InvalidQuery(format!("{code}: {msg}"))
                     }
                     ErrorCode::InvalidRequest => QueryError::InvalidQuery(msg),
-                    _ => QueryError::Internal(format!("{}: {}", code, msg)),
+                    _ => QueryError::Internal(format!("{code}: {msg}")),
                 });
             }
             return Err(QueryError::Internal(format!(
-                "Search service returned {}: {}",
-                status, body
+                "Search service returned {status}: {body}"
             )));
         }
 
@@ -192,7 +191,7 @@ impl VectorIndexProvider for RemoteVectorSearchProvider {
         let search_response: SearchResponse = response
             .json()
             .await
-            .map_err(|e| QueryError::Internal(format!("Failed to parse search response: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Failed to parse search response: {e}")))?;
 
         // Convert SearchHit -> VectorSearchHit
         let hits = search_response
@@ -255,7 +254,7 @@ mod tests {
         let provider = RemoteVectorSearchProvider::new("http://localhost:9090")
             .with_auth_token("secret-token");
 
-        let debug_output = format!("{:?}", provider);
+        let debug_output = format!("{provider:?}");
         assert!(debug_output.contains("has_auth_token: true"));
         assert!(!debug_output.contains("secret-token"));
     }
