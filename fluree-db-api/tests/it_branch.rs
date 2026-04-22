@@ -852,3 +852,156 @@ async fn time_travel_on_historical_branch() {
         .unwrap();
     assert_eq!(extract_names(&rows), vec!["Alice", "Bob"]);
 }
+
+/// Branching at t=0 returns an error.
+#[tokio::test]
+async fn branch_at_zero_t_fails() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    let err = fluree
+        .create_branch("mydb", "bad", None, Some(0))
+        .await
+        .expect_err("branching at t=0 should fail");
+    assert!(
+        err.to_string().contains("invalid"),
+        "expected 'invalid' in error, got: {err}"
+    );
+}
+
+/// Branching at a negative t returns an error.
+#[tokio::test]
+async fn branch_at_negative_t_fails() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    let err = fluree
+        .create_branch("mydb", "bad", None, Some(-1))
+        .await
+        .expect_err("branching at negative t should fail");
+    assert!(
+        err.to_string().contains("invalid"),
+        "expected 'invalid' in error, got: {err}"
+    );
+}
+
+/// Branch from genesis (t=1) — the earliest possible branch point.
+#[tokio::test]
+async fn branch_from_genesis() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+
+    // t=1: Alice
+    let r1 = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r1.receipt.t, 1);
+
+    // t=2: Bob
+    fluree
+        .insert(
+            r1.ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Branch from t=1 — should see only Alice
+    let record = fluree
+        .create_branch("mydb", "genesis", None, Some(1))
+        .await
+        .unwrap();
+    assert_eq!(record.commit_t, 1);
+
+    let query = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "select": ["?name"],
+        "where": {"@id": "?s", "ex:name": "?name"}
+    });
+
+    let snapshot = fluree.ledger("mydb:genesis").await.unwrap();
+    let result = support::query_jsonld(&fluree, &snapshot, &query)
+        .await
+        .unwrap();
+    let rows = result.to_jsonld(&snapshot.snapshot).unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice"]);
+}
+
+/// Branching at HEAD t is equivalent to branching without at_t.
+///
+/// Verifies the short-circuit: when at_t equals the source's current
+/// commit_t, no DAG walk is performed and the result matches a normal
+/// branch from HEAD.
+#[tokio::test]
+async fn branch_at_head_t_same_as_default() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+
+    // t=1: Alice
+    let r1 = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // t=2: Bob
+    fluree
+        .insert(
+            r1.ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Branch with at_t = HEAD (t=2) — should behave identically to None
+    let record = fluree
+        .create_branch("mydb", "snap", None, Some(2))
+        .await
+        .unwrap();
+    assert_eq!(record.commit_t, 2);
+
+    let query = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "select": ["?name"],
+        "where": {"@id": "?s", "ex:name": "?name"}
+    });
+
+    let snapshot = fluree.ledger("mydb:snap").await.unwrap();
+    let result = support::query_jsonld(&fluree, &snapshot, &query)
+        .await
+        .unwrap();
+    let rows = result.to_jsonld(&snapshot.snapshot).unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice", "Bob"]);
+}
