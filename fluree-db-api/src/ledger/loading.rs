@@ -258,8 +258,8 @@ impl Fluree {
     ///
     /// - [`ApiError::LedgerExists`] if the branch already exists
     /// - [`ApiError::NotFound`] if the source branch does not exist
-    /// - [`ApiError::Http`] (400) if `at_t` is beyond the source's HEAD
-    /// - [`ApiError::Http`] (400) if no commit exists at the requested `at_t`
+    /// - [`ApiError::InvalidBranch`] if `at_t` is beyond the source's HEAD
+    /// - [`ApiError::InvalidBranch`] if no commit exists at the requested `at_t`
     pub async fn create_branch(
         &self,
         ledger_name: &str,
@@ -302,19 +302,16 @@ impl Fluree {
         let at_commit = match at_t {
             Some(t) => {
                 if t > source_record.commit_t {
-                    return Err(ApiError::Http {
-                        status: 400,
-                        message: format!(
-                            "Requested t={} is beyond source branch HEAD (t={})",
-                            t, source_record.commit_t
-                        ),
-                    });
+                    return Err(ApiError::InvalidBranch(format!(
+                        "Requested t={} is beyond source branch HEAD (t={})",
+                        t, source_record.commit_t
+                    )));
                 }
                 if t < 1 {
-                    return Err(ApiError::Http {
-                        status: 400,
-                        message: format!("Requested t={} is invalid; t must be >= 1", t),
-                    });
+                    return Err(ApiError::InvalidBranch(format!(
+                        "Requested t={} is invalid; t must be >= 1",
+                        t
+                    )));
                 }
 
                 // at_t equal to HEAD is the same as branching from HEAD — no
@@ -330,22 +327,18 @@ impl Fluree {
 
                     // The last entry in the list is the oldest commit — the one at t.
                     let (commit_t, commit_id) =
-                        cids.last().ok_or_else(|| ApiError::Http {
-                            status: 400,
-                            message: format!(
+                        cids.last().ok_or_else(|| {
+                            ApiError::InvalidBranch(format!(
                                 "No commit found at t={} on source branch {}",
                                 t, source_id
-                            ),
+                            ))
                         })?;
 
                     if *commit_t != t {
-                        return Err(ApiError::Http {
-                            status: 400,
-                            message: format!(
-                                "No commit found at t={} on source branch {} (nearest is t={})",
-                                t, source_id, commit_t
-                            ),
-                        });
+                        return Err(ApiError::InvalidBranch(format!(
+                            "No commit found at t={} on source branch {} (nearest is t={})",
+                            t, source_id, commit_t
+                        )));
                     }
 
                     Some((commit_id.clone(), *commit_t))
