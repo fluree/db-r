@@ -532,6 +532,7 @@ impl NameService for DynamoDbNameService {
         ledger_name: &str,
         new_branch: &str,
         source_branch: &str,
+        at_commit: Option<(ContentId, i64)>,
     ) -> std::result::Result<(), NameServiceError> {
         // Look up the source branch to get its commit head.
         let source_id = format_ledger_id(ledger_name, source_branch);
@@ -541,10 +542,17 @@ impl NameService for DynamoDbNameService {
             ))
         })?;
 
-        let commit_id = source_record.commit_head_id.ok_or_else(|| {
-            NameServiceError::storage(format!("Source branch {source_id} has no commit head"))
-        })?;
-        let commit_t = source_record.commit_t;
+        let (commit_id, commit_t) = match at_commit {
+            Some(commit) => commit,
+            None => {
+                let cid = source_record.commit_head_id.ok_or_else(|| {
+                    NameServiceError::storage(format!(
+                        "Source branch {source_id} has no commit head"
+                    ))
+                })?;
+                (cid, source_record.commit_t)
+            }
+        };
 
         let pk = format_ledger_id(ledger_name, new_branch);
         let now = Self::now_epoch_ms().to_string();

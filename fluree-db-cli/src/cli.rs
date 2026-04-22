@@ -590,6 +590,11 @@ pub enum BranchAction {
         #[arg(long)]
         from: Option<String>,
 
+        /// Transaction time to branch from. Creates the branch at this
+        /// historical commit instead of the source's current HEAD.
+        #[arg(long)]
+        at_t: Option<i64>,
+
         /// Execute against a remote server (by remote name, e.g., "origin")
         #[arg(long)]
         remote: Option<String>,

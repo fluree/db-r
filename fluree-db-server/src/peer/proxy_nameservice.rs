@@ -5,6 +5,7 @@
 //! credentials.
 
 use async_trait::async_trait;
+use fluree_db_core::ContentId;
 use fluree_db_nameservice::{NameService, NameServiceError, NsRecord, Result};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
@@ -209,6 +210,7 @@ impl NameService for ProxyNameService {
         _ledger_name: &str,
         _new_branch: &str,
         _source_branch: &str,
+        _at_commit: Option<(ContentId, i64)>,
     ) -> Result<()> {
         // Proxy peers forward branch creation to the tx server via HTTP
         Err(NameServiceError::storage(

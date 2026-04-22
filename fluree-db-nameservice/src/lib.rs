@@ -439,8 +439,13 @@ pub trait NameService:
     ///
     /// Creates a new [`NsRecord`] for `ledger_name:new_branch` with its
     /// [`source_branch`](NsRecord::source_branch) set to record the parent.
-    /// The new branch starts at the same commit head as the source, so
-    /// subsequent transactions on either branch will diverge independently.
+    /// The new branch starts at the same commit head as the source (or at
+    /// `at_commit` if provided), so subsequent transactions on either branch
+    /// will diverge independently.
+    ///
+    /// When `at_commit` is `Some((cid, t))`, the new branch is created at that
+    /// historical commit instead of the source's current HEAD. The caller is
+    /// responsible for validating that the commit exists in the source chain.
     ///
     /// Also increments the source branch's `branches` count to track
     /// the child reference for safe deletion.
@@ -453,6 +458,7 @@ pub trait NameService:
         ledger_name: &str,
         new_branch: &str,
         source_branch: &str,
+        at_commit: Option<(ContentId, i64)>,
     ) -> Result<()>;
 
     /// Drop a branch, purging its nameservice record and decrementing

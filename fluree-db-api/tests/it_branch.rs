@@ -45,7 +45,10 @@ async fn create_and_list_branches() {
     fluree.insert(ledger, &txn).await.unwrap();
 
     // Create a branch
-    let record = fluree.create_branch("mydb", "dev", None).await.unwrap();
+    let record = fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
     assert_eq!(record.branch, "dev");
     assert_eq!(record.ledger_id, "mydb:dev");
     assert_eq!(
@@ -73,9 +76,12 @@ async fn create_branch_duplicate_fails() {
     });
     fluree.insert(ledger, &txn).await.unwrap();
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
     let err = fluree
-        .create_branch("mydb", "dev", None)
+        .create_branch("mydb", "dev", None, None)
         .await
         .expect_err("duplicate branch creation should fail");
     assert!(
@@ -97,16 +103,25 @@ async fn create_branch_invalid_name() {
     fluree.insert(ledger, &txn).await.unwrap();
 
     // Empty name
-    assert!(fluree.create_branch("mydb", "", None).await.is_err());
+    assert!(fluree.create_branch("mydb", "", None, None).await.is_err());
 
     // Contains colon
-    assert!(fluree.create_branch("mydb", "foo:bar", None).await.is_err());
+    assert!(fluree
+        .create_branch("mydb", "foo:bar", None, None)
+        .await
+        .is_err());
 
     // Contains @
-    assert!(fluree.create_branch("mydb", "foo@bar", None).await.is_err());
+    assert!(fluree
+        .create_branch("mydb", "foo@bar", None, None)
+        .await
+        .is_err());
 
     // Path traversal
-    assert!(fluree.create_branch("mydb", "..", None).await.is_err());
+    assert!(fluree
+        .create_branch("mydb", "..", None, None)
+        .await
+        .is_err());
 }
 
 /// Creating a branch from a non-existent source returns not-found.
@@ -116,7 +131,7 @@ async fn create_branch_missing_source() {
     fluree.create_ledger("mydb").await.unwrap();
 
     let err = fluree
-        .create_branch("mydb", "dev", Some("nonexistent"))
+        .create_branch("mydb", "dev", Some("nonexistent"), None)
         .await
         .expect_err("missing source branch should fail");
     assert!(
@@ -145,7 +160,10 @@ async fn branch_data_isolation() {
     let main_after_base = result.ledger;
 
     // 2. Create branch "dev" from main
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // 3. Transact data only on main
     let main_data = json!({
@@ -206,7 +224,10 @@ async fn branch_t_advances_independently() {
     assert_eq!(result.receipt.t, 1);
 
     // Branch at t=1
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // Transact twice on dev
     let dev = fluree.ledger("mydb:dev").await.unwrap();
@@ -246,7 +267,10 @@ async fn drop_branch_leaf() {
     fluree.insert(ledger, &txn).await.unwrap();
 
     // Create and then drop a leaf branch
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
     let report = fluree.drop_branch("mydb", "dev").await.unwrap();
 
     assert!(!report.deferred, "leaf branch should not be deferred");
@@ -296,7 +320,10 @@ async fn branches_count_tracks_children() {
     assert_eq!(record.branches, 0);
 
     // Create two child branches
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
     let record = fluree
         .nameservice()
         .lookup("mydb:main")
@@ -305,7 +332,10 @@ async fn branches_count_tracks_children() {
         .unwrap();
     assert_eq!(record.branches, 1);
 
-    fluree.create_branch("mydb", "staging", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "staging", None, None)
+        .await
+        .unwrap();
     let record = fluree
         .nameservice()
         .lookup("mydb:main")
@@ -349,9 +379,12 @@ async fn drop_branch_with_children_deferred() {
     fluree.insert(ledger, &txn).await.unwrap();
 
     // Create dev, then branch feature from dev
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
     fluree
-        .create_branch("mydb", "feature", Some("dev"))
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
+    fluree
+        .create_branch("mydb", "feature", Some("dev"), None)
         .await
         .unwrap();
 
@@ -399,9 +432,12 @@ async fn transact_on_retracted_branch_fails() {
     fluree.insert(ledger, &txn).await.unwrap();
 
     // Create dev, then a child so dev can be retracted (not purged)
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
     fluree
-        .create_branch("mydb", "feature", Some("dev"))
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
+    fluree
+        .create_branch("mydb", "feature", Some("dev"), None)
         .await
         .unwrap();
 
@@ -439,9 +475,12 @@ async fn drop_branch_cascade() {
     fluree.insert(ledger, &txn).await.unwrap();
 
     // main -> dev -> feature
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
     fluree
-        .create_branch("mydb", "feature", Some("dev"))
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
+    fluree
+        .create_branch("mydb", "feature", Some("dev"), None)
         .await
         .unwrap();
 
@@ -486,7 +525,10 @@ async fn nested_branch_data_isolation() {
     let main_ledger = result.ledger;
 
     // 2. Branch dev from main
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // 3. Transact on dev
     let dev = fluree.ledger("mydb:dev").await.unwrap();
@@ -498,7 +540,7 @@ async fn nested_branch_data_isolation() {
 
     // 4. Branch feature from dev (nested branch)
     fluree
-        .create_branch("mydb", "feature", Some("dev"))
+        .create_branch("mydb", "feature", Some("dev"), None)
         .await
         .unwrap();
 
@@ -543,4 +585,89 @@ async fn nested_branch_data_isolation() {
         .unwrap();
     let rows = result.to_jsonld(&feature.snapshot).unwrap();
     assert_eq!(extract_names(&rows), vec!["Alice", "Bob", "Carol"]);
+}
+
+/// Branch from a historical commit using `at_t`.
+///
+/// Transacts three commits on main, then creates a branch at t=2.
+/// The branch should see only the data from t=1 and t=2, not t=3.
+#[tokio::test]
+async fn branch_from_historical_commit() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    // 1. Create ledger and transact three commits
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+
+    // t=1: Alice
+    let txn1 = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+    });
+    let r1 = fluree.insert(ledger, &txn1).await.unwrap();
+    assert_eq!(r1.receipt.t, 1);
+
+    // t=2: Bob
+    let txn2 = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+    });
+    let r2 = fluree.insert(r1.ledger, &txn2).await.unwrap();
+    assert_eq!(r2.receipt.t, 2);
+
+    // t=3: Carol
+    let txn3 = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:carol", "ex:name": "Carol"}]
+    });
+    let r3 = fluree.insert(r2.ledger, &txn3).await.unwrap();
+    assert_eq!(r3.receipt.t, 3);
+
+    // 2. Branch from main at t=2 — should not include Carol (t=3)
+    let record = fluree
+        .create_branch("mydb", "snapshot", None, Some(2))
+        .await
+        .unwrap();
+    assert_eq!(record.commit_t, 2, "branch should be at t=2");
+
+    // 3. Query the branch — should see Alice and Bob only
+    let query = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "select": ["?name"],
+        "where": {"@id": "?s", "ex:name": "?name"}
+    });
+
+    let snapshot = fluree.ledger("mydb:snapshot").await.unwrap();
+    let result = support::query_jsonld(&fluree, &snapshot, &query)
+        .await
+        .unwrap();
+    let rows = result.to_jsonld(&snapshot.snapshot).unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice", "Bob"]);
+
+    // 4. Main should still have all three
+    let main = fluree.ledger("mydb:main").await.unwrap();
+    let result = support::query_jsonld(&fluree, &main, &query).await.unwrap();
+    let rows = result.to_jsonld(&main.snapshot).unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice", "Bob", "Carol"]);
+}
+
+/// Branching at a future t returns an error.
+#[tokio::test]
+async fn branch_at_future_t_fails() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+    let txn = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "@graph": [{"@id": "ex:seed", "ex:val": 1}]
+    });
+    fluree.insert(ledger, &txn).await.unwrap();
+
+    let err = fluree
+        .create_branch("mydb", "future", None, Some(999))
+        .await
+        .expect_err("branching at a future t should fail");
+    assert!(
+        err.to_string().contains("beyond"),
+        "expected 'beyond' in error, got: {err}"
+    );
 }

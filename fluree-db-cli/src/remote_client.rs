@@ -862,6 +862,7 @@ impl RemoteLedgerClient {
         ledger: &str,
         branch: &str,
         source: Option<&str>,
+        at_t: Option<i64>,
     ) -> Result<serde_json::Value, RemoteLedgerError> {
         let url = self.op_url_root("branch");
         let mut body = serde_json::json!({
@@ -870,6 +871,9 @@ impl RemoteLedgerClient {
         });
         if let Some(s) = source {
             body["source"] = serde_json::Value::String(s.to_string());
+        }
+        if let Some(t) = at_t {
+            body["t"] = serde_json::Value::Number(t.into());
         }
         self.send_json(
             reqwest::Method::POST,

@@ -62,7 +62,10 @@ async fn merge_fast_forward() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let _main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // Transact on dev
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
@@ -101,7 +104,10 @@ async fn merge_fast_forward_multiple_commits() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let _main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // Several commits on dev
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
@@ -170,7 +176,10 @@ async fn merge_self_refused() {
     });
     fluree.insert(ledger, &base_data).await.unwrap();
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     let err = fluree
         .merge_branch("mydb", "dev", Some("dev"), ConflictStrategy::default())
@@ -195,8 +204,14 @@ async fn merge_into_non_parent_allowed() {
     });
     fluree.insert(ledger, &base_data).await.unwrap();
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
-    fluree.create_branch("mydb", "feature", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
+    fluree
+        .create_branch("mydb", "feature", None, None)
+        .await
+        .unwrap();
 
     // Merge dev into feature — both share the same base from main, so
     // this is a valid fast-forward even though feature is not dev's parent.
@@ -221,7 +236,10 @@ async fn merge_diverged_target_general_merge() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // Transact on dev
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
@@ -302,7 +320,10 @@ async fn merge_empty_source_fails() {
     // at all, which the current API doesn't easily allow.
     // Instead, test the "source has no unique commits" case — which is
     // actually valid and should still succeed (copies 0 commits).
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // Merge dev → main with no unique commits on dev
     let report = fluree
@@ -331,7 +352,10 @@ async fn merge_target_head_updated() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let _main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
     let dev_data = json!({
@@ -384,7 +408,10 @@ async fn merge_source_branch_point_updated() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let _main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
     let dev_data = json!({
@@ -427,7 +454,10 @@ async fn merge_target_accepts_new_transactions() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let _main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
     let dev_data = json!({
@@ -466,7 +496,10 @@ async fn merge_source_continues_after_merge() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let _main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // First round: transact on dev, merge to main
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
@@ -516,9 +549,12 @@ async fn merge_nested_branch() {
     let _main_ledger = result.ledger;
 
     // main → dev → feature
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
     fluree
-        .create_branch("mydb", "feature", Some("dev"))
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
+    fluree
+        .create_branch("mydb", "feature", Some("dev"), None)
         .await
         .unwrap();
 
@@ -559,7 +595,10 @@ async fn merge_abort_leaves_nameservice_unchanged() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     // Both branches modify the same subject+predicate to create a real conflict.
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
@@ -631,7 +670,10 @@ async fn merge_explicit_target_matches_parent() {
     let result = fluree.insert(ledger, &base_data).await.unwrap();
     let _main_ledger = result.ledger;
 
-    fluree.create_branch("mydb", "dev", None).await.unwrap();
+    fluree
+        .create_branch("mydb", "dev", None, None)
+        .await
+        .unwrap();
 
     let dev_ledger = fluree.ledger("mydb:dev").await.unwrap();
     let dev_data = json!({

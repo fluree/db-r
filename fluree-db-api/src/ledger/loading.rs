@@ -246,6 +246,11 @@ impl Fluree {
     /// files are copied into the new branch's storage namespace so the branch
     /// owns its own copy (safe from GC on the source).
     ///
+    /// When `at_t` is `Some(t)`, the branch is created at that historical
+    /// commit instead of the source's current HEAD. The commit chain is walked
+    /// to find the commit at `t`, and the branch's `commit_head_id` and
+    /// `commit_t` are set to that commit.
+    ///
     /// Commits are **not** copied — the branch's [`BranchedContentStore`]
     /// reads historical commits from the source namespace via fallback.
     ///
@@ -253,12 +258,16 @@ impl Fluree {
     ///
     /// - [`ApiError::LedgerExists`] if the branch already exists
     /// - [`ApiError::NotFound`] if the source branch does not exist
+    /// - [`ApiError::Http`] (400) if `at_t` is beyond the source's HEAD
+    /// - [`ApiError::Http`] (400) if no commit exists at the requested `at_t`
     pub async fn create_branch(
         &self,
         ledger_name: &str,
         new_branch: &str,
         source_branch: Option<&str>,
+        at_t: Option<i64>,
     ) -> Result<NsRecord> {
+        use fluree_db_core::commit::collect_dag_cids;
         use fluree_db_core::ledger_id::{format_ledger_id, validate_branch_name};
         use tracing::info;
 
@@ -271,7 +280,7 @@ impl Fluree {
         let source_id = format_ledger_id(ledger_name, source);
         let new_id = format_ledger_id(ledger_name, new_branch);
 
-        info!(ledger_name, new_branch, source, "Creating branch");
+        info!(ledger_name, new_branch, source, ?at_t, "Creating branch");
 
         // Look up the source branch to capture its commit state
         let source_record = self
@@ -281,15 +290,67 @@ impl Fluree {
             .ok_or_else(|| ApiError::NotFound(source_id.clone()))?;
 
         // Verify the source branch has a commit head before creating.
-        if source_record.commit_head_id.is_none() {
-            return Err(ApiError::internal(format!(
-                "Source branch {} has no commit head",
-                source_id
-            )));
-        }
+        let source_head_id = source_record
+            .commit_head_id
+            .as_ref()
+            .ok_or_else(|| {
+                ApiError::internal(format!("Source branch {} has no commit head", source_id))
+            })?
+            .clone();
+
+        // Resolve the historical commit if at_t is specified.
+        let at_commit = match at_t {
+            Some(t) => {
+                if t > source_record.commit_t {
+                    return Err(ApiError::Http {
+                        status: 400,
+                        message: format!(
+                            "Requested t={} is beyond source branch HEAD (t={})",
+                            t, source_record.commit_t
+                        ),
+                    });
+                }
+                if t < 1 {
+                    return Err(ApiError::Http {
+                        status: 400,
+                        message: format!("Requested t={} is invalid; t must be >= 1", t),
+                    });
+                }
+
+                // Walk the commit chain to find the commit at the requested t.
+                // collect_dag_cids returns commits from HEAD down to stop_at_t
+                // (exclusive), so we stop at t-1 to include the commit at t.
+                let store = self.content_store(&source_id);
+                let cids = collect_dag_cids(&store, &source_head_id, t - 1).await?;
+
+                // The last entry in the list is the oldest commit — the one at t.
+                let (commit_t, commit_id) = cids.last().ok_or_else(|| ApiError::Http {
+                    status: 400,
+                    message: format!("No commit found at t={} on source branch {}", t, source_id),
+                })?;
+
+                if *commit_t != t {
+                    return Err(ApiError::Http {
+                        status: 400,
+                        message: format!(
+                            "No commit found at t={} on source branch {} (nearest is t={})",
+                            t, source_id, commit_t
+                        ),
+                    });
+                }
+
+                Some((commit_id.clone(), *commit_t))
+            }
+            None => None,
+        };
+
+        // Extract branch_t before moving at_commit into the nameservice call.
+        let branch_t = at_commit
+            .as_ref()
+            .map_or(source_record.commit_t, |(_, t)| *t);
 
         self.nameservice()
-            .create_branch(ledger_name, new_branch, source)
+            .create_branch(ledger_name, new_branch, source, at_commit)
             .await
             .map_err(|e| match e {
                 NameServiceError::LedgerAlreadyExists(a) => ApiError::ledger_exists(a),
@@ -297,21 +358,23 @@ impl Fluree {
             })?;
 
         // Copy the source's index files into the new branch's namespace.
-        // This gives the branch its own copy, safe from GC on the source.
+        // Only copy if the index covers the branch point (index_t <= branch commit_t).
         if let Some(ref index_cid) = source_record.index_head_id {
-            if let Err(e) = self
-                .copy_index_to_branch(&source_id, &new_id, index_cid)
-                .await
-            {
-                tracing::warn!(
-                    %e, source = %source_id, branch = %new_id,
-                    "failed to copy index to branch; branch will replay from genesis"
-                );
-            } else {
-                // Register the copied index in the new branch's nameservice record
-                self.publisher()?
-                    .publish_index(&new_id, source_record.index_t, index_cid)
-                    .await?;
+            if source_record.index_t <= branch_t {
+                if let Err(e) = self
+                    .copy_index_to_branch(&source_id, &new_id, index_cid)
+                    .await
+                {
+                    tracing::warn!(
+                        %e, source = %source_id, branch = %new_id,
+                        "failed to copy index to branch; branch will replay from genesis"
+                    );
+                } else {
+                    // Register the copied index in the new branch's nameservice record
+                    self.publisher()?
+                        .publish_index(&new_id, source_record.index_t, index_cid)
+                        .await?;
+                }
             }
         }
 

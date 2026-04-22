@@ -571,6 +571,7 @@ where
         ledger_name: &str,
         new_branch: &str,
         source_branch: &str,
+        at_commit: Option<(ContentId, i64)>,
     ) -> Result<()> {
         let key = self.ns_key(ledger_name, new_branch);
         let normalized_id = format_ledger_id(ledger_name, new_branch);
@@ -586,6 +587,14 @@ where
                 ))
             })?;
 
+        let (commit_cid, commit_t) = match at_commit {
+            Some((cid, t)) => (Some(cid.to_string()), t),
+            None => (
+                source_record.commit_head_id.as_ref().map(|c| c.to_string()),
+                source_record.commit_t,
+            ),
+        };
+
         let file = NsFileV2 {
             context: ns_context(),
             id: normalized_id.clone(),
@@ -594,9 +603,9 @@ where
                 id: ledger_name.to_string(),
             },
             branch: new_branch.to_string(),
-            commit_cid: source_record.commit_head_id.as_ref().map(|c| c.to_string()),
+            commit_cid,
             config_cid: None,
-            t: source_record.commit_t,
+            t: commit_t,
             index: None,
             status: "ready".to_string(),
             default_context_cid: None,
