@@ -212,6 +212,27 @@ impl NsRecord {
         }
     }
 
+    /// Returns the `(ContentId, t)` at which a new branch should diverge.
+    ///
+    /// Uses `at_commit` when provided, otherwise falls back to this record's
+    /// current HEAD. Returns an error if the source has no commit head.
+    pub fn branch_point(
+        &self,
+        at_commit: Option<(ContentId, i64)>,
+    ) -> std::result::Result<(ContentId, i64), NameServiceError> {
+        let head = self.commit_head_id.as_ref().ok_or_else(|| {
+            NameServiceError::storage(format!(
+                "Source branch {} has no commit head",
+                self.ledger_id
+            ))
+        })?;
+
+        match at_commit {
+            Some(commit) => Ok(commit),
+            None => Ok((head.clone(), self.commit_t)),
+        }
+    }
+
     /// Check if this record has an index
     pub fn has_index(&self) -> bool {
         self.index_head_id.is_some()

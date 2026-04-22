@@ -148,21 +148,10 @@ impl NameService for MemoryNameService {
         })?;
         source.branches += 1;
 
-        // Validate the source branch has a commit head regardless of at_commit.
-        if source.commit_head_id.is_none() {
-            return Err(crate::NameServiceError::storage(format!(
-                "Source branch {}:{} has no commit head",
-                ledger_name, source_branch
-            )));
-        }
-
-        let (commit_head_id, commit_t) = match at_commit {
-            Some((cid, t)) => (Some(cid), t),
-            None => (source.commit_head_id.clone(), source.commit_t),
-        };
+        let (commit_id, commit_t) = source.branch_point(at_commit)?;
 
         let mut record = NsRecord::new(ledger_name, new_branch);
-        record.commit_head_id = commit_head_id;
+        record.commit_head_id = Some(commit_id);
         record.commit_t = commit_t;
         record.source_branch = Some(source_branch.to_string());
         records.insert(key, record);
