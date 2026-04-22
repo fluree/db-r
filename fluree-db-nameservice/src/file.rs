@@ -477,12 +477,17 @@ impl NameService for FileNameService {
                 ))
             })?;
 
+        // Validate the source branch has a commit head regardless of at_commit.
+        let source_head = source_record.commit_head_id.as_ref().ok_or_else(|| {
+            NameServiceError::storage(format!(
+                "Source branch {}:{} has no commit head",
+                ledger_name, source_branch
+            ))
+        })?;
+
         let (commit_cid, commit_t) = match at_commit {
             Some((cid, t)) => (Some(cid.to_string()), t),
-            None => (
-                source_record.commit_head_id.as_ref().map(|c| c.to_string()),
-                source_record.commit_t,
-            ),
+            None => (Some(source_head.to_string()), source_record.commit_t),
         };
 
         let file = NsFileV2 {

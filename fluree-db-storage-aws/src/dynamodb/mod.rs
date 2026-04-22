@@ -542,15 +542,19 @@ impl NameService for DynamoDbNameService {
             ))
         })?;
 
+        // Validate the source branch has a commit head regardless of at_commit.
+        // The API layer checks this too, but the NS should be self-consistent.
+        if source_record.commit_head_id.is_none() {
+            return Err(NameServiceError::storage(format!(
+                "Source branch {source_id} has no commit head"
+            )));
+        }
+
         let (commit_id, commit_t) = match at_commit {
             Some(commit) => commit,
             None => {
-                let cid = source_record.commit_head_id.ok_or_else(|| {
-                    NameServiceError::storage(format!(
-                        "Source branch {source_id} has no commit head"
-                    ))
-                })?;
-                (cid, source_record.commit_t)
+                // unwrap safe: checked above
+                (source_record.commit_head_id.unwrap(), source_record.commit_t)
             }
         };
 
