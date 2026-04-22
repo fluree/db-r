@@ -632,7 +632,7 @@ impl BinaryScanOperator {
         let mut produced = 0;
 
         while produced < batch_size {
-            let Some(flake) = self.range_iter.as_mut().and_then(|it| it.next()) else {
+            let Some(flake) = self.range_iter.as_mut().and_then(std::iter::Iterator::next) else {
                 break;
             };
 
@@ -670,7 +670,7 @@ impl BinaryScanOperator {
                 }
                 if let Some(tag) = dtc.lang_tag() {
                     let flake_lang = flake.m.as_ref().and_then(|m| m.lang.as_ref());
-                    if flake_lang.map(|s| s.as_str()) != Some(tag) {
+                    if flake_lang.map(std::string::String::as_str) != Some(tag) {
                         continue;
                     }
                 }
@@ -1049,7 +1049,7 @@ impl BinaryScanOperator {
         // bindings eagerly — infrastructure queries (config, policy) need concrete
         // `Binding::Sid`/`Lit`, not `EncodedSid`/`EncodedLit`.
         let late_materialize = ctx.is_some_and(|c| {
-            c.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 && !c.eager_materialization
+            c.overlay.map(fluree_db_core::OverlayProvider::epoch).unwrap_or(0) == 0 && !c.eager_materialization
         })
             // If a repeated variable forces two components into the same output slot,
             // late-materialization must produce comparable binding representations.
@@ -1195,8 +1195,7 @@ impl BinaryScanOperator {
                         }
                         Err(e) => {
                             return Err(QueryError::dictionary_lookup(format!(
-                                "binary scan object decode fallback failed: o_type={}, o_key={}, p_id={}: {}",
-                                o_type, o_key, p_id, e
+                                "binary scan object decode fallback failed: o_type={o_type}, o_key={o_key}, p_id={p_id}: {e}"
                             )));
                         }
                     }
@@ -1515,7 +1514,7 @@ impl Operator for BinaryScanOperator {
         if let Some(bound_o) = self.bound_o.as_ref() {
             let dtc = self.pattern.dtc.as_ref();
             let lang = dtc.and_then(|d| d.lang_tag());
-            let dt_sid = dtc.map(|d| d.datatype());
+            let dt_sid = dtc.map(fluree_db_core::DatatypeConstraint::datatype);
             let dict_novelty = ctx.dict_novelty.as_ref();
             let stats_view = cached_stats_view_for_db(
                 fluree_db_core::GraphDbRef::new(
@@ -1813,7 +1812,10 @@ impl Operator for BinaryScanOperator {
             &self.inline_ops,
             &self.pattern,
             store_ref,
-            ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0,
+            ctx.overlay
+                .map(fluree_db_core::OverlayProvider::epoch)
+                .unwrap_or(0)
+                == 0,
         );
         self.encoded_pre_filters = encoded;
         self.inline_ops = pruned;
@@ -2253,7 +2255,7 @@ fn value_to_otype_okey(
         // Types not yet handled: BigInt, Decimal, Vector, Duration
         _ => Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
-            format!("unsupported FlakeValue variant for V3 overlay: {:?}", val),
+            format!("unsupported FlakeValue variant for V3 overlay: {val:?}"),
         )),
     }
 }
@@ -2508,8 +2510,7 @@ pub(crate) fn value_to_otype_okey_simple(
             ObjKey::encode_g_month_day(g.month(), g.day()).as_u64(),
         )),
         _ => Err(QueryError::execution(format!(
-            "unsupported FlakeValue variant for V6 fast-path: {:?}",
-            val
+            "unsupported FlakeValue variant for V6 fast-path: {val:?}"
         ))),
     }
 }

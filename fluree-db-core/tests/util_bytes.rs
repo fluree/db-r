@@ -91,7 +91,7 @@ mod tests {
         for iri in test_cases {
             let longs = string_to_longs(iri);
             let result = longs_to_string(&longs);
-            assert_eq!(result, iri, "Roundtrip failed for IRI: {}", iri);
+            assert_eq!(result, iri, "Roundtrip failed for IRI: {iri}");
         }
     }
 

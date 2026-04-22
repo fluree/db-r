@@ -103,12 +103,12 @@ fn normalize_float(f: f64) -> String {
     let abs = f.abs();
     if abs >= 1e21 || (abs < 1e-6 && abs != 0.0) {
         // Use exponential notation
-        let exp_str = format!("{:e}", f);
+        let exp_str = format!("{f:e}");
         return normalize_exponential(&exp_str);
     }
 
     // Regular decimal representation
-    let s = format!("{}", f);
+    let s = format!("{f}");
 
     // Remove unnecessary trailing zeros after decimal point
     // but keep at least one digit after decimal if needed
@@ -149,9 +149,9 @@ fn normalize_exponential(s: &str) -> String {
 
     // Format exponent with sign
     if exponent >= 0 {
-        format!("{}e+{}", norm_mantissa, exponent)
+        format!("{norm_mantissa}e+{exponent}")
     } else {
-        format!("{}e{}", norm_mantissa, exponent)
+        format!("{norm_mantissa}e{exponent}")
     }
 }
 
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn test_normalize_numbers_and_literals() {
         let data = json!({
-            "numbers": [333_333_333.333_333_3, 1E30, 4.50, 2e-3, 0.000000000000000000000000001],
+            "numbers": [333_333_333.333_333_3, 1E30, 4.50, 2e-3, 0.000_000_000_000_000_000_000_000_001],
             "literals": [null, true, false]
         });
 

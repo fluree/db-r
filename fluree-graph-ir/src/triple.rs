@@ -202,7 +202,7 @@ mod tests {
             Term::string("Alice"),
         );
 
-        let display = format!("{}", t);
+        let display = format!("{t}");
         assert!(display.contains("<http://example.org/alice>"));
         assert!(display.contains("<http://xmlns.com/foaf/0.1/name>"));
         assert!(display.contains("\"Alice\""));

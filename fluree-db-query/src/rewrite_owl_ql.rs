@@ -131,7 +131,7 @@ impl Ontology {
         self.inner
             .inverse_of
             .get(p)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(&[])
     }
 
@@ -140,7 +140,7 @@ impl Ontology {
         self.inner
             .equivalent_props
             .get(p)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(&[])
     }
 
@@ -472,7 +472,7 @@ pub fn rewrite_owl_ql_patterns(
     patterns: &[Pattern],
     ctx: &OwlQlContext,
 ) -> (Vec<Pattern>, Diagnostics) {
-    let epoch = ctx.ontology.as_ref().map(|o| o.epoch());
+    let epoch = ctx.ontology.as_ref().map(Ontology::epoch);
     let mut diag = Diagnostics::with_epoch(epoch);
 
     // No-op if no ontology available

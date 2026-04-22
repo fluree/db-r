@@ -26,10 +26,9 @@ async fn require_kubo() -> Option<KuboClient> {
     let client = KuboClient::new(KUBO_URL);
     if !client.is_available().await {
         eprintln!(
-            "Kubo node not available at {} — skipping test. \
+            "Kubo node not available at {KUBO_URL} — skipping test. \
              Start with `ipfs daemon` or \
-             `docker run -d -p 5001:5001 ipfs/kubo:latest`",
-            KUBO_URL
+             `docker run -d -p 5001:5001 ipfs/kubo:latest`"
         );
         return None;
     }
@@ -83,7 +82,7 @@ async fn test_block_put_custom_codec_numeric() {
             assert_eq!(retrieved, data);
         }
         Err(e) => {
-            println!("Custom numeric codec REJECTED: {}", e);
+            println!("Custom numeric codec REJECTED: {e}");
             println!("This is expected — Kubo only accepts named multicodec strings.");
             println!("We'll use 'raw' codec for storage and our own CID for identity.");
         }
@@ -107,7 +106,7 @@ async fn test_cross_codec_retrieval() {
 
     // 1. Compute Fluree's CID (custom codec + SHA256)
     let fluree_cid = ContentId::new(ContentKind::Commit, data);
-    println!("Fluree CID (codec 0x300001): {}", fluree_cid);
+    println!("Fluree CID (codec 0x300001): {fluree_cid}");
 
     // 2. Put with raw codec — this should always work
     let put_resp = kubo.block_put(data, None, Some("sha2-256")).await.unwrap();
@@ -122,7 +121,7 @@ async fn test_cross_codec_retrieval() {
             println!("This means we can use Fluree's native CIDs with IPFS storage.");
         }
         Err(e) => {
-            println!("CROSS-CODEC RETRIEVAL FAILED: {}", e);
+            println!("CROSS-CODEC RETRIEVAL FAILED: {e}");
             println!("Kubo requires exact CID match (including codec).");
             println!("We'll need to maintain a CID mapping: fluree_cid <-> raw_cid");
 
@@ -146,7 +145,7 @@ async fn test_content_store_roundtrip() {
     });
 
     if !store.is_available().await {
-        eprintln!("Kubo not available at {} — skipping test", KUBO_URL);
+        eprintln!("Kubo not available at {KUBO_URL} — skipping test");
         return;
     }
 
@@ -154,7 +153,7 @@ async fn test_content_store_roundtrip() {
 
     // Put via ContentStore trait
     let cid = store.put(ContentKind::Commit, test_data).await.unwrap();
-    println!("ContentStore put → Fluree CID: {}", cid);
+    println!("ContentStore put → Fluree CID: {cid}");
 
     // Verify the CID matches what we'd compute locally
     let expected_cid = ContentId::new(ContentKind::Commit, test_data);
@@ -166,9 +165,9 @@ async fn test_content_store_roundtrip() {
     match store.has(&cid).await {
         Ok(true) => println!("has() with Fluree CID: true"),
         Ok(false) => {
-            println!("has() with Fluree CID: false (Kubo can't resolve custom codec CIDs)")
+            println!("has() with Fluree CID: false (Kubo can't resolve custom codec CIDs)");
         }
-        Err(e) => println!("has() with Fluree CID: error — {}", e),
+        Err(e) => println!("has() with Fluree CID: error — {e}"),
     }
 
     // Try get()
@@ -178,7 +177,7 @@ async fn test_content_store_roundtrip() {
             println!("get() with Fluree CID: SUCCESS — bytes match!");
         }
         Err(e) => {
-            println!("get() with Fluree CID: FAILED — {}", e);
+            println!("get() with Fluree CID: FAILED — {e}");
             println!("We need a CID translation layer (fluree CID ↔ raw CID).");
         }
     }
@@ -195,12 +194,12 @@ async fn test_multiple_content_kinds() {
     };
 
     let kinds = [
-        ("Commit", ContentKind::Commit, 0x300001u64),
-        ("Txn", ContentKind::Txn, 0x300002),
-        ("IndexRoot", ContentKind::IndexRoot, 0x300003),
-        ("IndexBranch", ContentKind::IndexBranch, 0x300004),
-        ("IndexLeaf", ContentKind::IndexLeaf, 0x300005),
-        ("LedgerConfig", ContentKind::LedgerConfig, 0x300008),
+        ("Commit", ContentKind::Commit, 0x0030_0001_u64),
+        ("Txn", ContentKind::Txn, 0x0030_0002),
+        ("IndexRoot", ContentKind::IndexRoot, 0x0030_0003),
+        ("IndexBranch", ContentKind::IndexBranch, 0x0030_0004),
+        ("IndexLeaf", ContentKind::IndexLeaf, 0x0030_0005),
+        ("LedgerConfig", ContentKind::LedgerConfig, 0x0030_0008),
     ];
 
     println!("\n=== Testing IPFS block storage with Fluree content kinds ===\n");
@@ -211,7 +210,7 @@ async fn test_multiple_content_kinds() {
     println!("{}", "-".repeat(100));
 
     for (name, kind, codec) in kinds {
-        let data = format!("test payload for {}", name);
+        let data = format!("test payload for {name}");
         let fluree_cid = ContentId::new(kind, data.as_bytes());
 
         // Put with raw codec
@@ -253,7 +252,7 @@ async fn test_put_with_id() {
     });
 
     if !store.is_available().await {
-        eprintln!("Kubo not available at {} — skipping test", KUBO_URL);
+        eprintln!("Kubo not available at {KUBO_URL} — skipping test");
         return;
     }
 
@@ -262,7 +261,7 @@ async fn test_put_with_id() {
 
     // Should succeed — CID matches bytes
     store.put_with_id(&id, data).await.unwrap();
-    println!("put_with_id succeeded for CID: {}", id);
+    println!("put_with_id succeeded for CID: {id}");
 
     // Should fail — CID doesn't match bytes
     let wrong_data = b"this data doesn't match the CID";
@@ -305,7 +304,7 @@ async fn test_pin_lifecycle_raw_codec() {
         .await
         .unwrap();
     let fluree_cid_str = put_resp.key.clone();
-    println!("Fluree-codec CID (from put): {}", fluree_cid_str);
+    println!("Fluree-codec CID (from put): {fluree_cid_str}");
 
     // 2. Verify that pinning with Fluree-codec CID FAILS
     let pin_fluree_result = kubo.pin_add(&fluree_cid_str).await;
@@ -321,7 +320,7 @@ async fn test_pin_lifecycle_raw_codec() {
     // 3. Construct raw-codec CID (same multihash, codec 0x55)
     let raw_cid_str =
         fluree_db_storage_ipfs::address::hash_hex_to_cid_string(&fluree_cid.digest_hex()).unwrap();
-    println!("Raw-codec CID (for pin):     {}", raw_cid_str);
+    println!("Raw-codec CID (for pin):     {raw_cid_str}");
 
     // 4. Pin with raw-codec CID — this is what IpfsStorage::maybe_pin does
     kubo.pin_add(&raw_cid_str).await.unwrap();
@@ -370,8 +369,8 @@ async fn test_sha256_digest_matches() {
         .expect("IPFS CID should be parseable as ContentId");
     let ipfs_digest = ipfs_cid.digest_hex();
 
-    println!("Fluree digest: {}", fluree_digest);
-    println!("IPFS digest:   {}", ipfs_digest);
+    println!("Fluree digest: {fluree_digest}");
+    println!("IPFS digest:   {ipfs_digest}");
 
     assert_eq!(
         fluree_digest, ipfs_digest,

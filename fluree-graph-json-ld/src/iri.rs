@@ -121,7 +121,7 @@ pub fn add_trailing_slash(iri: &str) -> String {
     if iri.ends_with('/') || iri.ends_with('#') {
         iri.to_string()
     } else {
-        format!("{}/", iri)
+        format!("{iri}/")
     }
 }
 
@@ -138,9 +138,9 @@ pub fn join(base: &str, relative: &str) -> String {
         let base = if base.ends_with('/') || base.ends_with('#') {
             base.to_string()
         } else {
-            format!("{}/", base)
+            format!("{base}/")
         };
-        format!("{}{}", base, relative)
+        format!("{base}{relative}")
     }
 }
 

@@ -142,8 +142,7 @@ async fn vector_search_returns_scored_results() {
 
     assert!(
         doc1_pos.is_some() && doc2_pos.is_some() && doc3_pos.is_some(),
-        "expected all docs in results, got: {:?}",
-        ids
+        "expected all docs in results, got: {ids:?}"
     );
 
     // doc1 should rank first (most similar to query)
@@ -715,17 +714,16 @@ async fn vector_idx_query_syntax_e2e() {
         let doc = row_arr[0].as_str().expect("doc should be string");
         let score = row_arr[1].as_f64().expect("score should be number");
 
-        assert!(doc.contains("doc"), "doc should contain 'doc': {}", doc);
+        assert!(doc.contains("doc"), "doc should contain 'doc': {doc}");
         // Cosine similarity can be in [-1, 1] (not [0, 1])
         // -1 = opposite, 0 = orthogonal, 1 = identical
         assert!(
             (-1.0..=1.0).contains(&score),
-            "cosine score should be in [-1,1]: {}",
-            score
+            "cosine score should be in [-1,1]: {score}"
         );
 
         // Log for debugging
-        eprintln!("Result {}: doc={}, score={:.4}", i, doc, score);
+        eprintln!("Result {i}: doc={doc}, score={score:.4}");
     }
 
     // Verify ordering: doc2 should be last (least similar)
@@ -733,7 +731,6 @@ async fn vector_idx_query_syntax_e2e() {
     let last_doc = last_row[0].as_str().unwrap();
     assert!(
         last_doc.contains("doc2"),
-        "doc2 should be least similar (last), got: {}",
-        last_doc
+        "doc2 should be least similar (last), got: {last_doc}"
     );
 }

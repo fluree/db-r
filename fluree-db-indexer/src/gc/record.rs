@@ -48,7 +48,7 @@ mod tests {
                 test_cid_string(ContentKind::IndexLeaf, b"leaf-abc"),
                 test_cid_string(ContentKind::IndexLeaf, b"leaf-def"),
             ],
-            created_at_ms: 1700000000000,
+            created_at_ms: 1_700_000_000_000,
         };
 
         let json = serde_json::to_string(&record).unwrap();
@@ -65,7 +65,7 @@ mod tests {
             ledger_id: "test:main".to_string(),
             t: 100,
             garbage: vec![cid1, cid2],
-            created_at_ms: 1700000000000,
+            created_at_ms: 1_700_000_000_000,
         };
 
         let json = serde_json::to_string(&record).unwrap();

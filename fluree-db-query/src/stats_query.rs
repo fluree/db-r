@@ -43,7 +43,7 @@ impl StatsCountByPredicateOperator {
         // Prefer graph-scoped stats if present (and we can resolve p_id → Sid).
         if let Some(props) = self.stats.get_graph_properties(ctx.binary_g_id) {
             let mut out = Vec::with_capacity(props.len());
-            for (&p_id, data) in props.iter() {
+            for (&p_id, data) in props {
                 let pred_sid = ctx
                     .runtime_small_dicts
                     .and_then(|dicts| dicts.predicate_sid(p_id))
@@ -69,7 +69,7 @@ impl StatsCountByPredicateOperator {
         // Fallback: aggregate SID-keyed stats (across graphs).
         if !self.stats.properties.is_empty() {
             let mut out = Vec::with_capacity(self.stats.properties.len());
-            for (sid, data) in self.stats.properties.iter() {
+            for (sid, data) in &self.stats.properties {
                 let pred = Binding::Sid(sid.clone());
                 let count = Binding::lit(FlakeValue::Long(data.count as i64), dt.clone());
                 out.push((pred, count));

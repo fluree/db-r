@@ -309,8 +309,7 @@ async fn resolve_history_endpoint_t(
         dataset::TimeSpec::AtTime(iso) => {
             let dt = DateTime::parse_from_rfc3339(iso).map_err(|e| {
                 ApiError::internal(format!(
-                    "Invalid ISO-8601 timestamp for time travel: {} ({})",
-                    iso, e
+                    "Invalid ISO-8601 timestamp for time travel: {iso} ({e})"
                 ))
             })?;
             // See `Fluree::load_view_at` for rationale: `ledger#time` is epoch-ms and we

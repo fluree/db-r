@@ -86,7 +86,7 @@ fn median(values: &mut [f64]) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mid = values.len() / 2;
     if values.len().is_multiple_of(2) {
-        (values[mid - 1] + values[mid]) / 2.0
+        f64::midpoint(values[mid - 1], values[mid])
     } else {
         values[mid]
     }
@@ -354,9 +354,9 @@ async fn main() {
     println!("======================");
     println!();
     println!("Configuration:");
-    println!("  Entity count: {}", ENTITY_COUNT);
-    println!("  Iterations per benchmark: {}", ITERATIONS);
-    println!("  Queries per iteration: {}", QUERIES_PER_ITERATION);
+    println!("  Entity count: {ENTITY_COUNT}");
+    println!("  Iterations per benchmark: {ITERATIONS}");
+    println!("  Queries per iteration: {QUERIES_PER_ITERATION}");
     println!();
 
     // Create database and load test data
@@ -364,7 +364,7 @@ async fn main() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger0 = fluree.create_ledger("bench/filter:main").await.unwrap();
 
-    println!("Generating {} entities...", ENTITY_COUNT);
+    println!("Generating {ENTITY_COUNT} entities...");
     let data = generate_test_data(ENTITY_COUNT, 42);
 
     let insert = json!({

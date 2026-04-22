@@ -109,7 +109,7 @@ impl DateTime {
             }
         }
 
-        Err(format!("Cannot parse dateTime: {}", s))
+        Err(format!("Cannot parse dateTime: {s}"))
     }
 
     /// Get the normalized UTC instant
@@ -169,7 +169,7 @@ impl DateTime {
                 let hours = secs.abs() / 3600;
                 let mins = (secs.abs() % 3600) / 60;
                 let sign = if secs >= 0 { '+' } else { '-' };
-                format!("{}{:02}:{:02}", sign, hours, mins)
+                format!("{sign}{hours:02}:{mins:02}")
             }
         })
     }
@@ -237,7 +237,7 @@ impl Date {
     /// - Without timezone: `2024-01-15`
     pub fn parse(s: &str) -> Result<Self, String> {
         if !is_strict_date_lexical(s) {
-            return Err(format!("Cannot parse date: {}", s));
+            return Err(format!("Cannot parse date: {s}"));
         }
 
         // Try parsing with timezone suffix
@@ -289,7 +289,7 @@ impl Date {
             });
         }
 
-        Err(format!("Cannot parse date: {}", s))
+        Err(format!("Cannot parse date: {s}"))
     }
 
     /// Get the date value
@@ -343,7 +343,7 @@ impl Date {
                 let hours = secs.abs() / 3600;
                 let mins = (secs.abs() % 3600) / 60;
                 let sign = if secs >= 0 { '+' } else { '-' };
-                format!("{}{:02}:{:02}", sign, hours, mins)
+                format!("{sign}{hours:02}:{mins:02}")
             }
         })
     }
@@ -367,7 +367,7 @@ impl Ord for Date {
     fn cmp(&self, other: &Self) -> Ordering {
         // If either side has a timezone, compare by instant at midnight UTC
         match (self.tz_offset, other.tz_offset) {
-            (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) => {
+            (Some(_) | None, Some(_)) | (Some(_), None) => {
                 self.to_instant().cmp(&other.to_instant())
             }
             (None, None) => self.date.cmp(&other.date),
@@ -415,7 +415,7 @@ impl Time {
     /// - With fractional seconds: `10:30:00.123Z`
     pub fn parse(s: &str) -> Result<Self, String> {
         if !is_strict_time_lexical(s) {
-            return Err(format!("Cannot parse time: {}", s));
+            return Err(format!("Cannot parse time: {s}"));
         }
 
         // Try parsing with Z suffix
@@ -471,7 +471,7 @@ impl Time {
             }
         }
 
-        Err(format!("Cannot parse time: {}", s))
+        Err(format!("Cannot parse time: {s}"))
     }
 
     /// Get the time value
@@ -528,7 +528,7 @@ impl Time {
                 let hours = secs.abs() / 3600;
                 let mins = (secs.abs() % 3600) / 60;
                 let sign = if secs >= 0 { '+' } else { '-' };
-                format!("{}{:02}:{:02}", sign, hours, mins)
+                format!("{sign}{hours:02}:{mins:02}")
             }
         })
     }
@@ -561,9 +561,9 @@ fn is_strict_date_lexical(s: &str) -> bool {
     if bytes[4] != b'-' || bytes[7] != b'-' {
         return false;
     }
-    if !bytes[0..4].iter().all(|b| b.is_ascii_digit())
-        || !bytes[5..7].iter().all(|b| b.is_ascii_digit())
-        || !bytes[8..10].iter().all(|b| b.is_ascii_digit())
+    if !bytes[0..4].iter().all(u8::is_ascii_digit)
+        || !bytes[5..7].iter().all(u8::is_ascii_digit)
+        || !bytes[8..10].iter().all(u8::is_ascii_digit)
     {
         return false;
     }
@@ -579,8 +579,8 @@ fn is_strict_date_lexical(s: &str) -> bool {
         if (tzb[0] != b'+' && tzb[0] != b'-') || tzb[3] != b':' {
             return false;
         }
-        return tzb[1..3].iter().all(|b| b.is_ascii_digit())
-            && tzb[4..6].iter().all(|b| b.is_ascii_digit());
+        return tzb[1..3].iter().all(u8::is_ascii_digit)
+            && tzb[4..6].iter().all(u8::is_ascii_digit);
     }
 
     true
@@ -616,9 +616,9 @@ fn is_strict_time_lexical(s: &str) -> bool {
     if bytes[2] != b':' || bytes[5] != b':' {
         return false;
     }
-    if !bytes[0..2].iter().all(|b| b.is_ascii_digit())
-        || !bytes[3..5].iter().all(|b| b.is_ascii_digit())
-        || !bytes[6..8].iter().all(|b| b.is_ascii_digit())
+    if !bytes[0..2].iter().all(u8::is_ascii_digit)
+        || !bytes[3..5].iter().all(u8::is_ascii_digit)
+        || !bytes[6..8].iter().all(u8::is_ascii_digit)
     {
         return false;
     }
@@ -634,8 +634,8 @@ fn is_strict_time_lexical(s: &str) -> bool {
         if (tzb[0] != b'+' && tzb[0] != b'-') || tzb[3] != b':' {
             return false;
         }
-        return tzb[1..3].iter().all(|b| b.is_ascii_digit())
-            && tzb[4..6].iter().all(|b| b.is_ascii_digit());
+        return tzb[1..3].iter().all(u8::is_ascii_digit)
+            && tzb[4..6].iter().all(u8::is_ascii_digit);
     }
 
     true
@@ -653,7 +653,7 @@ impl Ord for Time {
     fn cmp(&self, other: &Self) -> Ordering {
         // If either side has a timezone, compare by normalized UTC time-of-day
         match (self.tz_offset, other.tz_offset) {
-            (Some(_), Some(_)) | (Some(_), None) | (None, Some(_)) => {
+            (Some(_) | None, Some(_)) | (Some(_), None) => {
                 self.to_utc_time().cmp(&other.to_utc_time())
             }
             (None, None) => self.time.cmp(&other.time),
@@ -720,7 +720,7 @@ fn format_tz_suffix(tz: Option<FixedOffset>) -> String {
                 let hours = secs.abs() / 3600;
                 let mins = (secs.abs() % 3600) / 60;
                 let sign = if secs >= 0 { '+' } else { '-' };
-                format!("{}{:02}:{:02}", sign, hours, mins)
+                format!("{sign}{hours:02}:{mins:02}")
             }
         }
     }
@@ -749,7 +749,7 @@ impl GYear {
         // Handle negative years: the year string itself starts with '-'
         let year: i32 = value
             .parse()
-            .map_err(|_| format!("Cannot parse gYear: {}", s))?;
+            .map_err(|_| format!("Cannot parse gYear: {s}"))?;
 
         Ok(Self {
             year,
@@ -776,11 +776,11 @@ impl GYear {
     fn canonical_string(year: i32, tz: Option<FixedOffset>) -> String {
         let tz_str = format_tz_suffix(tz);
         if year >= 10000 || year <= -10000 {
-            format!("{}{}", year, tz_str)
+            format!("{year}{tz_str}")
         } else if year < 0 {
             format!("-{:04}{}", year.unsigned_abs(), tz_str)
         } else {
-            format!("{:04}{}", year, tz_str)
+            format!("{year:04}{tz_str}")
         }
     }
 
@@ -858,31 +858,31 @@ impl GYearMonth {
             // skip leading '-'
             let dash_pos = rest
                 .rfind('-')
-                .ok_or_else(|| format!("Cannot parse gYearMonth: {}", s))?;
+                .ok_or_else(|| format!("Cannot parse gYearMonth: {s}"))?;
             let year_str = &rest[..dash_pos];
             let month_str = &rest[dash_pos + 1..];
             let year: i32 = year_str
                 .parse::<i32>()
-                .map_err(|_| format!("Cannot parse gYearMonth year: {}", s))?;
+                .map_err(|_| format!("Cannot parse gYearMonth year: {s}"))?;
             let month: u32 = month_str
                 .parse()
-                .map_err(|_| format!("Cannot parse gYearMonth month: {}", s))?;
+                .map_err(|_| format!("Cannot parse gYearMonth month: {s}"))?;
             (-year, month)
         } else {
             let dash_pos = value
                 .rfind('-')
-                .ok_or_else(|| format!("Cannot parse gYearMonth: {}", s))?;
+                .ok_or_else(|| format!("Cannot parse gYearMonth: {s}"))?;
             let year: i32 = value[..dash_pos]
                 .parse()
-                .map_err(|_| format!("Cannot parse gYearMonth year: {}", s))?;
+                .map_err(|_| format!("Cannot parse gYearMonth year: {s}"))?;
             let month: u32 = value[dash_pos + 1..]
                 .parse()
-                .map_err(|_| format!("Cannot parse gYearMonth month: {}", s))?;
+                .map_err(|_| format!("Cannot parse gYearMonth month: {s}"))?;
             (year, month)
         };
 
         if !(1..=12).contains(&month) {
-            return Err(format!("Invalid month {} in gYearMonth: {}", month, s));
+            return Err(format!("Invalid month {month} in gYearMonth: {s}"));
         }
 
         Ok(Self {
@@ -899,7 +899,7 @@ impl GYearMonth {
         let original = if year < 0 {
             format!("-{:04}-{:02}{}", year.unsigned_abs(), month, tz_str)
         } else {
-            format!("{:04}-{:02}{}", year, month, tz_str)
+            format!("{year:04}-{month:02}{tz_str}")
         };
         Self {
             year,
@@ -978,7 +978,7 @@ impl GMonth {
     /// Accepts: `"--01"`, `"--01Z"`, `"--01+05:00"`
     pub fn parse(s: &str) -> Result<Self, String> {
         if !s.starts_with("--") {
-            return Err(format!("gMonth must start with '--': {}", s));
+            return Err(format!("gMonth must start with '--': {s}"));
         }
 
         let after_prefix = &s[2..];
@@ -986,10 +986,10 @@ impl GMonth {
 
         let month: u32 = value
             .parse()
-            .map_err(|_| format!("Cannot parse gMonth: {}", s))?;
+            .map_err(|_| format!("Cannot parse gMonth: {s}"))?;
 
         if !(1..=12).contains(&month) {
-            return Err(format!("Invalid month {} in gMonth: {}", month, s));
+            return Err(format!("Invalid month {month} in gMonth: {s}"));
         }
 
         Ok(Self {
@@ -1001,7 +1001,7 @@ impl GMonth {
 
     /// Construct from a month value with no timezone.
     pub fn from_month(month: u32) -> Self {
-        let original = format!("--{:02}", month);
+        let original = format!("--{month:02}");
         Self {
             month,
             tz_offset: None,
@@ -1073,7 +1073,7 @@ impl GDay {
     /// Accepts: `"---15"`, `"---15Z"`, `"---15+05:00"`
     pub fn parse(s: &str) -> Result<Self, String> {
         if !s.starts_with("---") {
-            return Err(format!("gDay must start with '---': {}", s));
+            return Err(format!("gDay must start with '---': {s}"));
         }
 
         let after_prefix = &s[3..];
@@ -1081,10 +1081,10 @@ impl GDay {
 
         let day: u32 = value
             .parse()
-            .map_err(|_| format!("Cannot parse gDay: {}", s))?;
+            .map_err(|_| format!("Cannot parse gDay: {s}"))?;
 
         if !(1..=31).contains(&day) {
-            return Err(format!("Invalid day {} in gDay: {}", day, s));
+            return Err(format!("Invalid day {day} in gDay: {s}"));
         }
 
         Ok(Self {
@@ -1096,7 +1096,7 @@ impl GDay {
 
     /// Construct from a day value with no timezone.
     pub fn from_day(day: u32) -> Self {
-        let original = format!("---{:02}", day);
+        let original = format!("---{day:02}");
         Self {
             day,
             tz_offset: None,
@@ -1169,7 +1169,7 @@ impl GMonthDay {
     /// Accepts: `"--01-15"`, `"--01-15Z"`, `"--01-15+05:00"`
     pub fn parse(s: &str) -> Result<Self, String> {
         if !s.starts_with("--") {
-            return Err(format!("gMonthDay must start with '--': {}", s));
+            return Err(format!("gMonthDay must start with '--': {s}"));
         }
 
         let after_prefix = &s[2..];
@@ -1178,20 +1178,20 @@ impl GMonthDay {
         // value should be "MM-DD"
         let dash_pos = value
             .find('-')
-            .ok_or_else(|| format!("Cannot parse gMonthDay (expected MM-DD): {}", s))?;
+            .ok_or_else(|| format!("Cannot parse gMonthDay (expected MM-DD): {s}"))?;
 
         let month: u32 = value[..dash_pos]
             .parse()
-            .map_err(|_| format!("Cannot parse gMonthDay month: {}", s))?;
+            .map_err(|_| format!("Cannot parse gMonthDay month: {s}"))?;
         let day: u32 = value[dash_pos + 1..]
             .parse()
-            .map_err(|_| format!("Cannot parse gMonthDay day: {}", s))?;
+            .map_err(|_| format!("Cannot parse gMonthDay day: {s}"))?;
 
         if !(1..=12).contains(&month) {
-            return Err(format!("Invalid month {} in gMonthDay: {}", month, s));
+            return Err(format!("Invalid month {month} in gMonthDay: {s}"));
         }
         if !(1..=31).contains(&day) {
-            return Err(format!("Invalid day {} in gMonthDay: {}", day, s));
+            return Err(format!("Invalid day {day} in gMonthDay: {s}"));
         }
 
         Ok(Self {
@@ -1204,7 +1204,7 @@ impl GMonthDay {
 
     /// Construct from month and day with no timezone.
     pub fn from_components(month: u32, day: u32) -> Self {
-        let original = format!("--{:02}-{:02}", month, day);
+        let original = format!("--{month:02}-{day:02}");
         Self {
             month,
             day,
@@ -1286,13 +1286,12 @@ impl YearMonthDuration {
 
         let body = rest
             .strip_prefix('P')
-            .ok_or_else(|| format!("yearMonthDuration must start with 'P' (or '-P'): {}", s))?;
+            .ok_or_else(|| format!("yearMonthDuration must start with 'P' (or '-P'): {s}"))?;
 
         // Reject if it contains 'D' or 'T' — those are day/time components
         if body.contains('D') || body.contains('T') {
             return Err(format!(
-                "yearMonthDuration must not contain day or time components: {}",
-                s
+                "yearMonthDuration must not contain day or time components: {s}"
             ));
         }
 
@@ -1305,7 +1304,7 @@ impl YearMonthDuration {
         if let Some(y_pos) = remaining.find('Y') {
             years = remaining[..y_pos]
                 .parse()
-                .map_err(|_| format!("Invalid year component in yearMonthDuration: {}", s))?;
+                .map_err(|_| format!("Invalid year component in yearMonthDuration: {s}"))?;
             remaining = &remaining[y_pos + 1..];
             found_any = true;
         }
@@ -1314,22 +1313,20 @@ impl YearMonthDuration {
         if let Some(m_pos) = remaining.find('M') {
             months_part = remaining[..m_pos]
                 .parse()
-                .map_err(|_| format!("Invalid month component in yearMonthDuration: {}", s))?;
+                .map_err(|_| format!("Invalid month component in yearMonthDuration: {s}"))?;
             remaining = &remaining[m_pos + 1..];
             found_any = true;
         }
 
         if !found_any {
             return Err(format!(
-                "yearMonthDuration must have at least Y or M component: {}",
-                s
+                "yearMonthDuration must have at least Y or M component: {s}"
             ));
         }
 
         if !remaining.is_empty() {
             return Err(format!(
-                "Unexpected trailing content in yearMonthDuration: {}",
-                s
+                "Unexpected trailing content in yearMonthDuration: {s}"
             ));
         }
 
@@ -1364,9 +1361,9 @@ impl YearMonthDuration {
         let m = abs % 12;
         let prefix = if negative { "-P" } else { "P" };
         match (y, m) {
-            (0, _) => format!("{}{}M", prefix, m),
-            (_, 0) => format!("{}{}Y", prefix, y),
-            _ => format!("{}{}Y{}M", prefix, y, m),
+            (0, _) => format!("{prefix}{m}M"),
+            (_, 0) => format!("{prefix}{y}Y"),
+            _ => format!("{prefix}{y}Y{m}M"),
         }
     }
 
@@ -1445,13 +1442,12 @@ impl DayTimeDuration {
 
         let body = rest
             .strip_prefix('P')
-            .ok_or_else(|| format!("dayTimeDuration must start with 'P' (or '-P'): {}", s))?;
+            .ok_or_else(|| format!("dayTimeDuration must start with 'P' (or '-P'): {s}"))?;
 
         // Reject year component
         if body.contains('Y') {
             return Err(format!(
-                "dayTimeDuration must not contain year component: {}",
-                s
+                "dayTimeDuration must not contain year component: {s}"
             ));
         }
 
@@ -1465,8 +1461,7 @@ impl DayTimeDuration {
         // Reject month component in the date part (M before T means months)
         if date_part.contains('M') {
             return Err(format!(
-                "dayTimeDuration must not contain month component: {}",
-                s
+                "dayTimeDuration must not contain month component: {s}"
             ));
         }
 
@@ -1478,32 +1473,25 @@ impl DayTimeDuration {
             if let Some(d_pos) = date_part.find('D') {
                 let days: i64 = date_part[..d_pos]
                     .parse()
-                    .map_err(|_| format!("Invalid day component in dayTimeDuration: {}", s))?;
+                    .map_err(|_| format!("Invalid day component in dayTimeDuration: {s}"))?;
                 total_micros += days * 86_400_000_000;
                 found_any = true;
 
                 let after_d = &date_part[d_pos + 1..];
                 if !after_d.is_empty() {
                     return Err(format!(
-                        "Unexpected content after D in dayTimeDuration: {}",
-                        s
+                        "Unexpected content after D in dayTimeDuration: {s}"
                     ));
                 }
             } else {
-                return Err(format!(
-                    "Expected 'D' in date part of dayTimeDuration: {}",
-                    s
-                ));
+                return Err(format!("Expected 'D' in date part of dayTimeDuration: {s}"));
             }
         }
 
         // Parse time components
         if let Some(tp) = time_part {
             if tp.is_empty() {
-                return Err(format!(
-                    "Empty time part after 'T' in dayTimeDuration: {}",
-                    s
-                ));
+                return Err(format!("Empty time part after 'T' in dayTimeDuration: {s}"));
             }
 
             let mut remaining = tp;
@@ -1512,7 +1500,7 @@ impl DayTimeDuration {
             if let Some(h_pos) = remaining.find('H') {
                 let hours: i64 = remaining[..h_pos]
                     .parse()
-                    .map_err(|_| format!("Invalid hour component in dayTimeDuration: {}", s))?;
+                    .map_err(|_| format!("Invalid hour component in dayTimeDuration: {s}"))?;
                 total_micros += hours * 3_600_000_000;
                 remaining = &remaining[h_pos + 1..];
                 found_any = true;
@@ -1522,7 +1510,7 @@ impl DayTimeDuration {
             if let Some(m_pos) = remaining.find('M') {
                 let minutes: i64 = remaining[..m_pos]
                     .parse()
-                    .map_err(|_| format!("Invalid minute component in dayTimeDuration: {}", s))?;
+                    .map_err(|_| format!("Invalid minute component in dayTimeDuration: {s}"))?;
                 total_micros += minutes * 60_000_000;
                 remaining = &remaining[m_pos + 1..];
                 found_any = true;
@@ -1532,7 +1520,7 @@ impl DayTimeDuration {
             if let Some(s_pos) = remaining.find('S') {
                 let sec_str = &remaining[..s_pos];
                 let sec_micros = parse_seconds_to_micros(sec_str)
-                    .map_err(|e| format!("Invalid seconds in dayTimeDuration '{}': {}", s, e))?;
+                    .map_err(|e| format!("Invalid seconds in dayTimeDuration '{s}': {e}"))?;
                 total_micros += sec_micros;
                 remaining = &remaining[s_pos + 1..];
                 found_any = true;
@@ -1540,16 +1528,14 @@ impl DayTimeDuration {
 
             if !remaining.is_empty() {
                 return Err(format!(
-                    "Unexpected trailing content in dayTimeDuration time part: {}",
-                    s
+                    "Unexpected trailing content in dayTimeDuration time part: {s}"
                 ));
             }
         }
 
         if !found_any {
             return Err(format!(
-                "dayTimeDuration must have at least one of D, H, M, or S: {}",
-                s
+                "dayTimeDuration must have at least one of D, H, M, or S: {s}"
             ));
         }
 
@@ -1594,7 +1580,7 @@ impl DayTimeDuration {
         let mut result = prefix.to_string();
         let mut has_date = false;
         if days > 0 {
-            result.push_str(&format!("{}D", days));
+            result.push_str(&format!("{days}D"));
             has_date = true;
         }
 
@@ -1602,19 +1588,19 @@ impl DayTimeDuration {
         if has_time {
             result.push('T');
             if hours > 0 {
-                result.push_str(&format!("{}H", hours));
+                result.push_str(&format!("{hours}H"));
             }
             if minutes > 0 {
-                result.push_str(&format!("{}M", minutes));
+                result.push_str(&format!("{minutes}M"));
             }
             if secs > 0 || frac_micros > 0 {
                 if frac_micros > 0 {
                     // Format fractional seconds, trimming trailing zeros
-                    let frac_str = format!("{:06}", frac_micros);
+                    let frac_str = format!("{frac_micros:06}");
                     let trimmed = frac_str.trim_end_matches('0');
-                    result.push_str(&format!("{}.{}S", secs, trimmed));
+                    result.push_str(&format!("{secs}.{trimmed}S"));
                 } else {
-                    result.push_str(&format!("{}S", secs));
+                    result.push_str(&format!("{secs}S"));
                 }
             }
         } else if !has_date {
@@ -1712,7 +1698,7 @@ impl Duration {
 
         let body = rest
             .strip_prefix('P')
-            .ok_or_else(|| format!("Duration must start with 'P' (or '-P'): {}", s))?;
+            .ok_or_else(|| format!("Duration must start with 'P' (or '-P'): {s}"))?;
 
         // Split on 'T' to separate date-part from time-part
         let (date_part, time_part) = if let Some(t_pos) = body.find('T') {
@@ -1731,7 +1717,7 @@ impl Duration {
         if let Some(y_pos) = remaining.find('Y') {
             let years: i32 = remaining[..y_pos]
                 .parse()
-                .map_err(|_| format!("Invalid year component in duration: {}", s))?;
+                .map_err(|_| format!("Invalid year component in duration: {s}"))?;
             total_months += years * 12;
             remaining = &remaining[y_pos + 1..];
             found_any = true;
@@ -1741,7 +1727,7 @@ impl Duration {
         if let Some(m_pos) = remaining.find('M') {
             let months_val: i32 = remaining[..m_pos]
                 .parse()
-                .map_err(|_| format!("Invalid month component in duration: {}", s))?;
+                .map_err(|_| format!("Invalid month component in duration: {s}"))?;
             total_months += months_val;
             remaining = &remaining[m_pos + 1..];
             found_any = true;
@@ -1750,23 +1736,20 @@ impl Duration {
         if let Some(d_pos) = remaining.find('D') {
             let days: i64 = remaining[..d_pos]
                 .parse()
-                .map_err(|_| format!("Invalid day component in duration: {}", s))?;
+                .map_err(|_| format!("Invalid day component in duration: {s}"))?;
             total_micros += days * 86_400_000_000;
             remaining = &remaining[d_pos + 1..];
             found_any = true;
         }
 
         if !remaining.is_empty() {
-            return Err(format!(
-                "Unexpected content in date part of duration: {}",
-                s
-            ));
+            return Err(format!("Unexpected content in date part of duration: {s}"));
         }
 
         // Parse time components: nH nM nS
         if let Some(tp) = time_part {
             if tp.is_empty() {
-                return Err(format!("Empty time part after 'T' in duration: {}", s));
+                return Err(format!("Empty time part after 'T' in duration: {s}"));
             }
 
             let mut remaining = tp;
@@ -1774,7 +1757,7 @@ impl Duration {
             if let Some(h_pos) = remaining.find('H') {
                 let hours: i64 = remaining[..h_pos]
                     .parse()
-                    .map_err(|_| format!("Invalid hour component in duration: {}", s))?;
+                    .map_err(|_| format!("Invalid hour component in duration: {s}"))?;
                 total_micros += hours * 3_600_000_000;
                 remaining = &remaining[h_pos + 1..];
                 found_any = true;
@@ -1784,7 +1767,7 @@ impl Duration {
             if let Some(m_pos) = remaining.find('M') {
                 let minutes: i64 = remaining[..m_pos]
                     .parse()
-                    .map_err(|_| format!("Invalid minute component in duration: {}", s))?;
+                    .map_err(|_| format!("Invalid minute component in duration: {s}"))?;
                 total_micros += minutes * 60_000_000;
                 remaining = &remaining[m_pos + 1..];
                 found_any = true;
@@ -1793,7 +1776,7 @@ impl Duration {
             if let Some(s_pos) = remaining.find('S') {
                 let sec_str = &remaining[..s_pos];
                 let sec_micros = parse_seconds_to_micros(sec_str)
-                    .map_err(|e| format!("Invalid seconds in duration '{}': {}", s, e))?;
+                    .map_err(|e| format!("Invalid seconds in duration '{s}': {e}"))?;
                 total_micros += sec_micros;
                 remaining = &remaining[s_pos + 1..];
                 found_any = true;
@@ -1801,16 +1784,14 @@ impl Duration {
 
             if !remaining.is_empty() {
                 return Err(format!(
-                    "Unexpected trailing content in duration time part: {}",
-                    s
+                    "Unexpected trailing content in duration time part: {s}"
                 ));
             }
         }
 
         if !found_any {
             return Err(format!(
-                "Duration must have at least one component (Y, M, D, H, M, S): {}",
-                s
+                "Duration must have at least one component (Y, M, D, H, M, S): {s}"
             ));
         }
 
@@ -1857,15 +1838,15 @@ impl Duration {
 
         let mut has_date = false;
         if years > 0 {
-            result.push_str(&format!("{}Y", years));
+            result.push_str(&format!("{years}Y"));
             has_date = true;
         }
         if months > 0 {
-            result.push_str(&format!("{}M", months));
+            result.push_str(&format!("{months}M"));
             has_date = true;
         }
         if days > 0 {
-            result.push_str(&format!("{}D", days));
+            result.push_str(&format!("{days}D"));
             has_date = true;
         }
 
@@ -1873,18 +1854,18 @@ impl Duration {
         if has_time {
             result.push('T');
             if hours > 0 {
-                result.push_str(&format!("{}H", hours));
+                result.push_str(&format!("{hours}H"));
             }
             if minutes > 0 {
-                result.push_str(&format!("{}M", minutes));
+                result.push_str(&format!("{minutes}M"));
             }
             if secs > 0 || frac_micros > 0 {
                 if frac_micros > 0 {
-                    let frac_str = format!("{:06}", frac_micros);
+                    let frac_str = format!("{frac_micros:06}");
                     let trimmed = frac_str.trim_end_matches('0');
-                    result.push_str(&format!("{}.{}S", secs, trimmed));
+                    result.push_str(&format!("{secs}.{trimmed}S"));
                 } else {
-                    result.push_str(&format!("{}S", secs));
+                    result.push_str(&format!("{secs}S"));
                 }
             }
         } else if !has_date {
@@ -1984,23 +1965,23 @@ fn parse_seconds_to_micros(s: &str) -> Result<i64, String> {
         } else {
             whole_str
                 .parse()
-                .map_err(|_| format!("Invalid whole seconds: {}", s))?
+                .map_err(|_| format!("Invalid whole seconds: {s}"))?
         };
 
         // Pad or truncate fractional part to exactly 6 digits (microseconds)
         let padded = if frac_str.len() >= 6 {
             frac_str[..6].to_string()
         } else {
-            format!("{:0<6}", frac_str)
+            format!("{frac_str:0<6}")
         };
 
         let frac_micros: i64 = padded
             .parse()
-            .map_err(|_| format!("Invalid fractional seconds: {}", s))?;
+            .map_err(|_| format!("Invalid fractional seconds: {s}"))?;
 
         Ok(whole * 1_000_000 + frac_micros)
     } else {
-        let whole: i64 = s.parse().map_err(|_| format!("Invalid seconds: {}", s))?;
+        let whole: i64 = s.parse().map_err(|_| format!("Invalid seconds: {s}"))?;
         Ok(whole * 1_000_000)
     }
 }
@@ -2218,7 +2199,7 @@ mod tests {
     #[test]
     fn test_gyear_display() {
         let y = GYear::parse("2024+05:00").unwrap();
-        assert_eq!(format!("{}", y), "2024+05:00");
+        assert_eq!(format!("{y}"), "2024+05:00");
     }
 
     #[test]
@@ -2299,7 +2280,7 @@ mod tests {
     #[test]
     fn test_gyearmonth_display() {
         let ym = GYearMonth::parse("2024-01+05:00").unwrap();
-        assert_eq!(format!("{}", ym), "2024-01+05:00");
+        assert_eq!(format!("{ym}"), "2024-01+05:00");
     }
 
     // ---- GMonth ----
@@ -2356,7 +2337,7 @@ mod tests {
     #[test]
     fn test_gmonth_display() {
         let m = GMonth::parse("--07Z").unwrap();
-        assert_eq!(format!("{}", m), "--07Z");
+        assert_eq!(format!("{m}"), "--07Z");
     }
 
     // ---- GDay ----
@@ -2413,7 +2394,7 @@ mod tests {
     #[test]
     fn test_gday_display() {
         let d = GDay::parse("---15+05:00").unwrap();
-        assert_eq!(format!("{}", d), "---15+05:00");
+        assert_eq!(format!("{d}"), "---15+05:00");
     }
 
     // ---- GMonthDay ----
@@ -2476,7 +2457,7 @@ mod tests {
     #[test]
     fn test_gmonthday_display() {
         let md = GMonthDay::parse("--12-25Z").unwrap();
-        assert_eq!(format!("{}", md), "--12-25Z");
+        assert_eq!(format!("{md}"), "--12-25Z");
     }
 
     // ---- YearMonthDuration ----
@@ -2591,7 +2572,7 @@ mod tests {
     #[test]
     fn test_ymd_display() {
         let d = YearMonthDuration::parse("P1Y2M").unwrap();
-        assert_eq!(format!("{}", d), "P1Y2M");
+        assert_eq!(format!("{d}"), "P1Y2M");
     }
 
     // ---- DayTimeDuration ----
@@ -2717,7 +2698,7 @@ mod tests {
     #[test]
     fn test_dtd_display() {
         let d = DayTimeDuration::parse("P3DT4H5M6.789S").unwrap();
-        assert_eq!(format!("{}", d), "P3DT4H5M6.789S");
+        assert_eq!(format!("{d}"), "P3DT4H5M6.789S");
     }
 
     // ---- Duration ----
@@ -2891,7 +2872,7 @@ mod tests {
     #[test]
     fn test_duration_display() {
         let d = Duration::parse("P1Y2M3DT4H5M6S").unwrap();
-        assert_eq!(format!("{}", d), "P1Y2M3DT4H5M6S");
+        assert_eq!(format!("{d}"), "P1Y2M3DT4H5M6S");
     }
 
     // ---- parse_seconds_to_micros ----
@@ -2972,7 +2953,7 @@ mod tests {
             let d = YearMonthDuration::parse(input).unwrap();
             let canonical = d.to_canonical_string();
             let d2 = YearMonthDuration::parse(&canonical).unwrap();
-            assert_eq!(d, d2, "Roundtrip failed for {}", input);
+            assert_eq!(d, d2, "Roundtrip failed for {input}");
         }
     }
 
@@ -2983,7 +2964,7 @@ mod tests {
             let d = DayTimeDuration::parse(input).unwrap();
             let canonical = d.to_canonical_string();
             let d2 = DayTimeDuration::parse(&canonical).unwrap();
-            assert_eq!(d, d2, "Roundtrip failed for {}", input);
+            assert_eq!(d, d2, "Roundtrip failed for {input}");
         }
     }
 

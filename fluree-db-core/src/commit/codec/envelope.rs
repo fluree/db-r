@@ -107,8 +107,7 @@ pub fn encode_envelope_fields(
     let num_parents = envelope.previous_refs.len();
     if num_parents > MAX_PREVIOUS_REFS {
         return Err(CommitCodecError::EnvelopeEncode(format!(
-            "previous_refs has {} entries, max is {}",
-            num_parents, MAX_PREVIOUS_REFS
+            "previous_refs has {num_parents} entries, max is {MAX_PREVIOUS_REFS}"
         )));
     }
 
@@ -203,9 +202,11 @@ pub fn encode_envelope_fields(
     // ns_split_mode (trailing optional extension)
     if let Some(mode) = envelope.ns_split_mode {
         buf.push(1);
-        buf.push(mode.to_byte().map_err(|e| {
-            CommitCodecError::EnvelopeDecode(format!("ns_split_mode encode: {}", e))
-        })?);
+        buf.push(
+            mode.to_byte().map_err(|e| {
+                CommitCodecError::EnvelopeDecode(format!("ns_split_mode encode: {e}"))
+            })?,
+        );
     } else {
         buf.push(0);
     }
@@ -245,8 +246,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CodecEnvelope, CommitCodecError> {
     let unknown = flags & !KNOWN_FLAGS;
     if unknown != 0 {
         return Err(CommitCodecError::EnvelopeDecode(format!(
-            "unknown envelope flags: 0x{:02x}",
-            unknown
+            "unknown envelope flags: 0x{unknown:02x}"
         )));
     }
 
@@ -263,8 +263,7 @@ pub fn decode_envelope(data: &[u8]) -> Result<CodecEnvelope, CommitCodecError> {
             let count = decode_varint(data, &mut pos)? as usize;
             if count > MAX_PREVIOUS_REFS {
                 return Err(CommitCodecError::EnvelopeDecode(format!(
-                    "previous_refs count {} exceeds maximum {}",
-                    count, MAX_PREVIOUS_REFS
+                    "previous_refs count {count} exceeds maximum {MAX_PREVIOUS_REFS}"
                 )));
             }
             let mut refs = Vec::with_capacity(count);
@@ -388,7 +387,7 @@ fn decode_len_str(data: &[u8], pos: &mut usize) -> Result<String, CommitCodecErr
     let len = decode_varint(data, pos)? as usize;
     let bytes = read_exact(data, pos, len)?;
     let s = std::str::from_utf8(bytes)
-        .map_err(|e| CommitCodecError::EnvelopeDecode(format!("invalid UTF-8: {}", e)))?;
+        .map_err(|e| CommitCodecError::EnvelopeDecode(format!("invalid UTF-8: {e}")))?;
     Ok(s.to_string())
 }
 
@@ -415,8 +414,7 @@ fn decode_len_bytes<'a>(data: &'a [u8], pos: &mut usize) -> Result<&'a [u8], Com
     let len64 = decode_varint(data, pos)?;
     if len64 > MAX_CID_BYTES as u64 {
         return Err(CommitCodecError::EnvelopeDecode(format!(
-            "CID byte length {} exceeds maximum {}",
-            len64, MAX_CID_BYTES
+            "CID byte length {len64} exceeds maximum {MAX_CID_BYTES}"
         )));
     }
     let len = len64 as usize;
@@ -562,7 +560,7 @@ fn encode_txn_meta_value(value: &TxnMetaValue, buf: &mut Vec<u8>) -> Result<(), 
         }
         TxnMetaValue::Boolean(b) => {
             buf.push(TXN_META_TAG_BOOLEAN);
-            buf.push(if *b { 1 } else { 0 });
+            buf.push(u8::from(*b));
         }
     }
     Ok(())
@@ -572,8 +570,7 @@ fn decode_txn_meta(data: &[u8], pos: &mut usize) -> Result<Vec<TxnMetaEntry>, Co
     let count = decode_varint(data, pos)? as usize;
     if count > MAX_TXN_META_ENTRIES {
         return Err(CommitCodecError::EnvelopeDecode(format!(
-            "txn_meta entry count {} exceeds maximum {}",
-            count, MAX_TXN_META_ENTRIES
+            "txn_meta entry count {count} exceeds maximum {MAX_TXN_META_ENTRIES}"
         )));
     }
     let mut entries = Vec::with_capacity(count);
@@ -637,8 +634,7 @@ fn decode_txn_meta_value(data: &[u8], pos: &mut usize) -> Result<TxnMetaValue, C
             Ok(TxnMetaValue::Boolean(b))
         }
         _ => Err(CommitCodecError::EnvelopeDecode(format!(
-            "unknown txn_meta value tag: {}",
-            tag
+            "unknown txn_meta value tag: {tag}"
         ))),
     }
 }
@@ -882,8 +878,7 @@ mod tests {
 
         assert_eq!(
             buf, expected,
-            "wire format mismatch:\n  actual:   {:02x?}\n  expected: {:02x?}",
-            buf, expected
+            "wire format mismatch:\n  actual:   {buf:02x?}\n  expected: {expected:02x?}"
         );
 
         // Verify CID binary length is exactly 39 bytes (SHA-256 + Fluree codecs)

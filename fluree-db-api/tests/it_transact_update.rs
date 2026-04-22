@@ -494,11 +494,26 @@ async fn update_where_bind_datetime_functions() {
 
     let now_val = result.get("ex:now").expect("now");
     assert!(now_val.is_string() || now_val.get("@value").is_some());
-    assert_eq!(result.get("ex:year").and_then(|v| v.as_i64()), Some(2023));
-    assert_eq!(result.get("ex:month").and_then(|v| v.as_i64()), Some(6));
-    assert_eq!(result.get("ex:day").and_then(|v| v.as_i64()), Some(13));
-    assert_eq!(result.get("ex:hours").and_then(|v| v.as_i64()), Some(14));
-    assert_eq!(result.get("ex:minutes").and_then(|v| v.as_i64()), Some(17));
+    assert_eq!(
+        result.get("ex:year").and_then(serde_json::Value::as_i64),
+        Some(2023)
+    );
+    assert_eq!(
+        result.get("ex:month").and_then(serde_json::Value::as_i64),
+        Some(6)
+    );
+    assert_eq!(
+        result.get("ex:day").and_then(serde_json::Value::as_i64),
+        Some(13)
+    );
+    assert_eq!(
+        result.get("ex:hours").and_then(serde_json::Value::as_i64),
+        Some(14)
+    );
+    assert_eq!(
+        result.get("ex:minutes").and_then(serde_json::Value::as_i64),
+        Some(17)
+    );
     // SECONDS returns xsd:decimal per W3C spec. The JSON-LD output may
     // serialize it as a plain string ("22.435000000"), a JSON number, or a
     // typed value object.
@@ -512,12 +527,15 @@ async fn update_where_bind_datetime_functions() {
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse::<f64>().ok())
         })
-        .or_else(|| seconds_val.get("@value").and_then(|v| v.as_f64()))
+        .or_else(|| {
+            seconds_val
+                .get("@value")
+                .and_then(serde_json::Value::as_f64)
+        })
         .expect("seconds should be numeric");
     assert!(
         (seconds - 22.435).abs() < 0.001,
-        "expected ~22.435, got {}",
-        seconds
+        "expected ~22.435, got {seconds}"
     );
     let mut tz_values: Vec<&str> = result
         .get("ex:tz")
@@ -954,8 +972,7 @@ async fn update_where_bind_error_handling_unknown_function() {
     if let Err(err) = parse_err {
         assert!(
             err.to_string().contains("Unknown function: foo"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 
@@ -998,8 +1015,7 @@ async fn update_where_bind_error_handling_unknown_function() {
     if let Err(err) = query_err {
         assert!(
             err.to_string().contains("Unknown function: foo"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }
@@ -1099,8 +1115,7 @@ async fn update_where_bind_error_handling_invalid_iri() {
         assert!(
             err.to_string().contains("Raw IRI")
                 || err.to_string().contains("cannot be used as object"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }
@@ -1146,8 +1161,7 @@ async fn update_where_bind_error_handling_invalid_datatype_iri() {
     if let Err(err) = run_err {
         assert!(
             err.to_string().contains("Unknown datatype IRI"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }
@@ -1380,8 +1394,7 @@ async fn update_where_bind_error_handling_iri_arity() {
     if let Err(err) = run_err {
         assert!(
             err.to_string().contains("IRI requires exactly 1 argument"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }
@@ -1428,8 +1441,7 @@ async fn update_where_bind_error_handling_strdt_arity() {
         assert!(
             err.to_string()
                 .contains("STRDT requires exactly 2 arguments"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }
@@ -1476,8 +1488,7 @@ async fn update_where_bind_error_handling_strlang_arity() {
         assert!(
             err.to_string()
                 .contains("STRLANG requires exactly 2 arguments"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }
@@ -1523,8 +1534,7 @@ async fn update_where_bind_error_handling_in_requires_list() {
     if let Err(err) = parse_err {
         assert!(
             err.to_string().contains("in requires a list literal"),
-            "unexpected error: {}",
-            err
+            "unexpected error: {err}"
         );
     }
 }

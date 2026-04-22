@@ -198,7 +198,7 @@ pub fn decode_by_type_string(bytes: &[u8], type_str: Option<&str>) -> Result<Typ
         }
         "string" => {
             let s = std::str::from_utf8(bytes)
-                .map_err(|e| IcebergError::Manifest(format!("Invalid UTF-8 in string: {}", e)))?;
+                .map_err(|e| IcebergError::Manifest(format!("Invalid UTF-8 in string: {e}")))?;
             Ok(TypedValue::String(s.to_string()))
         }
         "binary" | "fixed" => Ok(TypedValue::Bytes(bytes.to_vec())),
@@ -216,10 +216,7 @@ pub fn decode_by_type_string(bytes: &[u8], type_str: Option<&str>) -> Result<Typ
             let inner = s.trim_start_matches("decimal(").trim_end_matches(')');
             let parts: Vec<&str> = inner.split(',').collect();
             if parts.len() != 2 {
-                return Err(IcebergError::Manifest(format!(
-                    "Invalid decimal type: {}",
-                    s
-                )));
+                return Err(IcebergError::Manifest(format!("Invalid decimal type: {s}")));
             }
             let precision: u8 = parts[0].trim().parse().map_err(|_| {
                 IcebergError::Manifest(format!("Invalid decimal precision: {}", parts[0]))
@@ -238,8 +235,7 @@ pub fn decode_by_type_string(bytes: &[u8], type_str: Option<&str>) -> Result<Typ
             })
         }
         _ => Err(IcebergError::Manifest(format!(
-            "Unsupported type for bound decoding: {}",
-            type_str
+            "Unsupported type for bound decoding: {type_str}"
         ))),
     }
 }
@@ -272,7 +268,7 @@ fn decode_decimal_bytes(bytes: &[u8]) -> Result<i128> {
 /// This is useful for building test fixtures and for writing manifest files.
 pub fn encode_value(value: &TypedValue) -> Vec<u8> {
     match value {
-        TypedValue::Boolean(v) => vec![if *v { 1 } else { 0 }],
+        TypedValue::Boolean(v) => vec![u8::from(*v)],
         TypedValue::Int32(v) => v.to_le_bytes().to_vec(),
         TypedValue::Int64(v) => v.to_le_bytes().to_vec(),
         TypedValue::Float32(v) => v.to_le_bytes().to_vec(),
@@ -348,10 +344,10 @@ mod tests {
 
     #[test]
     fn test_decode_long() {
-        let bytes = 1234567890123i64.to_le_bytes();
+        let bytes = 1_234_567_890_123_i64.to_le_bytes();
         assert_eq!(
             decode_by_type_string(&bytes, Some("long")).unwrap(),
-            TypedValue::Int64(1234567890123)
+            TypedValue::Int64(1_234_567_890_123)
         );
     }
 
@@ -366,10 +362,10 @@ mod tests {
 
     #[test]
     fn test_decode_double() {
-        let bytes = 3.13159265359f64.to_le_bytes();
+        let bytes = 3.131_592_653_59_f64.to_le_bytes();
         assert_eq!(
             decode_by_type_string(&bytes, Some("double")).unwrap(),
-            TypedValue::Float64(3.13159265359)
+            TypedValue::Float64(3.131_592_653_59)
         );
     }
 
@@ -385,7 +381,7 @@ mod tests {
 
     #[test]
     fn test_decode_timestamp() {
-        let micros = 1700000000000000i64; // microseconds since epoch
+        let micros = 1_700_000_000_000_000_i64; // microseconds since epoch
         let bytes = micros.to_le_bytes();
         assert_eq!(
             decode_by_type_string(&bytes, Some("timestamp")).unwrap(),
@@ -477,11 +473,11 @@ mod tests {
             TypedValue::Boolean(false),
             TypedValue::Int32(42),
             TypedValue::Int32(-100),
-            TypedValue::Int64(1234567890123),
+            TypedValue::Int64(1_234_567_890_123),
             TypedValue::Float32(3.13),
-            TypedValue::Float64(3.13159265359),
+            TypedValue::Float64(3.131_592_653_59),
             TypedValue::Date(19723),
-            TypedValue::Timestamp(1700000000000000),
+            TypedValue::Timestamp(1_700_000_000_000_000),
             TypedValue::String("hello".to_string()),
             TypedValue::Bytes(vec![1, 2, 3, 4]),
         ];
@@ -503,7 +499,7 @@ mod tests {
         for (value, type_str) in values.iter().zip(types.iter()) {
             let encoded = encode_value(value);
             let decoded = decode_by_type_string(&encoded, Some(type_str)).unwrap();
-            assert_eq!(&decoded, value, "Roundtrip failed for type {}", type_str);
+            assert_eq!(&decoded, value, "Roundtrip failed for type {type_str}");
         }
     }
 

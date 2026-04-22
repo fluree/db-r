@@ -116,7 +116,7 @@ impl crate::watch::RemoteWatch for PollRemoteWatch {
                     Err(e) => {
                         if connected {
                             yield RemoteEvent::Disconnected {
-                                reason: format!("Poll failed: {}", e),
+                                reason: format!("Poll failed: {e}"),
                             };
                             connected = false;
                         }
@@ -196,7 +196,7 @@ mod tests {
 
     fn make_record(ledger_name: &str, commit_t: i64) -> NsRecord {
         NsRecord {
-            ledger_id: format!("{}:main", ledger_name),
+            ledger_id: format!("{ledger_name}:main"),
             name: ledger_name.to_string(),
             branch: "main".to_string(),
             commit_head_id: None,
@@ -224,7 +224,7 @@ mod tests {
         // First event should be Connected
         match stream.next().await.unwrap() {
             RemoteEvent::Connected => {}
-            other => panic!("expected Connected, got {:?}", other),
+            other => panic!("expected Connected, got {other:?}"),
         }
 
         // Second should be the new ledger
@@ -232,7 +232,7 @@ mod tests {
             RemoteEvent::LedgerUpdated(r) => {
                 assert_eq!(r.commit_t, 1);
             }
-            other => panic!("expected LedgerUpdated, got {:?}", other),
+            other => panic!("expected LedgerUpdated, got {other:?}"),
         }
     }
 
@@ -265,7 +265,7 @@ mod tests {
             RemoteEvent::LedgerUpdated(r) => {
                 assert_eq!(r.commit_t, 5);
             }
-            other => panic!("expected LedgerUpdated, got {:?}", other),
+            other => panic!("expected LedgerUpdated, got {other:?}"),
         }
     }
 }

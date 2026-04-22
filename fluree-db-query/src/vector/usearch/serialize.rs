@@ -51,7 +51,7 @@ pub fn serialize(index: &VectorIndex) -> Result<Vec<u8>> {
 
     // Serialize metadata as JSON
     let metadata_json = serde_json::to_vec(&index.metadata)
-        .map_err(|e| VectorError::SerializeError(format!("metadata JSON: {}", e)))?;
+        .map_err(|e| VectorError::SerializeError(format!("metadata JSON: {e}")))?;
     write_length_prefixed(&mut data, &metadata_json);
 
     // Serialize IRI mapping with postcard
@@ -73,7 +73,7 @@ pub fn serialize(index: &VectorIndex) -> Result<Vec<u8>> {
     index
         .inner()
         .save_to_buffer(&mut usearch_bytes)
-        .map_err(|e| VectorError::Usearch(format!("save_to_buffer: {}", e)))?;
+        .map_err(|e| VectorError::Usearch(format!("save_to_buffer: {e}")))?;
     write_length_prefixed(&mut data, &usearch_bytes);
 
     Ok(data)
@@ -119,7 +119,7 @@ pub fn deserialize(data: &[u8]) -> Result<VectorIndex> {
     let (metadata_bytes, new_cursor) = read_length_prefixed(data, cursor)?;
     cursor = new_cursor;
     let metadata: VectorIndexMetadata = serde_json::from_slice(metadata_bytes)
-        .map_err(|e| VectorError::SerializeError(format!("metadata JSON parse: {}", e)))?;
+        .map_err(|e| VectorError::SerializeError(format!("metadata JSON parse: {e}")))?;
 
     // Validate metadata
     check_compatibility(&metadata)?;
@@ -167,12 +167,12 @@ pub fn deserialize(data: &[u8]) -> Result<VectorIndex> {
     };
 
     let inner = Index::new(&index_options)
-        .map_err(|e| VectorError::Usearch(format!("create index: {}", e)))?;
+        .map_err(|e| VectorError::Usearch(format!("create index: {e}")))?;
 
     // Load the index data from buffer
     inner
         .load_from_buffer(usearch_bytes)
-        .map_err(|e| VectorError::Usearch(format!("load_from_buffer: {}", e)))?;
+        .map_err(|e| VectorError::Usearch(format!("load_from_buffer: {e}")))?;
 
     Ok(VectorIndex::from_parts(
         inner,

@@ -395,8 +395,7 @@ pub fn parse_where_array_element(
             Ok(())
         }
         _ => Err(ParseError::InvalidWhere(format!(
-            "unknown where clause keyword: {}",
-            keyword
+            "unknown where clause keyword: {keyword}"
         ))),
     }
 }
@@ -515,7 +514,7 @@ fn parse_optional_patterns(
                 if !has_node_map_anchor && current_group.is_empty() {
                     // Check if this is a constraint that needs an anchor
                     let keyword = inner_arr.first().and_then(|v| v.as_str());
-                    if matches!(keyword, Some("filter") | Some("bind")) {
+                    if matches!(keyword, Some("filter" | "bind")) {
                         return Err(ParseError::InvalidWhere(
                             "filter and bind in optional must follow a node-map pattern"
                                 .to_string(),

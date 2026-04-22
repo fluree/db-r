@@ -383,7 +383,7 @@ impl LedgerHandle {
         let bytes = cs
             .get(index_id)
             .await
-            .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
+            .map_err(|e| ApiError::internal(format!("failed to read index root: {e}")))?;
 
         let mut store = BinaryIndexStore::load_from_root_bytes(
             Arc::clone(&cs),
@@ -392,11 +392,11 @@ impl LedgerHandle {
             leaflet_cache,
         )
         .await
-        .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("failed to load binary index: {e}")))?;
 
         // Build metadata-only LedgerSnapshot from FIR6 root.
         let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
-            .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {}", e)))?;
+            .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {e}")))?;
         let meta = LedgerSnapshotMetadata {
             ledger_id: root.ledger_id,
             t: root.index_t,
@@ -421,7 +421,7 @@ impl LedgerHandle {
             // apply_loaded_db: validates, trims novelty, rebuilds dict_novelty
             state
                 .apply_loaded_db(db, Some(index_id))
-                .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {}", e)))?;
+                .map_err(|e| ApiError::internal(format!("apply_loaded_db failed: {e}")))?;
 
             // Sync namespace codes between store and snapshot (bimap validation).
             crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
@@ -577,13 +577,13 @@ pub(crate) async fn load_and_attach_binary_store(
     let bytes = cs
         .get(&index_cid)
         .await
-        .map_err(|e| ApiError::internal(format!("failed to read index root: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("failed to read index root: {e}")))?;
 
     // Decode FIR6 root metadata to populate snapshot watermarks.
     // `LedgerSnapshot::from_root_bytes` only parses the header; watermarks are needed for
     // DictNovelty/DictOverlay correctness (especially bound-object filters and overlay merges).
     let root = fluree_db_binary_index::IndexRoot::decode(&bytes)
-        .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {}", e)))?;
+        .map_err(|e| ApiError::internal(format!("failed to decode FIR6 root: {e}")))?;
     state.snapshot.subject_watermarks = root.subject_watermarks;
     state.snapshot.string_watermark = root.string_watermark;
     state.dict_novelty = Arc::new(DictNovelty::with_watermarks(
@@ -594,7 +594,7 @@ pub(crate) async fn load_and_attach_binary_store(
     let mut store =
         BinaryIndexStore::load_from_root_bytes(Arc::clone(&cs), &bytes, cache_dir, leaflet_cache)
             .await
-            .map_err(|e| ApiError::internal(format!("failed to load binary index: {}", e)))?;
+            .map_err(|e| ApiError::internal(format!("failed to load binary index: {e}")))?;
 
     // Sync namespace codes between store and snapshot (bimap validation).
     crate::ns_helpers::sync_store_and_snapshot_ns(&mut store, &mut state.snapshot)?;
@@ -645,7 +645,7 @@ pub(crate) async fn load_and_attach_binary_store(
                     Err(e) => tracing::warn!(%e, "failed to parse default context JSON"),
                 },
                 Err(e) => {
-                    tracing::debug!(%e, "could not load default context: {}", e)
+                    tracing::debug!(%e, "could not load default context: {}", e);
                 }
             }
         }
@@ -1720,7 +1720,7 @@ mod tests {
             } => {
                 assert_eq!(idx_t, 10);
             }
-            other => panic!("expected CommitCatchUp with index_update, got {:?}", other),
+            other => panic!("expected CommitCatchUp with index_update, got {other:?}"),
         }
     }
 

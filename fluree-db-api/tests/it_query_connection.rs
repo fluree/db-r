@@ -406,8 +406,7 @@ async fn query_connection_missing_dataset_errors() {
     let err = fluree.query_connection(&query).await.unwrap_err();
     assert!(
         err.to_string().contains("Missing ledger specification"),
-        "unexpected error: {}",
-        err
+        "unexpected error: {err}"
     );
 }
 
@@ -439,7 +438,7 @@ async fn query_connection_policy_identity_not_found_returns_empty() {
         .await
         .expect("query should succeed");
     // Unknown identity → no matching policies → default-allow: false → no rows returned
-    let total_rows: usize = result.batches.iter().map(|b| b.len()).sum();
+    let total_rows: usize = result.batches.iter().map(fluree_db_api::Batch::len).sum();
     assert_eq!(
         total_rows, 0,
         "unknown identity should return no results (fail-closed)"
@@ -452,7 +451,7 @@ async fn query_connection_sparql_uses_from_clause() {
     let fluree = FlureeBuilder::memory().build_memory();
     let _ledger = seed_people_ledger(&fluree, "people:main").await;
 
-    let sparql = r#"
+    let sparql = r"
 PREFIX ex: <http://example.org/ns/>
 PREFIX schema: <http://schema.org/>
 SELECT ?name
@@ -461,7 +460,7 @@ WHERE {
   ?person a ex:Person ;
           schema:name ?name .
 }
-"#;
+";
 
     let result = fluree
         .query_connection_sparql(sparql)
@@ -522,7 +521,7 @@ async fn query_connection_sparql_tracked_uses_from_clause() {
     let fluree = FlureeBuilder::memory().build_memory();
     let _ledger = seed_people_ledger(&fluree, "people:main").await;
 
-    let sparql = r#"
+    let sparql = r"
 PREFIX ex: <http://example.org/ns/>
 PREFIX schema: <http://schema.org/>
 SELECT ?name
@@ -531,7 +530,7 @@ WHERE {
   ?person a ex:Person ;
           schema:name ?name .
 }
-"#;
+";
 
     let tracked = fluree
         .query_connection_sparql_tracked(sparql, None)

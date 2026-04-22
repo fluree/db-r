@@ -334,7 +334,7 @@ impl GraphDb {
             snapshot
                 .apply_envelope_deltas(
                     staged.ns_registry.delta(),
-                    staged.graph_delta.values().map(|s| s.as_str()),
+                    staged.graph_delta.values().map(std::string::String::as_str),
                 )
                 .map_err(|e| crate::ApiError::internal(e.to_string()))?;
         }
@@ -353,8 +353,7 @@ impl GraphDb {
                 .apply_commit(staged_flakes, staged_t, &reverse_graph)
                 .map_err(|e| {
                     crate::ApiError::internal(format!(
-                        "Failed to merge staged flakes into novelty: {}",
-                        e
+                        "Failed to merge staged flakes into novelty: {e}"
                     ))
                 })?;
         }
@@ -764,7 +763,7 @@ impl GraphDb {
     ///
     /// Returns `Some(&Novelty)` if novelty is available, `None` otherwise.
     pub fn novelty_for_stats(&self) -> Option<&Novelty> {
-        self.novelty.as_ref().map(|n| n.as_ref())
+        self.novelty.as_ref().map(std::convert::AsRef::as_ref)
     }
 }
 
@@ -933,7 +932,7 @@ mod tests {
         let overlay = novelty.clone() as Arc<dyn OverlayProvider>;
 
         let view = GraphDb::new(Arc::new(snapshot), overlay, Some(novelty), 5, "test:main");
-        let debug = format!("{:?}", view);
+        let debug = format!("{view:?}");
 
         assert!(debug.contains("GraphDb"));
         assert!(debug.contains("test:main"));

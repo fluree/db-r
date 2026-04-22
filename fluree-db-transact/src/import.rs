@@ -135,7 +135,7 @@ mod inner {
         S: ContentAddressedWrite,
     {
         let new_t = state.t + 1;
-        let txn_id = format!("{}-{}", ledger_id, new_t);
+        let txn_id = format!("{ledger_id}-{new_t}");
 
         // 1. Create ImportSink + parse TTL
         let ns_codes_before = state.ns_registry.code_count();
@@ -147,12 +147,12 @@ mod inner {
         )
         .entered();
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id, compress)
-            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {e}")))?;
 
         if let Some((dir, config)) = spool_dir.zip(spool_config) {
-            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_path = dir.join(format!("chunk_{chunk_idx}.spool"));
             let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
-                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("spool create: {e}")))?;
             sink.set_spool_context(spool_ctx);
         }
 
@@ -165,10 +165,10 @@ mod inner {
             let _span = tracing::debug_span!("import_build_envelope", t = new_t).entered();
             let (writer, chunk_prefix_map, spool_ctx) = sink
                 .finish()
-                .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("flake encode error: {e}")))?;
             state.prefix_map.extend(chunk_prefix_map);
 
-            let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+            let spool_result = spool_ctx.map(crate::import_sink::SpoolContext::finish_buffered);
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
@@ -270,7 +270,7 @@ mod inner {
         }
 
         let new_t = state.t + 1;
-        let txn_id = format!("{}-{}", ledger_id, new_t);
+        let txn_id = format!("{ledger_id}-{new_t}");
 
         let ns_codes_before = state.ns_registry.code_count();
         let _parse_span = tracing::debug_span!(
@@ -281,12 +281,12 @@ mod inner {
         )
         .entered();
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id, compress)
-            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {e}")))?;
 
         if let Some((dir, config)) = spool_dir.zip(spool_config) {
-            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_path = dir.join(format!("chunk_{chunk_idx}.spool"));
             let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
-                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("spool create: {e}")))?;
             sink.set_spool_context(spool_ctx);
         }
 
@@ -303,9 +303,9 @@ mod inner {
             let _span = tracing::debug_span!("import_build_envelope", t = new_t).entered();
             let (writer, _chunk_prefix_map, spool_ctx) = sink
                 .finish()
-                .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("flake encode error: {e}")))?;
 
-            let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+            let spool_result = spool_ctx.map(crate::import_sink::SpoolContext::finish_buffered);
             let op_count = writer.op_count();
             let ns_delta = state.ns_registry.take_delta();
             let ns_codes_after = state.ns_registry.code_count();
@@ -406,7 +406,7 @@ mod inner {
         S: ContentAddressedWrite,
     {
         let new_t = state.t + 1;
-        let txn_id = format!("{}-{}", ledger_id, new_t);
+        let txn_id = format!("{ledger_id}-{new_t}");
 
         // 1. Parse TriG to extract GRAPH blocks
         let phase1 = parse_trig_phase1(trig)?;
@@ -436,12 +436,12 @@ mod inner {
 
         // 2. Create ImportSink and parse default graph Turtle
         let mut sink = ImportSink::new(&mut state.ns_registry, new_t, txn_id.clone(), compress)
-            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {e}")))?;
 
         if let Some((dir, config)) = spool_dir.zip(spool_config) {
-            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_path = dir.join(format!("chunk_{chunk_idx}.spool"));
             let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
-                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("spool create: {e}")))?;
             sink.set_spool_context(spool_ctx);
         }
 
@@ -454,9 +454,9 @@ mod inner {
         // falls back to the serial resolver path for index generation.
         let (mut writer, chunk_prefix_map, spool_ctx) = sink
             .finish()
-            .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("flake encode error: {e}")))?;
         state.prefix_map.extend(chunk_prefix_map);
-        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+        let spool_result = spool_ctx.map(crate::import_sink::SpoolContext::finish_buffered);
         let mut op_count = writer.op_count();
 
         // 4. Process named graphs
@@ -506,7 +506,7 @@ mod inner {
                     );
 
                     writer.push_flake(&flake).map_err(|e| {
-                        TransactError::Parse(format!("failed to encode named graph flake: {}", e))
+                        TransactError::Parse(format!("failed to encode named graph flake: {e}"))
                     })?;
                     op_count += 1;
                 }
@@ -612,8 +612,8 @@ mod inner {
             RawTerm::PrefixedName { prefix, local } => {
                 let ns = prefixes
                     .get(prefix.as_str())
-                    .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {}", prefix)))?;
-                let iri = format!("{}{}", ns, local);
+                    .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {prefix}")))?;
+                let iri = format!("{ns}{local}");
                 Ok(ns_registry.sid_for_iri(&iri))
             }
         }
@@ -637,8 +637,8 @@ mod inner {
             RawObject::PrefixedName { prefix, local } => {
                 let ns = prefixes
                     .get(prefix.as_str())
-                    .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {}", prefix)))?;
-                let iri = format!("{}{}", ns, local);
+                    .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {prefix}")))?;
+                let iri = format!("{ns}{local}");
                 let sid = ns_registry.sid_for_iri(&iri);
                 Ok((FlakeValue::Ref(sid), DT_ID.clone(), None))
             }
@@ -727,18 +727,18 @@ mod inner {
         spool_config: Option<&crate::import_sink::SpoolConfig>,
         chunk_idx: usize,
     ) -> Result<ParsedChunk> {
-        let txn_id = format!("{}-{}", ledger_id, t);
+        let txn_id = format!("{ledger_id}-{t}");
 
         let _parse_span = tracing::debug_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
         let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
         let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
-            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {e}")))?;
 
         if let Some((dir, config)) = spool_dir.zip(spool_config) {
-            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_path = dir.join(format!("chunk_{chunk_idx}.spool"));
             let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
-                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("spool create: {e}")))?;
             sink.set_spool_context(spool_ctx);
         }
 
@@ -748,11 +748,11 @@ mod inner {
 
         let (writer, prefix_map, spool_ctx) = sink
             .finish()
-            .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("flake encode error: {e}")))?;
         let op_count = writer.op_count();
         let new_codes = worker_cache.into_new_codes();
 
-        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+        let spool_result = spool_ctx.map(crate::import_sink::SpoolContext::finish_buffered);
 
         Ok(ParsedChunk {
             writer,
@@ -782,7 +782,7 @@ mod inner {
         spool_config: Option<&crate::import_sink::SpoolConfig>,
         chunk_idx: usize,
     ) -> Result<ParsedChunk> {
-        let txn_id = format!("{}-{}", ledger_id, t);
+        let txn_id = format!("{ledger_id}-{t}");
         let _parse_span = tracing::debug_span!("parse_chunk", t, ttl_bytes = ttl.len(),).entered();
 
         let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
@@ -793,12 +793,12 @@ mod inner {
         }
 
         let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
-            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {e}")))?;
 
         if let Some((dir, config)) = spool_dir.zip(spool_config) {
-            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_path = dir.join(format!("chunk_{chunk_idx}.spool"));
             let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
-                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("spool create: {e}")))?;
             sink.set_spool_context(spool_ctx);
         }
 
@@ -813,11 +813,11 @@ mod inner {
 
         let (writer, _prefix_map, spool_ctx) = sink
             .finish()
-            .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("flake encode error: {e}")))?;
         let op_count = writer.op_count();
         let new_codes = worker_cache.into_new_codes();
 
-        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+        let spool_result = spool_ctx.map(crate::import_sink::SpoolContext::finish_buffered);
 
         Ok(ParsedChunk {
             writer,
@@ -897,24 +897,24 @@ mod inner {
         spool_config: Option<&crate::import_sink::SpoolConfig>,
         chunk_idx: usize,
     ) -> Result<ParsedChunk> {
-        let txn_id = format!("{}-{}", ledger_id, t);
+        let txn_id = format!("{ledger_id}-{t}");
 
         let _parse_span =
             tracing::debug_span!("parse_jsonld_chunk", t, jsonld_bytes = jsonld.len(),).entered();
 
         let mut worker_cache = WorkerCache::new(Arc::clone(alloc));
         let mut sink = ImportSink::new_cached(&mut worker_cache, t, txn_id, compress)
-            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("failed to create import sink: {e}")))?;
 
         if let Some((dir, config)) = spool_dir.zip(spool_config) {
-            let spool_path = dir.join(format!("chunk_{}.spool", chunk_idx));
+            let spool_path = dir.join(format!("chunk_{chunk_idx}.spool"));
             let spool_ctx = crate::import_sink::SpoolContext::new(spool_path, chunk_idx, 0, config)
-                .map_err(|e| TransactError::Parse(format!("spool create: {}", e)))?;
+                .map_err(|e| TransactError::Parse(format!("spool create: {e}")))?;
             sink.set_spool_context(spool_ctx);
         }
 
         let doc: serde_json::Value = serde_json::from_str(jsonld)
-            .map_err(|e| TransactError::Parse(format!("JSON parse error: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("JSON parse error: {e}")))?;
 
         // Register @context prefix→IRI mappings in the namespace trie BEFORE
         // expansion. JSON-LD expand() resolves prefixes internally, but the
@@ -925,18 +925,18 @@ mod inner {
         register_jsonld_prefixes(&doc, &mut sink);
 
         let expanded = fluree_graph_json_ld::expand(&doc)
-            .map_err(|e| TransactError::Parse(format!("JSON-LD expand error: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("JSON-LD expand error: {e}")))?;
         fluree_graph_json_ld::adapter::to_graph_events(&expanded, &mut sink)
-            .map_err(|e| TransactError::Parse(format!("JSON-LD adapter error: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("JSON-LD adapter error: {e}")))?;
         drop(_parse_span);
 
         let (writer, prefix_map, spool_ctx) = sink
             .finish()
-            .map_err(|e| TransactError::Parse(format!("flake encode error: {}", e)))?;
+            .map_err(|e| TransactError::Parse(format!("flake encode error: {e}")))?;
         let op_count = writer.op_count();
         let new_codes = worker_cache.into_new_codes();
 
-        let spool_result = spool_ctx.map(|ctx| ctx.finish_buffered());
+        let spool_result = spool_ctx.map(crate::import_sink::SpoolContext::finish_buffered);
 
         Ok(ParsedChunk {
             writer,
@@ -973,7 +973,7 @@ mod inner {
         // (needed for TriG serial paths and the final namespace snapshot).
         for (code, prefix) in &ns_delta {
             state.ns_registry.ensure_code(*code, prefix).map_err(|e| {
-                TransactError::FlakeGeneration(format!("namespace code conflict: {}", e))
+                TransactError::FlakeGeneration(format!("namespace code conflict: {e}"))
             })?;
         }
         // Merge turtle prefix short names into session state

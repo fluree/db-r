@@ -655,7 +655,7 @@ impl SpatialIndexProvider for EmbeddedSpatialProvider {
         }
 
         // Sort entries by index order before storing
-        entries.sort_by(|a, b| a.cmp_index(b));
+        entries.sort_by(super::cell_index::CellEntry::cmp_index);
 
         if let Ok(mut guard) = self.novelty_state.write() {
             // Double-check epoch after acquiring write lock (another thread may have updated)
@@ -719,7 +719,7 @@ mod tests {
         let count = HASH_COUNTER.fetch_add(1, Ordering::Relaxed);
         // Use a simple checksum + counter for unique hashes
         let sum: u64 = bytes.iter().map(|&b| b as u64).sum();
-        format!("sha256:test{:08x}{:08x}", sum, count)
+        format!("sha256:test{sum:08x}{count:08x}")
     }
 
     /// Build a minimal snapshot with a single polygon for testing.

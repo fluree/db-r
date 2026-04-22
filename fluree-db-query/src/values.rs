@@ -219,7 +219,7 @@ impl Operator for ValuesOperator {
             }
         }
 
-        if columns.first().map(|c| c.is_empty()).unwrap_or(true) {
+        if columns.first().map(std::vec::Vec::is_empty).unwrap_or(true) {
             // No compatible rows - return empty batch
             return Ok(Some(Batch::empty(self.schema.clone())?));
         }
@@ -247,10 +247,8 @@ fn bindings_compatible_for_values(ctx: &ExecutionContext<'_>, a: &Binding, b: &B
 
     match (a, b) {
         // Compare SID to IRI-bearing bindings by decoding SID via primary db.
-        (Binding::Sid(sid), Binding::Iri(iri))
-        | (Binding::Sid(sid), Binding::IriMatch { iri, .. })
-        | (Binding::Iri(iri), Binding::Sid(sid))
-        | (Binding::IriMatch { iri, .. }, Binding::Sid(sid)) => ctx
+        (Binding::Sid(sid), Binding::Iri(iri) | Binding::IriMatch { iri, .. })
+        | (Binding::Iri(iri) | Binding::IriMatch { iri, .. }, Binding::Sid(sid)) => ctx
             .active_snapshot
             .decode_sid(sid)
             .map(|decoded| decoded == iri.as_ref())

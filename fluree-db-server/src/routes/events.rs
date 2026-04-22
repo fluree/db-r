@@ -112,7 +112,7 @@ fn retracted_event_id(kind: &str, resource_id: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis();
-    format!("{}:{}:retracted:{}", kind, resource_id, timestamp_ms)
+    format!("{kind}:{resource_id}:retracted:{timestamp_ms}")
 }
 
 /// Compute 8-char truncated SHA-256 hash
@@ -131,8 +131,14 @@ fn ledger_to_sse_event(record: &NsRecord) -> Event {
     let ledger_id = record.ledger_id.clone();
     let event_id = ledger_event_id(&ledger_id, record);
 
-    let commit_head_id = record.commit_head_id.as_ref().map(|id| id.to_string());
-    let index_head_id = record.index_head_id.as_ref().map(|id| id.to_string());
+    let commit_head_id = record
+        .commit_head_id
+        .as_ref()
+        .map(std::string::ToString::to_string);
+    let index_head_id = record
+        .index_head_id
+        .as_ref()
+        .map(std::string::ToString::to_string);
 
     let data = NsRecordData {
         action: "ns-record",
@@ -165,7 +171,10 @@ fn graph_source_to_sse_event(record: &GraphSourceRecord) -> Event {
     let graph_source_id = record.graph_source_id.clone();
     let event_id = graph_source_event_id(&graph_source_id, record);
 
-    let index_id = record.index_id.as_ref().map(|id| id.to_string());
+    let index_id = record
+        .index_id
+        .as_ref()
+        .map(std::string::ToString::to_string);
 
     let data = NsRecordData {
         action: "ns-record",

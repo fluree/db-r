@@ -180,7 +180,7 @@ pub async fn wrap_policy_view_historical<'a>(
     let policy_graphs = resolve_policy_graphs_from_config(&view.snapshot, view, view.to_t()).await;
 
     // Extract novelty from the view for stats computation (needed for f:onClass)
-    let novelty_for_stats: Option<&Novelty> = view.overlay().map(|arc| arc.as_ref());
+    let novelty_for_stats: Option<&Novelty> = view.overlay().map(std::convert::AsRef::as_ref);
     let policy_ctx = policy_builder::build_policy_context_from_opts(
         &view.snapshot,
         view,

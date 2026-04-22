@@ -36,7 +36,7 @@ pub async fn verify_bearer_token(
     jwks_cache: Option<&JwksCache>,
 ) -> Result<VerifiedToken, ServerError> {
     let (kid, _alg, has_embedded_jwk) = fluree_db_credential::peek_jwt_header(token)
-        .map_err(|e| ServerError::unauthorized(format!("Invalid token header: {}", e)))?;
+        .map_err(|e| ServerError::unauthorized(format!("Invalid token header: {e}")))?;
 
     if has_embedded_jwk {
         // Existing path: embedded JWK (Ed25519)
@@ -68,11 +68,11 @@ pub async fn verify_bearer_token(
 /// call confirms that the `iss` claim matches the actual signer — preventing
 /// a token from claiming an arbitrary issuer while being signed by a different key.
 fn verify_embedded_jwk(token: &str) -> Result<VerifiedToken, ServerError> {
-    let verified: JwsVerified = verify_jws(token)
-        .map_err(|e| ServerError::unauthorized(format!("Invalid token: {}", e)))?;
+    let verified: JwsVerified =
+        verify_jws(token).map_err(|e| ServerError::unauthorized(format!("Invalid token: {e}")))?;
 
     let payload: EventsTokenPayload = serde_json::from_str(&verified.payload)
-        .map_err(|e| ServerError::unauthorized(format!("Invalid token claims: {}", e)))?;
+        .map_err(|e| ServerError::unauthorized(format!("Invalid token claims: {e}")))?;
 
     Ok(VerifiedToken {
         issuer: verified.did,
@@ -91,14 +91,13 @@ async fn verify_via_jwks(
     // This is safe: we reject immediately if `iss` is not a configured issuer,
     // and we verify the signature before trusting any claims.
     let issuer = fluree_db_credential::decode_unverified_issuer(token)
-        .map_err(|e| ServerError::unauthorized(format!("Invalid token format: {}", e)))?
+        .map_err(|e| ServerError::unauthorized(format!("Invalid token format: {e}")))?
         .ok_or_else(|| ServerError::unauthorized("Token missing iss claim".to_string()))?;
 
     // Immediately reject if issuer is not configured
     if !jwks_cache.is_configured_issuer(&issuer) {
         return Err(ServerError::unauthorized(format!(
-            "OIDC issuer not configured: {}",
-            issuer
+            "OIDC issuer not configured: {issuer}"
         )));
     }
 
@@ -106,15 +105,15 @@ async fn verify_via_jwks(
     let key = jwks_cache
         .get_key(&issuer, kid)
         .await
-        .map_err(|e| ServerError::unauthorized(format!("JWKS key lookup failed: {}", e)))?;
+        .map_err(|e| ServerError::unauthorized(format!("JWKS key lookup failed: {e}")))?;
 
     // Verify the token with the looked-up key (RS256 constrained)
     let jwt_verified = fluree_db_credential::verify_jwt(token, &key, &[Algorithm::RS256], &issuer)
-        .map_err(|e| ServerError::unauthorized(format!("Token verification failed: {}", e)))?;
+        .map_err(|e| ServerError::unauthorized(format!("Token verification failed: {e}")))?;
 
     // Parse claims into EventsTokenPayload
     let payload: EventsTokenPayload = serde_json::from_str(&jwt_verified.payload_json)
-        .map_err(|e| ServerError::unauthorized(format!("Invalid token claims: {}", e)))?;
+        .map_err(|e| ServerError::unauthorized(format!("Invalid token claims: {e}")))?;
 
     Ok(VerifiedToken {
         issuer: jwt_verified.issuer,

@@ -168,7 +168,9 @@ pub fn label_regex_type_operator(
                     let s_id = batch.s_id.get(i);
                     hit_subjects.push(s_id);
                     let lang = if ot.is_lang_string() {
-                        store.resolve_lang_tag(ot_u16).map(|t| t.to_string())
+                        store
+                            .resolve_lang_tag(ot_u16)
+                            .map(std::string::ToString::to_string)
                     } else {
                         None
                     };
@@ -240,15 +242,14 @@ fn build_regex(pattern: &str, flags: &str) -> Result<Regex> {
             }
             c => {
                 return Err(QueryError::InvalidFilter(format!(
-                    "Unknown regex flag: '{}'",
-                    c
+                    "Unknown regex flag: '{c}'"
                 )))
             }
         }
     }
     builder
         .build()
-        .map_err(|e| QueryError::InvalidFilter(format!("Invalid regex: {}", e)))
+        .map_err(|e| QueryError::InvalidFilter(format!("Invalid regex: {e}")))
 }
 
 fn is_plain_literal(pattern: &str) -> bool {

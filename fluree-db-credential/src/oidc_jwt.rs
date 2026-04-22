@@ -34,7 +34,7 @@ pub struct JwtVerified {
 /// - `InvalidJwsHeader` if the header cannot be decoded
 pub fn peek_jwt_header(token: &str) -> Result<(Option<String>, Option<Algorithm>, bool)> {
     let header = jsonwebtoken::decode_header(token)
-        .map_err(|e| CredentialError::InvalidJwsHeader(format!("cannot decode header: {}", e)))?;
+        .map_err(|e| CredentialError::InvalidJwsHeader(format!("cannot decode header: {e}")))?;
 
     let has_embedded_jwk = header.jwk.is_some();
     let algorithm = Some(header.alg);
@@ -100,12 +100,9 @@ pub fn verify_jwt(
             jsonwebtoken::errors::ErrorKind::InvalidAlgorithm => {
                 CredentialError::UnsupportedAlgorithm(format!("{:?}", header.alg))
             }
-            jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
-                CredentialError::InvalidJwsHeader(format!(
-                    "issuer mismatch: expected {}, token has different iss",
-                    expected_issuer
-                ))
-            }
+            jsonwebtoken::errors::ErrorKind::InvalidIssuer => CredentialError::InvalidJwsHeader(
+                format!("issuer mismatch: expected {expected_issuer}, token has different iss"),
+            ),
             _ => CredentialError::JwtError(e.to_string()),
         })?;
 
@@ -118,7 +115,7 @@ pub fn verify_jwt(
         .to_string();
 
     let payload_json = serde_json::to_string(&token_data.claims)
-        .map_err(|e| CredentialError::JwtError(format!("failed to serialize claims: {}", e)))?;
+        .map_err(|e| CredentialError::JwtError(format!("failed to serialize claims: {e}")))?;
 
     Ok(JwtVerified {
         payload_json,
@@ -151,10 +148,10 @@ pub fn decode_unverified_issuer(token: &str) -> Result<Option<String>> {
 
     let payload_bytes = URL_SAFE_NO_PAD
         .decode(parts[1])
-        .map_err(|e| CredentialError::JwtError(format!("payload base64 decode: {}", e)))?;
+        .map_err(|e| CredentialError::JwtError(format!("payload base64 decode: {e}")))?;
 
     let claims: serde_json::Value = serde_json::from_slice(&payload_bytes)
-        .map_err(|e| CredentialError::JwtError(format!("payload JSON parse: {}", e)))?;
+        .map_err(|e| CredentialError::JwtError(format!("payload JSON parse: {e}")))?;
 
     Ok(claims.get("iss").and_then(|v| v.as_str()).map(String::from))
 }
@@ -189,8 +186,8 @@ mod tests {
         let claims = json!({
             "iss": "https://solo.example.com",
             "sub": "user@example.com",
-            "exp": 9999999999u64,
-            "iat": 1700000000u64,
+            "exp": 9_999_999_999_u64,
+            "iat": 1_700_000_000_u64,
             "fluree.identity": "did:key:z6MkTest",
             "fluree.ledger.read.all": true
         });
@@ -219,7 +216,7 @@ mod tests {
         let (enc_key, dec_key) = test_rsa_keys();
         let claims = json!({
             "iss": "https://solo.example.com",
-            "exp": 9999999999u64,
+            "exp": 9_999_999_999_u64,
         });
 
         let token = create_test_jwt(&claims, &enc_key, "kid-1");
@@ -243,7 +240,7 @@ mod tests {
         let (enc_key, dec_key) = test_rsa_keys();
         let claims = json!({
             "iss": "https://evil.example.com",
-            "exp": 9999999999u64,
+            "exp": 9_999_999_999_u64,
         });
 
         let token = create_test_jwt(&claims, &enc_key, "kid-1");
@@ -257,8 +254,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             matches!(err, CredentialError::InvalidJwsHeader(_)),
-            "expected InvalidJwsHeader for issuer mismatch, got {:?}",
-            err
+            "expected InvalidJwsHeader for issuer mismatch, got {err:?}"
         );
     }
 
@@ -267,14 +263,14 @@ mod tests {
         // alg=none should be rejected even if the header claims it
         let claims = json!({
             "iss": "https://solo.example.com",
-            "exp": 9999999999u64,
+            "exp": 9_999_999_999_u64,
         });
 
         // Manually construct an alg=none token
         let header_json = json!({"alg": "none", "typ": "JWT"});
         let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
         let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
-        let token = format!("{}..{}", header_b64, payload_b64);
+        let token = format!("{header_b64}..{payload_b64}");
 
         let (_enc_key, dec_key) = test_rsa_keys();
         let result = verify_jwt(
@@ -289,7 +285,7 @@ mod tests {
     #[test]
     fn test_peek_header_with_kid() {
         let (enc_key, _) = test_rsa_keys();
-        let claims = json!({"iss": "https://example.com", "exp": 9999999999u64});
+        let claims = json!({"iss": "https://example.com", "exp": 9_999_999_999_u64});
         let token = create_test_jwt(&claims, &enc_key, "my-kid");
 
         let (kid, alg, has_jwk) = peek_jwt_header(&token).unwrap();
@@ -306,7 +302,7 @@ mod tests {
             "jwk": {"kty": "OKP", "crv": "Ed25519", "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
         });
         let header_b64 = URL_SAFE_NO_PAD.encode(header_json.to_string().as_bytes());
-        let token = format!("{}.cGF5bG9hZA.c2ln", header_b64);
+        let token = format!("{header_b64}.cGF5bG9hZA.c2ln");
 
         let (kid, alg, has_jwk) = peek_jwt_header(&token).unwrap();
         assert!(kid.is_none());
@@ -319,7 +315,7 @@ mod tests {
         let (enc_key, _) = test_rsa_keys();
         let claims = json!({
             "iss": "https://solo.example.com",
-            "exp": 9999999999u64,
+            "exp": 9_999_999_999_u64,
             "sub": "user@example.com"
         });
         let token = create_test_jwt(&claims, &enc_key, "kid-1");
@@ -331,7 +327,7 @@ mod tests {
     #[test]
     fn test_decode_unverified_issuer_missing_iss() {
         let (enc_key, _) = test_rsa_keys();
-        let claims = json!({"exp": 9999999999u64});
+        let claims = json!({"exp": 9_999_999_999_u64});
         let token = create_test_jwt(&claims, &enc_key, "kid-1");
 
         let iss = decode_unverified_issuer(&token).unwrap();

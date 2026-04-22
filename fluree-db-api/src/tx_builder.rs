@@ -50,7 +50,7 @@ pub(crate) struct ParsedOperation {
     pub named_graphs: Vec<NamedGraphBlock>,
 }
 
-impl<'a> TransactOperation<'a> {
+impl TransactOperation<'_> {
     /// Get the `TxnType` for this operation.
     pub(crate) fn txn_type(&self) -> TxnType {
         match self {
@@ -1100,8 +1100,7 @@ pub(crate) async fn commit_with_handle(
     }
 
     Err(ApiError::internal(format!(
-        "transaction commit retry limit exceeded ({} attempts)",
-        MAX_RETRIES
+        "transaction commit retry limit exceeded ({MAX_RETRIES} attempts)"
     )))
 }
 
@@ -1292,13 +1291,13 @@ mod tests {
 
         // Build a SPARQL UPDATE Txn IR (Modify) and execute via stage_owned().txn(txn).execute().
         // This must NOT panic (regression for OwnedTransactBuilder::execute unwrap bug).
-        let sparql_update = r#"
+        let sparql_update = r"
             INSERT { <http://example.org/counter> <http://example.org/next> ?next }
             WHERE  {
               <http://example.org/a> <http://example.org/seq> ?n .
               BIND((?n + 1) AS ?next)
             }
-        "#;
+        ";
         let parsed = fluree_db_sparql::parse_sparql(sparql_update);
         assert!(
             !parsed.has_errors(),

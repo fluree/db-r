@@ -232,7 +232,7 @@ fn find_safe_header(buf: &[u8]) -> &str {
     // Always truncate at the last newline to avoid cutting mid-token.
     if let Some(nl_pos) = valid.iter().rposition(|&b| b == b'\n') {
         // Safety: valid[..nl_pos+1] is valid UTF-8 (subset of a valid prefix).
-        std::str::from_utf8(&valid[..nl_pos + 1]).unwrap_or("")
+        std::str::from_utf8(&valid[..=nl_pos]).unwrap_or("")
     } else {
         // No newline at all — use whatever we have.
         std::str::from_utf8(valid).unwrap_or("")
@@ -369,27 +369,25 @@ pub fn compute_chunk_boundaries(
                             }
                         };
                         continue;
-                    } else {
-                        lookahead.pending_quotes = total;
-                        continue;
                     }
-                } else {
-                    // Not a triple quote.
-                    lookahead.pending_quotes = 0;
-                    match state {
-                        ScanState::InLongDoubleString | ScanState::InLongSingleString => {
-                            // Inside long string, saw 1-2 quotes but not 3.
-                            // Stay in long string; fall through to process `b`.
-                        }
-                        _ => {
-                            // Opening short string.
-                            state = if pq_char == b'"' {
-                                ScanState::InShortDoubleString
-                            } else {
-                                ScanState::InShortSingleString
-                            };
-                            // Fall through to process `b` in new state.
-                        }
+                    lookahead.pending_quotes = total;
+                    continue;
+                }
+                // Not a triple quote.
+                lookahead.pending_quotes = 0;
+                match state {
+                    ScanState::InLongDoubleString | ScanState::InLongSingleString => {
+                        // Inside long string, saw 1-2 quotes but not 3.
+                        // Stay in long string; fall through to process `b`.
+                    }
+                    _ => {
+                        // Opening short string.
+                        state = if pq_char == b'"' {
+                            ScanState::InShortDoubleString
+                        } else {
+                            ScanState::InShortSingleString
+                        };
+                        // Fall through to process `b` in new state.
                     }
                 }
             }
@@ -782,10 +780,7 @@ impl TurtleChunkReader {
         let data = String::from_utf8(buf).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "chunk {} (bytes {}..{}) contains invalid UTF-8: {}",
-                    index, start, end, e
-                ),
+                format!("chunk {index} (bytes {start}..{end}) contains invalid UTF-8: {e}"),
             )
         })?;
 
@@ -999,8 +994,7 @@ impl StreamingTurtleReader {
             })
             .map_err(|e| {
                 SplitError::Io(io::Error::other(format!(
-                    "failed to spawn reader thread: {}",
-                    e
+                    "failed to spawn reader thread: {e}"
                 )))
             })?;
 
@@ -1332,7 +1326,7 @@ impl NamespacePreflightDetector {
         }
         let abs_end = abs_start + bytes.len() as u64;
         // Feed any windows that overlap this read.
-        for (w_start, w_end, scanner) in self.windows.iter_mut() {
+        for (w_start, w_end, scanner) in &mut self.windows {
             if *w_end <= abs_start || *w_start >= abs_end {
                 continue;
             }
@@ -1956,8 +1950,7 @@ ex:dave ex:name \"Dave\" ; ex:age 35 .
         let actual_count = reader.join().unwrap();
         assert!(
             actual_count >= 2,
-            "expected at least 2 chunks, got {}",
-            actual_count
+            "expected at least 2 chunks, got {actual_count}"
         );
 
         all_subjects.sort();
@@ -2122,7 +2115,7 @@ ex:carol ex:name \"Carol\" .\n";
 
         let actual = reader.join().unwrap();
         assert_eq!(count, actual);
-        assert!(count >= 2, "expected multiple chunks, got {}", count);
+        assert!(count >= 2, "expected multiple chunks, got {count}");
     }
 
     #[test]

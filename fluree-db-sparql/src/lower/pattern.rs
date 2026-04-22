@@ -17,7 +17,7 @@ use fluree_db_query::var_registry::VarId;
 
 use super::{LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     pub(super) fn lower_graph_pattern(
         &mut self,
         pattern: &SparqlGraphPattern,

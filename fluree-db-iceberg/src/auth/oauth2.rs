@@ -68,7 +68,7 @@ impl OAuth2ClientCredentials {
             .connect_timeout(std::time::Duration::from_secs(30))
             .timeout(std::time::Duration::from_secs(60))
             .build()
-            .map_err(|e| IcebergError::Http(format!("Failed to build HTTP client: {}", e)))?;
+            .map_err(|e| IcebergError::Http(format!("Failed to build HTTP client: {e}")))?;
 
         Ok(Self {
             config,
@@ -99,14 +99,13 @@ impl OAuth2ClientCredentials {
             .form(&form)
             .send()
             .await
-            .map_err(|e| IcebergError::Http(format!("Token request failed: {}", e)))?;
+            .map_err(|e| IcebergError::Http(format!("Token request failed: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             return Err(IcebergError::Auth(format!(
-                "OAuth2 token request failed ({}): {}",
-                status, body
+                "OAuth2 token request failed ({status}): {body}"
             )));
         }
 
@@ -127,7 +126,7 @@ impl OAuth2ClientCredentials {
         let token_resp: TokenResponse = response
             .json()
             .await
-            .map_err(|e| IcebergError::Auth(format!("Failed to parse token response: {}", e)))?;
+            .map_err(|e| IcebergError::Auth(format!("Failed to parse token response: {e}")))?;
 
         // Default to 1 hour if not specified
         let expires_in = token_resp.expires_in.unwrap_or(3600);

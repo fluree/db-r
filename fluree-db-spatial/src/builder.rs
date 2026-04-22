@@ -194,7 +194,7 @@ impl SpatialIndexBuilder {
         let cell_count = cells.len();
 
         // Create cell entries for each covering cell
-        let op = if is_assert { 1u8 } else { 0u8 };
+        let op = u8::from(is_assert);
         for cell_id in cells {
             self.entries
                 .push(CellEntry::new(cell_id, subject_id, geo_handle, t, op));
@@ -219,11 +219,11 @@ impl SpatialIndexBuilder {
     pub fn add_retraction(&mut self, subject_id: u64, geo_handle: u32, t: i64) -> Result<()> {
         // Get the geometry from the arena to generate matching covering
         let entry = self.arena.get(geo_handle).ok_or_else(|| {
-            SpatialError::InvalidGeometry(format!("Unknown geo_handle: {}", geo_handle))
+            SpatialError::InvalidGeometry(format!("Unknown geo_handle: {geo_handle}"))
         })?;
 
         let wkt_str = std::str::from_utf8(&entry.wkt)
-            .map_err(|e| SpatialError::WktParse(format!("Invalid UTF-8: {}", e)))?;
+            .map_err(|e| SpatialError::WktParse(format!("Invalid UTF-8: {e}")))?;
         let geom = parse_wkt(wkt_str)?;
 
         // Generate the same S2 covering
@@ -264,7 +264,8 @@ impl SpatialIndexBuilder {
         self.stats.distinct_subjects = self.seen_subjects.len() as u64;
 
         // Sort entries by index order: (cell_id, subject_id, t DESC, op ASC)
-        self.entries.sort_by(|a, b| a.cmp_index(b));
+        self.entries
+            .sort_by(super::cell_index::CellEntry::cmp_index);
 
         (self.entries, self.arena, self.stats)
     }
@@ -368,8 +369,7 @@ impl BuildResult {
         // 2. Serialize and write the cell index manifest
         let manifest_bytes = serde_json::to_vec(&manifest).map_err(|e| {
             SpatialError::Io(std::io::Error::other(format!(
-                "manifest serialization failed: {}",
-                e
+                "manifest serialization failed: {e}"
             )))
         })?;
         let cell_index_hash = write_bytes(&manifest_bytes)?;
@@ -528,7 +528,7 @@ mod tests {
         let write_result = result
             .write_to_cas(|bytes| {
                 hash_counter += 1;
-                let hash = format!("sha256:{:08x}", hash_counter);
+                let hash = format!("sha256:{hash_counter:08x}");
                 writes.push((hash.clone(), bytes.to_vec()));
                 Ok(hash)
             })
@@ -625,7 +625,7 @@ mod tests {
         let write_result = result
             .write_to_cas(|bytes| {
                 counter += 1;
-                let hash = format!("sha256:{:08x}", counter);
+                let hash = format!("sha256:{counter:08x}");
                 cas_write
                     .write()
                     .unwrap()
@@ -641,7 +641,7 @@ mod tests {
         let snapshot =
             SpatialIndexSnapshot::load_from_cas(write_result.root.clone(), move |hash| {
                 cas_read.read().unwrap().get(hash).cloned().ok_or_else(|| {
-                    crate::error::SpatialError::FormatError(format!("hash not found: {}", hash))
+                    crate::error::SpatialError::FormatError(format!("hash not found: {hash}"))
                 })
             })
             .unwrap();

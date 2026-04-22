@@ -124,12 +124,10 @@ pub async fn run(dirs: &FlureeDir, remote_flag: Option<&str>, direct: bool) -> C
 async fn run_remote(remote_name: &str, dirs: &FlureeDir) -> CliResult<()> {
     let client = context::build_remote_client(remote_name, dirs).await?;
 
-    let result = client.list_ledgers().await.map_err(|e| {
-        CliError::Remote(format!(
-            "failed to list ledgers on '{}': {}",
-            remote_name, e
-        ))
-    })?;
+    let result = client
+        .list_ledgers()
+        .await
+        .map_err(|e| CliError::Remote(format!("failed to list ledgers on '{remote_name}': {e}")))?;
 
     context::persist_refreshed_tokens(&client, remote_name, dirs).await;
 
@@ -144,7 +142,7 @@ async fn run_remote_with_client(
     let result = client
         .list_ledgers()
         .await
-        .map_err(|e| CliError::Remote(format!("failed to list ledgers on local server: {}", e)))?;
+        .map_err(|e| CliError::Remote(format!("failed to list ledgers on local server: {e}")))?;
 
     context::persist_refreshed_tokens(client, context::LOCAL_SERVER_REMOTE, dirs).await;
 
@@ -164,7 +162,7 @@ fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> 
 
     if entries.is_empty() {
         match remote_label {
-            Some(name) => println!("No ledgers on remote '{}'.", name),
+            Some(name) => println!("No ledgers on remote '{name}'."),
             None => println!("No ledgers found."),
         }
         return Ok(());
@@ -200,7 +198,7 @@ fn print_ledger_list(result: &serde_json::Value, remote_label: Option<&str>) -> 
             .unwrap_or("main");
         let t = entry
             .get("t")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string());
 

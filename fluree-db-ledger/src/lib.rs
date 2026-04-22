@@ -457,7 +457,7 @@ impl LedgerState {
     /// as it includes both the indexed stats and any uncommitted changes
     /// from the novelty layer.
     pub fn current_stats(&self) -> fluree_db_core::IndexStats {
-        let indexed = self.snapshot.stats.as_ref().cloned().unwrap_or_default(); // IndexStats::default() for genesis/no-index
+        let indexed = self.snapshot.stats.clone().unwrap_or_default(); // IndexStats::default() for genesis/no-index
         fluree_db_novelty::current_stats(&indexed, self.novelty.as_ref())
     }
 
@@ -829,8 +829,8 @@ mod tests {
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,
@@ -976,9 +976,10 @@ mod tests {
             match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
                 CasResult::Updated => {}
                 CasResult::Conflict { actual } => {
-                    if actual.as_ref().map(|r| r.t).unwrap_or(0) < t {
-                        panic!("unexpected commit publish conflict: {actual:?}");
-                    }
+                    assert!(
+                        actual.as_ref().map(|r| r.t).unwrap_or(0) >= t,
+                        "unexpected commit publish conflict: {actual:?}"
+                    );
                 }
             }
         }

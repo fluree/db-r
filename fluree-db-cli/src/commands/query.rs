@@ -35,7 +35,7 @@ pub fn parse_time_spec(at: &str) -> fluree_db_api::TimeSpec {
 fn format_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs_f64();
     if secs >= 1.0 {
-        format!("{:.2}s", secs)
+        format!("{secs:.2}s")
     } else if secs >= 0.001 {
         format!("{:.1}ms", secs * 1_000.0)
     } else {
@@ -78,7 +78,7 @@ fn inject_sparql_from_before_where(sparql: &str, from_iri: &str) -> Option<Strin
     // - If the query already contains FROM/FROM NAMED, caller should not inject.
     let lower = sparql.to_ascii_lowercase();
     let where_idx = lower.find(" where ")?; // require standard spacing
-    let insert = format!(" FROM <{}>", from_iri);
+    let insert = format!(" FROM <{from_iri}>");
     let mut out = String::with_capacity(sparql.len() + insert.len());
     out.push_str(&sparql[..where_idx]);
     out.push_str(&insert);
@@ -371,7 +371,7 @@ pub async fn run(
                 let total = result
                     .pointer("/results/bindings")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.len())
+                    .map(std::vec::Vec::len)
                     .unwrap_or(0);
                 if total > DEFAULT_TABLE_PREVIEW_ROWS {
                     Some(DEFAULT_TABLE_PREVIEW_ROWS)

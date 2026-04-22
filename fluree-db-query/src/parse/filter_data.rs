@@ -55,9 +55,9 @@ pub fn parse_filter_expr(value: &JsonValue) -> Result<UnresolvedExpression> {
 /// Like `parse_filter_expr` but recognizes `["exists", ...]` and `["not-exists", ...]`
 /// inside compound expressions (e.g., `["or", ["=", "?x", "?y"], ["not-exists", {...}]]`).
 /// The `pattern_parser` callback handles parsing the node-map patterns inside EXISTS.
-pub fn parse_filter_expr_ctx<'a>(
+pub fn parse_filter_expr_ctx(
     value: &JsonValue,
-    pattern_parser: PatternParserFn<'a>,
+    pattern_parser: PatternParserFn<'_>,
 ) -> Result<UnresolvedExpression> {
     parse_filter_expr_inner(value, |arr| {
         dispatch_filter_op(
@@ -108,8 +108,7 @@ fn parse_filter_expr_inner(
                 Ok(UnresolvedExpression::double(f))
             } else {
                 Err(ParseError::InvalidFilter(format!(
-                    "unsupported number in filter: {}",
-                    n
+                    "unsupported number in filter: {n}"
                 )))
             }
         }

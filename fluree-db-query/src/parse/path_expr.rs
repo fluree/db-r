@@ -54,7 +54,7 @@ pub fn parse_path_string(input: &str, ctx: &JsonLdParseCtx) -> Result<Unresolved
     if pos < trimmed.len() {
         return Err(ParseError::InvalidContext(format!(
             "@path: unexpected character '{}' at position {}",
-            &trimmed[pos..pos + 1],
+            &trimmed[pos..=pos],
             pos,
         )));
     }
@@ -220,8 +220,7 @@ fn parse_pname(input: &str, pos: &mut usize) -> Result<String> {
     }
     if *pos == start {
         return Err(ParseError::InvalidContext(format!(
-            "@path: expected IRI at position {}",
-            start,
+            "@path: expected IRI at position {start}",
         )));
     }
     Ok(input[start..*pos].to_string())
@@ -311,8 +310,7 @@ pub fn parse_path_array(arr: &[JsonValue], ctx: &JsonLdParseCtx) -> Result<Unres
             }
         }
         _ => Err(ParseError::InvalidContext(format!(
-            "@path array: unknown operator '{}'; expected one of +, *, ?, ^, /, |",
-            op,
+            "@path array: unknown operator '{op}'; expected one of +, *, ?, ^, /, |",
         ))),
     }
 }

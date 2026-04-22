@@ -53,7 +53,7 @@ pub const FIRST_USER_GRAPH_ID: GraphId = 3;
 /// assert_eq!(txn_meta_graph_iri("mydb:main"), "urn:fluree:mydb:main#txn-meta");
 /// ```
 pub fn txn_meta_graph_iri(ledger_id: &str) -> String {
-    format!("urn:fluree:{}#txn-meta", ledger_id)
+    format!("urn:fluree:{ledger_id}#txn-meta")
 }
 
 /// Construct the ledger-scoped config graph IRI from a ledger ID.
@@ -69,7 +69,7 @@ pub fn txn_meta_graph_iri(ledger_id: &str) -> String {
 /// assert_eq!(config_graph_iri("mydb:main"), "urn:fluree:mydb:main#config");
 /// ```
 pub fn config_graph_iri(ledger_id: &str) -> String {
-    format!("urn:fluree:{}#config", ledger_id)
+    format!("urn:fluree:{ledger_id}#config")
 }
 
 /// Ledger-level registry mapping graph IRIs to deterministic GraphIds.
@@ -161,15 +161,13 @@ impl GraphRegistry {
             let g_id = (root_idx as GraphId) + 1; // root index 0 → g_id 1
             if iri_str.is_empty() {
                 return Err(Error::invalid_index(format!(
-                    "GraphRegistry: empty IRI at root index {} (g_id={})",
-                    root_idx, g_id
+                    "GraphRegistry: empty IRI at root index {root_idx} (g_id={g_id})"
                 )));
             }
             let arc: Arc<str> = Arc::from(iri_str.as_str());
             if let Some(&existing_id) = iri_to_id.get(&arc) {
                 return Err(Error::invalid_index(format!(
-                    "GraphRegistry: duplicate IRI '{}' at g_id={} (already at g_id={})",
-                    iri_str, g_id, existing_id
+                    "GraphRegistry: duplicate IRI '{iri_str}' at g_id={g_id} (already at g_id={existing_id})"
                 )));
             }
             iri_to_id.insert(arc.clone(), g_id);
@@ -211,14 +209,12 @@ impl GraphRegistry {
             let arc: Arc<str> = Arc::from(iri);
             if let Some(&existing_id) = iri_to_id.get(&arc) {
                 return Err(Error::invalid_index(format!(
-                    "GraphRegistry: duplicate IRI '{}' at g_id={} (already at g_id={})",
-                    iri, g_id, existing_id
+                    "GraphRegistry: duplicate IRI '{iri}' at g_id={g_id} (already at g_id={existing_id})"
                 )));
             }
             if id_to_iri[g_id as usize].is_some() {
                 return Err(Error::invalid_index(format!(
-                    "GraphRegistry: duplicate g_id={} with different IRIs",
-                    g_id
+                    "GraphRegistry: duplicate g_id={g_id} with different IRIs"
                 )));
             }
             iri_to_id.insert(arc.clone(), g_id);
@@ -507,7 +503,7 @@ mod tests {
     fn test_seed_from_root_iris_rejects_empty_string() {
         let iris = vec![
             "urn:fluree:test:a#txn-meta".to_string(),
-            "".to_string(), // empty IRI at root[1]
+            String::new(), // empty IRI at root[1]
         ];
         let err = GraphRegistry::seed_from_root_iris(&iris).unwrap_err();
         assert!(err.to_string().contains("empty IRI"));

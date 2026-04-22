@@ -56,7 +56,7 @@ async fn ensure_bucket(sdk_config: &aws_config::SdkConfig, bucket: &str) {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    panic!("S3 bucket was not available: {}", bucket);
+    panic!("S3 bucket was not available: {bucket}");
 }
 
 async fn ensure_dynamodb_table(sdk_config: &aws_config::SdkConfig, table_name: &str) {
@@ -151,7 +151,7 @@ async fn list_object_keys(sdk_config: &aws_config::SdkConfig, bucket: &str) -> V
         .expect("list_objects_v2");
     resp.contents()
         .iter()
-        .filter_map(|o| o.key().map(|k| k.to_string()))
+        .filter_map(|o| o.key().map(std::string::ToString::to_string))
         .collect()
 }
 

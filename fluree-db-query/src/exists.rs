@@ -69,8 +69,10 @@ impl ExistsOperator {
         // Detect correlation: if no vars in patterns intersect the input schema,
         // EXISTS/NOT EXISTS reduces to a global boolean (evaluate once).
         let input_vars: HashSet<VarId> = schema.iter().copied().collect();
-        let pattern_vars: HashSet<VarId> =
-            exists_patterns.iter().flat_map(|p| p.variables()).collect();
+        let pattern_vars: HashSet<VarId> = exists_patterns
+            .iter()
+            .flat_map(super::ir::Pattern::variables)
+            .collect();
         let uncorrelated = pattern_vars.is_disjoint(&input_vars);
 
         Self {

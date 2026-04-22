@@ -59,7 +59,7 @@ async fn debug_graph_ids_after_named_graph_index() {
             println!("root.named_graphs = {:?}", root.named_graphs);
 
             // Also sanity-check querying the audit graph through the public API.
-            let audit_alias = format!("{}#http://example.org/graphs/audit", ledger_id);
+            let audit_alias = format!("{ledger_id}#http://example.org/graphs/audit");
             let q = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &audit_alias,
@@ -69,7 +69,7 @@ async fn debug_graph_ids_after_named_graph_index() {
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
             let r = fluree.query_connection(&q).await.expect("query");
             let jsonld = r.to_jsonld(&ledger.snapshot).expect("to_jsonld");
-            println!("query result = {}", jsonld);
+            println!("query result = {jsonld}");
         })
         .await;
 }

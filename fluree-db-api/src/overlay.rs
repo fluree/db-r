@@ -53,7 +53,7 @@ impl OverlayProvider for CompositeOverlay {
         let mut flakes: Vec<Flake> = Vec::new();
         for overlay in &self.overlays {
             overlay.for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, &mut |f| {
-                flakes.push(f.clone())
+                flakes.push(f.clone());
             });
         }
 

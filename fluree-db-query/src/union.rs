@@ -138,7 +138,7 @@ impl UnionOperator {
                     .iter()
                     .position(|&v| v == var)
                     .and_then(|src_idx| batch.column_by_idx(src_idx))
-                    .map(|src_col| src_col.to_vec())
+                    .map(<[Binding]>::to_vec)
                     .unwrap_or_else(|| vec![Binding::Unbound; batch.len()])
             })
             .collect();
@@ -245,7 +245,7 @@ impl Operator for UnionOperator {
                     >= self
                         .current_input_batch
                         .as_ref()
-                        .map(|b| b.len())
+                        .map(super::binding::Batch::len)
                         .unwrap_or(0)
             {
                 // Fetch next non-empty batch from child.

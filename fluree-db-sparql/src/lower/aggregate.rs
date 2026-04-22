@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use super::{LowerError, LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     fn iri_key(iri: &crate::ast::term::Iri) -> String {
         use crate::ast::term::IriValue;
         match &iri.value {
-            IriValue::Full(s) => format!("<{}>", s),
-            IriValue::Prefixed { prefix, local } => format!("{}:{}", prefix, local),
+            IriValue::Full(s) => format!("<{s}>"),
+            IriValue::Prefixed { prefix, local } => format!("{prefix}:{local}"),
         }
     }
 
@@ -36,15 +36,15 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         match expr.unwrap_bracketed() {
             Expression::Var(v) => format!("?{}", v.name),
             Expression::Literal(lit) => match &lit.value {
-                LiteralValue::Simple(s) => format!("\"{}\"", s),
-                LiteralValue::LangTagged { value, lang } => format!("\"{}\"@{}", value, lang),
+                LiteralValue::Simple(s) => format!("\"{s}\""),
+                LiteralValue::LangTagged { value, lang } => format!("\"{value}\"@{lang}"),
                 LiteralValue::Typed { value, datatype } => {
                     format!("\"{}\"^^{}", value, Self::iri_key(datatype))
                 }
-                LiteralValue::Integer(i) => format!("{}", i),
-                LiteralValue::Decimal(d) => format!("{}", d),
-                LiteralValue::Double(d) => format!("{}", d),
-                LiteralValue::Boolean(b) => format!("{}", b),
+                LiteralValue::Integer(i) => format!("{i}"),
+                LiteralValue::Decimal(d) => format!("{d}"),
+                LiteralValue::Double(d) => format!("{d}"),
+                LiteralValue::Boolean(b) => format!("{b}"),
             },
             Expression::Iri(i) => Self::iri_key(i),
             Expression::Unary { op, operand, .. } => {
@@ -67,14 +67,14 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                 use crate::ast::expr::FunctionName;
                 let name_key = match name {
                     FunctionName::Extension(iri) => format!("EXT{}", Self::iri_key(iri)),
-                    other => format!("{:?}", other),
+                    other => format!("{other:?}"),
                 };
                 let args_key = args
                     .iter()
                     .map(Self::expr_key_no_span)
                     .collect::<Vec<_>>()
                     .join(",");
-                format!("CALL[{};distinct={}]({})", name_key, distinct, args_key)
+                format!("CALL[{name_key};distinct={distinct}]({args_key})")
             }
             Expression::If {
                 condition,
@@ -223,7 +223,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
             Some(_) => self.map_aggregate_function(
                 function,
                 *distinct,
-                separator.as_ref().map(|s| s.as_ref()),
+                separator.as_ref().map(std::convert::AsRef::as_ref),
             ),
             None => AggregateFn::CountAll,
         };

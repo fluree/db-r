@@ -16,7 +16,7 @@ use crate::owl;
 
 /// Create a test SID from a namespace code.
 pub(crate) fn sid(n: u16) -> Sid {
-    Sid::new(n, format!("test:{}", n))
+    Sid::new(n, format!("test:{n}"))
 }
 
 /// Create a reference flake for testing.

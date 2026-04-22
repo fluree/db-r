@@ -77,7 +77,7 @@ impl HttpOriginFetcher {
         let normalized = if trimmed.ends_with("/fluree") {
             trimmed
         } else {
-            format!("{}/fluree", trimmed)
+            format!("{trimmed}/fluree")
         };
         Self {
             base_url: normalized,
@@ -145,11 +145,11 @@ impl HttpOriginFetcher {
         ledger: &str,
         request: &PackRequest,
     ) -> Result<Option<reqwest::Response>> {
-        let url = format!("{}/pack/{}", self.base_url, urlencoding::encode(ledger),);
+        let url = format!("{}/pack/{}", self.base_url, urlencoding::encode(ledger));
 
         debug!(url = %url, "requesting pack stream");
         let body = serde_json::to_vec(request).map_err(|e| {
-            SyncError::PackProtocol(format!("failed to serialize pack request: {}", e))
+            SyncError::PackProtocol(format!("failed to serialize pack request: {e}"))
         })?;
 
         let resp = self

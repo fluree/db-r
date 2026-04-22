@@ -11,7 +11,7 @@ use fluree_db_query::parse::{ParsedQuery, QueryOutput};
 
 use super::{LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     /// Lower an ASK query to a ParsedQuery.
     pub(super) fn lower_ask(&mut self, ask: &AskQuery) -> Result<ParsedQuery> {
         // Lower WHERE clause patterns

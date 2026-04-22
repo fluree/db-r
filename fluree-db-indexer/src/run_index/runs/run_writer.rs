@@ -557,7 +557,7 @@ mod tests {
         });
 
         for i in 0..100u64 {
-            let op = if i % 10 == 0 { 0u8 } else { 1u8 };
+            let op = u8::from(i % 10 != 0);
             writer
                 .push(
                     make_rec(i, 1, OType::XSD_INTEGER.as_u16(), i * 10, (i + 1) as u32),
@@ -592,7 +592,7 @@ mod tests {
         .unwrap();
 
         for i in 0..50u64 {
-            let op = if i % 5 == 0 { 0u8 } else { 1u8 };
+            let op = u8::from(i % 5 != 0);
             writer
                 .push(
                     make_rec(i, (i % 5) as u32, OType::XSD_INTEGER.as_u16(), i * 10, 1),

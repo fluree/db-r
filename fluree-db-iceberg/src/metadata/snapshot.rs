@@ -68,7 +68,9 @@ impl Snapshot {
 
     /// Get the operation that created this snapshot.
     pub fn operation(&self) -> Option<&str> {
-        self.summary.get("operation").map(|s| s.as_str())
+        self.summary
+            .get("operation")
+            .map(std::string::String::as_str)
     }
 
     /// Get added records count from summary.
@@ -237,7 +239,7 @@ mod tests {
 
         assert_eq!(snap.total_records(), Some(100));
         assert_eq!(snap.total_data_files(), Some(5));
-        assert_eq!(snap.total_files_size(), Some(1048576));
+        assert_eq!(snap.total_files_size(), Some(1_048_576));
         assert_eq!(snap.operation(), Some("append"));
         assert_eq!(snap.added_records(), Some(50));
         assert_eq!(snap.deleted_records(), Some(10));

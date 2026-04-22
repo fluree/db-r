@@ -350,7 +350,7 @@ fn encode_and_track(
         first_key,
         last_key,
         entry_count,
-        address: format!("pending:{}", hash),
+        address: format!("pending:{hash}"),
     }
 }
 
@@ -586,14 +586,14 @@ mod tests {
     fn test_reverse_tree_split_oversized_leaf() {
         // Build a tree with a single small leaf
         let mut entries: Vec<ReverseEntry> = (0..50)
-            .map(|i| make_reverse_entry(&format!("key_{:04}", i), i as u64))
+            .map(|i| make_reverse_entry(&format!("key_{i:04}"), i as u64))
             .collect();
         entries.sort_by(|a, b| a.key.cmp(&b.key));
         let (branch, leaf_bytes) = build_test_tree(&entries);
 
         // Add enough entries to exceed split threshold with a tiny target
         let mut new_entries: Vec<ReverseEntry> = (50..150)
-            .map(|i| make_reverse_entry(&format!("key_{:04}", i), i as u64))
+            .map(|i| make_reverse_entry(&format!("key_{i:04}"), i as u64))
             .collect();
         new_entries.sort_by(|a, b| a.key.cmp(&b.key));
 
@@ -614,12 +614,12 @@ mod tests {
 
         // Verify all entries are findable across leaves
         for i in 0..150u64 {
-            let key = format!("key_{:04}", i);
+            let key = format!("key_{i:04}");
             let found = result.new_leaves.iter().any(|l| {
                 let leaf = ReverseLeaf::from_bytes(&l.bytes).unwrap();
                 leaf.lookup(key.as_bytes()) == Some(i)
             });
-            assert!(found, "entry key_{:04} not found in any leaf", i);
+            assert!(found, "entry key_{i:04} not found in any leaf");
         }
     }
 
@@ -628,7 +628,7 @@ mod tests {
         // Build a tree with enough entries to span multiple leaves
         let mut entries: Vec<ReverseEntry> = (0..200)
             .map(|i| ReverseEntry {
-                key: format!("key_{:06}", i).into_bytes(),
+                key: format!("key_{i:06}").into_bytes(),
                 id: i as u64,
             })
             .collect();

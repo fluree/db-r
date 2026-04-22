@@ -314,16 +314,15 @@ async fn create_aws_connection(
             } => {
                 let dynamo_config = RawDynamoDbConfig {
                     table_name: table.to_string(),
-                    region: region.as_ref().map(|s| s.to_string()),
-                    endpoint: endpoint.as_ref().map(|s| s.to_string()),
+                    region: region.as_ref().map(std::string::ToString::to_string),
+                    endpoint: endpoint.as_ref().map(std::string::ToString::to_string),
                     timeout_ms: *timeout_ms,
                 };
                 let ns = DynamoDbNameService::new(sdk_config, dynamo_config)
                     .await
                     .map_err(|e| {
                         ConnectionError::storage(format!(
-                            "Failed to create DynamoDB nameservice: {}",
-                            e
+                            "Failed to create DynamoDB nameservice: {e}"
                         ))
                     })?;
                 Arc::new(ns) as Arc<dyn aws::AwsNameServiceDyn>
@@ -357,10 +356,7 @@ async fn create_aws_connection(
             let ns = DynamoDbNameService::new(sdk_config, dynamo_config)
                 .await
                 .map_err(|e| {
-                    ConnectionError::storage(format!(
-                        "Failed to create DynamoDB nameservice: {}",
-                        e
-                    ))
+                    ConnectionError::storage(format!("Failed to create DynamoDB nameservice: {e}"))
                 })?;
             Arc::new(ns) as Arc<dyn aws::AwsNameServiceDyn>
         }
@@ -387,7 +383,7 @@ mod tests {
             config: ConnectionConfig::memory(),
             storage: MemoryStorage::new(),
         };
-        assert!(format!("{:?}", handle).contains("MemoryStorage"));
+        assert!(format!("{handle:?}").contains("MemoryStorage"));
         assert_eq!(
             handle.config().parallelism,
             ConnectionConfig::default().parallelism
@@ -401,6 +397,6 @@ mod tests {
             config: ConnectionConfig::file("/tmp/test"),
             storage: FileStorage::new("/tmp/test"),
         };
-        assert!(format!("{:?}", handle).contains("FileStorage"));
+        assert!(format!("{handle:?}").contains("FileStorage"));
     }
 }

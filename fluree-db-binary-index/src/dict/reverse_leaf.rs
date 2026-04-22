@@ -410,7 +410,7 @@ mod tests {
     fn test_large_reverse_leaf() {
         let mut entries: Vec<ReverseEntry> = (0..5000)
             .map(|i| ReverseEntry {
-                key: format!("http://example.org/entity/{:06}", i).into_bytes(),
+                key: format!("http://example.org/entity/{i:06}").into_bytes(),
                 id: i as u64,
             })
             .collect();

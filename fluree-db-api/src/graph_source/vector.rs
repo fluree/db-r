@@ -101,8 +101,7 @@ impl crate::Fluree {
         {
             if !existing.retracted {
                 return Err(crate::ApiError::Config(format!(
-                    "Graph source '{}' already exists",
-                    graph_source_id
+                    "Graph source '{graph_source_id}' already exists"
                 )));
             }
         }
@@ -318,12 +317,12 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         // Get index CID
         let index_cid = record.index_id.ok_or_else(|| {
-            crate::ApiError::NotFound(format!("No index for graph source: {}", graph_source_id))
+            crate::ApiError::NotFound(format!("No index for graph source: {graph_source_id}"))
         })?;
 
         // Load from content store
@@ -349,7 +348,7 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         // Get source ledger from dependencies
@@ -365,7 +364,7 @@ impl crate::Fluree {
         let mut ledger_t: Option<i64> = None;
         for dep in &record.dependencies {
             let ledger_record = self.nameservice().lookup(dep).await?.ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Source ledger not found: {}", dep))
+                crate::ApiError::NotFound(format!("Source ledger not found: {dep}"))
             })?;
             ledger_t = Some(match ledger_t {
                 Some(cur) => cur.min(ledger_record.commit_t),
@@ -413,14 +412,13 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         // Check if graph source has been dropped
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
-                "Cannot sync retracted graph source: {}",
-                graph_source_id
+                "Cannot sync retracted graph source: {graph_source_id}"
             )));
         }
 
@@ -543,7 +541,7 @@ impl crate::Fluree {
             for (prefix, ns) in &prefix_map {
                 if full_iri.starts_with(ns.as_str()) {
                     let local = &full_iri[ns.len()..];
-                    let prefixed = format!("{}:{}", prefix, local);
+                    let prefixed = format!("{prefix}:{local}");
                     affected_iris_expanded.insert(Arc::from(prefixed));
                 }
             }
@@ -567,10 +565,7 @@ impl crate::Fluree {
             .await?;
 
         let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid graph source ID '{}': {}",
-                graph_source_id, e
-            ))
+            crate::ApiError::config(format!("Invalid graph source ID '{graph_source_id}': {e}"))
         })?;
 
         // 11. Update graph source index record (head pointer)
@@ -610,13 +605,12 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         if record.retracted {
             return Err(crate::ApiError::Drop(format!(
-                "Cannot resync retracted graph source: {}",
-                graph_source_id
+                "Cannot resync retracted graph source: {graph_source_id}"
             )));
         }
 
@@ -636,7 +630,7 @@ impl crate::Fluree {
             })?;
         let dimensions = config
             .get("dimensions")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .ok_or_else(|| {
                 crate::ApiError::Config("Missing dimensions in graph source config".to_string())
             })? as usize;
@@ -725,10 +719,7 @@ impl crate::Fluree {
             .await?;
 
         let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid graph source ID '{}': {}",
-                graph_source_id, e
-            ))
+            crate::ApiError::config(format!("Invalid graph source ID '{graph_source_id}': {e}"))
         })?;
 
         // 7. Update graph source index record (head pointer)
@@ -767,7 +758,7 @@ impl crate::Fluree {
             .lookup_graph_source(graph_source_id)
             .await?
             .ok_or_else(|| {
-                crate::ApiError::NotFound(format!("Graph source not found: {}", graph_source_id))
+                crate::ApiError::NotFound(format!("Graph source not found: {graph_source_id}"))
             })?;
 
         if record.retracted {
@@ -780,10 +771,7 @@ impl crate::Fluree {
 
         // Mark as retracted
         let (name, branch) = split_ledger_id(graph_source_id).map_err(|e| {
-            crate::ApiError::config(format!(
-                "Invalid graph source ID '{}': {}",
-                graph_source_id, e
-            ))
+            crate::ApiError::config(format!("Invalid graph source ID '{graph_source_id}': {e}"))
         })?;
 
         self.publisher()?

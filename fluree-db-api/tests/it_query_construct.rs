@@ -61,7 +61,7 @@ fn normalize_construct(mut v: JsonValue) -> JsonValue {
             if let JsonValue::Object(m) = node {
                 for (_k, vv) in m.iter_mut() {
                     if let JsonValue::Array(arr) = vv {
-                        arr.sort_by_key(|a| a.to_string());
+                        arr.sort_by_key(std::string::ToString::to_string);
                     }
                 }
             }

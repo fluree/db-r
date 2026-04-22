@@ -440,11 +440,10 @@ fn collect_label_pairs(
                     if str_id > dn.strings.watermark() {
                         dn.strings
                             .resolve_string(str_id)
-                            .map(|s| s.to_string())
+                            .map(std::string::ToString::to_string)
                             .ok_or_else(|| {
                                 QueryError::Internal(format!(
-                                    "resolve_string_value: string id {} not found in DictNovelty",
-                                    str_id
+                                    "resolve_string_value: string id {str_id} not found in DictNovelty"
                                 ))
                             })?
                     } else {
@@ -458,7 +457,9 @@ fn collect_label_pairs(
                         .map_err(|e| QueryError::Internal(format!("resolve_string_value: {e}")))?
                 };
                 let lang = if ot.is_lang_string() {
-                    store.resolve_lang_tag(ot_u16).map(|t| t.to_string())
+                    store
+                        .resolve_lang_tag(ot_u16)
+                        .map(std::string::ToString::to_string)
                 } else {
                     None
                 };

@@ -84,7 +84,7 @@ pub fn verify_jws(jws: &str) -> Result<JwsVerified> {
     // 2. Decode header (base64url -> JSON)
     let header_bytes = URL_SAFE_NO_PAD
         .decode(header_b64)
-        .map_err(|e| CredentialError::Base64Decode(format!("header: {}", e)))?;
+        .map_err(|e| CredentialError::Base64Decode(format!("header: {e}")))?;
 
     let header: JwsHeader = serde_json::from_slice(&header_bytes)
         .map_err(|e| CredentialError::InvalidJwsHeader(e.to_string()))?;
@@ -100,10 +100,10 @@ pub fn verify_jws(jws: &str) -> Result<JwsVerified> {
     // 5. Decode signature (base64url -> 64 bytes)
     let signature_bytes = URL_SAFE_NO_PAD
         .decode(sig_b64)
-        .map_err(|e| CredentialError::Base64Decode(format!("signature: {}", e)))?;
+        .map_err(|e| CredentialError::Base64Decode(format!("signature: {e}")))?;
 
     // 6. signing_input = "{header_b64}.{payload_b64}"
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
 
     // 7. Verify Ed25519 signature over signing_input
     verify_ed25519(&pubkey, signing_input.as_bytes(), &signature_bytes)?;
@@ -111,10 +111,10 @@ pub fn verify_jws(jws: &str) -> Result<JwsVerified> {
     // 8. Decode payload (base64url -> string)
     let payload_bytes = URL_SAFE_NO_PAD
         .decode(payload_b64)
-        .map_err(|e| CredentialError::Base64Decode(format!("payload: {}", e)))?;
+        .map_err(|e| CredentialError::Base64Decode(format!("payload: {e}")))?;
 
     let payload = String::from_utf8(payload_bytes)
-        .map_err(|e| CredentialError::InvalidJwsFormat(format!("payload not UTF-8: {}", e)))?;
+        .map_err(|e| CredentialError::InvalidJwsFormat(format!("payload not UTF-8: {e}")))?;
 
     // 9. Derive DID: did_from_pubkey(&pubkey)
     let did = did_from_pubkey(&pubkey);
@@ -153,7 +153,7 @@ fn extract_pubkey_from_jwk(header: &JwsHeader) -> Result<[u8; 32]> {
     // Decode the public key from base64url
     let key_bytes = URL_SAFE_NO_PAD
         .decode(&jwk.x)
-        .map_err(|e| CredentialError::Base64Decode(format!("jwk.x: {}", e)))?;
+        .map_err(|e| CredentialError::Base64Decode(format!("jwk.x: {e}")))?;
 
     if key_bytes.len() != 32 {
         return Err(CredentialError::InvalidPublicKey(format!(
@@ -191,11 +191,11 @@ mod tests {
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
 
         // Sign header.payload
-        let signing_input = format!("{}.{}", header_b64, payload_b64);
+        let signing_input = format!("{header_b64}.{payload_b64}");
         let signature = signing_key.sign(signing_input.as_bytes());
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-        format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+        format!("{header_b64}.{payload_b64}.{sig_b64}")
     }
 
     #[test]
@@ -225,7 +225,7 @@ mod tests {
             "jwk": {"kty": "OKP", "crv": "Ed25519", "x": "AAAA"}
         });
         let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
-        let jws = format!("{}.cGF5bG9hZA.c2ln", header_b64);
+        let jws = format!("{header_b64}.cGF5bG9hZA.c2ln");
 
         let result = verify_jws(&jws);
         assert!(matches!(
@@ -238,7 +238,7 @@ mod tests {
     fn test_verify_jws_missing_jwk() {
         let header = serde_json::json!({"alg": "EdDSA"});
         let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
-        let jws = format!("{}.cGF5bG9hZA.c2ln", header_b64);
+        let jws = format!("{header_b64}.cGF5bG9hZA.c2ln");
 
         let result = verify_jws(&jws);
         assert!(matches!(result, Err(CredentialError::MissingField(_))));

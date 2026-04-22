@@ -139,20 +139,17 @@ impl AwsConnectionHandle {
             .nameservice
             .lookup(ledger_id)
             .await
-            .map_err(|e| ConnectionError::storage(format!("Nameservice lookup failed: {}", e)))?
-            .ok_or_else(|| {
-                ConnectionError::not_found(format!("Ledger not found: {}", ledger_id))
-            })?;
+            .map_err(|e| ConnectionError::storage(format!("Nameservice lookup failed: {e}")))?
+            .ok_or_else(|| ConnectionError::not_found(format!("Ledger not found: {ledger_id}")))?;
 
         if record.retracted {
             return Err(ConnectionError::not_found(format!(
-                "Ledger has been retracted: {}",
-                ledger_id
+                "Ledger has been retracted: {ledger_id}"
             )));
         }
 
         let index_id = record.index_head_id.ok_or_else(|| {
-            ConnectionError::not_found(format!("Ledger has no index yet: {}", ledger_id))
+            ConnectionError::not_found(format!("Ledger has no index yet: {ledger_id}"))
         })?;
 
         let storage = self.index_storage.clone();
@@ -166,7 +163,7 @@ impl AwsConnectionHandle {
         self.nameservice
             .lookup(ledger_id)
             .await
-            .map_err(|e| ConnectionError::storage(format!("Nameservice lookup failed: {}", e)))
+            .map_err(|e| ConnectionError::storage(format!("Nameservice lookup failed: {e}")))
     }
 
     /// Publish a new index to the nameservice
@@ -181,7 +178,7 @@ impl AwsConnectionHandle {
         self.nameservice
             .publish_index(ledger_id, index_t, index_id)
             .await
-            .map_err(|e| ConnectionError::storage(format!("Publish index failed: {}", e)))
+            .map_err(|e| ConnectionError::storage(format!("Publish index failed: {e}")))
     }
 }
 

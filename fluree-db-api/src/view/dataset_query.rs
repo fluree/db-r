@@ -835,7 +835,7 @@ mod tests {
         });
 
         let result = fluree.query_dataset(&dataset, &query).await.unwrap();
-        let total_solutions: usize = result.batches.iter().map(|b| b.len()).sum();
+        let total_solutions: usize = result.batches.iter().map(fluree_db_query::Batch::len).sum();
         assert_eq!(total_solutions, 2);
     }
 

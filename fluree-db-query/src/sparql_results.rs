@@ -306,7 +306,7 @@ mod tests {
                 assert_eq!(s, "Hola");
                 assert_eq!(dtc.lang_tag(), Some("es"));
             }
-            other => panic!("expected lang-tagged literal, got {:?}", other),
+            other => panic!("expected lang-tagged literal, got {other:?}"),
         }
     }
 
@@ -437,7 +437,7 @@ mod tests {
                 assert_eq!(sid.namespace_code, 0);
                 assert_eq!(&*sid.name, "http://example.org/myType");
             }
-            other => panic!("expected Lit, got {:?}", other),
+            other => panic!("expected Lit, got {other:?}"),
         }
     }
 }

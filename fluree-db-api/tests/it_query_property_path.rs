@@ -430,8 +430,7 @@ async fn property_path_unsupported_operator_error() {
     let msg = format!("{}", err.unwrap_err());
     assert!(
         msg.contains("not yet supported"),
-        "Error should mention 'not yet supported', got: {}",
-        msg
+        "Error should mention 'not yet supported', got: {msg}"
     );
 }
 
@@ -454,8 +453,7 @@ async fn property_path_reverse_and_path_mutually_exclusive() {
     let msg = format!("{}", err.unwrap_err());
     assert!(
         msg.contains("mutually exclusive"),
-        "Error should mention 'mutually exclusive', got: {}",
-        msg
+        "Error should mention 'mutually exclusive', got: {msg}"
     );
 }
 
@@ -653,8 +651,7 @@ async fn property_path_nested_alternative_under_transitive_errors() {
     let msg = format!("{}", err.unwrap_err());
     assert!(
         msg.contains("simple predicate IRI"),
-        "Error should mention 'simple predicate IRI', got: {}",
-        msg
+        "Error should mention 'simple predicate IRI', got: {msg}"
     );
 }
 
@@ -786,8 +783,7 @@ async fn property_path_sequence_wildcard_hides_internal_vars() {
         for key in obj.keys() {
             assert!(
                 !key.starts_with("?__"),
-                "Internal variable '{}' should not appear in wildcard output",
-                key
+                "Internal variable '{key}' should not appear in wildcard output"
             );
         }
     }
@@ -928,8 +924,7 @@ async fn property_path_alternative_of_sequences_wildcard_hides_vars() {
         for key in obj.keys() {
             assert!(
                 !key.starts_with("?__"),
-                "Internal variable '{}' should not appear in wildcard output",
-                key
+                "Internal variable '{key}' should not appear in wildcard output"
             );
         }
     }
@@ -1127,8 +1122,7 @@ async fn property_path_sequence_with_alternative_step_wildcard() {
             for key in obj.keys() {
                 assert!(
                     !key.starts_with("?__"),
-                    "Internal variable {} should not appear in wildcard output",
-                    key,
+                    "Internal variable {key} should not appear in wildcard output",
                 );
             }
         }

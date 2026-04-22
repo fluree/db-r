@@ -165,13 +165,13 @@ pub fn parse_manifest_list_with_deletes(
     include_deletes: bool,
 ) -> Result<Vec<ManifestListEntry>> {
     let reader = apache_avro::Reader::new(&data[..])
-        .map_err(|e| IcebergError::Manifest(format!("Failed to create Avro reader: {}", e)))?;
+        .map_err(|e| IcebergError::Manifest(format!("Failed to create Avro reader: {e}")))?;
 
     let mut entries = Vec::new();
 
     for value_result in reader {
         let value = value_result
-            .map_err(|e| IcebergError::Manifest(format!("Failed to read Avro record: {}", e)))?;
+            .map_err(|e| IcebergError::Manifest(format!("Failed to read Avro record: {e}")))?;
 
         let entry = parse_manifest_list_entry(&value)?;
 

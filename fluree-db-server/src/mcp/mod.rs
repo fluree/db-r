@@ -14,7 +14,7 @@ use crate::state::AppState;
 use axum::middleware;
 use axum::Router;
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, StreamableHttpService,
+    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
 use std::sync::Arc;
 use tools::FlureeToolService;
@@ -33,7 +33,7 @@ pub fn build_mcp_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let mcp_service = StreamableHttpService::new(
         factory,
         LocalSessionManager::default().into(),
-        Default::default(),
+        StreamableHttpServerConfig::default(),
     );
 
     // Build router with authentication middleware

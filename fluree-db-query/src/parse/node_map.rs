@@ -63,7 +63,7 @@ fn map_get_by_iri<'a>(
         return Some(v);
     }
     // Expand each key through context and check
-    for (key, val) in map.iter() {
+    for (key, val) in map {
         if expand_iri(key, context) == iri {
             return Some(val);
         }
@@ -116,8 +116,7 @@ fn add_metadata_bind_pattern(
 
     if !object.is_var() {
         return Err(ParseError::InvalidWhere(format!(
-            "{} requires @value to be a variable",
-            error_context
+            "{error_context} requires @value to be a variable"
         )));
     }
 
@@ -155,8 +154,7 @@ fn add_metadata_filter_pattern(
 
     if !object.is_var() {
         return Err(ParseError::InvalidWhere(format!(
-            "{} requires @value to be a variable",
-            error_context
+            "{error_context} requires @value to be a variable"
         )));
     }
 
@@ -290,11 +288,12 @@ fn parse_index_search_pattern(
 
     // Extract f:syncBeforeQuery (optional, default false)
     let sync = map_get_by_iri(map, search_iris::SYNC_BEFORE_QUERY, context)
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     // Extract f:timeoutMs (optional)
-    let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
+    let timeout =
+        map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(serde_json::Value::as_u64);
 
     let mut pattern =
         UnresolvedIndexSearchPattern::new(graph_source_id, target, result_vars.id.as_ref());
@@ -400,11 +399,12 @@ fn parse_vector_search_pattern(
 
     // Extract f:syncBeforeQuery (optional, default false)
     let sync = map_get_by_iri(map, search_iris::SYNC_BEFORE_QUERY, context)
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     // Extract f:timeoutMs (optional)
-    let timeout = map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(|v| v.as_u64());
+    let timeout =
+        map_get_by_iri(map, search_iris::TIMEOUT_MS, context).and_then(serde_json::Value::as_u64);
 
     let mut pattern = UnresolvedVectorSearchPattern::new(
         graph_source_id,
@@ -1052,8 +1052,7 @@ fn parse_value_object(
                 UnresolvedTerm::double(f)
             } else {
                 return Err(ParseError::InvalidWhere(format!(
-                    "Unsupported number type in @value: {}",
-                    n
+                    "Unsupported number type in @value: {n}"
                 )));
             }
         }
@@ -1180,8 +1179,7 @@ fn parse_json_value(
                 Ok(UnresolvedTerm::double(f))
             } else {
                 Err(ParseError::InvalidWhere(format!(
-                    "Unsupported number type: {}",
-                    n
+                    "Unsupported number type: {n}"
                 )))
             }
         }

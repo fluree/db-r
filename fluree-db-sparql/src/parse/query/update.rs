@@ -9,7 +9,7 @@ use crate::ast::{GraphPattern, Iri};
 use crate::lex::TokenKind;
 use crate::span::SourceSpan;
 
-impl<'a> super::Parser<'a> {
+impl super::Parser<'_> {
     /// Parse a SPARQL Update operation.
     ///
     /// Grammar:

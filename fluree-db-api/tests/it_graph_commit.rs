@@ -248,8 +248,7 @@ async fn commit_show_without_policy_returns_all_flakes() {
     assert_eq!(
         ssn_flakes.len(),
         2,
-        "unfiltered should see both SSN flakes, got: {:?}",
-        ssn_flakes
+        "unfiltered should see both SSN flakes, got: {ssn_flakes:?}"
     );
 }
 
@@ -279,14 +278,13 @@ async fn commit_show_with_identity_filters_flakes_by_policy() {
     assert_eq!(
         ssn_flakes.len(),
         1,
-        "policy-filtered should see only Alice's SSN, got: {:?}",
-        ssn_flakes
+        "policy-filtered should see only Alice's SSN, got: {ssn_flakes:?}"
     );
 
     // Verify it's Alice's SSN specifically
     let ssn_value = match &ssn_flakes[0].o {
         fluree_db_api::graph_commit_builder::ResolvedValue::String(s) => s.as_str(),
-        other => panic!("expected string SSN, got: {:?}", other),
+        other => panic!("expected string SSN, got: {other:?}"),
     };
     assert_eq!(ssn_value, "111-11-1111", "should be Alice's SSN");
 
@@ -355,10 +353,7 @@ async fn commit_show_with_bad_identity_returns_query_error() {
 
     match result {
         Err(ApiError::Query(_)) => { /* expected: bad identity is a query/config error */ }
-        Err(other) => panic!(
-            "expected ApiError::Query for bad identity, got: {:?}",
-            other
-        ),
+        Err(other) => panic!("expected ApiError::Query for bad identity, got: {other:?}"),
         Ok(_) => {
             // Some implementations may return root policy (all flakes) when
             // identity resolves but has no policyClass. This is also acceptable.
@@ -426,13 +421,12 @@ async fn commit_show_prefix_with_identity_filters_flakes_by_policy() {
     assert_eq!(
         filtered_ssns.len(),
         1,
-        "policy-filtered prefix lookup should see only Alice's SSN, got: {:?}",
-        filtered_ssns
+        "policy-filtered prefix lookup should see only Alice's SSN, got: {filtered_ssns:?}"
     );
 
     let ssn_value = match &filtered_ssns[0].o {
         fluree_db_api::graph_commit_builder::ResolvedValue::String(s) => s.as_str(),
-        other => panic!("expected string SSN, got: {:?}", other),
+        other => panic!("expected string SSN, got: {other:?}"),
     };
     assert_eq!(ssn_value, "111-11-1111", "should be Alice's SSN");
 }

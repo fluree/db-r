@@ -84,12 +84,12 @@ async fn query_bound_iri_in_new_namespace_after_index_returns_row() {
     );
 
     // Regression: a query with bound IRIs in namespace B should return 1 row.
-    let sparql = r#"
+    let sparql = r"
         PREFIX b: <http://example.org/b/>
         SELECT ?name WHERE {
           b:thing2 b:name ?name .
         }
-    "#;
+    ";
     let rows = support::query_sparql(&fluree, &ledger2, sparql)
         .await
         .unwrap()
@@ -98,7 +98,7 @@ async fn query_bound_iri_in_new_namespace_after_index_returns_row() {
         .unwrap();
 
     assert_eq!(
-        rows.as_array().map(|a| a.len()).unwrap_or(0),
+        rows.as_array().map(std::vec::Vec::len).unwrap_or(0),
         1,
         "expected 1 row for ns B data"
     );
@@ -144,13 +144,13 @@ async fn query_predicate_var_in_new_namespace_after_index_preserves_prefix() {
 
     // Query with predicate variable, but FILTER by subject constant.
     // This exercises binary-scan cursor + overlay ops translation, not overlay-only fallback.
-    let sparql = r#"
+    let sparql = r"
         PREFIX b: <http://example.org/b/>
         SELECT ?p ?o WHERE {
           ?s ?p ?o .
           FILTER(?s = b:thing2)
         }
-    "#;
+    ";
     let result = support::query_sparql(&fluree, &ledger2, sparql)
         .await
         .unwrap();

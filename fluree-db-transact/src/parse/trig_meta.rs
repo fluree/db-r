@@ -235,8 +235,8 @@ fn expand_prefixed_name(
 ) -> Result<String> {
     let ns = prefixes
         .get(prefix)
-        .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {}", prefix)))?;
-    Ok(format!("{}{}", ns, local))
+        .ok_or_else(|| TransactError::Parse(format!("undefined prefix: {prefix}")))?;
+    Ok(format!("{ns}{local}"))
 }
 
 /// Convert a RawObject to TxnMetaValue using the namespace registry.
@@ -560,7 +560,7 @@ impl<'a> TrigMetaParser<'a> {
         // Simple resolution - if relative and base is set, resolve against base
         if let Some(base) = &self.base {
             if !iri.contains(':') {
-                return format!("{}{}", base, iri);
+                return format!("{base}{iri}");
             }
         }
         iri.to_string()
@@ -568,12 +568,9 @@ impl<'a> TrigMetaParser<'a> {
 
     fn expand_prefixed_name(&self, prefix: &str, local: &str) -> Result<String> {
         if let Some(namespace) = self.prefixes.get(prefix) {
-            Ok(format!("{}{}", namespace, local))
+            Ok(format!("{namespace}{local}"))
         } else {
-            Err(TransactError::Parse(format!(
-                "undefined prefix: {}",
-                prefix
-            )))
+            Err(TransactError::Parse(format!("undefined prefix: {prefix}")))
         }
     }
 
@@ -823,7 +820,7 @@ impl<'a> TrigMetaParser<'a> {
                 self.advance();
                 let n: f64 = text
                     .parse()
-                    .map_err(|_| TransactError::Parse(format!("invalid decimal: {}", text)))?;
+                    .map_err(|_| TransactError::Parse(format!("invalid decimal: {text}")))?;
                 Ok(ObjectValue::Double(n))
             }
             TokenKind::KwTrue => {
@@ -935,8 +932,7 @@ impl<'a> TrigMetaParser<'a> {
 
                     if !is_commit_this_iri(&subject_iri) {
                         return Err(TransactError::Parse(format!(
-                            "txn-meta subject must be fluree:commit:this, found: {}",
-                            subject_iri
+                            "txn-meta subject must be fluree:commit:this, found: {subject_iri}"
                         )));
                     }
 
@@ -1008,7 +1004,7 @@ impl<'a> TrigMetaParser<'a> {
                 },
                 TermValue::BlankNode(label) => {
                     // Blank nodes are allowed in named graphs (will be skolemized)
-                    RawTerm::Iri(format!("_:{}", label))
+                    RawTerm::Iri(format!("_:{label}"))
                 }
             };
 
@@ -1063,7 +1059,7 @@ impl<'a> TrigMetaParser<'a> {
             }),
             ObjectValue::BlankNode(label) => {
                 // Blank nodes in objects are allowed in named graphs
-                Ok(RawObject::Iri(format!("_:{}", label)))
+                Ok(RawObject::Iri(format!("_:{label}")))
             }
             ObjectValue::LangString { value, lang } => Ok(RawObject::LangString {
                 value: value.clone(),
@@ -1168,8 +1164,7 @@ impl<'a> TrigMetaParser<'a> {
 
                     if !is_commit_this_iri(&subject_iri) {
                         return Err(TransactError::Parse(format!(
-                            "txn-meta subject must be fluree:commit:this, found: {}",
-                            subject_iri
+                            "txn-meta subject must be fluree:commit:this, found: {subject_iri}"
                         )));
                     }
 
@@ -1284,8 +1279,7 @@ fn validate_limits(entries: &[TxnMetaEntry]) -> Result<()> {
 
     if estimated_bytes > MAX_TXN_META_BYTES {
         return Err(TransactError::Parse(format!(
-            "txn-meta estimated size {} bytes exceeds maximum {} bytes",
-            estimated_bytes, MAX_TXN_META_BYTES
+            "txn-meta estimated size {estimated_bytes} bytes exceeds maximum {MAX_TXN_META_BYTES} bytes"
         )));
     }
 
@@ -1497,14 +1491,14 @@ GRAPH <#txn-meta> {
     #[test]
     fn test_reject_blank_node_object() {
         let mut ns = test_registry();
-        let input = r#"
+        let input = r"
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:source _:b1 .
 }
-"#;
+";
 
         let result = extract_trig_txn_meta(input, &mut ns);
         assert!(result.is_err());
@@ -1562,14 +1556,14 @@ GRAPH <#txn-meta> {
     #[test]
     fn test_iri_reference_object() {
         let mut ns = test_registry();
-        let input = r#"
+        let input = r"
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:author ex:alice .
 }
-"#;
+";
 
         let result = extract_trig_txn_meta(input, &mut ns).unwrap();
         assert_eq!(result.txn_meta.len(), 1);
@@ -1584,14 +1578,14 @@ GRAPH <#txn-meta> {
     #[test]
     fn test_boolean_values() {
         let mut ns = test_registry();
-        let input = r#"
+        let input = r"
 @prefix ex: <http://example.org/> .
 @prefix fluree: <https://ns.flur.ee/db#> .
 
 GRAPH <#txn-meta> {
     fluree:commit:this ex:validated true .
 }
-"#;
+";
 
         let result = extract_trig_txn_meta(input, &mut ns).unwrap();
         assert_eq!(result.txn_meta.len(), 1);

@@ -355,8 +355,7 @@ fn extract_path_aliases_into(
                         // Validate: @path and @reverse are mutually exclusive
                         if term_def.contains_key("@reverse") {
                             return Err(ParseError::InvalidContext(format!(
-                                "term '{}': @path and @reverse are mutually exclusive",
-                                key,
+                                "term '{key}': @path and @reverse are mutually exclusive",
                             )));
                         }
 
@@ -1343,7 +1342,7 @@ mod tests {
                     .as_ref()
                     .is_some_and(|d| d.datatype_iri() == "https://ns.flur.ee/db#embeddingVector"));
             }
-            other => panic!("unexpected cell: {:?}", other),
+            other => panic!("unexpected cell: {other:?}"),
         }
     }
 
@@ -1449,7 +1448,10 @@ mod tests {
         let pattern = triple(&ast.patterns[0]);
         assert!(pattern.dtc.is_some());
         assert_eq!(
-            pattern.dtc.as_ref().map(|c| c.datatype_iri()),
+            pattern
+                .dtc
+                .as_ref()
+                .map(fluree_vocab::UnresolvedDatatypeConstraint::datatype_iri),
             Some("http://www.w3.org/2001/XMLSchema#integer")
         );
     }
@@ -2523,11 +2525,10 @@ mod tests {
                     assert_eq!(
                         func.as_ref(),
                         expected_func,
-                        "Operator {} did not match",
-                        op_str
+                        "Operator {op_str} did not match"
                     );
                 }
-                _ => panic!("Expected Call for operator {}", op_str),
+                _ => panic!("Expected Call for operator {op_str}"),
             }
         }
     }

@@ -80,7 +80,7 @@ pub fn build_class_stats_json(
         let iri = std::str::from_utf8(&iri_buf).ok()?;
         let prefix = namespace_codes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
         let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
             &iri[prefix.len()..]
@@ -214,7 +214,7 @@ pub fn build_class_stat_entries(
         let iri = std::str::from_utf8(&iri_buf).ok()?;
         let prefix = namespace_codes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
         let suffix = if !prefix.is_empty() && iri.starts_with(prefix) {
             &iri[prefix.len()..]
@@ -326,7 +326,7 @@ pub fn build_class_stat_entries(
         });
     }
 
-    let total_classes: usize = per_graph.values().map(|v| v.len()).sum();
+    let total_classes: usize = per_graph.values().map(std::vec::Vec::len).sum();
     tracing::info!(
         classes = total_classes,
         graphs = per_graph.len(),

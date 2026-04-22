@@ -443,8 +443,7 @@ pub fn deserialize(data: &[u8]) -> Result<Bm25Index> {
 
     if version != SNAPSHOT_VERSION_V3 {
         return Err(SerializeError::InvalidFormat(format!(
-            "Unsupported version: {} (only v3 and v4 supported)",
-            version,
+            "Unsupported version: {version} (only v3 and v4 supported)",
         )));
     }
 
@@ -696,8 +695,7 @@ pub fn deserialize_chunked_root(data: &[u8]) -> Result<ChunkedRoot> {
 
     if uncompressed_len > MAX_ROOT_DECOMPRESSED {
         return Err(SerializeError::InvalidFormat(format!(
-            "Declared uncompressed size {} exceeds maximum allowed {} for root blob",
-            uncompressed_len, MAX_ROOT_DECOMPRESSED
+            "Declared uncompressed size {uncompressed_len} exceeds maximum allowed {MAX_ROOT_DECOMPRESSED} for root blob"
         )));
     }
 
@@ -725,8 +723,7 @@ pub fn deserialize_chunked_root(data: &[u8]) -> Result<ChunkedRoot> {
 pub fn deserialize_posting_leaflet(data: &[u8]) -> Result<(u32, Vec<PostingList>)> {
     let decompressed = zstd::bulk::decompress(data, MAX_LEAFLET_DECOMPRESSED).map_err(|e| {
         SerializeError::Io(std::io::Error::other(format!(
-            "Leaflet decompression failed (max {} bytes): {}",
-            MAX_LEAFLET_DECOMPRESSED, e
+            "Leaflet decompression failed (max {MAX_LEAFLET_DECOMPRESSED} bytes): {e}"
         )))
     })?;
 
@@ -987,10 +984,7 @@ mod tests {
             assert_eq!(dk_o, dk_r, "DocKey mismatch");
             assert!(
                 (s_o - s_r).abs() < 1e-10,
-                "Score mismatch for {:?}: {} vs {}",
-                dk_o,
-                s_o,
-                s_r
+                "Score mismatch for {dk_o:?}: {s_o} vs {s_r}"
             );
         }
 
@@ -1170,10 +1164,7 @@ mod tests {
             assert_eq!(dk_o, dk_r, "DocKey mismatch");
             assert!(
                 (s_o - s_r).abs() < 1e-10,
-                "Score mismatch for {:?}: {} vs {}",
-                dk_o,
-                s_o,
-                s_r
+                "Score mismatch for {dk_o:?}: {s_o} vs {s_r}"
             );
         }
 

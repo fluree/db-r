@@ -244,13 +244,15 @@ pub async fn format_async(
                         }
                         Some(Binding::Sid(sid)) => Some(sid.clone()),
                         Some(Binding::IriMatch { primary_sid, .. }) => Some(primary_sid.clone()),
-                        Some(Binding::Unbound) | Some(Binding::Poisoned) | None => None,
-                        Some(Binding::Lit { .. })
-                        | Some(Binding::Grouped(_))
-                        | Some(Binding::Iri(_))
-                        | Some(Binding::EncodedLit { .. })
-                        | Some(Binding::EncodedSid { .. })
-                        | Some(Binding::EncodedPid { .. }) => None,
+                        Some(Binding::Unbound | Binding::Poisoned) | None => None,
+                        Some(
+                            Binding::Lit { .. }
+                            | Binding::Grouped(_)
+                            | Binding::Iri(_)
+                            | Binding::EncodedLit { .. }
+                            | Binding::EncodedSid { .. }
+                            | Binding::EncodedPid { .. },
+                        ) => None,
                     };
 
                     let Some(root_sid) = root_sid else {
@@ -679,7 +681,7 @@ impl<'a> GraphCrawlFormatter<'a> {
             return match &flake.o {
                 FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
                     serde_json::from_str(json_str).map_err(|e| {
-                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {e}"))
                     })
                 }
                 _ => Err(FormatError::InvalidBinding(
@@ -816,7 +818,7 @@ impl<'a> GraphCrawlFormatter<'a> {
             return match &flake.o {
                 FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
                     let json_val: JsonValue = serde_json::from_str(json_str).map_err(|e| {
-                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {e}"))
                     })?;
                     Ok(json!({
                         "@value": json_val,
@@ -962,7 +964,7 @@ impl<'a> GraphCrawlFormatter<'a> {
             return match &flake.o {
                 FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
                     serde_json::from_str(json_str).map_err(|e| {
-                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {e}"))
                     })
                 }
                 _ => Err(FormatError::InvalidBinding(
@@ -1026,7 +1028,7 @@ impl<'a> GraphCrawlFormatter<'a> {
             )
             .await
             .map_err(|e| {
-                FormatError::InvalidBinding(format!("Failed to fetch subject properties: {}", e))
+                FormatError::InvalidBinding(format!("Failed to fetch subject properties: {e}"))
             })?;
 
         // Policy filtering: only when policy is Some and not root.
@@ -1055,7 +1057,7 @@ impl<'a> GraphCrawlFormatter<'a> {
             )
             .await
             .map_err(|e| {
-                FormatError::InvalidBinding(format!("Failed to fetch reverse properties: {}", e))
+                FormatError::InvalidBinding(format!("Failed to fetch reverse properties: {e}"))
             })?;
 
         // Policy filtering: only when policy is Some and not root

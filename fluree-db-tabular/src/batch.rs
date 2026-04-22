@@ -206,17 +206,19 @@ impl Column {
     #[inline]
     pub fn is_null(&self, idx: usize) -> bool {
         match self {
-            Self::Boolean(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Int32(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Int64(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Float32(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Float64(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::String(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Bytes(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Date(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Timestamp(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::TimestampTz(v) => v.get(idx).is_none_or(|v| v.is_none()),
-            Self::Decimal { values, .. } => values.get(idx).is_none_or(|v| v.is_none()),
+            Self::Boolean(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Int32(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Int64(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Float32(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Float64(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::String(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Bytes(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Date(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Timestamp(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::TimestampTz(v) => v.get(idx).is_none_or(std::option::Option::is_none),
+            Self::Decimal { values, .. } => {
+                values.get(idx).is_none_or(std::option::Option::is_none)
+            }
         }
     }
 
@@ -391,7 +393,7 @@ impl ColumnBatch {
             )));
         }
 
-        let num_rows = columns.first().map_or(0, |c| c.len());
+        let num_rows = columns.first().map_or(0, Column::len);
 
         // Verify all columns have the same row count
         for (i, col) in columns.iter().enumerate() {
@@ -471,7 +473,7 @@ impl ColumnBatch {
 
         for &field_id in field_ids {
             let idx = self.schema.index_by_id(field_id).ok_or_else(|| {
-                TabularError::Schema(format!("Field ID {} not found in schema", field_id))
+                TabularError::Schema(format!("Field ID {field_id} not found in schema"))
             })?;
 
             new_fields.push(self.schema.fields[idx].clone());
@@ -488,7 +490,7 @@ impl ColumnBatch {
 
     /// Approximate byte size of this batch (for budget tracking).
     pub fn byte_size(&self) -> usize {
-        self.columns.iter().map(|c| c.byte_size()).sum()
+        self.columns.iter().map(Column::byte_size).sum()
     }
 
     /// Iterator over row indices.

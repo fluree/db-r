@@ -146,3 +146,6 @@ harness = false
 [[bench]]
 name = "insert_formats"
 harness = false
+
+[lints]
+workspace = true

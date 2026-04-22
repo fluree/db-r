@@ -257,13 +257,12 @@ pub(crate) async fn walk_prev_index_chain_cs(
             Err(e) => {
                 if chain.is_empty() {
                     return Err(e.into());
-                } else {
-                    tracing::debug!(
-                        root_id = %current_id,
-                        "prev_index not found, chain ends here (prior GC)"
-                    );
-                    break;
                 }
+                tracing::debug!(
+                    root_id = %current_id,
+                    "prev_index not found, chain ends here (prior GC)"
+                );
+                break;
             }
         };
 
@@ -363,7 +362,7 @@ mod tests {
     fn test_current_timestamp_ms() {
         let ts = current_timestamp_ms();
         // Should be a reasonable timestamp (after year 2020)
-        assert!(ts > 1577836800000); // Jan 1, 2020 in ms
+        assert!(ts > 1_577_836_800_000); // Jan 1, 2020 in ms
     }
 
     #[test]
@@ -533,15 +532,12 @@ mod tests {
 
         // Garbage record at t=2: CID strings of nodes replaced from t=1
         let garbage2 = format!(
-            r#"{{"ledger_id": "{}", "t": 2, "garbage": ["{}"], "created_at_ms": {}}}"#,
-            LEDGER, old_leaf_cid, old_ts
+            r#"{{"ledger_id": "{LEDGER}", "t": 2, "garbage": ["{old_leaf_cid}"], "created_at_ms": {old_ts}}}"#
         );
 
         // Garbage record at t=1 (empty, will be deleted with t=1)
-        let garbage1 = format!(
-            r#"{{"ledger_id": "{}", "t": 1, "garbage": [], "created_at_ms": 0}}"#,
-            LEDGER
-        );
+        let garbage1 =
+            format!(r#"{{"ledger_id": "{LEDGER}", "t": 1, "garbage": [], "created_at_ms": 0}}"#);
 
         storage.write_bytes(&addr1, &root1).await.unwrap();
         storage.write_bytes(&addr2, &root2).await.unwrap();
@@ -617,8 +613,7 @@ mod tests {
         );
 
         let garbage2 = format!(
-            r#"{{"ledger_id": "{}", "t": 2, "garbage": ["old"], "created_at_ms": {}}}"#,
-            LEDGER, recent_ts
+            r#"{{"ledger_id": "{LEDGER}", "t": 2, "garbage": ["old"], "created_at_ms": {recent_ts}}}"#
         );
 
         storage.write_bytes(&addr1, &root1).await.unwrap();
@@ -680,8 +675,7 @@ mod tests {
         );
 
         let garbage2 = format!(
-            r#"{{"ledger_id": "{}", "t": 2, "garbage": ["{}"], "created_at_ms": {}}}"#,
-            LEDGER, old_cid, old_ts
+            r#"{{"ledger_id": "{LEDGER}", "t": 2, "garbage": ["{old_cid}"], "created_at_ms": {old_ts}}}"#
         );
 
         storage.write_bytes(&addr1, &root1).await.unwrap();
@@ -775,16 +769,13 @@ mod tests {
         );
 
         let garbage2 = format!(
-            r#"{{"ledger_id": "{}", "t": 2, "garbage": ["{}"], "created_at_ms": {}}}"#,
-            LEDGER, n1_cid, old_ts
+            r#"{{"ledger_id": "{LEDGER}", "t": 2, "garbage": ["{n1_cid}"], "created_at_ms": {old_ts}}}"#
         );
         let garbage3 = format!(
-            r#"{{"ledger_id": "{}", "t": 3, "garbage": ["{}"], "created_at_ms": {}}}"#,
-            LEDGER, n2_cid, old_ts
+            r#"{{"ledger_id": "{LEDGER}", "t": 3, "garbage": ["{n2_cid}"], "created_at_ms": {old_ts}}}"#
         );
         let garbage4 = format!(
-            r#"{{"ledger_id": "{}", "t": 4, "garbage": ["{}"], "created_at_ms": {}}}"#,
-            LEDGER, n3_cid, old_ts
+            r#"{{"ledger_id": "{LEDGER}", "t": 4, "garbage": ["{n3_cid}"], "created_at_ms": {old_ts}}}"#
         );
 
         storage.write_bytes(&addr1, &root1).await.unwrap();
@@ -896,13 +887,16 @@ mod tests {
 
         // Write garbage manifest (as the pipeline does via write_garbage_record)
         let old_ts = current_timestamp_ms() - (60 * 60 * 1000); // 1 hour ago
-        let garbage_items: Vec<String> = replaced_cids.iter().map(|c| c.to_string()).collect();
+        let garbage_items: Vec<String> = replaced_cids
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         let garbage_json = format!(
             r#"{{"ledger_id": "{}", "t": 10, "garbage": [{}], "created_at_ms": {}}}"#,
             LEDGER,
             garbage_items
                 .iter()
-                .map(|s| format!("\"{}\"", s))
+                .map(|s| format!("\"{s}\""))
                 .collect::<Vec<_>>()
                 .join(","),
             old_ts

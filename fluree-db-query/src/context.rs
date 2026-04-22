@@ -25,6 +25,10 @@ use fluree_vocab::{geo_names, xsd_names};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Map from `(graph_id, predicate_id, lang_id)` to fulltext BoW arenas used
+/// by `fulltext()` BM25 scoring.
+pub type FulltextProviders = HashMap<(GraphId, u32, u16), Arc<FulltextArena>>;
+
 /// Execution context providing access to database and query state.
 ///
 /// # Dataset Support
@@ -117,7 +121,7 @@ pub struct ExecutionContext<'a> {
     /// When present, `eval_fulltext` uses arena-based BM25 scoring with
     /// corpus-wide IDF and avgdl stats. When absent, falls back to
     /// per-document TF-saturation scoring.
-    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32, u16), Arc<FulltextArena>>>,
+    pub fulltext_providers: Option<&'a FulltextProviders>,
     /// Dict-assigned lang_id for BCP-47 `"en"`, resolved at context
     /// construction time from the binary index's language dict.
     ///
@@ -478,10 +482,7 @@ impl<'a> ExecutionContext<'a> {
     }
 
     /// Attach fulltext BoW arenas to this context (for `fulltext()` BM25 scoring).
-    pub fn with_fulltext_providers(
-        mut self,
-        providers: &'a HashMap<(GraphId, u32, u16), Arc<FulltextArena>>,
-    ) -> Self {
+    pub fn with_fulltext_providers(mut self, providers: &'a FulltextProviders) -> Self {
         self.fulltext_providers = Some(providers);
         self
     }

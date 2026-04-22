@@ -55,3 +55,6 @@ fluree-db-api = { path = "../fluree-db-api", features = ["native"] }
 tempfile = "3.19"
 http = { workspace = true }
 http-body-util = { workspace = true }
+
+[lints]
+workspace = true

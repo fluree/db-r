@@ -227,8 +227,7 @@ impl<'a> Validator<'a> {
                 )
                 .with_label(Label::new(var.span, "variable not allowed here"))
                 .with_help(format!(
-                    "{} requires ground triples (IRIs, literals, blank nodes) with no variables.",
-                    context
+                    "{context} requires ground triples (IRIs, literals, blank nodes) with no variables."
                 ))
                 .with_note(
                     "Use DELETE WHERE or INSERT/DELETE with WHERE clause for patterns with variables.",
@@ -246,8 +245,7 @@ impl<'a> Validator<'a> {
                 )
                 .with_label(Label::new(var.span, "variable not allowed here"))
                 .with_help(format!(
-                    "{} requires ground triples (IRIs, literals, blank nodes) with no variables.",
-                    context
+                    "{context} requires ground triples (IRIs, literals, blank nodes) with no variables."
                 ))
                 .with_note(
                     "Use DELETE WHERE or INSERT/DELETE with WHERE clause for patterns with variables.",
@@ -265,8 +263,7 @@ impl<'a> Validator<'a> {
                 )
                 .with_label(Label::new(var.span, "variable not allowed here"))
                 .with_help(format!(
-                    "{} requires ground triples (IRIs, literals, blank nodes) with no variables.",
-                    context
+                    "{context} requires ground triples (IRIs, literals, blank nodes) with no variables."
                 ))
                 .with_note(
                     "Use DELETE WHERE or INSERT/DELETE with WHERE clause for patterns with variables.",
@@ -416,8 +413,7 @@ mod tests {
         );
         assert!(
             diags.iter().all(|d| !d.is_error()),
-            "Expected no errors: {:?}",
-            diags
+            "Expected no errors: {diags:?}"
         );
     }
 
@@ -464,8 +460,7 @@ mod tests {
         );
         assert!(
             diags.iter().all(|d| !d.is_error()),
-            "Expected no errors: {:?}",
-            diags
+            "Expected no errors: {diags:?}"
         );
     }
 
@@ -516,8 +511,7 @@ mod tests {
         let diags = validate_query("SELECT * WHERE { ?s ex:name ?o }");
         assert!(
             diags.iter().all(|d| !d.is_error()),
-            "Expected no errors: {:?}",
-            diags
+            "Expected no errors: {diags:?}"
         );
     }
 
@@ -597,8 +591,7 @@ mod tests {
             diags
                 .iter()
                 .any(|d| d.code == DiagCode::MinusSemanticsPartial && d.is_warning()),
-            "MINUS should emit a warning: {:?}",
-            diags
+            "MINUS should emit a warning: {diags:?}"
         );
     }
 
@@ -611,8 +604,7 @@ mod tests {
         let diags = validate_query("SELECT ?x ?y WHERE { ?x ex:knows ?y }");
         assert!(
             diags.iter().all(|d| !d.is_error()),
-            "Expected no errors: {:?}",
-            diags
+            "Expected no errors: {diags:?}"
         );
     }
 

@@ -71,8 +71,7 @@ async fn owl2rl_same_as_symmetry() {
     // Should include both carol and carol-lynn (sameAs is reflexive and symmetric)
     assert!(
         results.contains(&json!("ex:carol")),
-        "carol-lynn should be sameAs carol, got {:?}",
-        results
+        "carol-lynn should be sameAs carol, got {results:?}"
     );
 }
 
@@ -399,8 +398,7 @@ async fn owl2rl_functional_property() {
     // carol and carol2 should be sameAs each other
     assert!(
         results.contains(&json!("ex:carol2")),
-        "carol should be sameAs carol2, got {:?}",
-        results
+        "carol should be sameAs carol2, got {results:?}"
     );
 }
 

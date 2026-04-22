@@ -124,11 +124,11 @@ pub fn parse_offset(obj: &serde_json::Map<String, JsonValue>) -> Result<Option<u
 /// ```
 pub fn parse_distinct(obj: &serde_json::Map<String, JsonValue>) -> bool {
     obj.get("distinct")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
         || obj
             .get("selectDistinct")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
 }
 
@@ -400,8 +400,7 @@ fn rewrite_having_aggregates(
             if let Some(function) = agg_fn {
                 if args.len() != 1 {
                     return Err(ParseError::InvalidFilter(format!(
-                        "HAVING aggregate {} requires exactly 1 argument",
-                        func
+                        "HAVING aggregate {func} requires exactly 1 argument"
                     )));
                 }
 
@@ -490,7 +489,7 @@ pub fn parse_reasoning(
     let query_obj = JsonValue::Object(obj.clone());
     crate::rewrite::ReasoningModes::from_query_json(&query_obj)
         .map(Some)
-        .map_err(|e| ParseError::InvalidOption(format!("reasoning: {}", e)))
+        .map_err(|e| ParseError::InvalidOption(format!("reasoning: {e}")))
 }
 
 /// Parse all query options from JSON
@@ -534,7 +533,7 @@ pub fn parse_object_var_parsing(obj: &serde_json::Map<String, JsonValue>) -> boo
         }
     }
     obj.get("objectVarParsing")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(true)
 }
 

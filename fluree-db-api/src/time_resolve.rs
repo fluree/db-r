@@ -123,8 +123,7 @@ where
         let target_iso = epoch_ms_to_iso(target_epoch_ms);
         let earliest_iso = epoch_ms_to_iso(earliest_time);
         return Err(ApiError::internal(format!(
-            "There is no data as of {} (earliest commit is at {})",
-            target_iso, earliest_iso
+            "There is no data as of {target_iso} (earliest commit is at {earliest_iso})"
         )));
     }
 
@@ -245,7 +244,7 @@ where
     // Commit subjects use the FLUREE_COMMIT namespace with hex hash as name
     let start_sid = Sid::new(FLUREE_COMMIT, normalized);
     // Use tilde (~) as end bound since it sorts after all hex characters (0-9, a-f)
-    let end_prefix = format!("{}~", normalized);
+    let end_prefix = format!("{normalized}~");
     let end_sid = Sid::new(FLUREE_COMMIT, &end_prefix);
 
     let start_bound = Flake::min_for_subject(start_sid);
@@ -316,8 +315,7 @@ where
     // Step 4: Return result based on match count
     match matching_commits.len() {
         0 => Err(ApiError::query(format!(
-            "No commit found with prefix: {}",
-            normalized
+            "No commit found with prefix: {normalized}"
         ))),
         1 => {
             let (_, t) = matching_commits[0];
@@ -358,8 +356,7 @@ pub(crate) async fn resolve_time_spec(
         crate::TimeSpec::AtTime(iso) => {
             let dt = chrono::DateTime::parse_from_rfc3339(iso).map_err(|e| {
                 ApiError::internal(format!(
-                    "Invalid ISO-8601 timestamp for time travel: {} ({})",
-                    iso, e
+                    "Invalid ISO-8601 timestamp for time travel: {iso} ({e})"
                 ))
             })?;
             // `ledger#time` flakes store epoch milliseconds. Ceiling sub-ms precision
@@ -403,7 +400,7 @@ mod tests {
         for (input, expected) in cases {
             let normalized = input.strip_prefix("fluree:commit:").unwrap_or(input);
             let normalized = normalized.strip_prefix("sha256:").unwrap_or(normalized);
-            assert_eq!(normalized, expected, "Failed for input: {}", input);
+            assert_eq!(normalized, expected, "Failed for input: {input}");
         }
     }
 

@@ -81,7 +81,7 @@ async fn rdf_type_isolated_across_named_graphs() {
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query rdf:type from graph "types" → should find ex:Person
-            let types_alias = format!("{}#http://example.org/graphs/types", ledger_id);
+            let types_alias = format!("{ledger_id}#http://example.org/graphs/types");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
                 "from": &types_alias,
@@ -98,7 +98,7 @@ async fn rdf_type_isolated_across_named_graphs() {
             );
 
             // Query rdf:type from graph "data" → should be EMPTY
-            let data_alias = format!("{}#http://example.org/graphs/data", ledger_id);
+            let data_alias = format!("{ledger_id}#http://example.org/graphs/data");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#"},
                 "from": &data_alias,
@@ -111,8 +111,7 @@ async fn rdf_type_isolated_across_named_graphs() {
             let arr = results.as_array().expect("array");
             assert!(
                 arr.is_empty(),
-                "rdf:type should NOT bleed from types graph to data graph, got: {:?}",
-                arr
+                "rdf:type should NOT bleed from types graph to data graph, got: {arr:?}"
             );
 
             // Also verify default graph has no types for alice
@@ -128,8 +127,7 @@ async fn rdf_type_isolated_across_named_graphs() {
             let arr = results.as_array().expect("array");
             assert!(
                 arr.is_empty(),
-                "default graph should have no rdf:type for alice, got: {:?}",
-                arr
+                "default graph should have no rdf:type for alice, got: {arr:?}"
             );
         })
         .await;
@@ -190,7 +188,7 @@ async fn subject_properties_isolated_per_graph() {
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query all properties of alice from the scores graph
-            let scores_alias = format!("{}#http://example.org/graphs/scores", ledger_id);
+            let scores_alias = format!("{ledger_id}#http://example.org/graphs/scores");
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &scores_alias,
@@ -209,17 +207,15 @@ async fn subject_properties_isolated_per_graph() {
                 .collect();
             assert!(
                 !predicates.iter().any(|p| p.contains("type")),
-                "rdf:type from core graph should not appear in scores graph, predicates: {:?}",
-                predicates
+                "rdf:type from core graph should not appear in scores graph, predicates: {predicates:?}"
             );
             assert!(
                 !predicates.iter().any(|p| p.contains("name")),
-                "schema:name from core graph should not appear in scores graph, predicates: {:?}",
-                predicates
+                "schema:name from core graph should not appear in scores graph, predicates: {predicates:?}"
             );
 
             // Query all properties of alice from the core graph
-            let core_alias = format!("{}#http://example.org/graphs/core", ledger_id);
+            let core_alias = format!("{ledger_id}#http://example.org/graphs/core");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &core_alias,
@@ -238,18 +234,15 @@ async fn subject_properties_isolated_per_graph() {
                 .collect();
             assert!(
                 predicates.iter().any(|p| p.contains("type")),
-                "core graph should contain rdf:type, predicates: {:?}",
-                predicates
+                "core graph should contain rdf:type, predicates: {predicates:?}"
             );
             assert!(
                 predicates.iter().any(|p| p.contains("name")),
-                "core graph should contain schema:name, predicates: {:?}",
-                predicates
+                "core graph should contain schema:name, predicates: {predicates:?}"
             );
             assert!(
                 !predicates.iter().any(|p| p.contains("score")),
-                "core graph should not contain ex:score from scores graph, predicates: {:?}",
-                predicates
+                "core graph should not contain ex:score from scores graph, predicates: {predicates:?}"
             );
         })
         .await;
@@ -309,7 +302,7 @@ async fn type_filter_query_respects_graph_boundaries() {
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query payroll graph for employees → should be empty
-            let payroll_alias = format!("{}#http://example.org/graphs/payroll", ledger_id);
+            let payroll_alias = format!("{ledger_id}#http://example.org/graphs/payroll");
             let query = json!({
                 "@context": {
                     "ex": "http://example.org/",
@@ -328,12 +321,11 @@ async fn type_filter_query_respects_graph_boundaries() {
             let arr = results.as_array().expect("array");
             assert!(
                 arr.is_empty(),
-                "payroll graph should have no Employees, got: {:?}",
-                arr
+                "payroll graph should have no Employees, got: {arr:?}"
             );
 
             // Query HR graph for employees → should find alice
-            let hr_alias = format!("{}#http://example.org/graphs/hr", ledger_id);
+            let hr_alias = format!("{ledger_id}#http://example.org/graphs/hr");
             let query = json!({
                 "@context": {
                     "ex": "http://example.org/",
@@ -349,8 +341,7 @@ async fn type_filter_query_respects_graph_boundaries() {
             let arr = results.as_array().expect("array");
             assert!(
                 !arr.is_empty(),
-                "HR graph should find alice as Employee, got: {:?}",
-                arr
+                "HR graph should find alice as Employee, got: {arr:?}"
             );
         })
         .await;
@@ -437,7 +428,7 @@ async fn pre_index_upsert_isolates_named_graphs() {
             let _ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query alpha graph for score → should be "99"
-            let alpha_alias = format!("{}#http://example.org/graphs/alpha", ledger_id);
+            let alpha_alias = format!("{ledger_id}#http://example.org/graphs/alpha");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &alpha_alias,
@@ -451,17 +442,15 @@ async fn pre_index_upsert_isolates_named_graphs() {
             let scores: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
             assert!(
                 scores.contains(&"99"),
-                "alpha graph should have score 99, got: {:?}",
-                arr
+                "alpha graph should have score 99, got: {arr:?}"
             );
             assert!(
                 !scores.contains(&"10"),
-                "alpha graph should NOT have old score 10, got: {:?}",
-                arr
+                "alpha graph should NOT have old score 10, got: {arr:?}"
             );
 
             // Query beta graph for score → should still be "20"
-            let beta_alias = format!("{}#http://example.org/graphs/beta", ledger_id);
+            let beta_alias = format!("{ledger_id}#http://example.org/graphs/beta");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &beta_alias,
@@ -475,13 +464,11 @@ async fn pre_index_upsert_isolates_named_graphs() {
             let scores: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
             assert!(
                 scores.contains(&"20"),
-                "beta graph should still have score 20, got: {:?}",
-                arr
+                "beta graph should still have score 20, got: {arr:?}"
             );
             assert!(
                 !scores.contains(&"99"),
-                "beta graph should NOT have alpha's score 99, got: {:?}",
-                arr
+                "beta graph should NOT have alpha's score 99, got: {arr:?}"
             );
 
             // Also verify rdf:type isolation persists through indexing.
@@ -507,11 +494,10 @@ async fn pre_index_upsert_isolates_named_graphs() {
             let has_robot = arr
                 .iter()
                 .any(|v| v.as_str().map(|s| s.contains("Robot")).unwrap_or(false));
-            assert!(has_person, "alpha should have Person type, got: {:?}", arr);
+            assert!(has_person, "alpha should have Person type, got: {arr:?}");
             assert!(
                 !has_robot,
-                "alpha should NOT have Robot type (from beta), got: {:?}",
-                arr
+                "alpha should NOT have Robot type (from beta), got: {arr:?}"
             );
         })
         .await;
@@ -652,7 +638,7 @@ async fn push_roundtrip_named_graph_retractions() {
             // --- Query target to verify data ---
 
             // Query HR graph for Employee type — should find alice.
-            let hr_alias = format!("{}#http://example.org/graphs/hr", tgt_id);
+            let hr_alias = format!("{tgt_id}#http://example.org/graphs/hr");
             let query = json!({
                 "@context": {
                     "ex": "http://example.org/",
@@ -682,12 +668,11 @@ async fn push_roundtrip_named_graph_retractions() {
             let names: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
             assert!(
                 names.contains(&"Alice"),
-                "should find Alice in HR graph, got: {:?}",
-                arr
+                "should find Alice in HR graph, got: {arr:?}"
             );
 
             // Query payroll graph for salary — should see "75000" (not "50000").
-            let payroll_alias = format!("{}#http://example.org/graphs/payroll", tgt_id);
+            let payroll_alias = format!("{tgt_id}#http://example.org/graphs/payroll");
             let query = json!({
                 "@context": {
                     "ex": "http://example.org/",
@@ -715,13 +700,11 @@ async fn push_roundtrip_named_graph_retractions() {
             let salaries: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
             assert!(
                 salaries.contains(&"75000"),
-                "salary should be 75000 after retraction, got: {:?}",
-                arr
+                "salary should be 75000 after retraction, got: {arr:?}"
             );
             assert!(
                 !salaries.contains(&"50000"),
-                "old salary 50000 should be retracted, got: {:?}",
-                arr
+                "old salary 50000 should be retracted, got: {arr:?}"
             );
         })
         .await;

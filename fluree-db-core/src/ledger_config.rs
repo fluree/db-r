@@ -243,15 +243,10 @@ impl OverrideControl {
         let self_perm = self.permissiveness();
         let other_perm = other.permissiveness();
 
-        if self_perm < other_perm {
-            // self is stricter → use self
-            self.clone()
-        } else if other_perm < self_perm {
-            // other is stricter → use other
-            other.clone()
-        } else {
-            // Same level — special handling for IdentityRestricted intersection
-            match (self, other) {
+        match self_perm.cmp(&other_perm) {
+            std::cmp::Ordering::Less => self.clone(),
+            std::cmp::Ordering::Greater => other.clone(),
+            std::cmp::Ordering::Equal => match (self, other) {
                 (
                     OverrideControl::IdentityRestricted {
                         allowed_identities: a,
@@ -262,9 +257,8 @@ impl OverrideControl {
                 ) => OverrideControl::IdentityRestricted {
                     allowed_identities: a.intersection(b).cloned().collect(),
                 },
-                // Both None or both AllowAll
                 _ => self.clone(),
-            }
+            },
         }
     }
 
@@ -403,7 +397,7 @@ mod tests {
                 assert!(allowed_identities.contains("did:key:alice"));
                 assert_eq!(allowed_identities.len(), 1);
             }
-            other => panic!("Expected IdentityRestricted, got {:?}", other),
+            other => panic!("Expected IdentityRestricted, got {other:?}"),
         }
     }
 
@@ -418,7 +412,7 @@ mod tests {
                 assert!(allowed_identities.contains("did:key:alice"));
                 assert_eq!(allowed_identities.len(), 1);
             }
-            other => panic!("Expected IdentityRestricted, got {:?}", other),
+            other => panic!("Expected IdentityRestricted, got {other:?}"),
         }
     }
 
@@ -438,7 +432,7 @@ mod tests {
                 assert!(!allowed_identities.contains("did:key:carol"));
                 assert_eq!(allowed_identities.len(), 1);
             }
-            other => panic!("Expected IdentityRestricted, got {:?}", other),
+            other => panic!("Expected IdentityRestricted, got {other:?}"),
         }
     }
 
@@ -455,7 +449,7 @@ mod tests {
             OverrideControl::IdentityRestricted { allowed_identities } => {
                 assert!(allowed_identities.is_empty());
             }
-            other => panic!("Expected IdentityRestricted, got {:?}", other),
+            other => panic!("Expected IdentityRestricted, got {other:?}"),
         }
     }
 

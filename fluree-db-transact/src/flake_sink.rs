@@ -135,7 +135,7 @@ impl<'a> FlakeSink<'a> {
         let (o, dtc) = self.resolve_object(object)?;
 
         let dt = dtc.datatype().clone();
-        let lang = dtc.lang_tag().map(|s| s.to_string());
+        let lang = dtc.lang_tag().map(std::string::ToString::to_string);
 
         let meta = match (&lang, list_index) {
             (Some(l), Some(i)) => Some(FlakeMeta {
@@ -155,7 +155,7 @@ impl<'a> FlakeSink<'a> {
 // GraphSink implementation
 // ---------------------------------------------------------------------------
 
-impl<'a> GraphSink for FlakeSink<'a> {
+impl GraphSink for FlakeSink<'_> {
     fn on_base(&mut self, _base_iri: &str) {
         // No-op — the parser resolves relative IRIs before calling term_iri
     }

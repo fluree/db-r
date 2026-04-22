@@ -22,7 +22,7 @@ pub async fn get(explicit_ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<(
             // Print null to stdout for scripting consistency (matches HTTP API),
             // plus a human-readable hint on stderr.
             println!("null");
-            eprintln!("No default context set for '{}'.", alias);
+            eprintln!("No default context set for '{alias}'.");
         }
     }
 
@@ -81,7 +81,7 @@ pub async fn set(
 
     match fluree.set_default_context(&ledger_id, &ctx_value).await? {
         fluree_db_api::SetContextResult::Updated => {
-            eprintln!("Default context updated for '{}'.", alias);
+            eprintln!("Default context updated for '{alias}'.");
         }
         fluree_db_api::SetContextResult::Conflict => {
             return Err(CliError::Api(fluree_db_api::ApiError::internal(

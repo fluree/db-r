@@ -370,7 +370,7 @@ pub fn write_vector_shards(
         let end_f32 = end_vec * dims;
         let shard_data = &arena.raw_values()[start_f32..end_f32];
 
-        let path = dir.join(format!("p_{}_s_{}.vas", p_id, shard_idx));
+        let path = dir.join(format!("p_{p_id}_s_{shard_idx}.vas"));
         let file = std::fs::File::create(&path)?;
         let mut writer = io::BufWriter::new(file);
         write_vas1_shard(&mut writer, arena.dims(), shard_data)?;
@@ -421,7 +421,7 @@ pub fn read_vector_shard_from_bytes(data: &[u8]) -> io::Result<VectorShard> {
     if version != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("vector shard: unsupported version {}", version),
+            format!("vector shard: unsupported version {version}"),
         ));
     }
     let dims = u16::from_le_bytes(data[5..7].try_into().unwrap());
@@ -433,8 +433,7 @@ pub fn read_vector_shard_from_bytes(data: &[u8]) -> io::Result<VectorShard> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "vector shard: data truncated (expected {} bytes, got {})",
-                expected_data_size, actual_data_size
+                "vector shard: data truncated (expected {expected_data_size} bytes, got {actual_data_size})"
             ),
         ));
     }
@@ -682,16 +681,13 @@ impl LazyVectorArena {
         let cas = self.cas.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("vector shard {} not on disk and no CAS configured", idx),
+                format!("vector shard {idx} not on disk and no CAS configured"),
             )
         })?;
         let cid = source.cid.as_ref().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "vector shard {} not on disk and no CID for remote fetch",
-                    idx
-                ),
+                format!("vector shard {idx} not on disk and no CID for remote fetch"),
             )
         })?;
         // Sync→async bridge: spawn an OS thread to block_on the async fetch.

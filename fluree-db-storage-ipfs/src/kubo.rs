@@ -78,10 +78,10 @@ impl KuboClient {
         // Build query parameters
         let mut params = Vec::new();
         if let Some(codec) = cid_codec {
-            params.push(format!("cid-codec={}", codec));
+            params.push(format!("cid-codec={codec}"));
         }
         if let Some(mh) = mhtype {
-            params.push(format!("mhtype={}", mh));
+            params.push(format!("mhtype={mh}"));
         }
         if !params.is_empty() {
             url.push('?');
@@ -106,8 +106,7 @@ impl KuboClient {
                 .await
                 .unwrap_or_else(|_| "unknown".to_string());
             return Err(IpfsStorageError::Rpc(format!(
-                "block/put failed ({}): {}",
-                status, body
+                "block/put failed ({status}): {body}"
             )));
         }
 
@@ -138,8 +137,7 @@ impl KuboClient {
                 return Err(IpfsStorageError::NotFound(cid.to_string()));
             }
             return Err(IpfsStorageError::Rpc(format!(
-                "block/get failed ({}): {}",
-                status, body
+                "block/get failed ({status}): {body}"
             )));
         }
 
@@ -171,8 +169,7 @@ impl KuboClient {
                 return Err(IpfsStorageError::NotFound(cid.to_string()));
             }
             return Err(IpfsStorageError::Rpc(format!(
-                "block/stat failed ({}): {}",
-                status, body
+                "block/stat failed ({status}): {body}"
             )));
         }
 
@@ -205,8 +202,7 @@ impl KuboClient {
                 .await
                 .unwrap_or_else(|_| "unknown".to_string());
             return Err(IpfsStorageError::Rpc(format!(
-                "pin/add failed ({}): {}",
-                status, body
+                "pin/add failed ({status}): {body}"
             )));
         }
 
@@ -244,7 +240,7 @@ impl KuboClient {
             return Ok(false);
         }
 
-        Err(IpfsStorageError::Rpc(format!("pin/ls failed: {}", body)))
+        Err(IpfsStorageError::Rpc(format!("pin/ls failed: {body}")))
     }
 
     /// `POST /api/v0/pin/rm` — unpin a block by CID.
@@ -273,7 +269,7 @@ impl KuboClient {
             if body.contains("not pinned") || body.contains("not found") {
                 return Ok(());
             }
-            return Err(IpfsStorageError::Rpc(format!("pin/rm failed: {}", body)));
+            return Err(IpfsStorageError::Rpc(format!("pin/rm failed: {body}")));
         }
 
         // Consume response body

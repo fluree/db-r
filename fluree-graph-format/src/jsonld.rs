@@ -217,7 +217,7 @@ impl BlankNodeRenamer {
         match &self.policy {
             BlankNodePolicy::PreserveLabeled => {
                 // Keep original label
-                format!("_:{}", original)
+                format!("_:{original}")
             }
             BlankNodePolicy::Deterministic => {
                 // Rewrite to _:b0, _:b1, etc.
@@ -232,7 +232,7 @@ impl BlankNodeRenamer {
             }
             BlankNodePolicy::FlureeStyle => {
                 // Keep original (Fluree-style IDs should already be in the right format)
-                format!("_:{}", original)
+                format!("_:{original}")
             }
         }
     }
@@ -688,9 +688,9 @@ mod tests {
         let graph = make_simple_graph();
         let config = JsonLdFormatConfig::default().with_compactor(|iri| {
             if let Some(suffix) = iri.strip_prefix("http://xmlns.com/foaf/0.1/") {
-                format!("foaf:{}", suffix)
+                format!("foaf:{suffix}")
             } else if let Some(suffix) = iri.strip_prefix("http://example.org/") {
-                format!("ex:{}", suffix)
+                format!("ex:{suffix}")
             } else {
                 iri.to_string()
             }

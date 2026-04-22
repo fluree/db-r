@@ -355,11 +355,11 @@ fn evaluate_comparison(
                 .get(i)
                 .and_then(|v| *v)
                 .is_some_and(|v| compare_op(v, *lit, op)),
-            (Column::Timestamp(vals), LiteralValue::Timestamp(lit))
-            | (Column::TimestampTz(vals), LiteralValue::Timestamp(lit)) => vals
-                .get(i)
-                .and_then(|v| *v)
-                .is_some_and(|v| compare_op(v, *lit, op)),
+            (Column::Timestamp(vals) | Column::TimestampTz(vals), LiteralValue::Timestamp(lit)) => {
+                vals.get(i)
+                    .and_then(|v| *v)
+                    .is_some_and(|v| compare_op(v, *lit, op))
+            }
             _ => false, // Type mismatch
         };
 

@@ -252,9 +252,8 @@ fn parse_primary_expr(tokens: &mut TokenStream) -> Result<Expression, String> {
         if tokens.check(&TokenKind::LParen) {
             // Function call with IRI
             return parse_function_call_with_iri(tokens, iri, start);
-        } else {
-            return Ok(Expression::iri(iri));
         }
+        return Ok(Expression::iri(iri));
     }
 
     // Prefixed name - could be function call or just IRI
@@ -266,9 +265,8 @@ fn parse_primary_expr(tokens: &mut TokenStream) -> Result<Expression, String> {
         if tokens.check(&TokenKind::LParen) {
             // Function call with prefixed IRI
             return parse_function_call_with_iri(tokens, iri, start);
-        } else {
-            return Ok(Expression::iri(iri));
         }
+        return Ok(Expression::iri(iri));
     }
 
     // PrefixedNameNs (just namespace, no local part) - like "ex:"
@@ -282,9 +280,8 @@ fn parse_primary_expr(tokens: &mut TokenStream) -> Result<Expression, String> {
         };
         if tokens.check(&TokenKind::LParen) {
             return parse_function_call_with_iri(tokens, iri, start);
-        } else {
-            return Ok(Expression::iri(iri));
         }
+        return Ok(Expression::iri(iri));
     }
 
     Err(format!(
@@ -340,9 +337,8 @@ fn try_parse_literal(tokens: &mut TokenStream) -> Result<Option<Expression>, Str
                 return Ok(Some(Expression::Literal(Literal::typed(
                     value, dt_iri, full_span,
                 ))));
-            } else {
-                return Err("Expected datatype IRI after '^^'".to_string());
             }
+            return Err("Expected datatype IRI after '^^'".to_string());
         }
 
         // Simple string literal
@@ -391,11 +387,10 @@ fn try_parse_keyword_expr(tokens: &mut TokenStream) -> Result<Option<Expression>
                 pattern: Box::new(pattern),
                 span,
             }));
-        } else {
-            // Backtrack - NOT is unary operator, handled elsewhere
-            tokens.restore(saved_pos);
-            return Ok(None);
         }
+        // Backtrack - NOT is unary operator, handled elsewhere
+        tokens.restore(saved_pos);
+        return Ok(None);
     }
 
     // BOUND(?var)
@@ -418,9 +413,8 @@ fn try_parse_keyword_expr(tokens: &mut TokenStream) -> Result<Option<Expression>
                 distinct: false,
                 span,
             }));
-        } else {
-            return Err("Expected variable in BOUND()".to_string());
         }
+        return Err("Expected variable in BOUND()".to_string());
     }
 
     // IF(cond, then, else)
@@ -1060,7 +1054,7 @@ mod tests {
                 assert!(matches!(name, FunctionName::Now));
                 assert!(args.is_empty());
             }
-            _ => panic!("Expected function call, got {:?}", expr),
+            _ => panic!("Expected function call, got {expr:?}"),
         }
     }
 

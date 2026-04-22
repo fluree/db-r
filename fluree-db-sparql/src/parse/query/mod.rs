@@ -261,8 +261,8 @@ fn collect_patterns_into_one(
         _ => {
             let span = patterns
                 .iter()
-                .map(|p| p.span())
-                .reduce(|a, b| a.union(b))
+                .map(super::super::ast::pattern::GraphPattern::span)
+                .reduce(super::super::span::SourceSpan::union)
                 .unwrap_or(fallback_span);
             GraphPattern::group(patterns, span)
         }

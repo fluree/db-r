@@ -13,13 +13,13 @@ pub fn format_text(memory: &Memory) -> String {
         out.push_str(&format!("Refs:    {}\n", memory.artifact_refs.join(", ")));
     }
     if let Some(branch) = &memory.branch {
-        out.push_str(&format!("Branch:  {}\n", branch));
+        out.push_str(&format!("Branch:  {branch}\n"));
     }
     if let Some(rationale) = &memory.rationale {
-        out.push_str(&format!("Rationale: {}\n", rationale));
+        out.push_str(&format!("Rationale: {rationale}\n"));
     }
     if let Some(alternatives) = &memory.alternatives {
-        out.push_str(&format!("Alternatives: {}\n", alternatives));
+        out.push_str(&format!("Alternatives: {alternatives}\n"));
     }
     out.push_str(&format!("Created: {}\n", memory.created_at));
     out
@@ -110,7 +110,7 @@ pub fn format_context_paged(
             ));
         }
         if let Some(severity) = &mem.severity {
-            out.push_str(&format!("    <severity>{:?}</severity>\n", severity));
+            out.push_str(&format!("    <severity>{severity:?}</severity>\n"));
         }
         if let Some(rationale) = &mem.rationale {
             out.push_str(&format!(
@@ -128,13 +128,11 @@ pub fn format_context_paged(
     }
 
     let shown = memories.len();
-    let limit_attr = limit
-        .map(|l| format!(" limit=\"{}\"", l))
-        .unwrap_or_default();
+    let limit_attr = limit.map(|l| format!(" limit=\"{l}\"")).unwrap_or_default();
     if has_more {
         let next_offset = offset + shown;
         let next_score_hint = next_score
-            .map(|s| format!(", next score: {:.1}", s))
+            .map(|s| format!(", next score: {s:.1}"))
             .unwrap_or_default();
         out.push_str(&format!(
             "  <pagination shown=\"{}\" offset=\"{}\"{} total_in_store=\"{}\">\
@@ -149,8 +147,7 @@ pub fn format_context_paged(
         ));
     } else {
         out.push_str(&format!(
-            "  <pagination shown=\"{}\" offset=\"{}\" total_in_store=\"{}\" />\n",
-            shown, offset, total_store,
+            "  <pagination shown=\"{shown}\" offset=\"{offset}\" total_in_store=\"{total_store}\" />\n",
         ));
     }
 
@@ -186,7 +183,7 @@ pub fn format_status_text(status: &MemoryStatus) -> String {
         let kinds: Vec<String> = status
             .by_kind
             .iter()
-            .map(|(kind, count)| format!("{} {}", count, kind))
+            .map(|(kind, count)| format!("{count} {kind}"))
             .collect();
         out.push_str(&format!("  Kinds: {}\n", kinds.join(", ")));
     }
@@ -267,10 +264,10 @@ fn format_age(created_at: &str) -> String {
         if hours == 0 {
             format!("{}m", age.num_minutes().max(1))
         } else {
-            format!("{}h", hours)
+            format!("{hours}h")
         }
     } else if days < 30 {
-        format!("{}d", days)
+        format!("{days}d")
     } else {
         format!("{}w", days / 7)
     }

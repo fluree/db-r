@@ -66,7 +66,11 @@ fn count_p1_then_p2_plus(
     p1: &Ref,
     p2: &Ref,
 ) -> Result<Option<u64>> {
-    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
+    let overlay_has_rows = ctx
+        .overlay
+        .map(fluree_db_core::OverlayProvider::epoch)
+        .unwrap_or(0)
+        != 0;
     let p1_sid = normalize_pred_sid(store, p1)?;
     let p2_sid = normalize_pred_sid(store, p2)?;
     let Some(p1_id) = store.sid_to_p_id(&p1_sid) else {

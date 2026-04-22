@@ -350,7 +350,7 @@ pub fn intersect_many_sorted(mut lists: Vec<Vec<u64>>) -> Vec<u64> {
     if lists.is_empty() {
         return Vec::new();
     }
-    lists.sort_by_key(|v| v.len());
+    lists.sort_by_key(std::vec::Vec::len);
     let mut acc = lists.remove(0);
     for next in lists {
         if acc.is_empty() {
@@ -1598,7 +1598,10 @@ impl PrecomputedSingleBatchOperator {
 #[async_trait]
 impl Operator for PrecomputedSingleBatchOperator {
     fn schema(&self) -> &[VarId] {
-        self.batch.as_ref().map(|b| b.schema()).unwrap_or(&[])
+        self.batch
+            .as_ref()
+            .map(super::binding::Batch::schema)
+            .unwrap_or(&[])
     }
 
     async fn open(&mut self, _ctx: &ExecutionContext<'_>) -> Result<()> {
@@ -1664,7 +1667,7 @@ pub fn ref_to_p_id(ctx: &ExecutionContext<'_>, store: &BinaryIndexStore, r: &Ref
         }
     };
     store.find_predicate_id(iri.as_ref()).ok_or_else(|| {
-        QueryError::execution(format!("predicate not found in binary index dict: {}", iri))
+        QueryError::execution(format!("predicate not found in binary index dict: {iri}"))
     })
 }
 
@@ -1704,7 +1707,11 @@ fn allow_fast_path(ctx: &ExecutionContext<'_>) -> bool {
         && !ctx.history_mode
         && ctx.from_t.is_none()
         && ctx.policy_enforcer.as_ref().is_none_or(|p| p.is_root())
-        && ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0
+        && ctx
+            .overlay
+            .map(fluree_db_core::OverlayProvider::epoch)
+            .unwrap_or(0)
+            == 0
 }
 
 /// Combined fast-path eligibility: [`allow_fast_path`] + binary store present + `to_t == max_t`.

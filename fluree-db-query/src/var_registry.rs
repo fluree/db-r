@@ -55,12 +55,11 @@ impl VarRegistry {
         //
         // This runs only when introducing a *new* variable name (planning time), not in the
         // hot query execution loop.
-        if self.id_to_name.len() >= (u16::MAX as usize) {
-            panic!(
-                "VarRegistry capacity exceeded ({}). VarId is u16; refusing to wrap.",
-                self.id_to_name.len()
-            );
-        }
+        assert!(
+            self.id_to_name.len() < (u16::MAX as usize),
+            "VarRegistry capacity exceeded ({}). VarId is u16; refusing to wrap.",
+            self.id_to_name.len()
+        );
 
         let id = VarId(self.id_to_name.len() as u16);
         let arc_name: Arc<str> = Arc::from(name);
@@ -85,7 +84,9 @@ impl VarRegistry {
 
     /// Get the name for a VarId, returning None if invalid
     pub fn try_name(&self, id: VarId) -> Option<&str> {
-        self.id_to_name.get(id.index()).map(|s| s.as_ref())
+        self.id_to_name
+            .get(id.index())
+            .map(std::convert::AsRef::as_ref)
     }
 
     /// Get the number of registered variables

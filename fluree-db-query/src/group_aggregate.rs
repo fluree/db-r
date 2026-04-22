@@ -492,7 +492,7 @@ fn flake_value_to_key(val: &FlakeValue, dtc: &DatatypeConstraint) -> Materialize
         },
         _ => MaterializedLitKey {
             discriminant: 0,
-            string_val: Some(Arc::from(format!("{:?}", val))),
+            string_val: Some(Arc::from(format!("{val:?}"))),
             number_bits: None,
             bool_val: None,
             dtc: dtc.clone(),
@@ -574,7 +574,7 @@ impl GroupAggregateOperator {
                 child_schema
                     .iter()
                     .position(|sv| sv == v)
-                    .unwrap_or_else(|| panic!("GROUP BY variable {:?} not in schema", v))
+                    .unwrap_or_else(|| panic!("GROUP BY variable {v:?} not in schema"))
             })
             .collect();
 

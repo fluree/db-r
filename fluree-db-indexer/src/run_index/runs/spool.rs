@@ -312,7 +312,7 @@ impl SpoolHeaderV2 {
         if version != SPOOL_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("spool: unsupported version {}", version),
+                format!("spool: unsupported version {version}"),
             ));
         }
         Ok(Self {
@@ -456,7 +456,8 @@ impl SpoolWriter {
         let mut file = match self.inner {
             SpoolWriterInner::Raw(mut w) => {
                 w.flush()?;
-                w.into_inner().map_err(|e| e.into_error())?
+                w.into_inner()
+                    .map_err(std::io::IntoInnerError::into_error)?
             }
             SpoolWriterInner::Zstd(w) => {
                 // finish() flushes and returns the underlying writer.
@@ -576,8 +577,7 @@ impl SpoolReader {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
-                            "spool file truncated: expected {} bytes (header {} + {} records × {}), got {}",
-                            expected_size, SPOOL_HEADER_LEN, record_count, SPOOL_RECORD_WIRE_SIZE, actual_size
+                            "spool file truncated: expected {expected_size} bytes (header {SPOOL_HEADER_LEN} + {record_count} records × {SPOOL_RECORD_WIRE_SIZE}), got {actual_size}"
                         ),
                     ));
                 }
@@ -594,8 +594,7 @@ impl SpoolReader {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
-                        "spool file truncated: expected {} bytes ({} records × {}), got {}",
-                        expected_size, record_count, SPOOL_RECORD_WIRE_SIZE, actual_size
+                        "spool file truncated: expected {expected_size} bytes ({record_count} records × {SPOOL_RECORD_WIRE_SIZE}), got {actual_size}"
                     ),
                 ));
             }
@@ -766,7 +765,7 @@ impl SortedCommitV2Header {
         if version != 2 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("sorted commit v2: unsupported version {}", version),
+                format!("sorted commit v2: unsupported version {version}"),
             ));
         }
         Ok(Self {
@@ -849,7 +848,8 @@ impl SortedCommitWriterV2 {
         let mut file = match self.inner {
             SpoolWriterInner::Raw(mut w) => {
                 w.flush()?;
-                w.into_inner().map_err(|e| e.into_error())?
+                w.into_inner()
+                    .map_err(std::io::IntoInnerError::into_error)?
             }
             SpoolWriterInner::Zstd(w) => w.finish()?,
         };
@@ -893,8 +893,7 @@ impl SortedCommitReaderV2 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "sorted commit v2: expected magic {:?}, got {:?}",
-                    SORTED_COMMIT_V2_MAGIC, magic
+                    "sorted commit v2: expected magic {SORTED_COMMIT_V2_MAGIC:?}, got {magic:?}"
                 ),
             ));
         }
@@ -1068,7 +1067,7 @@ pub fn collect_chunk_run_files(
 ) -> io::Result<Vec<PathBuf>> {
     let mut all_runs = Vec::new();
     let mut chunk_dirs: Vec<_> = std::fs::read_dir(base_run_dir)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
                 && e.file_name().to_string_lossy().starts_with("chunk_")
@@ -1104,7 +1103,7 @@ pub fn link_chunk_run_files_to_flat(
     std::fs::create_dir_all(flat_dir)?;
 
     let mut chunk_dirs: Vec<_> = std::fs::read_dir(base_run_dir)?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
                 && e.file_name().to_string_lossy().starts_with("chunk_")
@@ -1122,7 +1121,7 @@ pub fn link_chunk_run_files_to_flat(
         let mut runs = crate::run_index::build::index_build::discover_run_files_v2(&order_dir)?;
         runs.sort();
         for src in runs {
-            let dst = flat_dir.join(format!("run_{:05}.frn", next_idx));
+            let dst = flat_dir.join(format!("run_{next_idx:05}.frn"));
             next_idx += 1;
             #[cfg(unix)]
             std::os::unix::fs::symlink(&src, &dst)?;
@@ -1916,7 +1915,7 @@ mod tests {
                 1,
             ),
             make_record(1, 5, ObjKind::BOOL, ObjKey::encode_bool(true).as_u64(), 1),
-            make_record(1, 6, ObjKind::GEO_POINT, 0xDEADBEEF_CAFEBABE, 1),
+            make_record(1, 6, ObjKind::GEO_POINT, 0xDEAD_BEEF_CAFE_BABE, 1),
         ];
 
         let mut writer = SpoolWriter::new(&path, 0).unwrap();
@@ -1929,8 +1928,8 @@ mod tests {
         let read: Vec<RunRecord> = reader.map(|r| r.unwrap()).collect();
 
         for (i, (orig, read)) in records.iter().zip(read.iter()).enumerate() {
-            assert_eq!(orig.o_kind, read.o_kind, "o_kind mismatch at record {}", i);
-            assert_eq!(orig.o_key, read.o_key, "o_key mismatch at record {}", i);
+            assert_eq!(orig.o_kind, read.o_kind, "o_kind mismatch at record {i}");
+            assert_eq!(orig.o_key, read.o_key, "o_key mismatch at record {i}");
         }
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -1986,7 +1985,7 @@ mod tests {
 
         // Create chunk subdirs with fake run files
         for chunk_idx in 0..3 {
-            let spot_dir = dir.join(format!("chunk_{}", chunk_idx)).join("spot");
+            let spot_dir = dir.join(format!("chunk_{chunk_idx}")).join("spot");
             std::fs::create_dir_all(&spot_dir).unwrap();
             std::fs::write(spot_dir.join("run_00000.frn"), b"fake").unwrap();
             if chunk_idx == 1 {
@@ -2501,8 +2500,7 @@ mod tests {
         for (order, result) in &results {
             assert_eq!(
                 result.total_records, 2,
-                "order {:?} should have 2 records",
-                order
+                "order {order:?} should have 2 records"
             );
         }
 

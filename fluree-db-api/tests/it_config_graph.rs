@@ -14,7 +14,7 @@ use support::genesis_ledger;
 
 /// Build the config graph IRI for a canonical ledger id.
 fn config_graph_iri(ledger_id: &str) -> String {
-    format!("urn:fluree:{}#config", ledger_id)
+    format!("urn:fluree:{ledger_id}#config")
 }
 
 // =============================================================================
@@ -58,7 +58,7 @@ async fn config_write_trig_roundtrip() {
 
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -67,7 +67,7 @@ async fn config_write_trig_roundtrip() {
             <urn:config:main> f:policyDefaults <urn:config:policy> .
             <urn:config:policy> f:defaultAllow false .
         }}
-    "#
+    "
     );
 
     fluree
@@ -106,7 +106,7 @@ async fn config_write_json_ld() {
 
     // Write config using TriG with JSON-LD-style structure
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -117,7 +117,7 @@ async fn config_write_json_ld() {
             <urn:config:main> f:reasoningDefaults <urn:config:reasoning> .
             <urn:config:reasoning> f:reasoningModes f:rdfs .
         }}
-    "#
+    "
     );
 
     fluree
@@ -138,7 +138,7 @@ async fn config_write_json_ld() {
             .reasoning
             .as_ref()
             .and_then(|r| r.modes.as_ref())
-            .map(|m| m.as_slice()),
+            .map(std::vec::Vec::as_slice),
         Some(["https://ns.flur.ee/db#rdfs".to_string()].as_slice()),
         "reasoning modes should round-trip as full IRIs"
     );
@@ -183,7 +183,7 @@ async fn policy_defaults_apply() {
     // 2. Write config: defaultAllow=false, policyClass=ex:DenyAllPolicy
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix ex: <http://example.org/ns/> .
@@ -194,7 +194,7 @@ async fn policy_defaults_apply() {
             <urn:config:policy> f:defaultAllow false .
             <urn:config:policy> f:policyClass ex:DenyAllPolicy .
         }}
-    "#
+    "
     );
 
     fluree
@@ -258,7 +258,7 @@ async fn reasoning_defaults_apply() {
     // 2. Write config: reasoningDefaults with modes=["rdfs"], overrideControl=f:OverrideAll
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -268,7 +268,7 @@ async fn reasoning_defaults_apply() {
             <urn:config:reasoning> f:reasoningModes f:rdfs .
             <urn:config:reasoning> f:overrideControl f:OverrideAll .
         }}
-    "#
+    "
     );
 
     fluree
@@ -365,7 +365,7 @@ async fn reasoning_none_disables_by_default() {
     // 2. Write config: reasoningDefaults with modes=["none"]
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -374,7 +374,7 @@ async fn reasoning_none_disables_by_default() {
             <urn:config:main> f:reasoningDefaults <urn:config:reasoning> .
             <urn:config:reasoning> f:reasoningModes f:none .
         }}
-    "#
+    "
     );
 
     fluree
@@ -498,7 +498,7 @@ async fn override_control_none_blocks() {
     // 2. Write config: policyDefaults with defaultAllow=false, overrideControl=OverrideNone
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -508,7 +508,7 @@ async fn override_control_none_blocks() {
             <urn:config:policy> f:defaultAllow false .
             <urn:config:policy> f:overrideControl f:OverrideNone .
         }}
-    "#
+    "
     );
 
     fluree
@@ -555,7 +555,7 @@ async fn override_control_identity_restricted() {
 
     // Write config with IdentityRestricted override control
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -567,7 +567,7 @@ async fn override_control_identity_restricted() {
             <urn:config:oc> f:controlMode f:IdentityRestricted .
             <urn:config:oc> f:allowedIdentities <did:key:admin> .
         }}
-    "#
+    "
     );
 
     fluree
@@ -631,7 +631,7 @@ async fn override_monotonicity() {
 
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -645,7 +645,7 @@ async fn override_monotonicity() {
             <urn:config:go1> f:policyDefaults <urn:config:go1-policy> .
             <urn:config:go1-policy> f:overrideControl f:OverrideNone .
         }}
-    "#
+    "
     );
 
     fluree
@@ -675,7 +675,7 @@ async fn override_monotonicity() {
 
     let config_iri_b = config_graph_iri(ledger_id_b);
     let trig_b = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -690,7 +690,7 @@ async fn override_monotonicity() {
             <urn:config:go1-policy> f:defaultAllow true .
             <urn:config:go1-policy> f:overrideControl f:OverrideAll .
         }}
-    "#
+    "
     );
 
     fluree_b
@@ -766,7 +766,7 @@ async fn multiple_configs_lexicographic_tiebreaker() {
 
     // Write two LedgerConfig nodes: alpha (defaultAllow=false) and beta (defaultAllow=true)
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -779,7 +779,7 @@ async fn multiple_configs_lexicographic_tiebreaker() {
             <urn:config:beta> f:policyDefaults <urn:config:beta-policy> .
             <urn:config:beta-policy> f:defaultAllow true .
         }}
-    "#
+    "
     );
 
     fluree
@@ -829,7 +829,7 @@ async fn config_time_travel_consistent() {
     // t=2: write config
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -838,7 +838,7 @@ async fn config_time_travel_consistent() {
             <urn:config:main> f:policyDefaults <urn:config:policy> .
             <urn:config:policy> f:defaultAllow false .
         }}
-    "#
+    "
     );
 
     let result2 = fluree
@@ -929,7 +929,7 @@ async fn shacl_config_disables_validation() {
     // Step 3: Write config disabling SHACL
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -938,7 +938,7 @@ async fn shacl_config_disables_validation() {
             <urn:config:main> f:shaclDefaults <urn:config:shacl> .
             <urn:config:shacl> f:shaclEnabled false .
         }}
-    "#
+    "
     );
 
     let result = fluree
@@ -1003,7 +1003,7 @@ async fn shacl_config_warn_mode() {
     // Write config: SHACL enabled but in Warn mode
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1013,7 +1013,7 @@ async fn shacl_config_warn_mode() {
             <urn:config:shacl> f:shaclEnabled true .
             <urn:config:shacl> f:validationMode f:ValidationWarn .
         }}
-    "#
+    "
     );
 
     let result = fluree
@@ -1057,7 +1057,7 @@ async fn shacl_shapes_source_points_to_named_graph() {
     // named graph and enabling SHACL.
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix sh: <http://www.w3.org/ns/shacl#> .
@@ -1082,7 +1082,7 @@ async fn shacl_shapes_source_points_to_named_graph() {
                                     f:graphSource <urn:config:shapes-source> .
             <urn:config:shapes-source> f:graphSelector <http://example.org/shapes> .
         }}
-    "#
+    "
     );
 
     let result = fluree
@@ -1225,7 +1225,7 @@ async fn shacl_per_graph_disable_honored() {
     // default graph must still fail.
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix sh: <http://www.w3.org/ns/shacl#> .
@@ -1250,7 +1250,7 @@ async fn shacl_per_graph_disable_honored() {
                                           f:shaclDefaults <urn:config:scratch-shacl> .
             <urn:config:scratch-shacl> f:shaclEnabled false .
         }}
-    "#
+    "
     );
     let result = fluree
         .stage_owned(ledger)
@@ -1262,14 +1262,14 @@ async fn shacl_per_graph_disable_honored() {
 
     // Violating ex:Person written into ex:scratch MUST pass — that graph
     // has SHACL disabled via per-graph override.
-    let scratch_trig = r#"
+    let scratch_trig = r"
         @prefix ex: <http://example.org/> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
         GRAPH <http://example.org/scratch> {
             ex:temp_person rdf:type ex:Person .
         }
-    "#;
+    ";
     let result = fluree
         .stage_owned(ledger)
         .upsert_turtle(scratch_trig)
@@ -1321,7 +1321,7 @@ async fn shacl_per_graph_mode_warn_vs_reject() {
     // overridden to Warn mode. Shape applies to both.
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
         @prefix sh: <http://www.w3.org/ns/shacl#> .
@@ -1348,7 +1348,7 @@ async fn shacl_per_graph_mode_warn_vs_reject() {
             <urn:config:scratch-shacl> f:shaclEnabled true ;
                                        f:validationMode f:ValidationWarn .
         }}
-    "#
+    "
     );
     let result = fluree
         .stage_owned(ledger)
@@ -1361,14 +1361,14 @@ async fn shacl_per_graph_mode_warn_vs_reject() {
     // Violating ex:Person in ex:scratch (warn mode) must pass — even though
     // the ledger-wide mode is Reject. Pre-fix, "strictest wins" would have
     // promoted this to Reject and failed the txn.
-    let scratch_trig = r#"
+    let scratch_trig = r"
         @prefix ex: <http://example.org/> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
         GRAPH <http://example.org/scratch> {
             ex:temp_person rdf:type ex:Person .
         }
-    "#;
+    ";
     let result = fluree
         .stage_owned(ledger)
         .upsert_turtle(scratch_trig)
@@ -1528,10 +1528,10 @@ async fn shacl_turtle_insert_rejected_when_violating() {
     let ledger = result.ledger;
 
     // Violating Turtle: an ex:Person with no ex:name.
-    let turtle = r#"
+    let turtle = r"
         @prefix ex: <http://example.org/> .
         ex:charlie a ex:Person .
-    "#;
+    ";
 
     let err = fluree
         .insert_turtle(ledger, turtle)
@@ -1587,7 +1587,7 @@ async fn shacl_turtle_insert_warn_mode_logs_but_succeeds() {
     // Switch SHACL to Warn mode.
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1597,7 +1597,7 @@ async fn shacl_turtle_insert_warn_mode_logs_but_succeeds() {
             <urn:config:shacl> f:shaclEnabled true .
             <urn:config:shacl> f:validationMode f:ValidationWarn .
         }}
-    "#
+    "
     );
     let result = fluree
         .stage_owned(ledger)
@@ -1608,10 +1608,10 @@ async fn shacl_turtle_insert_warn_mode_logs_but_succeeds() {
     let ledger = result.ledger;
 
     // Violating Turtle should now succeed (warn-logged, not rejected).
-    let turtle = r#"
+    let turtle = r"
         @prefix ex: <http://example.org/> .
         ex:dave a ex:Person .
-    "#;
+    ";
     fluree
         .insert_turtle(ledger, turtle)
         .await
@@ -1633,7 +1633,7 @@ async fn datalog_config_disables_reasoning() {
     // Write config: datalog disabled, no overrides permitted
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1643,7 +1643,7 @@ async fn datalog_config_disables_reasoning() {
             <urn:config:datalog> f:datalogEnabled false .
             <urn:config:datalog> f:overrideControl f:OverrideNone .
         }}
-    "#
+    "
     );
 
     fluree
@@ -1681,7 +1681,7 @@ async fn datalog_config_blocks_query_time_rules() {
     // Write config: datalog enabled but query-time rules blocked
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1692,7 +1692,7 @@ async fn datalog_config_blocks_query_time_rules() {
             <urn:config:datalog> f:allowQueryTimeRules false .
             <urn:config:datalog> f:overrideControl f:OverrideNone .
         }}
-    "#
+    "
     );
 
     fluree
@@ -1733,7 +1733,7 @@ async fn datalog_override_control_identity_restricted() {
     // Write config: datalog disabled with identity-restricted override
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1745,7 +1745,7 @@ async fn datalog_override_control_identity_restricted() {
             <urn:config:oc> f:controlMode f:IdentityRestricted .
             <urn:config:oc> f:allowedIdentities <did:key:admin> .
         }}
-    "#
+    "
     );
 
     fluree
@@ -1799,7 +1799,7 @@ async fn merge_shacl_opts_unit_test() {
     // Write config with SHACL in Warn mode
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1809,7 +1809,7 @@ async fn merge_shacl_opts_unit_test() {
             <urn:config:shacl> f:shaclEnabled true .
             <urn:config:shacl> f:validationMode f:ValidationWarn .
         }}
-    "#
+    "
     );
 
     fluree
@@ -1844,7 +1844,7 @@ async fn write_unique_config(
 ) -> fluree_db_api::tx::TransactResult {
     let config_iri = config_graph_iri(ledger_id);
     let trig = format!(
-        r#"
+        r"
         @prefix f: <https://ns.flur.ee/db#> .
         @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 
@@ -1853,7 +1853,7 @@ async fn write_unique_config(
             <urn:config:main> f:transactDefaults <urn:config:transact> .
             <urn:config:transact> f:uniqueEnabled true .
         }}
-    "#
+    "
     );
 
     fluree

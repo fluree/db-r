@@ -410,8 +410,7 @@ async fn reverse_alias_does_not_rewrite_forward_predicate() {
     let map = obj.as_object().unwrap();
     assert!(
         map.contains_key("ex:friend"),
-        "forward ex:friend predicate must keep its own name, got: {}",
-        obj
+        "forward ex:friend predicate must keep its own name, got: {obj}"
     );
     assert_eq!(map.get("ex:friend"), Some(&json!({"@id":"ex:alice"})));
     assert_eq!(map.get("friendOf"), Some(&json!({"@id":"ex:cam"})));

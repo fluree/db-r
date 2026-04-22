@@ -148,8 +148,7 @@ pub fn expand_template(
             Some(None) | None => {
                 // Column is null or not present - this produces no term
                 error = Some(R2rmlError::Materialization(format!(
-                    "Column '{}' is null, cannot expand template",
-                    column
+                    "Column '{column}' is null, cannot expand template"
                 )));
                 break;
             }
@@ -190,7 +189,7 @@ fn iri_escape(value: &str) -> String {
             // Percent-encode other characters
             _ => {
                 for byte in c.to_string().as_bytes() {
-                    result.push_str(&format!("%{:02X}", byte));
+                    result.push_str(&format!("%{byte:02X}"));
                 }
             }
         }
@@ -257,7 +256,7 @@ pub fn materialize_subject(
     // No subject specification - generate blank node if possible
     if subject_map.term_type == TermType::BlankNode {
         let id = row_id.unwrap_or("row");
-        return Ok(Some(RdfTerm::blank_node(format!("_:gen_{}", id))));
+        return Ok(Some(RdfTerm::blank_node(format!("_:gen_{id}"))));
     }
 
     Err(R2rmlError::MissingProperty(
@@ -388,7 +387,7 @@ fn column_to_string(col: &Column, row_idx: usize) -> Option<String> {
         Column::Int64(v) => v.get(row_idx).and_then(|v| *v).map(|n| n.to_string()),
         Column::Float32(v) => v.get(row_idx).and_then(|v| *v).map(|n| n.to_string()),
         Column::Float64(v) => v.get(row_idx).and_then(|v| *v).map(|n| n.to_string()),
-        Column::String(v) => v.get(row_idx).and_then(|v| v.clone()),
+        Column::String(v) => v.get(row_idx).and_then(std::clone::Clone::clone),
         Column::Bytes(v) => v
             .get(row_idx)
             .and_then(|v| v.as_ref())
@@ -407,7 +406,7 @@ fn column_to_string(col: &Column, row_idx: usize) -> Option<String> {
 /// Base64 encode bytes (simple implementation)
 fn base64_encode(bytes: &[u8]) -> String {
     // Simple hex encoding for now; can be replaced with proper base64
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Format date (days since epoch) as ISO 8601
@@ -419,7 +418,7 @@ fn format_date(days: i32) -> String {
 
     // Simplified Gregorian calendar calculation
     let (year, month, day) = days_to_ymd(total_days);
-    format!("{:04}-{:02}-{:02}", year, month, day)
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// Format timestamp (microseconds since epoch) as ISO 8601
@@ -440,15 +439,9 @@ fn format_timestamp(micros: i64) -> String {
     let (year, month, day) = days_to_ymd(total_days);
 
     if micros_part > 0 {
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
-            year, month, day, hours, minutes, secs, micros_part
-        )
+        format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{secs:02}.{micros_part:06}Z")
     } else {
-        format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            year, month, day, hours, minutes, secs
-        )
+        format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{secs:02}Z")
     }
 }
 
@@ -477,7 +470,7 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
     };
 
     let mut month = 1u32;
-    for days_in_month in days_in_months.iter() {
+    for days_in_month in &days_in_months {
         if remaining >= *days_in_month as i64 {
             remaining -= *days_in_month as i64;
             month += 1;
@@ -538,8 +531,7 @@ pub fn expand_template_from_batch(
             }
             None => {
                 error = Some(R2rmlError::Materialization(format!(
-                    "Column '{}' is null or not found at row {}, cannot expand template",
-                    column, row_idx
+                    "Column '{column}' is null or not found at row {row_idx}, cannot expand template"
                 )));
                 break;
             }
@@ -612,7 +604,7 @@ pub fn materialize_subject_from_batch(
 
     // No subject specification - generate blank node if possible
     if subject_map.term_type == TermType::BlankNode {
-        return Ok(Some(RdfTerm::blank_node(format!("_:gen_row_{}", row_idx))));
+        return Ok(Some(RdfTerm::blank_node(format!("_:gen_row_{row_idx}"))));
     }
 
     Err(R2rmlError::MissingProperty(

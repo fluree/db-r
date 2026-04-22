@@ -13,13 +13,16 @@ fn extract_first_string(v: &serde_json::Value) -> Option<String> {
         return Some(s.to_string());
     }
     if let Some(arr) = v.as_array() {
-        return arr.first().and_then(|x| x.as_str()).map(|s| s.to_string());
+        return arr
+            .first()
+            .and_then(|x| x.as_str())
+            .map(std::string::ToString::to_string);
     }
     if let Some(obj) = v.as_object() {
         return obj
             .get("@id")
             .and_then(|x| x.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
     }
     None
 }
@@ -119,7 +122,7 @@ async fn nameservice_query_memory_parity() {
         .filter_map(|row| row.as_array())
         .find(|row| row.first().and_then(|v| v.as_str()) == Some("ledger-three"))
         .and_then(|row| row.get(1))
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .expect("ledger-three t");
     assert!(
         ledger_three_t >= 2,

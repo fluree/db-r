@@ -34,7 +34,7 @@ fn find_root_file(test_db_path: &Path) -> Option<ContentId> {
 
     let entry = std::fs::read_dir(&root_dir)
         .ok()?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .find(|e| {
             e.path()
                 .extension()
@@ -122,7 +122,7 @@ async fn loads_fixture_database_and_scans_triples() {
     let batches = execute_pattern(db_ref, &vars, pattern).await.unwrap();
 
     assert!(!batches.is_empty(), "Should have at least one batch");
-    let total: usize = batches.iter().map(|b| b.len()).sum();
+    let total: usize = batches.iter().map(fluree_db_query::Batch::len).sum();
     assert!(total > 0, "Should have results");
 
     if let Some(batch) = batches.first() {

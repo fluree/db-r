@@ -163,7 +163,7 @@ mod tests {
 
     fn make_flake(s: u16, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
+            Sid::new(s, format!("s{s}")),
             Sid::new(1, "p"),
             FlakeValue::Long(100),
             Sid::new(2, "long"),
@@ -180,7 +180,7 @@ mod tests {
 
         let mut count = 0;
         overlay.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 100, &mut |_| {
-            count += 1
+            count += 1;
         });
         assert_eq!(count, 0);
     }
@@ -196,7 +196,7 @@ mod tests {
 
         let mut collected = Vec::new();
         overlay.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 100, &mut |f| {
-            collected.push(f.s.namespace_code)
+            collected.push(f.s.namespace_code);
         });
         assert_eq!(collected, vec![1, 2, 3]);
     }

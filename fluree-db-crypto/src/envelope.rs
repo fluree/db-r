@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(MIN_ENVELOPE_LEN, 38);
 
         // Build a header and verify layout
-        let header = build_header(0x12345678, &[0xAA; NONCE_LEN]);
+        let header = build_header(0x1234_5678, &[0xAA; NONCE_LEN]);
 
         // Magic
         assert_eq!(&header[0..4], b"FLU\x00");

@@ -84,7 +84,10 @@ impl ConstructTemplate {
 
     /// Collect all variables referenced in the template patterns.
     pub fn variables(&self) -> HashSet<VarId> {
-        self.patterns.iter().flat_map(|tp| tp.variables()).collect()
+        self.patterns
+            .iter()
+            .flat_map(super::super::triple::TriplePattern::variables)
+            .collect()
     }
 }
 
@@ -946,8 +949,7 @@ fn lower_distributed_sequence<E: IriEncoder>(
     let n = combos.len();
     if n > MAX_SEQUENCE_EXPANSION {
         return Err(ParseError::InvalidWhere(format!(
-            "Property path sequence expands to {} chains (limit {})",
-            n, MAX_SEQUENCE_EXPANSION,
+            "Property path sequence expands to {n} chains (limit {MAX_SEQUENCE_EXPANSION})",
         )));
     }
 
@@ -1448,8 +1450,7 @@ fn lower_filter_expr_inner<E: IriEncoder>(
             let func_name = lower_function_name(func);
             if let Function::Custom(unknown) = &func_name {
                 return Err(ParseError::InvalidFilter(format!(
-                    "Unknown function: {}",
-                    unknown
+                    "Unknown function: {unknown}"
                 )));
             }
             Ok(Expression::Call {
@@ -1756,7 +1757,7 @@ mod tests {
         if let Term::Iri(iri) = lowered {
             assert_eq!(iri.as_ref(), "http://schema.org/name");
         } else {
-            panic!("Expected Term::Iri, got {:?}", lowered);
+            panic!("Expected Term::Iri, got {lowered:?}");
         }
     }
 
@@ -1907,7 +1908,7 @@ mod tests {
             FlakeValue::BigInt(bi) => {
                 assert_eq!(bi.to_string(), big_num);
             }
-            other => panic!("Expected BigInt, got {:?}", other),
+            other => panic!("Expected BigInt, got {other:?}"),
         }
     }
 
@@ -1923,7 +1924,7 @@ mod tests {
                 // Verify precision is preserved
                 assert!(bd.to_string().starts_with("3.14159265358979"));
             }
-            other => panic!("Expected Decimal, got {:?}", other),
+            other => panic!("Expected Decimal, got {other:?}"),
         }
     }
 
@@ -2158,7 +2159,7 @@ mod tests {
     fn extract_triple(pattern: &Pattern) -> &TriplePattern {
         match pattern {
             Pattern::Triple(tp) => tp,
-            other => panic!("Expected Pattern::Triple, got {:?}", other),
+            other => panic!("Expected Pattern::Triple, got {other:?}"),
         }
     }
 
@@ -2319,7 +2320,7 @@ mod tests {
                 assert_eq!(pp.predicate.name_str(), "a");
                 assert_eq!(pp.object.as_var().map(|v| vars.name(v)), Some("?__pp0"));
             }
-            other => panic!("Expected PropertyPath, got {:?}", other),
+            other => panic!("Expected PropertyPath, got {other:?}"),
         }
 
         // Step 1: Triple(?__pp0, b, ?o)
@@ -2549,18 +2550,11 @@ mod tests {
 
             // Each branch should be a 3-step chain (3 triples, 2 join vars)
             for (i, branch) in branches.iter().enumerate() {
-                assert_eq!(
-                    branch.len(),
-                    3,
-                    "Branch {} should have 3 triple patterns",
-                    i
-                );
+                assert_eq!(branch.len(), 3, "Branch {i} should have 3 triple patterns");
                 for (j, pat) in branch.iter().enumerate() {
                     assert!(
                         matches!(pat, Pattern::Triple(_)),
-                        "Branch {} pattern {} should be Triple",
-                        i,
-                        j
+                        "Branch {i} pattern {j} should be Triple"
                     );
                 }
             }
@@ -2605,7 +2599,7 @@ mod tests {
 
             // Each branch should be a 2-step chain
             for (i, branch) in branches.iter().enumerate() {
-                assert_eq!(branch.len(), 2, "Branch {} should have 2 triples", i);
+                assert_eq!(branch.len(), 2, "Branch {i} should have 2 triples");
             }
 
             // Verify the 4 combinations: a/c, a/d, b/c, b/d
@@ -2702,12 +2696,8 @@ mod tests {
         let steps: Vec<UnresolvedPathExpr> = (0..7)
             .map(|i| {
                 UnresolvedPathExpr::Alternative(vec![
-                    UnresolvedPathExpr::Iri(Arc::from(
-                        format!("http://example.org/a{}", i).as_str(),
-                    )),
-                    UnresolvedPathExpr::Iri(Arc::from(
-                        format!("http://example.org/b{}", i).as_str(),
-                    )),
+                    UnresolvedPathExpr::Iri(Arc::from(format!("http://example.org/a{i}").as_str())),
+                    UnresolvedPathExpr::Iri(Arc::from(format!("http://example.org/b{i}").as_str())),
                 ])
             })
             .collect();
@@ -2720,8 +2710,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("expands to 128") && err.contains("limit 64"),
-            "Unexpected error: {}",
-            err,
+            "Unexpected error: {err}",
         );
     }
 
@@ -2776,24 +2765,24 @@ mod tests {
                 match &steps[0] {
                     UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
                         UnresolvedPathExpr::Iri(iri) => {
-                            assert_eq!(iri.as_ref(), "http://example.org/b")
+                            assert_eq!(iri.as_ref(), "http://example.org/b");
                         }
-                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                        other => panic!("Expected Iri inside Inverse, got {other:?}"),
                     },
-                    other => panic!("Expected Inverse, got {:?}", other),
+                    other => panic!("Expected Inverse, got {other:?}"),
                 }
                 // Second step: ^a
                 match &steps[1] {
                     UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
                         UnresolvedPathExpr::Iri(iri) => {
-                            assert_eq!(iri.as_ref(), "http://example.org/a")
+                            assert_eq!(iri.as_ref(), "http://example.org/a");
                         }
-                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                        other => panic!("Expected Iri inside Inverse, got {other:?}"),
                     },
-                    other => panic!("Expected Inverse, got {:?}", other),
+                    other => panic!("Expected Inverse, got {other:?}"),
                 }
             }
-            other => panic!("Expected Sequence, got {:?}", other),
+            other => panic!("Expected Sequence, got {other:?}"),
         }
     }
 
@@ -2812,23 +2801,23 @@ mod tests {
                 match &branches[0] {
                     UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
                         UnresolvedPathExpr::Iri(iri) => {
-                            assert_eq!(iri.as_ref(), "http://example.org/a")
+                            assert_eq!(iri.as_ref(), "http://example.org/a");
                         }
-                        other => panic!("Expected Iri, got {:?}", other),
+                        other => panic!("Expected Iri, got {other:?}"),
                     },
-                    other => panic!("Expected Inverse, got {:?}", other),
+                    other => panic!("Expected Inverse, got {other:?}"),
                 }
                 match &branches[1] {
                     UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
                         UnresolvedPathExpr::Iri(iri) => {
-                            assert_eq!(iri.as_ref(), "http://example.org/b")
+                            assert_eq!(iri.as_ref(), "http://example.org/b");
                         }
-                        other => panic!("Expected Iri, got {:?}", other),
+                        other => panic!("Expected Iri, got {other:?}"),
                     },
-                    other => panic!("Expected Inverse, got {:?}", other),
+                    other => panic!("Expected Inverse, got {other:?}"),
                 }
             }
-            other => panic!("Expected Alternative, got {:?}", other),
+            other => panic!("Expected Alternative, got {other:?}"),
         }
     }
 
@@ -2854,13 +2843,13 @@ mod tests {
                     match &steps[i] {
                         UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
                             UnresolvedPathExpr::Iri(iri) => assert_eq!(iri.as_ref(), *exp_iri),
-                            other => panic!("Step {}: expected Iri, got {:?}", i, other),
+                            other => panic!("Step {i}: expected Iri, got {other:?}"),
                         },
-                        other => panic!("Step {}: expected Inverse, got {:?}", i, other),
+                        other => panic!("Step {i}: expected Inverse, got {other:?}"),
                     }
                 }
             }
-            other => panic!("Expected Sequence, got {:?}", other),
+            other => panic!("Expected Sequence, got {other:?}"),
         }
     }
 
@@ -2889,14 +2878,14 @@ mod tests {
                             if matches!(inner.as_ref(), UnresolvedPathExpr::Iri(iri)
                                 if iri.as_ref() == "http://example.org/c")));
                     }
-                    other => panic!("Expected Alternative, got {:?}", other),
+                    other => panic!("Expected Alternative, got {other:?}"),
                 }
                 // Second step: ^a
                 assert!(matches!(&steps[1], UnresolvedPathExpr::Inverse(inner)
                     if matches!(inner.as_ref(), UnresolvedPathExpr::Iri(iri)
                         if iri.as_ref() == "http://example.org/a")));
             }
-            other => panic!("Expected Sequence, got {:?}", other),
+            other => panic!("Expected Sequence, got {other:?}"),
         }
     }
 
@@ -2911,7 +2900,7 @@ mod tests {
             UnresolvedPathExpr::Iri(iri) => {
                 assert_eq!(iri.as_ref(), "http://example.org/a");
             }
-            other => panic!("Expected Iri (double-inverse cancelled), got {:?}", other),
+            other => panic!("Expected Iri (double-inverse cancelled), got {other:?}"),
         }
     }
 
@@ -2933,24 +2922,23 @@ mod tests {
                 match &steps[0] {
                     UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
                         UnresolvedPathExpr::Iri(iri) => {
-                            assert_eq!(iri.as_ref(), "http://example.org/b")
+                            assert_eq!(iri.as_ref(), "http://example.org/b");
                         }
-                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                        other => panic!("Expected Iri inside Inverse, got {other:?}"),
                     },
-                    other => panic!("Expected Inverse for step 0, got {:?}", other),
+                    other => panic!("Expected Inverse for step 0, got {other:?}"),
                 }
                 // Second step: a (^a was first, reversed to second, ^(^a) cancels to a)
                 match &steps[1] {
                     UnresolvedPathExpr::Iri(iri) => {
-                        assert_eq!(iri.as_ref(), "http://example.org/a")
+                        assert_eq!(iri.as_ref(), "http://example.org/a");
                     }
-                    other => panic!(
-                        "Expected Iri (double-inverse cancelled) for step 1, got {:?}",
-                        other
-                    ),
+                    other => {
+                        panic!("Expected Iri (double-inverse cancelled) for step 1, got {other:?}")
+                    }
                 }
             }
-            other => panic!("Expected Sequence, got {:?}", other),
+            other => panic!("Expected Sequence, got {other:?}"),
         }
     }
 
@@ -2972,24 +2960,23 @@ mod tests {
                 match &branches[0] {
                     UnresolvedPathExpr::Inverse(inner) => match inner.as_ref() {
                         UnresolvedPathExpr::Iri(iri) => {
-                            assert_eq!(iri.as_ref(), "http://example.org/a")
+                            assert_eq!(iri.as_ref(), "http://example.org/a");
                         }
-                        other => panic!("Expected Iri inside Inverse, got {:?}", other),
+                        other => panic!("Expected Iri inside Inverse, got {other:?}"),
                     },
-                    other => panic!("Expected Inverse for branch 0, got {:?}", other),
+                    other => panic!("Expected Inverse for branch 0, got {other:?}"),
                 }
                 // Second branch: b (double-inverse cancelled)
                 match &branches[1] {
                     UnresolvedPathExpr::Iri(iri) => {
-                        assert_eq!(iri.as_ref(), "http://example.org/b")
+                        assert_eq!(iri.as_ref(), "http://example.org/b");
                     }
                     other => panic!(
-                        "Expected Iri (double-inverse cancelled) for branch 1, got {:?}",
-                        other
+                        "Expected Iri (double-inverse cancelled) for branch 1, got {other:?}"
                     ),
                 }
             }
-            other => panic!("Expected Alternative, got {:?}", other),
+            other => panic!("Expected Alternative, got {other:?}"),
         }
     }
 

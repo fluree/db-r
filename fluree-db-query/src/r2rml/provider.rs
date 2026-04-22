@@ -129,9 +129,8 @@ impl R2rmlProvider for NoOpR2rmlProvider {
         _as_of_t: Option<i64>,
     ) -> Result<Arc<CompiledR2rmlMapping>> {
         Err(crate::error::QueryError::Internal(format!(
-            "R2RML provider not available for graph source '{}'. \
-             This Fluree instance does not support graph source operations.",
-            graph_source_id
+            "R2RML provider not available for graph source '{graph_source_id}'. \
+             This Fluree instance does not support graph source operations."
         )))
     }
 }
@@ -146,9 +145,8 @@ impl R2rmlTableProvider for NoOpR2rmlProvider {
         _as_of_t: Option<i64>,
     ) -> Result<Vec<ColumnBatch>> {
         Err(crate::error::QueryError::Internal(format!(
-            "R2RML table scanning not available for graph source '{}'. \
-             This Fluree instance does not support graph source operations.",
-            graph_source_id
+            "R2RML table scanning not available for graph source '{graph_source_id}'. \
+             This Fluree instance does not support graph source operations."
         )))
     }
 }

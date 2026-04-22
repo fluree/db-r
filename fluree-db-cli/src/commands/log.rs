@@ -30,11 +30,11 @@ pub async fn run(
         .nameservice()
         .lookup(&ledger_id)
         .await?
-        .ok_or_else(|| CliError::NotFound(format!("ledger '{}' not found", alias)))?;
+        .ok_or_else(|| CliError::NotFound(format!("ledger '{alias}' not found")))?;
 
     let commit_head_id = record
         .commit_head_id
-        .ok_or_else(|| CliError::NotFound(format!("ledger '{}' has no commits", alias)))?;
+        .ok_or_else(|| CliError::NotFound(format!("ledger '{alias}' has no commits")))?;
 
     // Walk commit chain by CID
     let store = fluree.content_store(&ledger_id);
@@ -59,7 +59,7 @@ pub async fn run(
         let commit_id_str = commit
             .id
             .as_ref()
-            .map(|id| id.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap_or_default();
         let short_hash = abbreviate_hash(&commit_id_str);
 
@@ -69,9 +69,9 @@ pub async fn run(
             let time_str = commit.time.as_deref().unwrap_or("");
             println!("t={:<4}  {}  {}", commit.t, short_hash, time_str);
         } else {
-            println!("commit {}", short_hash);
+            println!("commit {short_hash}");
             if let Some(ref time) = commit.time {
-                println!("Date:    {}", time);
+                println!("Date:    {time}");
             }
             println!("t:       {}", commit.t);
             println!("Flakes:  {}", commit.flakes.len());
@@ -82,7 +82,7 @@ pub async fn run(
     }
 
     if shown == 0 {
-        println!("No commits found for ledger '{}'", alias);
+        println!("No commits found for ledger '{alias}'");
     }
 
     Ok(())

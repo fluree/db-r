@@ -25,7 +25,7 @@ pub struct RowColumnSlice<'a> {
     pub i: &'a [i32],
 }
 
-impl<'a> RowColumnSlice<'a> {
+impl RowColumnSlice<'_> {
     /// Get the number of rows in these column slices.
     #[inline]
     pub fn len(&self) -> usize {

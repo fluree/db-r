@@ -54,14 +54,14 @@ pub fn render_diagnostic(diag: &Diagnostic, source: &str, filename: Option<&str>
     // Help text
     if let Some(help) = &diag.help {
         for line in help.lines() {
-            output.push_str(&format!("   = help: {}\n", line));
+            output.push_str(&format!("   = help: {line}\n"));
         }
     }
 
     // Note text
     if let Some(note) = &diag.note {
         for line in note.lines() {
-            output.push_str(&format!("   = note: {}\n", line));
+            output.push_str(&format!("   = note: {line}\n"));
         }
     }
 
@@ -87,12 +87,7 @@ fn render_source_snippet(output: &mut String, source: &str, index: &LineIndex, d
         output.push_str(&format!("{:>width$} |\n", "", width = gutter_width));
 
         // Line with source
-        output.push_str(&format!(
-            "{:>width$} | {}\n",
-            line_num,
-            line_text,
-            width = gutter_width
-        ));
+        output.push_str(&format!("{line_num:>gutter_width$} | {line_text}\n"));
 
         // Underline
         let underline_start = if line_num == start_loc.line {
@@ -164,7 +159,7 @@ mod tests {
         );
 
         let rendered = render_diagnostic(&diag, source, Some("query.sparql"));
-        println!("{}", rendered);
+        println!("{rendered}");
 
         assert!(rendered.contains("error[S001]"));
         assert!(rendered.contains("query.sparql:1:19"));
@@ -183,7 +178,7 @@ mod tests {
         .with_note("Fluree supports +, *, ? but not depth bounds");
 
         let rendered = render_diagnostic(&diag, source, Some("query.sparql"));
-        println!("{}", rendered);
+        println!("{rendered}");
 
         assert!(rendered.contains("error[F001]"));
         assert!(rendered.contains("= help:"));
@@ -200,7 +195,7 @@ mod tests {
         );
 
         let rendered = render_diagnostic(&diag, source, None);
-        println!("{}", rendered);
+        println!("{rendered}");
 
         assert!(rendered.contains("warning[W002]"));
         assert!(rendered.contains("<input>:1:8"));

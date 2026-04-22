@@ -202,7 +202,7 @@ mod tests {
                 assert_eq!(record.name, "mydb");
                 assert_eq!(record.branch, "main");
             }
-            other => panic!("expected LedgerUpdated, got {:?}", other),
+            other => panic!("expected LedgerUpdated, got {other:?}"),
         }
     }
 
@@ -222,7 +222,7 @@ mod tests {
 
         match parse_server_sse_event(&event).unwrap() {
             Some(RemoteEvent::LedgerRetracted { ledger_id }) => assert_eq!(ledger_id, "mydb:main"),
-            other => panic!("expected LedgerRetracted, got {:?}", other),
+            other => panic!("expected LedgerRetracted, got {other:?}"),
         }
     }
 
@@ -258,7 +258,7 @@ mod tests {
                 assert_eq!(record.branch, "main");
                 assert_eq!(record.index_t, 0);
             }
-            other => panic!("expected GraphSourceUpdated, got {:?}", other),
+            other => panic!("expected GraphSourceUpdated, got {other:?}"),
         }
     }
 

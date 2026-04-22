@@ -277,8 +277,7 @@ impl ConnectionConfig {
                 }
                 _ => {
                     return Err(ConnectionError::invalid_config(format!(
-                        "Unknown configuration field: '{}'",
-                        key
+                        "Unknown configuration field: '{key}'"
                     )));
                 }
             }
@@ -568,7 +567,7 @@ fn resolve_u64(graph: &ConfigGraph, node: &JsonValue, field: &str) -> Option<u64
     // 1) Literal number
     let n = resolved
         .get("@value")
-        .and_then(|x| x.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .or_else(|| resolved.as_u64());
     if n.is_some() {
         return n;
@@ -598,7 +597,7 @@ fn resolve_bool(graph: &ConfigGraph, node: &JsonValue, field: &str) -> Option<bo
     // 1) Literal boolean
     let b = resolved
         .get("@value")
-        .and_then(|x| x.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .or_else(|| resolved.as_bool());
     if b.is_some() {
         return b;
@@ -633,7 +632,7 @@ fn get_int_field(node: &JsonValue, field: &str) -> Option<i64> {
         })
         .and_then(|v| {
             v.get("@value")
-                .and_then(|x| x.as_i64())
+                .and_then(serde_json::Value::as_i64)
                 .or_else(|| v.as_i64())
         })
 }
@@ -677,8 +676,7 @@ impl CacheConfig {
                 }
                 _ => {
                     return Err(ConnectionError::invalid_config(format!(
-                        "Unknown cache configuration field: '{}'",
-                        key
+                        "Unknown cache configuration field: '{key}'"
                     )));
                 }
             }
@@ -720,8 +718,7 @@ fn resolve_config_value_usize(value: &JsonValue) -> Result<usize> {
         if let Some(resolved) = spec.resolve_string() {
             return resolved.parse::<usize>().map_err(|_| {
                 ConnectionError::invalid_config(format!(
-                    "Could not parse cache config value as number: '{}'",
-                    resolved
+                    "Could not parse cache config value as number: '{resolved}'"
                 ))
             });
         }
@@ -784,8 +781,7 @@ impl StorageConfig {
                     // For unsupported types, we allow unknown fields
                     if !matches!(config.storage_type, StorageType::Unsupported { .. }) {
                         return Err(ConnectionError::invalid_config(format!(
-                            "Unknown storage configuration field: '{}'",
-                            key
+                            "Unknown storage configuration field: '{key}'"
                         )));
                     }
                 }
@@ -859,7 +855,7 @@ fn parse_address_identifiers_map(
 
     let mut result = HashMap::new();
 
-    for (key, value) in map.iter() {
+    for (key, value) in map {
         // Skip JSON-LD keywords
         if key.starts_with('@') {
             continue;
@@ -880,8 +876,7 @@ fn parse_address_identifiers_map(
         // Resolve the value to a storage node using ConfigGraph
         let storage_node = graph.resolve_first(value).ok_or_else(|| {
             ConnectionError::invalid_config(format!(
-                "addressIdentifiers[{}] must reference a Storage node",
-                identifier
+                "addressIdentifiers[{identifier}] must reference a Storage node"
             ))
         })?;
 

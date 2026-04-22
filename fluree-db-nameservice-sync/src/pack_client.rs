@@ -69,13 +69,13 @@ pub async fn fetch_and_ingest_pack<S: ContentAddressedWrite>(
     }
 
     let body = serde_json::to_vec(request)
-        .map_err(|e| SyncError::PackProtocol(format!("failed to serialize pack request: {}", e)))?;
+        .map_err(|e| SyncError::PackProtocol(format!("failed to serialize pack request: {e}")))?;
 
     let response = req_builder
         .body(body)
         .send()
         .await
-        .map_err(|e| SyncError::Remote(format!("pack request failed: {}", e)))?;
+        .map_err(|e| SyncError::Remote(format!("pack request failed: {e}")))?;
 
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND
@@ -86,10 +86,7 @@ pub async fn fetch_and_ingest_pack<S: ContentAddressedWrite>(
         return Err(SyncError::PackNotSupported);
     }
     if !status.is_success() {
-        return Err(SyncError::Remote(format!(
-            "pack request returned {}",
-            status
-        )));
+        return Err(SyncError::Remote(format!("pack request returned {status}")));
     }
 
     // Stream the response body and decode frames.
@@ -121,9 +118,8 @@ pub async fn ingest_pack_stream<S: ContentAddressedWrite>(
         // Try to decode from what we have.
         if !preamble_consumed {
             if buf.len() >= PREAMBLE_SIZE {
-                read_stream_preamble(&buf).map_err(|e| {
-                    SyncError::PackProtocol(format!("invalid pack preamble: {}", e))
-                })?;
+                read_stream_preamble(&buf)
+                    .map_err(|e| SyncError::PackProtocol(format!("invalid pack preamble: {e}")))?;
                 let _ = buf.split_to(PREAMBLE_SIZE);
                 preamble_consumed = true;
                 continue;
@@ -182,8 +178,7 @@ pub async fn ingest_pack_stream<S: ContentAddressedWrite>(
                         }
                         PackFrame::Error(msg) => {
                             return Err(SyncError::PackProtocol(format!(
-                                "server error in pack stream: {}",
-                                msg
+                                "server error in pack stream: {msg}"
                             )));
                         }
                         PackFrame::Manifest(manifest) => {
@@ -217,8 +212,7 @@ pub async fn ingest_pack_stream<S: ContentAddressedWrite>(
                 }
                 Err(e) => {
                     return Err(SyncError::PackProtocol(format!(
-                        "pack frame decode error: {}",
-                        e
+                        "pack frame decode error: {e}"
                     )));
                 }
             }
@@ -230,10 +224,7 @@ pub async fn ingest_pack_stream<S: ContentAddressedWrite>(
                 buf.extend_from_slice(&chunk);
             }
             Some(Err(e)) => {
-                return Err(SyncError::Remote(format!(
-                    "error reading pack stream: {}",
-                    e
-                )));
+                return Err(SyncError::Remote(format!("error reading pack stream: {e}")));
             }
             None => {
                 // Stream ended without End frame.
@@ -267,9 +258,8 @@ pub async fn peek_pack_header(
     loop {
         if !preamble_consumed {
             if buf.len() >= PREAMBLE_SIZE {
-                read_stream_preamble(&buf).map_err(|e| {
-                    SyncError::PackProtocol(format!("invalid pack preamble: {}", e))
-                })?;
+                read_stream_preamble(&buf)
+                    .map_err(|e| SyncError::PackProtocol(format!("invalid pack preamble: {e}")))?;
                 let _ = buf.split_to(PREAMBLE_SIZE);
                 preamble_consumed = true;
                 continue;
@@ -291,8 +281,7 @@ pub async fn peek_pack_header(
                         }
                         PackFrame::Error(msg) => {
                             return Err(SyncError::PackProtocol(format!(
-                                "server error in pack stream: {}",
-                                msg
+                                "server error in pack stream: {msg}"
                             )));
                         }
                         _ => {
@@ -307,8 +296,7 @@ pub async fn peek_pack_header(
                 }
                 Err(e) => {
                     return Err(SyncError::PackProtocol(format!(
-                        "pack frame decode error: {}",
-                        e
+                        "pack frame decode error: {e}"
                     )));
                 }
             }
@@ -318,10 +306,7 @@ pub async fn peek_pack_header(
         match stream.next().await {
             Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
             Some(Err(e)) => {
-                return Err(SyncError::Remote(format!(
-                    "error reading pack stream: {}",
-                    e
-                )));
+                return Err(SyncError::Remote(format!("error reading pack stream: {e}")));
             }
             None => {
                 return Err(SyncError::PackProtocol(
@@ -380,8 +365,7 @@ pub async fn ingest_pack_stream_with_header<S: ContentAddressedWrite>(
                     }
                     PackFrame::Error(msg) => {
                         return Err(SyncError::PackProtocol(format!(
-                            "server error in pack stream: {}",
-                            msg
+                            "server error in pack stream: {msg}"
                         )));
                     }
                     PackFrame::Manifest(manifest) => {
@@ -405,8 +389,7 @@ pub async fn ingest_pack_stream_with_header<S: ContentAddressedWrite>(
             }
             Err(e) => {
                 return Err(SyncError::PackProtocol(format!(
-                    "pack frame decode error: {}",
-                    e
+                    "pack frame decode error: {e}"
                 )));
             }
         }
@@ -415,10 +398,7 @@ pub async fn ingest_pack_stream_with_header<S: ContentAddressedWrite>(
         match stream.next().await {
             Some(Ok(chunk)) => buf.extend_from_slice(&chunk),
             Some(Err(e)) => {
-                return Err(SyncError::Remote(format!(
-                    "error reading pack stream: {}",
-                    e
-                )));
+                return Err(SyncError::Remote(format!("error reading pack stream: {e}")));
             }
             None => {
                 if buf.is_empty() {
@@ -453,8 +433,7 @@ pub async fn ingest_pack_frame<S: ContentAddressedWrite>(
     // Verify integrity (format-sniffing for commit-v2).
     if !verify_object_integrity(cid, bytes) {
         return Err(SyncError::PackProtocol(format!(
-            "integrity check failed for {}",
-            cid
+            "integrity check failed for {cid}"
         )));
     }
 
@@ -471,7 +450,7 @@ pub async fn ingest_pack_frame<S: ContentAddressedWrite>(
     storage
         .content_write_bytes_with_hash(kind, ledger_id, &digest_hex, bytes)
         .await
-        .map_err(|e| SyncError::PackProtocol(format!("failed to write {}: {}", cid, e)))?;
+        .map_err(|e| SyncError::PackProtocol(format!("failed to write {cid}: {e}")))?;
 
     Ok(())
 }
@@ -483,8 +462,7 @@ fn derive_commit_digest_hex(bytes: &[u8]) -> Result<String> {
     match fluree_db_core::commit::codec::verify_commit_blob(bytes) {
         Ok(derived_id) => Ok(derived_id.digest_hex()),
         Err(e) => Err(SyncError::PackProtocol(format!(
-            "failed to derive commit digest: {}",
-            e
+            "failed to derive commit digest: {e}"
         ))),
     }
 }

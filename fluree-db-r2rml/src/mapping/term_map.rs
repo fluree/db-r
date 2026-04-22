@@ -109,7 +109,9 @@ impl PredicateMap {
     pub fn referenced_columns(&self) -> Vec<&str> {
         match self {
             PredicateMap::Constant(_) => vec![],
-            PredicateMap::Template { columns, .. } => columns.iter().map(|s| s.as_str()).collect(),
+            PredicateMap::Template { columns, .. } => {
+                columns.iter().map(std::string::String::as_str).collect()
+            }
             PredicateMap::Column(col) => vec![col.as_str()],
         }
     }
@@ -256,7 +258,9 @@ impl ObjectMap {
         match self {
             ObjectMap::Column { column, .. } => vec![column.as_str()],
             ObjectMap::Constant { .. } => vec![],
-            ObjectMap::Template { columns, .. } => columns.iter().map(|s| s.as_str()).collect(),
+            ObjectMap::Template { columns, .. } => {
+                columns.iter().map(std::string::String::as_str).collect()
+            }
             ObjectMap::RefObjectMap(ref_map) => ref_map
                 .join_conditions
                 .iter()

@@ -168,11 +168,10 @@ async fn modify_policy_allows_own_property() {
     let rows = query_result.to_jsonld(&tx_result.ledger.snapshot).unwrap();
     let arr = rows.as_array().unwrap();
 
-    assert_eq!(arr.len(), 1, "Should have 1 row, got: {:?}", arr);
+    assert_eq!(arr.len(), 1, "Should have 1 row, got: {arr:?}");
     assert_eq!(
         arr[0], "updated@flur.ee",
-        "Email should be updated, got: {:?}",
-        arr
+        "Email should be updated, got: {arr:?}"
     );
 }
 
@@ -350,8 +349,7 @@ async fn view_only_policy_blocks_modify() {
 
     assert!(
         result.is_err(),
-        "View-only policy should block modifications, but got: {:?}",
-        result
+        "View-only policy should block modifications, but got: {result:?}"
     );
 
     let err = result.unwrap_err();

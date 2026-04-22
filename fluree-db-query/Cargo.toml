@@ -80,3 +80,6 @@ criterion = "0.5"
 [[bench]]
 name = "vector_math"
 harness = false
+
+[lints]
+workspace = true

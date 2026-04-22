@@ -174,7 +174,7 @@ impl ClassBitsetTable {
             total_subjects = graph_bitsets
                 .values()
                 .flat_map(|ns| ns.values())
-                .map(|v| v.len())
+                .map(std::vec::Vec::len)
                 .sum::<usize>(),
             "class bitset table built"
         );
@@ -260,7 +260,7 @@ impl ClassBitsetTable {
             total_subjects = graph_bitsets
                 .values()
                 .flat_map(|ns| ns.values())
-                .map(|v| v.len())
+                .map(std::vec::Vec::len)
                 .sum::<usize>(),
             "class bitset table built (from global types)"
         );
@@ -914,12 +914,12 @@ mod tests {
         // Write identity remap files.
         // Subject remap: 4 entries (0-indexed), identity mapping.
         let subj_remap_path = dir.join("subjects_00000.rmp");
-        let subj_data: Vec<u8> = (0u64..4).flat_map(|i| i.to_le_bytes()).collect();
+        let subj_data: Vec<u8> = (0u64..4).flat_map(u64::to_le_bytes).collect();
         std::fs::write(&subj_remap_path, &subj_data).unwrap();
 
         // String remap: 10 entries, identity mapping.
         let str_remap_path = dir.join("strings_00000.rmp");
-        let str_data: Vec<u8> = (0u32..10).flat_map(|i| i.to_le_bytes()).collect();
+        let str_data: Vec<u8> = (0u32..10).flat_map(u32::to_le_bytes).collect();
         std::fs::write(&str_remap_path, &str_data).unwrap();
 
         let commits = vec![CommitInput {

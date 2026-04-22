@@ -45,7 +45,11 @@ pub fn compute_variable_deps(query: &ParsedQuery, options: &QueryOptions) -> Opt
 
     // Graph crawl formatter reads the root variable from result batches
     // in addition to the SELECT variables (for mixed-select mode).
-    if let Some(root_var) = query.graph_select.as_ref().and_then(|gs| gs.root_var()) {
+    if let Some(root_var) = query
+        .graph_select
+        .as_ref()
+        .and_then(super::super::ir::GraphSelectSpec::root_var)
+    {
         deps.insert(root_var);
     }
 

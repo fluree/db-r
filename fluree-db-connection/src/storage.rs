@@ -50,14 +50,14 @@ mod tests {
     #[test]
     fn test_create_memory_storage() {
         let storage = create_memory_storage();
-        assert!(format!("{:?}", storage).contains("MemoryStorage"));
+        assert!(format!("{storage:?}").contains("MemoryStorage"));
     }
 
     #[test]
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     fn test_create_file_storage() {
         let storage = create_file_storage("/tmp/test");
-        assert!(format!("{:?}", storage).contains("FileStorage"));
+        assert!(format!("{storage:?}").contains("FileStorage"));
     }
 
     #[test]

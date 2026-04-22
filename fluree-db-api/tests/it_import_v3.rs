@@ -232,11 +232,11 @@ ex:bob a ex:User ;
     let names_result = support::query_sparql(
         &fluree,
         &ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name WHERE { ?s schema:name ?name }
         ORDER BY ?name
-        "#,
+        ",
     )
     .await
     .expect("string query");
@@ -284,11 +284,11 @@ ex:bob a ex:User ;
     let desc_result = support::query_sparql(
         &fluree,
         &ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?desc WHERE { ?s schema:description ?desc }
         ORDER BY ?desc
-        "#,
+        ",
     )
     .await
     .expect("langString query");
@@ -348,11 +348,11 @@ ex:bob a ex:User ;
     let type_result = support::query_sparql(
         &fluree,
         &ledger,
-        r#"
+        r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s WHERE { ?s a ex:User }
         ORDER BY ?s
-        "#,
+        ",
     )
     .await
     .expect("IRI ref query");
@@ -376,11 +376,11 @@ ex:bob a ex:User ;
     let age_result = support::query_sparql(
         &fluree,
         &ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         PREFIX ex: <http://example.org/ns/>
         SELECT ?age WHERE { ex:alice schema:age ?age }
-        "#,
+        ",
     )
     .await
     .expect("integer query");
@@ -498,11 +498,11 @@ ex:bob a ex:User ;
     let names_result = support::query_sparql(
         &fluree,
         &ledger_after,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name WHERE { ?s schema:name ?name }
         ORDER BY ?name
-        "#,
+        ",
     )
     .await
     .expect("overlay query");
@@ -526,11 +526,11 @@ ex:bob a ex:User ;
     let type_result = support::query_sparql(
         &fluree,
         &ledger_after,
-        r#"
+        r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s WHERE { ?s a ex:User }
         ORDER BY ?s
-        "#,
+        ",
     )
     .await
     .expect("type query with overlay");
@@ -550,11 +550,11 @@ ex:bob a ex:User ;
     let cam_age = support::query_sparql(
         &fluree,
         &ledger_after,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         PREFIX ex: <http://example.org/ns/>
         SELECT ?age WHERE { ex:cam schema:age ?age }
-        "#,
+        ",
     )
     .await
     .expect("cam age query");
@@ -625,7 +625,7 @@ ex:bob schema:name "Bob" ;
             &delete_data,
             fluree_db_api::TxnOpts::default(),
             fluree_db_api::CommitOpts::default(),
-            &Default::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .expect("retract should succeed");
@@ -636,11 +636,11 @@ ex:bob schema:name "Bob" ;
     let names_result = support::query_sparql(
         &fluree,
         &ledger_after,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name WHERE { ?s schema:name ?name }
         ORDER BY ?name
-        "#,
+        ",
     )
     .await
     .expect("post-retract query");
@@ -714,10 +714,10 @@ ex:alice schema:name "Alice" .
     let desc_result = support::query_sparql(
         &fluree,
         &ledger_after,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?desc WHERE { ?s schema:description ?desc }
-        "#,
+        ",
     )
     .await
     .expect("langString overlay query");
@@ -864,11 +864,11 @@ ex:bob a ex:User ;
     let names_result = support::query_sparql(
         &fluree,
         &rebuilt_ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name WHERE { ?s schema:name ?name }
         ORDER BY ?name
-        "#,
+        ",
     )
     .await
     .expect("query rebuilt V3 index");
@@ -892,11 +892,11 @@ ex:bob a ex:User ;
     let age_result = support::query_sparql(
         &fluree,
         &rebuilt_ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         PREFIX ex: <http://example.org/ns/>
         SELECT ?age WHERE { ex:cam schema:age ?age }
-        "#,
+        ",
     )
     .await
     .expect("cam age after rebuild");
@@ -911,11 +911,11 @@ ex:bob a ex:User ;
     let type_result = support::query_sparql(
         &fluree,
         &rebuilt_ledger,
-        r#"
+        r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s WHERE { ?s a ex:User }
         ORDER BY ?s
-        "#,
+        ",
     )
     .await
     .expect("type query after rebuild");
@@ -1116,11 +1116,11 @@ ex:bob a ex:User ;
     let names_result = support::query_sparql(
         &fluree,
         &incr_ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name WHERE { ?s schema:name ?name }
         ORDER BY ?name
-        "#,
+        ",
     )
     .await
     .expect("query incremental V3 index");
@@ -1144,11 +1144,11 @@ ex:bob a ex:User ;
     let cam_result = support::query_sparql(
         &fluree,
         &incr_ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         PREFIX ex: <http://example.org/ns/>
         SELECT ?age WHERE { ex:cam schema:age ?age }
-        "#,
+        ",
     )
     .await
     .expect("cam age query");
@@ -1167,11 +1167,11 @@ ex:bob a ex:User ;
     let type_result = support::query_sparql(
         &fluree,
         &incr_ledger,
-        r#"
+        r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s WHERE { ?s a ex:User }
         ORDER BY ?s
-        "#,
+        ",
     )
     .await
     .expect("type query after incremental");
@@ -1294,11 +1294,11 @@ ex:remove a ex:User ;
     let names_result = support::query_sparql(
         &fluree,
         &rebuilt_ledger,
-        r#"
+        r"
         PREFIX schema: <http://schema.org/>
         SELECT ?name WHERE { ?s schema:name ?name }
         ORDER BY ?name
-        "#,
+        ",
     )
     .await
     .expect("query rebuilt V3 index");

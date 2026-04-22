@@ -30,7 +30,7 @@ pub fn eval_now(args: &[Expression]) -> Result<Option<ComparableValue>> {
     let now = Utc::now();
     let formatted = now.to_rfc3339_opts(SecondsFormat::Millis, true);
     let parsed = FlureeDateTime::parse(&formatted)
-        .map_err(|e| QueryError::InvalidFilter(format!("now parse error: {}", e)))?;
+        .map_err(|e| QueryError::InvalidFilter(format!("now parse error: {e}")))?;
     Ok(Some(ComparableValue::DateTime(parsed)))
 }
 
@@ -222,13 +222,13 @@ fn format_day_time_duration(total_secs: i32) -> String {
     }
     result.push_str("PT");
     if hours > 0 {
-        result.push_str(&format!("{}H", hours));
+        result.push_str(&format!("{hours}H"));
     }
     if minutes > 0 {
-        result.push_str(&format!("{}M", minutes));
+        result.push_str(&format!("{minutes}M"));
     }
     if secs > 0 {
-        result.push_str(&format!("{}S", secs));
+        result.push_str(&format!("{secs}S"));
     }
     result
 }
@@ -261,8 +261,7 @@ where
         }
     } else {
         Err(QueryError::InvalidFilter(format!(
-            "{} requires a variable argument",
-            fn_name
+            "{fn_name} requires a variable argument"
         )))
     }
 }

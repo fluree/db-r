@@ -57,9 +57,9 @@ fn iri_value_to_string(iri: &IriValue) -> String {
         IriValue::Full(s) => s.to_string(),
         IriValue::Prefixed { prefix, local } => {
             if prefix.is_empty() {
-                format!(":{}", local)
+                format!(":{local}")
             } else {
-                format!("{}:{}", prefix, local)
+                format!("{prefix}:{local}")
             }
         }
     }
@@ -322,7 +322,7 @@ impl SourcePolicyOverride {
             policy: self.policy.clone(),
             policy_values: self.policy_values.clone(),
             default_allow: self.default_allow.unwrap_or(false),
-            tracking: Default::default(),
+            tracking: TrackingOptions::default(),
         }
     }
 }
@@ -520,18 +520,17 @@ pub enum DatasetParseError {
 impl std::fmt::Display for DatasetParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidFrom(msg) => write!(f, "Invalid 'from' value: {}", msg),
-            Self::InvalidFromNamed(msg) => write!(f, "Invalid 'fromNamed' value: {}", msg),
-            Self::InvalidGraphSource(msg) => write!(f, "Invalid graph source: {}", msg),
-            Self::InvalidOptions(msg) => write!(f, "Invalid query options: {}", msg),
+            Self::InvalidFrom(msg) => write!(f, "Invalid 'from' value: {msg}"),
+            Self::InvalidFromNamed(msg) => write!(f, "Invalid 'fromNamed' value: {msg}"),
+            Self::InvalidGraphSource(msg) => write!(f, "Invalid graph source: {msg}"),
+            Self::InvalidOptions(msg) => write!(f, "Invalid query options: {msg}"),
             Self::DuplicateAlias(alias) => {
-                write!(f, "Duplicate dataset-local alias: '{}'", alias)
+                write!(f, "Duplicate dataset-local alias: '{alias}'")
             }
             Self::AmbiguousGraphSelector(id) => {
                 write!(
                     f,
-                    "Ambiguous graph selector for '{}': cannot use both #txn-meta fragment and 'graph' field",
-                    id
+                    "Ambiguous graph selector for '{id}': cannot use both #txn-meta fragment and 'graph' field"
                 )
             }
         }
@@ -780,8 +779,7 @@ impl QueryConnectionOptions {
             Some(JsonValue::Object(o)) => o,
             Some(other) => {
                 return Err(DatasetParseError::InvalidOptions(format!(
-                    "'opts' must be an object, got {}",
-                    other
+                    "'opts' must be an object, got {other}"
                 )))
             }
         };
@@ -792,7 +790,7 @@ impl QueryConnectionOptions {
         let identity = opts
             .get("identity")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
 
         let policy_class_val = opts
             .get("policy-class")
@@ -845,7 +843,7 @@ impl QueryConnectionOptions {
             .get("default-allow")
             .or_else(|| opts.get("default_allow"))
             .or_else(|| opts.get("defaultAllow"))
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         Ok(Self {
@@ -943,8 +941,7 @@ fn parse_graph_sources(
         JsonValue::Object(_) => Ok(vec![parse_single_graph_source(val, field_name)?]),
         JsonValue::Null => Ok(vec![]),
         _ => Err(DatasetParseError::InvalidFrom(format!(
-            "'{}' must be a string, array, or object",
-            field_name
+            "'{field_name}' must be a string, array, or object"
         ))),
     }
 }
@@ -976,8 +973,7 @@ fn parse_named_graph_object(
     for (alias, entry_val) in obj {
         let entry = entry_val.as_object().ok_or_else(|| {
             DatasetParseError::InvalidFromNamed(format!(
-                "fromNamed entry '{}' must be an object",
-                alias
+                "fromNamed entry '{alias}' must be an object"
             ))
         })?;
 
@@ -987,8 +983,7 @@ fn parse_named_graph_object(
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 DatasetParseError::InvalidGraphSource(format!(
-                    "fromNamed entry '{}' must have an '@id' string field",
-                    alias
+                    "fromNamed entry '{alias}' must have an '@id' string field"
                 ))
             })?;
 
@@ -1067,8 +1062,7 @@ fn parse_single_graph_source(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
                     DatasetParseError::InvalidGraphSource(format!(
-                        "'{}' object must have '@id' or 'id' string field",
-                        field_name
+                        "'{field_name}' object must have '@id' or 'id' string field"
                     ))
                 })?;
 
@@ -1133,8 +1127,7 @@ fn parse_single_graph_source(
             Ok(source)
         }
         _ => Err(DatasetParseError::InvalidGraphSource(format!(
-            "'{}' item must be a string or object",
-            field_name
+            "'{field_name}' item must be a string or object"
         ))),
     }
 }
@@ -1150,7 +1143,7 @@ fn parse_source_policy_override(
     let identity = obj
         .get("identity")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     let policy_class_val = obj
         .get("policy-class")
@@ -1203,7 +1196,7 @@ fn parse_source_policy_override(
         .get("default-allow")
         .or_else(|| obj.get("default_allow"))
         .or_else(|| obj.get("defaultAllow"))
-        .and_then(|v| v.as_bool());
+        .and_then(serde_json::Value::as_bool);
 
     Ok(SourcePolicyOverride {
         identity,
@@ -1260,7 +1253,7 @@ pub fn sparql_dataset_ledger_ids(sparql: &str) -> Result<Vec<String>, DatasetPar
             .first()
             .map(|d| d.message.clone())
             .unwrap_or_else(|| "unknown parse error".to_string());
-        DatasetParseError::InvalidFrom(format!("SPARQL parse error: {}", msg))
+        DatasetParseError::InvalidFrom(format!("SPARQL parse error: {msg}"))
     })?;
 
     let dataset_clause = match &ast.body {
@@ -2043,8 +2036,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("exactly one"),
-            "Error should mention 'exactly one': {}",
-            err
+            "Error should mention 'exactly one': {err}"
         );
     }
 
@@ -2065,8 +2057,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("same ledger"),
-            "Error should mention 'same ledger': {}",
-            err
+            "Error should mention 'same ledger': {err}"
         );
     }
 
@@ -2084,8 +2075,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("time specification"),
-            "Error should mention 'time specification': {}",
-            err
+            "Error should mention 'time specification': {err}"
         );
     }
 
@@ -2103,8 +2093,7 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("time specification"),
-            "Error should mention 'time specification': {}",
-            err
+            "Error should mention 'time specification': {err}"
         );
     }
 

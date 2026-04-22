@@ -177,12 +177,14 @@ impl VectorSearchOperator {
                     _ => Ok(None),
                 },
                 Some(Binding::EncodedLit { .. }) => Ok(None),
-                Some(Binding::Sid(_))
-                | Some(Binding::IriMatch { .. })
-                | Some(Binding::Iri(_))
-                | Some(Binding::Grouped(_))
-                | Some(Binding::EncodedSid { .. })
-                | Some(Binding::EncodedPid { .. }) => Ok(None),
+                Some(
+                    Binding::Sid(_)
+                    | Binding::IriMatch { .. }
+                    | Binding::Iri(_)
+                    | Binding::Grouped(_)
+                    | Binding::EncodedSid { .. }
+                    | Binding::EncodedPid { .. },
+                ) => Ok(None),
             },
         }
     }
@@ -217,8 +219,7 @@ impl Operator for VectorSearchOperator {
         if let VectorSearchTarget::Var(v) = &self.pattern.target {
             if !self.child.schema().iter().any(|vv| vv == v) {
                 return Err(QueryError::InvalidQuery(format!(
-                    "VectorSearch target variable {:?} is not bound by previous patterns",
-                    v
+                    "VectorSearch target variable {v:?} is not bound by previous patterns"
                 )));
             }
         }
@@ -363,7 +364,7 @@ impl Operator for VectorSearchOperator {
             }
         }
 
-        if columns.first().map(|c| c.is_empty()).unwrap_or(true) {
+        if columns.first().map(std::vec::Vec::is_empty).unwrap_or(true) {
             return Ok(Some(Batch::empty(self.in_schema.clone())?));
         }
 

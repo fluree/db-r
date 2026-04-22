@@ -580,7 +580,7 @@ async fn resolve_per_graph_unique_sids(
         } else {
             graph_delta
                 .get(&g_id)
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .or_else(|| snapshot.graph_registry.iri_for_graph_id(g_id))
         };
 
@@ -762,7 +762,7 @@ async fn enforce_unique_constraints(
 
         if seen_subjects.len() > 1 {
             // Build a descriptive error with decoded IRIs
-            let property_iri = snapshot.decode_sid(p).unwrap_or_else(|| format!("{:?}", p));
+            let property_iri = snapshot.decode_sid(p).unwrap_or_else(|| format!("{p:?}"));
             let graph_label = if *g_id == 0 {
                 "default".to_string()
             } else {
@@ -773,11 +773,11 @@ async fn enforce_unique_constraints(
                         snapshot
                             .graph_registry
                             .iri_for_graph_id(*g_id)
-                            .map(|s| s.to_string())
+                            .map(std::string::ToString::to_string)
                     })
-                    .unwrap_or_else(|| format!("g_id={}", g_id))
+                    .unwrap_or_else(|| format!("g_id={g_id}"))
             };
-            let value_str = format!("{:?}", o);
+            let value_str = format!("{o:?}");
 
             // Pick two subjects for the error message
             let mut subj_iter = seen_subjects.iter();
@@ -785,10 +785,10 @@ async fn enforce_unique_constraints(
             let conflicting = subj_iter.next().unwrap();
             let existing_iri = snapshot
                 .decode_sid(existing)
-                .unwrap_or_else(|| format!("{:?}", existing));
+                .unwrap_or_else(|| format!("{existing:?}"));
             let new_iri = snapshot
                 .decode_sid(conflicting)
-                .unwrap_or_else(|| format!("{:?}", conflicting));
+                .unwrap_or_else(|| format!("{conflicting:?}"));
 
             return Err(
                 fluree_db_transact::TransactError::UniqueConstraintViolation {
@@ -927,8 +927,8 @@ fn convert_named_graphs_to_templates(
     ) -> Result<String> {
         prefixes
             .get(prefix)
-            .map(|ns| format!("{}{}", ns, local))
-            .ok_or_else(|| ApiError::query(format!("undefined prefix: {}", prefix)))
+            .map(|ns| format!("{ns}{local}"))
+            .ok_or_else(|| ApiError::query(format!("undefined prefix: {prefix}")))
     }
 
     // Helper to convert RawTerm to TemplateTerm
@@ -2155,7 +2155,7 @@ impl crate::Fluree {
             use fluree_db_core::sha256_hex;
             let raw_bytes = serde_json::to_vec(&raw_credential).unwrap_or_default();
             let hash_hex = sha256_hex(&raw_bytes);
-            format!("fluree:tx:sha256:{}", hash_hex)
+            format!("fluree:tx:sha256:{hash_hex}")
         };
 
         // CommitOpts: identity for provenance (emitted as f:identity), raw_txn

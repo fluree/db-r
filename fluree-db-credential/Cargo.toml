@@ -39,3 +39,6 @@ oidc = ["dep:jsonwebtoken"]
 [dev-dependencies]
 # For test vector generation
 hex.workspace = true
+
+[lints]
+workspace = true

@@ -343,12 +343,12 @@ async fn time_travel_iso_between_commits_resolves_to_previous_commit() {
     // Choose midpoints to avoid boundary issues with equal timestamps.
     // If any timestamps are equal, fall back to +1ms after the earlier time.
     let mid_12_ms = if dt2.timestamp_millis() > dt1.timestamp_millis() {
-        (dt1.timestamp_millis() + dt2.timestamp_millis()) / 2
+        i64::midpoint(dt1.timestamp_millis(), dt2.timestamp_millis())
     } else {
         dt1.timestamp_millis() + 1
     };
     let mid_23_ms = if dt3.timestamp_millis() > dt2.timestamp_millis() {
-        (dt2.timestamp_millis() + dt3.timestamp_millis()) / 2
+        i64::midpoint(dt2.timestamp_millis(), dt3.timestamp_millis())
     } else {
         dt2.timestamp_millis() + 1
     };

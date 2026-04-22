@@ -120,7 +120,7 @@ impl DataFile {
         self.lower_bounds
             .as_ref()
             .and_then(|m| m.get(&field_id))
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
     }
 
     /// Get upper bound for a column by field ID.
@@ -128,7 +128,7 @@ impl DataFile {
         self.upper_bounds
             .as_ref()
             .and_then(|m| m.get(&field_id))
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
     }
 
     /// Get null count for a column by field ID.
@@ -197,13 +197,13 @@ pub fn parse_manifest_with_deleted(
     include_deleted: bool,
 ) -> Result<Vec<ManifestEntry>> {
     let reader = apache_avro::Reader::new(&data[..])
-        .map_err(|e| IcebergError::Manifest(format!("Failed to create Avro reader: {}", e)))?;
+        .map_err(|e| IcebergError::Manifest(format!("Failed to create Avro reader: {e}")))?;
 
     let mut entries = Vec::new();
 
     for value_result in reader {
         let value = value_result
-            .map_err(|e| IcebergError::Manifest(format!("Failed to read Avro record: {}", e)))?;
+            .map_err(|e| IcebergError::Manifest(format!("Failed to read Avro record: {e}")))?;
 
         let entry = parse_manifest_entry(&value)?;
 

@@ -670,21 +670,18 @@ mod tests {
         let err = result.unwrap_err();
         assert!(
             matches!(err, LowerError::MisusedPrefixSyntax { .. }),
-            "Expected MisusedPrefixSyntax error, got: {:?}",
-            err
+            "Expected MisusedPrefixSyntax error, got: {err:?}"
         );
 
         // Verify the error message contains helpful information
         let msg = err.to_string();
         assert!(
             msg.contains("angle brackets"),
-            "Error should mention angle brackets: {}",
-            msg
+            "Error should mention angle brackets: {msg}"
         );
         assert!(
             msg.contains("http://example.org/schema/product/123"),
-            "Error should show the expanded IRI: {}",
-            msg
+            "Error should show the expanded IRI: {msg}"
         );
     }
 
@@ -706,8 +703,8 @@ mod tests {
                 println!("Prefixed name with slash works!");
             }
             Err(e) => {
-                println!("Prefixed name with slash failed: {:?}", e);
-                panic!("Expected prefixed name with '/' to work, got error: {}", e);
+                println!("Prefixed name with slash failed: {e:?}");
+                panic!("Expected prefixed name with '/' to work, got error: {e}");
             }
         }
     }
@@ -2672,13 +2669,11 @@ mod tests {
                 );
                 assert!(
                     matches!(branch[0], Pattern::Triple(_)),
-                    "Branch {} pattern 0 should be Triple",
-                    i
+                    "Branch {i} pattern 0 should be Triple"
                 );
                 assert!(
                     matches!(branch[1], Pattern::Triple(_)),
-                    "Branch {} pattern 1 should be Triple",
-                    i
+                    "Branch {i} pattern 1 should be Triple"
                 );
             }
         } else {
@@ -2715,13 +2710,11 @@ mod tests {
                 );
                 assert!(
                     matches!(branch[0], Pattern::Triple(_)),
-                    "Branch {} pattern 0 should be Triple",
-                    i
+                    "Branch {i} pattern 0 should be Triple"
                 );
                 assert!(
                     matches!(branch[1], Pattern::Triple(_)),
-                    "Branch {} pattern 1 should be Triple",
-                    i
+                    "Branch {i} pattern 1 should be Triple"
                 );
             }
         } else {
@@ -2805,9 +2798,7 @@ mod tests {
                 for (j, pat) in branch.iter().enumerate() {
                     assert!(
                         matches!(pat, Pattern::Triple(_)),
-                        "Branch {} pattern {} should be Triple",
-                        i,
-                        j
+                        "Branch {i} pattern {j} should be Triple"
                     );
                 }
             }
@@ -2858,12 +2849,7 @@ mod tests {
 
             // Both branches should have 2 triples
             for (i, branch) in branches.iter().enumerate() {
-                assert_eq!(
-                    branch.len(),
-                    2,
-                    "Branch {} should have 2 triple patterns",
-                    i
-                );
+                assert_eq!(branch.len(), 2, "Branch {i} should have 2 triple patterns");
             }
 
             // Branch 0 first triple: forward — subject is a var (the ?s)
@@ -2895,13 +2881,11 @@ mod tests {
         // Build (a0|b0)/(a1|b1)/(a2|b2)/(a3|b3)/(a4|b4)/(a5|b5)/(a6|b6)
         // 2^7 = 128 > 64 limit
         let predicates: String = (0..7)
-            .map(|i| format!("(ex:a{}|ex:b{})", i, i))
+            .map(|i| format!("(ex:a{i}|ex:b{i})"))
             .collect::<Vec<_>>()
             .join("/");
-        let sparql = format!(
-            "PREFIX ex: <http://example.org/>\nSELECT ?x WHERE {{ ?s {} ?x }}",
-            predicates
-        );
+        let sparql =
+            format!("PREFIX ex: <http://example.org/>\nSELECT ?x WHERE {{ ?s {predicates} ?x }}");
         let result = lower_query(&sparql);
 
         assert!(result.is_err());
@@ -2910,8 +2894,7 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("expands to 128") && msg.contains("limit 64"),
-            "Unexpected error: {}",
-            msg,
+            "Unexpected error: {msg}",
         );
     }
 
@@ -2966,11 +2949,10 @@ mod tests {
         if let Pattern::Union(branches) = &query.patterns[0] {
             assert_eq!(branches.len(), 2);
             for (i, branch) in branches.iter().enumerate() {
-                assert_eq!(branch.len(), 1, "Branch {} should have 1 triple", i);
+                assert_eq!(branch.len(), 1, "Branch {i} should have 1 triple");
                 assert!(
                     matches!(&branch[0], Pattern::Triple(_)),
-                    "Branch {} should be a Triple",
-                    i
+                    "Branch {i} should be a Triple"
                 );
             }
         } else {
@@ -3024,7 +3006,7 @@ mod tests {
         if let Pattern::Union(branches) = &query.patterns[0] {
             assert_eq!(branches.len(), 2);
             for (i, branch) in branches.iter().enumerate() {
-                assert_eq!(branch.len(), 2, "Branch {} should have 2 triples", i);
+                assert_eq!(branch.len(), 2, "Branch {i} should have 2 triples");
             }
         } else {
             panic!("Expected Union, got {:?}", query.patterns[0]);

@@ -79,3 +79,6 @@ required-features = ["aws"]
 [[example]]
 name = "read_local_iceberg"
 required-features = ["aws"]
+
+[lints]
+workspace = true

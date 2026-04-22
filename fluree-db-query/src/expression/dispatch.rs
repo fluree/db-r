@@ -179,8 +179,7 @@ impl Function {
 
             // Unknown function
             Function::Custom(name) => Err(QueryError::InvalidFilter(format!(
-                "Unknown function: {}",
-                name
+                "Unknown function: {name}"
             ))),
         }
     }

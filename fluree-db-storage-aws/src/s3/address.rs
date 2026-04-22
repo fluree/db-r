@@ -20,16 +20,14 @@ pub fn parse_fluree_address(address: &str) -> Result<&str> {
             let path = &rest[path_start + 3..];
             if path.is_empty() {
                 return Err(AwsStorageError::invalid_config(format!(
-                    "Empty path in address: {}",
-                    address
+                    "Empty path in address: {address}"
                 )));
             }
             return Ok(path);
         }
         // No :// found - might be just "fluree:path" which is invalid
         return Err(AwsStorageError::invalid_config(format!(
-            "Invalid Fluree address format: {}",
-            address
+            "Invalid Fluree address format: {address}"
         )));
     }
 
@@ -50,7 +48,7 @@ pub fn address_to_key(address: &str, prefix: Option<&str>) -> Result<String> {
     match prefix {
         Some(p) => {
             let p = p.trim_end_matches('/');
-            Ok(format!("{}/{}", p, path))
+            Ok(format!("{p}/{path}"))
         }
         None => Ok(path.to_string()),
     }
@@ -63,7 +61,7 @@ pub fn key_to_address(key: &str, prefix: Option<&str>) -> String {
     match prefix {
         Some(p) => {
             let p = p.trim_end_matches('/');
-            let prefix_with_slash = format!("{}/", p);
+            let prefix_with_slash = format!("{p}/");
             key.strip_prefix(&prefix_with_slash)
                 .unwrap_or(key)
                 .to_string()

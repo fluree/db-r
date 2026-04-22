@@ -251,7 +251,7 @@ impl<L: IndexLoader> SearchBackend for Bm25Backend<L> {
         }
 
         // Score documents
-        let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+        let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
         let scorer = Bm25Scorer::new(&index, &term_refs);
         let scored = scorer.top_k(limit);
 

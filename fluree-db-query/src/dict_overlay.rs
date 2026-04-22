@@ -226,11 +226,11 @@ impl DictOverlay {
                     return Ok(suffix.to_string());
                 }
                 let prefix = self.graph_view.namespace_prefix(ns_code)?;
-                return Ok(format!("{}{}", prefix, suffix));
+                return Ok(format!("{prefix}{suffix}"));
             }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("s_id {} not found", id),
+                format!("s_id {id} not found"),
             ));
         }
         let sid64 = SubjectId::from_u64(id);
@@ -246,7 +246,7 @@ impl DictOverlay {
                 return Ok(suffix.to_string());
             }
             let prefix = self.graph_view.namespace_prefix(ns_code)?;
-            return Ok(format!("{}{}", prefix, suffix));
+            return Ok(format!("{prefix}{suffix}"));
         }
 
         // Ephemeral fallback: even with DictNovelty initialized, overlay translation
@@ -257,12 +257,12 @@ impl DictOverlay {
                 return Ok(suffix.to_string());
             }
             let prefix = self.graph_view.namespace_prefix(ns_code)?;
-            return Ok(format!("{}{}", prefix, suffix));
+            return Ok(format!("{prefix}{suffix}"));
         }
 
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("s_id {} not found in store or DictNovelty", id),
+            format!("s_id {id} not found in store or DictNovelty"),
         ))
     }
 
@@ -341,7 +341,7 @@ impl DictOverlay {
             }
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("str_id {} not found", id),
+                format!("str_id {id} not found"),
             ));
         }
         let wm = self.dict_novelty.strings.watermark();
@@ -362,7 +362,7 @@ impl DictOverlay {
 
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("str_id {} not found in store or DictNovelty", id),
+            format!("str_id {id} not found in store or DictNovelty"),
         ))
     }
 
@@ -438,7 +438,7 @@ impl DictOverlay {
     /// First checks if this value already has an ephemeral handle (by canonical
     /// string representation). Returns `(ObjKind::NUM_BIG, handle)`.
     fn assign_numbig_handle(&mut self, val: &FlakeValue) -> (ObjKind, ObjKey) {
-        let key = format!("{:?}", val); // canonical Debug repr for dedup
+        let key = format!("{val:?}"); // canonical Debug repr for dedup
         if let Some(&handle) = self.ext_numbig_map.get(&key) {
             return (ObjKind::NUM_BIG, ObjKey::encode_u32_id(handle));
         }
@@ -688,7 +688,9 @@ impl DictOverlay {
                     .and_then(|m| m.lang)
             } else {
                 // Ephemeral lang_id
-                self.ext_lang_tags.resolve(lang_id).map(|s| s.to_string())
+                self.ext_lang_tags
+                    .resolve(lang_id)
+                    .map(std::string::ToString::to_string)
             };
             if let Some(tag) = tag {
                 meta = FlakeMeta::with_lang(tag);
@@ -716,9 +718,8 @@ impl DictOverlay {
                 let sid64 = SubjectId::from_u64(ref_id);
                 let wm = self.dict_novelty.subjects.watermark_for_ns(sid64.ns_code());
                 return sid64.local_id() > wm;
-            } else {
-                return self.ext_subjects.resolve_subject(ref_id).is_some();
             }
+            return self.ext_subjects.resolve_subject(ref_id).is_some();
         }
 
         // LEX_ID — check for ephemeral string IDs
@@ -726,9 +727,8 @@ impl DictOverlay {
             let str_id = o_key as u32;
             if initialized {
                 return str_id > self.dict_novelty.strings.watermark();
-            } else {
-                return self.ext_strings.resolve(str_id).is_some();
             }
+            return self.ext_strings.resolve(str_id).is_some();
         }
 
         // JSON_ID — same as LEX_ID (uses string dictionary)
@@ -736,9 +736,8 @@ impl DictOverlay {
             let str_id = o_key as u32;
             if initialized {
                 return str_id > self.dict_novelty.strings.watermark();
-            } else {
-                return self.ext_strings.resolve(str_id).is_some();
             }
+            return self.ext_strings.resolve(str_id).is_some();
         }
 
         // NUM_BIG with ephemeral handle

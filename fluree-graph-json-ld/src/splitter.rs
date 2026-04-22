@@ -1250,8 +1250,7 @@ mod tests {
     fn write_temp_json(json: &str) -> TempJsonFile {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let path =
-            std::env::temp_dir().join(format!("fluree_jsonld_split_test_{}_{}.json", pid, id));
+        let path = std::env::temp_dir().join(format!("fluree_jsonld_split_test_{pid}_{id}.json"));
         let mut f = File::create(&path).unwrap();
         f.write_all(json.as_bytes()).unwrap();
         f.flush().unwrap();
@@ -1360,9 +1359,9 @@ mod tests {
         // Each chunk should be valid JSON-LD with @context and @graph
         let mut total_entities = 0;
         for (idx, val) in &chunks {
-            assert!(val.get("@graph").is_some(), "Chunk {} missing @graph", idx);
+            assert!(val.get("@graph").is_some(), "Chunk {idx} missing @graph");
             let graph = val["@graph"].as_array().unwrap();
-            assert!(!graph.is_empty(), "Chunk {} has empty @graph", idx);
+            assert!(!graph.is_empty(), "Chunk {idx} has empty @graph");
             total_entities += graph.len();
         }
         assert_eq!(total_entities, 4);
@@ -1386,8 +1385,7 @@ mod tests {
         for (idx, val) in &chunks {
             assert!(
                 val.get("@context").is_some(),
-                "Chunk {} missing @context",
-                idx
+                "Chunk {idx} missing @context"
             );
         }
     }
@@ -1493,11 +1491,11 @@ mod tests {
         let mut total_entities = 0;
         for (idx, val) in &chunks {
             let outer_graph = val["@graph"].as_array().unwrap();
-            assert_eq!(outer_graph.len(), 1, "Chunk {} outer @graph len", idx);
+            assert_eq!(outer_graph.len(), 1, "Chunk {idx} outer @graph len");
             let ng = &outer_graph[0];
             assert_eq!(ng["@id"], "ex:bigGraph");
             let inner = ng["@graph"].as_array().unwrap();
-            assert!(!inner.is_empty(), "Chunk {} inner @graph empty", idx);
+            assert!(!inner.is_empty(), "Chunk {idx} inner @graph empty");
             total_entities += inner.len();
         }
         assert_eq!(total_entities, 20);

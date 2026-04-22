@@ -8,3 +8,6 @@ description = "RDF vocabulary constants and namespace codes for Fluree"
 
 [dependencies]
 # Minimal dependencies - just core Rust types
+
+[lints]
+workspace = true

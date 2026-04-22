@@ -333,7 +333,7 @@ mod tests {
         );
 
         // Unknown codec
-        assert_eq!(ContentKind::from_codec(0x999999), None);
+        assert_eq!(ContentKind::from_codec(0x0099_9999), None);
     }
 
     #[test]
@@ -379,7 +379,7 @@ mod tests {
         let mut byte_sorted = [c.to_bytes(), a.to_bytes(), b.to_bytes()];
         byte_sorted.sort();
 
-        let ids_bytes: Vec<Vec<u8>> = ids.iter().map(|id| id.to_bytes()).collect();
+        let ids_bytes: Vec<Vec<u8>> = ids.iter().map(super::ContentId::to_bytes).collect();
         assert_eq!(ids_bytes, byte_sorted);
     }
 

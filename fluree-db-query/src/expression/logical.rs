@@ -80,7 +80,7 @@ pub fn eval_in<R: RowAccess>(
                         found = true;
                         break;
                     }
-                    Ok(Some(_)) | Ok(None) => {}
+                    Ok(Some(_) | None) => {}
                     Err(err) if err.can_demote_in_expression() => {}
                     Err(err) => return Err(err),
                 }
@@ -114,7 +114,7 @@ pub fn eval_not_in<R: RowAccess>(
                         found = true;
                         break;
                     }
-                    Ok(Some(_)) | Ok(None) => {}
+                    Ok(Some(_) | None) => {}
                     Err(err) if err.can_demote_in_expression() => {}
                     Err(err) => return Err(err),
                 }

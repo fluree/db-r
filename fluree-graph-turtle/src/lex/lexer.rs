@@ -120,13 +120,11 @@ fn make_lex_error(source: &str, position: usize, input: &Input<'_>) -> TurtleErr
     let pointer = " ".repeat(col.saturating_sub(1));
     let message = if bad_char == '"' || bad_char == '\'' {
         format!(
-            "unterminated string literal at line {}, column {}\n  |\n{} | {}\n  | {}^",
-            line, col, line, line_content, pointer
+            "unterminated string literal at line {line}, column {col}\n  |\n{line} | {line_content}\n  | {pointer}^"
         )
     } else if bad_char == '<' {
         format!(
-            "invalid or unterminated IRI at line {}, column {}\n  |\n{} | {}\n  | {}^",
-            line, col, line, line_content, pointer
+            "invalid or unterminated IRI at line {line}, column {col}\n  |\n{line} | {line_content}\n  | {pointer}^"
         )
     } else if !bad_char.is_ascii() && !is_pn_chars_base(bad_char) {
         format!(
@@ -141,8 +139,7 @@ fn make_lex_error(source: &str, position: usize, input: &Input<'_>) -> TurtleErr
         )
     } else {
         format!(
-            "unexpected character '{}' at line {}, column {}\n  |\n{} | {}\n  | {}^",
-            bad_char, line, col, line, line_content, pointer
+            "unexpected character '{bad_char}' at line {line}, column {col}\n  |\n{line} | {line_content}\n  | {pointer}^"
         )
     };
 
@@ -366,9 +363,8 @@ fn parse_prefixed_name_or_keyword(input: &mut Input<'_>) -> ModalResult<TokenKin
                 }
             }
             break;
-        } else {
-            break;
         }
+        break;
     }
 
     // Check if followed by a colon (prefixed name)
@@ -896,7 +892,7 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         match &tokens[0] {
             TokenKind::IriEscaped(s) => assert_eq!(s.as_ref(), "http://example.org/A"),
-            other => panic!("Expected IriEscaped, got {:?}", other),
+            other => panic!("Expected IriEscaped, got {other:?}"),
         }
     }
 
@@ -969,7 +965,7 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         match &tokens[0] {
             TokenKind::StringEscaped(s) => assert_eq!(s.as_ref(), "hello\nworld"),
-            other => panic!("Expected StringEscaped, got {:?}", other),
+            other => panic!("Expected StringEscaped, got {other:?}"),
         }
 
         // Verify span for non-escaped string
@@ -992,7 +988,7 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         match &tokens[0] {
             TokenKind::StringEscaped(s) => assert_eq!(s.as_ref(), "hello\nworld"),
-            other => panic!("Expected StringEscaped, got {:?}", other),
+            other => panic!("Expected StringEscaped, got {other:?}"),
         }
     }
 

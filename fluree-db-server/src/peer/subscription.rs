@@ -103,7 +103,7 @@ impl PeerSubscriptionTask {
             .load_peer_events_token()
             .map_err(PeerSubscriptionError::TokenLoad)?
         {
-            request = request.header("Authorization", format!("Bearer {}", token));
+            request = request.header("Authorization", format!("Bearer {token}"));
         }
 
         request = request.header("Accept", "text/event-stream");
@@ -248,10 +248,10 @@ impl PeerSubscriptionTask {
 
             match result {
                 Ok(()) => {
-                    tracing::info!(ledger_id = %ledger_id, "Preloaded ledger into peer cache")
+                    tracing::info!(ledger_id = %ledger_id, "Preloaded ledger into peer cache");
                 }
                 Err(e) => {
-                    tracing::warn!(ledger_id = %ledger_id, error = %e, "Failed to preload ledger")
+                    tracing::warn!(ledger_id = %ledger_id, error = %e, "Failed to preload ledger");
                 }
             }
         }

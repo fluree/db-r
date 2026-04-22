@@ -19,8 +19,8 @@ fn test_value_codec_roundtrip_all_types() {
         ("int", TypedValue::Int32(i32::MAX)),
         ("int", TypedValue::Int32(i32::MIN)),
         ("long", TypedValue::Int64(0)),
-        ("long", TypedValue::Int64(1234567890123)),
-        ("long", TypedValue::Int64(-9876543210)),
+        ("long", TypedValue::Int64(1_234_567_890_123)),
+        ("long", TypedValue::Int64(-9_876_543_210)),
         ("long", TypedValue::Int64(i64::MAX)),
         ("long", TypedValue::Int64(i64::MIN)),
         ("float", TypedValue::Float32(0.0)),
@@ -33,9 +33,12 @@ fn test_value_codec_roundtrip_all_types() {
         ("date", TypedValue::Date(19000)),  // ~2022
         ("date", TypedValue::Date(-10000)), // Before epoch
         ("timestamp", TypedValue::Timestamp(0)),
-        ("timestamp", TypedValue::Timestamp(1640000000000000)), // 2021-12-20
-        ("timestamptz", TypedValue::TimestampTz(1640000000000000)),
-        ("string", TypedValue::String("".to_string())),
+        ("timestamp", TypedValue::Timestamp(1_640_000_000_000_000)), // 2021-12-20
+        (
+            "timestamptz",
+            TypedValue::TimestampTz(1_640_000_000_000_000),
+        ),
+        ("string", TypedValue::String(String::new())),
         ("string", TypedValue::String("hello".to_string())),
         (
             "string",
@@ -48,7 +51,7 @@ fn test_value_codec_roundtrip_all_types() {
     for (type_str, original) in test_cases {
         let encoded = encode_value(&original);
         let decoded = decode_by_type_string(&encoded, Some(type_str))
-            .unwrap_or_else(|_| panic!("decoding {} bytes {:?}", type_str, encoded));
+            .unwrap_or_else(|_| panic!("decoding {type_str} bytes {encoded:?}"));
 
         // Handle timestamptz specially - it decodes to TimestampTz variant
         let matches = match (&original, &decoded) {
@@ -58,8 +61,7 @@ fn test_value_codec_roundtrip_all_types() {
 
         assert!(
             matches,
-            "Roundtrip failed for type {}: {:?} -> {:?} -> {:?}",
-            type_str, original, encoded, decoded
+            "Roundtrip failed for type {type_str}: {original:?} -> {encoded:?} -> {decoded:?}"
         );
     }
 }
@@ -74,7 +76,7 @@ fn test_integer_boundaries() {
         let original = TypedValue::Int32(val);
         let encoded = encode_value(&original);
         let decoded = decode_by_type_string(&encoded, Some("int")).unwrap();
-        assert_eq!(original, decoded, "INT32 boundary failed for {}", val);
+        assert_eq!(original, decoded, "INT32 boundary failed for {val}");
     }
 
     // INT64 boundaries
@@ -92,7 +94,7 @@ fn test_integer_boundaries() {
         let original = TypedValue::Int64(val);
         let encoded = encode_value(&original);
         let decoded = decode_by_type_string(&encoded, Some("long")).unwrap();
-        assert_eq!(original, decoded, "INT64 boundary failed for {}", val);
+        assert_eq!(original, decoded, "INT64 boundary failed for {val}");
     }
 }
 
@@ -120,9 +122,7 @@ fn test_string_ordering() {
 
             assert!(
                 d1 < d2,
-                "String ordering not preserved: {:?} should be < {:?}",
-                d1,
-                d2
+                "String ordering not preserved: {d1:?} should be < {d2:?}"
             );
         }
     }
@@ -179,10 +179,10 @@ fn test_date_encoding() {
 fn test_decimal_encoding() {
     // Test with precision 10, scale 2
     let decimals = vec![
-        (12345i128, 10, 2),    // 123.45
-        (-12345i128, 10, 2),   // -123.45
-        (0i128, 10, 2),        // 0.00
-        (99999999i128, 10, 2), // 999999.99
+        (12345i128, 10, 2),       // 123.45
+        (-12345i128, 10, 2),      // -123.45
+        (0i128, 10, 2),           // 0.00
+        (99_999_999_i128, 10, 2), // 999999.99
     ];
 
     for (unscaled, precision, scale) in decimals {
@@ -194,7 +194,7 @@ fn test_decimal_encoding() {
         let encoded = encode_value(&original);
 
         // Decode with matching precision/scale
-        let type_str = format!("decimal({},{})", precision, scale);
+        let type_str = format!("decimal({precision},{scale})");
         let decoded = decode_by_type_string(&encoded, Some(&type_str)).unwrap();
 
         // Note: decimal decoding may not preserve exact unscaled value

@@ -171,7 +171,7 @@ impl StreamingCommitWriter {
         let total_size = HEADER_LEN
             + envelope_bytes.len()
             + ops_section.len()
-            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+            + dict_bytes.iter().map(std::vec::Vec::len).sum::<usize>()
             + FOOTER_LEN;
         let mut output = Vec::with_capacity(total_size);
 
@@ -341,9 +341,9 @@ mod tests {
             let value = if i % 3 == 0 {
                 FlakeValue::Long(i)
             } else if i % 3 == 1 {
-                FlakeValue::String(format!("value_{}", i))
+                FlakeValue::String(format!("value_{i}"))
             } else {
-                FlakeValue::Ref(Sid::new(101, format!("ref_{}", i)))
+                FlakeValue::Ref(Sid::new(101, format!("ref_{i}")))
             };
             let dt = if i % 3 == 2 {
                 "id"
@@ -354,7 +354,7 @@ mod tests {
             };
             writer
                 .push_flake(&Flake::new(
-                    Sid::new(101, format!("s_{}", i)),
+                    Sid::new(101, format!("s_{i}")),
                     Sid::new(101, format!("p_{}", i % 10)),
                     value,
                     Sid::new(if i % 3 == 2 { 1 } else { 2 }, dt),

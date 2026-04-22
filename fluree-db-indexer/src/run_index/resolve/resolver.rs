@@ -213,7 +213,7 @@ impl CommitResolver {
 
             writer
                 .push(record, &mut dicts.languages)
-                .map_err(|e| CommitCodecError::InvalidOp(format!("run writer error: {}", e)))?;
+                .map_err(|e| CommitCodecError::InvalidOp(format!("run writer error: {e}")))?;
             if record.op != 0 {
                 asserts += 1;
             } else {
@@ -540,7 +540,7 @@ impl CommitResolver {
                 }
                 // Always encode as NUM_F64 to avoid NUM_INT + dt DOUBLE edge cases
                 let key = ObjKey::encode_f64(*n)
-                    .map_err(|e| ResolverError::Resolve(format!("txn_meta double: {}", e)))?;
+                    .map_err(|e| ResolverError::Resolve(format!("txn_meta double: {e}")))?;
                 Ok((ObjKind::NUM_F64, key, DatatypeDictId::DOUBLE.as_u16(), 0))
             }
             TxnMetaValue::Boolean(b) => Ok((
@@ -551,7 +551,11 @@ impl CommitResolver {
             )),
             TxnMetaValue::Ref { ns, name } => {
                 // Resolve ref IRI -> global sid64
-                let prefix = self.ns_prefixes.get(ns).map(|s| s.as_str()).unwrap_or("");
+                let prefix = self
+                    .ns_prefixes
+                    .get(ns)
+                    .map(std::string::String::as_str)
+                    .unwrap_or("");
                 self.hasher.reset();
                 self.hasher.update(prefix.as_bytes());
                 self.hasher.update(name.as_bytes());
@@ -600,8 +604,7 @@ impl CommitResolver {
                 // Match resolve_single_op()'s u8 constraint for format consistency
                 if dt_id > u8::MAX as u32 {
                     return Err(ResolverError::Resolve(format!(
-                        "txn_meta datatype dict overflow (dt_id={} exceeds u8 max)",
-                        dt_id
+                        "txn_meta datatype dict overflow (dt_id={dt_id} exceeds u8 max)"
                     )));
                 }
                 Ok((
@@ -624,12 +627,12 @@ impl CommitResolver {
         // 1. Resolve graph
         let g_id = self
             .resolve_graph(op.g_ns_code, op.g_name, dicts)
-            .map_err(|e| CommitCodecError::InvalidOp(format!("graph resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("graph resolve: {e}")))?;
 
         // 2. Resolve subject (streaming hash) → sid64
         let s_id = self
             .resolve_subject(op.s_ns_code, op.s_name, dicts)
-            .map_err(|e| CommitCodecError::InvalidOp(format!("subject resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("subject resolve: {e}")))?;
 
         // 3. Resolve predicate
         let p_id = self.resolve_predicate(op.p_ns_code, op.p_name, dicts);
@@ -646,8 +649,7 @@ impl CommitResolver {
         // Operationally, the binary format supports widening dt to u16.
         if dt_id > u8::MAX as u32 {
             return Err(CommitCodecError::InvalidOp(format!(
-                "import not available: datatype dict overflow (dt_id={} exceeds u8 max)",
-                dt_id
+                "import not available: datatype dict overflow (dt_id={dt_id} exceeds u8 max)"
             )));
         }
         let dt_id = dt_id as u16;
@@ -655,7 +657,7 @@ impl CommitResolver {
         // 5. Encode object -> (ObjKind, ObjKey)
         let (o_kind, o_key) = self
             .resolve_object(&op.o, g_id, p_id, dt_id, dicts)
-            .map_err(|e| CommitCodecError::InvalidOp(format!("object resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("object resolve: {e}")))?;
 
         // 6. Language tag
         let lang_id = dicts.languages.get_or_insert(op.lang);
@@ -703,8 +705,7 @@ impl CommitResolver {
         let raw = dicts.graphs.get_or_insert_parts(prefix, name) + 1;
         if raw > u16::MAX as u32 {
             return Err(io::Error::other(format!(
-                "graph count {} exceeds u16::MAX",
-                raw
+                "graph count {raw} exceeds u16::MAX"
             )));
         }
         Ok(raw as u16)
@@ -722,7 +723,7 @@ impl CommitResolver {
         let prefix = self
             .ns_prefixes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
 
         // Streaming hash: feed prefix + name without concatenation
@@ -768,14 +769,14 @@ impl CommitResolver {
                 // The decode path uses the property's datatype to select
                 // DecodeKind, and F64→I64 mismatch corrupts values. (fluree/db-r#142)
                 let key = ObjKey::encode_f64(*v)
-                    .map_err(|e| format!("f64 encode for p_id={}: {}", p_id, e))?;
+                    .map_err(|e| format!("f64 encode for p_id={p_id}: {e}"))?;
                 Ok((ObjKind::NUM_F64, key))
             }
             RawObject::Str(s) => {
                 let id = dicts
                     .strings
                     .get_or_insert(s)
-                    .map_err(|e| format!("string dict write: {}", e))?;
+                    .map_err(|e| format!("string dict write: {e}"))?;
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::Boolean(b) => Ok((ObjKind::BOOL, ObjKey::encode_bool(*b))),
@@ -784,7 +785,7 @@ impl CommitResolver {
                 let prefix = self
                     .ns_prefixes
                     .get(ns_code)
-                    .map(|s| s.as_str())
+                    .map(std::string::String::as_str)
                     .unwrap_or("");
                 self.hasher.reset();
                 self.hasher.update(prefix.as_bytes());
@@ -799,18 +800,18 @@ impl CommitResolver {
                         s.push_str(name);
                         s
                     })
-                    .map_err(|e| format!("ref resolve: {}", e))?;
+                    .map_err(|e| format!("ref resolve: {e}"))?;
                 Ok((ObjKind::REF_ID, ObjKey::encode_sid64(sid64)))
             }
             RawObject::DateTimeStr(s) => DateTime::parse(s)
-                .map_err(|e| format!("datetime parse: {}", e))
+                .map_err(|e| format!("datetime parse: {e}"))
                 .map(|dt| {
                     let micros = dt.epoch_micros();
                     (ObjKind::DATE_TIME, ObjKey::encode_datetime(micros))
                 }),
             RawObject::DateStr(s) => Date::parse(s)
                 .map(|d| (ObjKind::DATE, ObjKey::encode_date(d.days_since_epoch())))
-                .map_err(|e| format!("date parse: {}", e)),
+                .map_err(|e| format!("date parse: {e}")),
             RawObject::TimeStr(s) => Time::parse(s)
                 .map(|t| {
                     (
@@ -818,7 +819,7 @@ impl CommitResolver {
                         ObjKey::encode_time(t.micros_since_midnight()),
                     )
                 })
-                .map_err(|e| format!("time parse: {}", e)),
+                .map_err(|e| format!("time parse: {e}")),
             RawObject::BigIntStr(s) => {
                 // Try to parse as i64 first for NumInt fast path
                 if let Ok(v) = s.parse::<i64>() {
@@ -845,7 +846,7 @@ impl CommitResolver {
                         let id = dicts
                             .strings
                             .get_or_insert(s)
-                            .map_err(|e| format!("string dict write: {}", e))?;
+                            .map_err(|e| format!("string dict write: {e}"))?;
                         Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
                     }
                 }
@@ -868,7 +869,7 @@ impl CommitResolver {
                         let id = dicts
                             .strings
                             .get_or_insert(s)
-                            .map_err(|e| format!("string dict write: {}", e))?;
+                            .map_err(|e| format!("string dict write: {e}"))?;
                         Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
                     }
                 }
@@ -877,13 +878,13 @@ impl CommitResolver {
                 let id = dicts
                     .strings
                     .get_or_insert(s)
-                    .map_err(|e| format!("string dict write: {}", e))?;
+                    .map_err(|e| format!("string dict write: {e}"))?;
                 Ok((ObjKind::JSON_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::Null => Ok((ObjKind::NULL, ObjKey::ZERO)),
             RawObject::GYearStr(s) => GYear::parse(s)
                 .map(|g| (ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))
-                .map_err(|e| format!("gYear parse: {}", e)),
+                .map_err(|e| format!("gYear parse: {e}")),
             RawObject::GYearMonthStr(s) => GYearMonth::parse(s)
                 .map(|g| {
                     (
@@ -891,13 +892,13 @@ impl CommitResolver {
                         ObjKey::encode_g_year_month(g.year(), g.month()),
                     )
                 })
-                .map_err(|e| format!("gYearMonth parse: {}", e)),
+                .map_err(|e| format!("gYearMonth parse: {e}")),
             RawObject::GMonthStr(s) => GMonth::parse(s)
                 .map(|g| (ObjKind::G_MONTH, ObjKey::encode_g_month(g.month())))
-                .map_err(|e| format!("gMonth parse: {}", e)),
+                .map_err(|e| format!("gMonth parse: {e}")),
             RawObject::GDayStr(s) => GDay::parse(s)
                 .map(|g| (ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))
-                .map_err(|e| format!("gDay parse: {}", e)),
+                .map_err(|e| format!("gDay parse: {e}")),
             RawObject::GMonthDayStr(s) => GMonthDay::parse(s)
                 .map(|g| {
                     (
@@ -905,7 +906,7 @@ impl CommitResolver {
                         ObjKey::encode_g_month_day(g.month(), g.day()),
                     )
                 })
-                .map_err(|e| format!("gMonthDay parse: {}", e)),
+                .map_err(|e| format!("gMonthDay parse: {e}")),
             RawObject::YearMonthDurationStr(s) => YearMonthDuration::parse(s)
                 .map(|d| {
                     (
@@ -913,7 +914,7 @@ impl CommitResolver {
                         ObjKey::encode_year_month_dur(d.months()),
                     )
                 })
-                .map_err(|e| format!("yearMonthDuration parse: {}", e)),
+                .map_err(|e| format!("yearMonthDuration parse: {e}")),
             RawObject::DayTimeDurationStr(s) => DayTimeDuration::parse(s)
                 .map(|d| {
                     (
@@ -921,20 +922,20 @@ impl CommitResolver {
                         ObjKey::encode_day_time_dur(d.micros()),
                     )
                 })
-                .map_err(|e| format!("dayTimeDuration parse: {}", e)),
+                .map_err(|e| format!("dayTimeDuration parse: {e}")),
             RawObject::DurationStr(s) => {
                 // General xsd:duration has no total order — store as canonical string
-                let d = XsdDuration::parse(s).map_err(|e| format!("duration parse: {}", e))?;
+                let d = XsdDuration::parse(s).map_err(|e| format!("duration parse: {e}"))?;
                 let canonical = d.to_canonical_string();
                 let id = dicts
                     .strings
                     .get_or_insert(&canonical)
-                    .map_err(|e| format!("string dict write: {}", e))?;
+                    .map_err(|e| format!("string dict write: {e}"))?;
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::GeoPoint { lat, lng } => {
                 let key = ObjKey::encode_geo_point(*lat, *lng)
-                    .map_err(|e| format!("geo point encode: {}", e))?;
+                    .map_err(|e| format!("geo point encode: {e}"))?;
                 Ok((ObjKind::GEO_POINT, key))
             }
             RawObject::Vector(v) => {
@@ -945,7 +946,7 @@ impl CommitResolver {
                     .entry(p_id)
                     .or_default()
                     .insert_f64(v)
-                    .map_err(|e| format!("vector arena insert: {}", e))?;
+                    .map_err(|e| format!("vector arena insert: {e}"))?;
                 Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(handle)))
             }
         }
@@ -956,7 +957,7 @@ impl CommitResolver {
     fn lookup_prefix(&self, ns_code: u16) -> &str {
         self.ns_prefixes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("")
     }
 }
@@ -1085,7 +1086,10 @@ impl SharedResolverState {
             .predicate_sids
             .iter()
             .map(|(ns_code, suffix)| {
-                let prefix = ns_prefixes.get(ns_code).map(|s| s.as_str()).unwrap_or("");
+                let prefix = ns_prefixes
+                    .get(ns_code)
+                    .map(std::string::String::as_str)
+                    .unwrap_or("");
                 let mut iri = String::with_capacity(prefix.len() + suffix.len());
                 iri.push_str(prefix);
                 iri.push_str(suffix);
@@ -1196,7 +1200,7 @@ impl SharedResolverState {
         let prefix = self
             .ns_prefixes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
         let dt_id = self.datatypes.get_or_insert_parts(prefix, name);
         // Grow dt_tags if this is a new entry.
@@ -1393,7 +1397,7 @@ impl SharedResolverState {
         // 1. Resolve graph (global)
         let g_id = self
             .resolve_graph(op.g_ns_code, op.g_name)
-            .map_err(|e| CommitCodecError::InvalidOp(format!("graph resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("graph resolve: {e}")))?;
 
         // 2. Resolve subject (chunk-local)
         let s_id = self.resolve_subject_chunk(op.s_ns_code, op.s_name, chunk);
@@ -1405,8 +1409,7 @@ impl SharedResolverState {
         let dt_id = self.resolve_datatype(op.dt_ns_code, op.dt_name);
         if dt_id > u8::MAX as u32 {
             return Err(CommitCodecError::InvalidOp(format!(
-                "datatype dict overflow (dt_id={} exceeds u8 max)",
-                dt_id
+                "datatype dict overflow (dt_id={dt_id} exceeds u8 max)"
             )));
         }
         let dt_id = dt_id as u16;
@@ -1414,7 +1417,7 @@ impl SharedResolverState {
         // 5. Encode object (subjects/strings → chunk-local)
         let (o_kind, o_key) = self
             .resolve_object_chunk(&op.o, g_id, p_id, dt_id, chunk)
-            .map_err(|e| CommitCodecError::InvalidOp(format!("object resolve: {}", e)))?;
+            .map_err(|e| CommitCodecError::InvalidOp(format!("object resolve: {e}")))?;
 
         // 6. Language tag (global)
         let lang_id = self.languages.get_or_insert(op.lang);
@@ -1458,13 +1461,12 @@ impl SharedResolverState {
         let prefix = self
             .ns_prefixes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
         let raw = self.graphs.get_or_insert_parts(prefix, name) + 1;
         if raw > u16::MAX as u32 {
             return Err(io::Error::other(format!(
-                "graph count {} exceeds u16::MAX",
-                raw
+                "graph count {raw} exceeds u16::MAX"
             )));
         }
         Ok(raw as u16)
@@ -1475,7 +1477,7 @@ impl SharedResolverState {
         let prefix = self
             .ns_prefixes
             .get(&ns_code)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
         self.predicates.get_or_insert_parts(prefix, name)
     }
@@ -1496,7 +1498,7 @@ impl SharedResolverState {
                 // The decode path uses the property's datatype to select
                 // DecodeKind, and F64→I64 mismatch corrupts values. (fluree/db-r#142)
                 let key = ObjKey::encode_f64(*v)
-                    .map_err(|e| format!("f64 encode for p_id={}: {}", p_id, e))?;
+                    .map_err(|e| format!("f64 encode for p_id={p_id}: {e}"))?;
                 Ok((ObjKind::NUM_F64, key))
             }
             RawObject::Str(s) => {
@@ -1510,14 +1512,14 @@ impl SharedResolverState {
                 Ok((ObjKind::REF_ID, ObjKey::encode_sid64(sid)))
             }
             RawObject::DateTimeStr(s) => DateTime::parse(s)
-                .map_err(|e| format!("datetime parse: {}", e))
+                .map_err(|e| format!("datetime parse: {e}"))
                 .map(|dt| {
                     let micros = dt.epoch_micros();
                     (ObjKind::DATE_TIME, ObjKey::encode_datetime(micros))
                 }),
             RawObject::DateStr(s) => Date::parse(s)
                 .map(|d| (ObjKind::DATE, ObjKey::encode_date(d.days_since_epoch())))
-                .map_err(|e| format!("date parse: {}", e)),
+                .map_err(|e| format!("date parse: {e}")),
             RawObject::TimeStr(s) => Time::parse(s)
                 .map(|t| {
                     (
@@ -1525,7 +1527,7 @@ impl SharedResolverState {
                         ObjKey::encode_time(t.micros_since_midnight()),
                     )
                 })
-                .map_err(|e| format!("time parse: {}", e)),
+                .map_err(|e| format!("time parse: {e}")),
             RawObject::BigIntStr(s) => {
                 if let Ok(v) = s.parse::<i64>() {
                     return Ok((ObjKind::NUM_INT, ObjKey::encode_i64(v)));
@@ -1573,7 +1575,7 @@ impl SharedResolverState {
             RawObject::Null => Ok((ObjKind::NULL, ObjKey::ZERO)),
             RawObject::GYearStr(s) => GYear::parse(s)
                 .map(|g| (ObjKind::G_YEAR, ObjKey::encode_g_year(g.year())))
-                .map_err(|e| format!("gYear parse: {}", e)),
+                .map_err(|e| format!("gYear parse: {e}")),
             RawObject::GYearMonthStr(s) => GYearMonth::parse(s)
                 .map(|g| {
                     (
@@ -1581,13 +1583,13 @@ impl SharedResolverState {
                         ObjKey::encode_g_year_month(g.year(), g.month()),
                     )
                 })
-                .map_err(|e| format!("gYearMonth parse: {}", e)),
+                .map_err(|e| format!("gYearMonth parse: {e}")),
             RawObject::GMonthStr(s) => GMonth::parse(s)
                 .map(|g| (ObjKind::G_MONTH, ObjKey::encode_g_month(g.month())))
-                .map_err(|e| format!("gMonth parse: {}", e)),
+                .map_err(|e| format!("gMonth parse: {e}")),
             RawObject::GDayStr(s) => GDay::parse(s)
                 .map(|g| (ObjKind::G_DAY, ObjKey::encode_g_day(g.day())))
-                .map_err(|e| format!("gDay parse: {}", e)),
+                .map_err(|e| format!("gDay parse: {e}")),
             RawObject::GMonthDayStr(s) => GMonthDay::parse(s)
                 .map(|g| {
                     (
@@ -1595,7 +1597,7 @@ impl SharedResolverState {
                         ObjKey::encode_g_month_day(g.month(), g.day()),
                     )
                 })
-                .map_err(|e| format!("gMonthDay parse: {}", e)),
+                .map_err(|e| format!("gMonthDay parse: {e}")),
             RawObject::YearMonthDurationStr(s) => YearMonthDuration::parse(s)
                 .map(|d| {
                     (
@@ -1603,7 +1605,7 @@ impl SharedResolverState {
                         ObjKey::encode_year_month_dur(d.months()),
                     )
                 })
-                .map_err(|e| format!("yearMonthDuration parse: {}", e)),
+                .map_err(|e| format!("yearMonthDuration parse: {e}")),
             RawObject::DayTimeDurationStr(s) => DayTimeDuration::parse(s)
                 .map(|d| {
                     (
@@ -1611,16 +1613,16 @@ impl SharedResolverState {
                         ObjKey::encode_day_time_dur(d.micros()),
                     )
                 })
-                .map_err(|e| format!("dayTimeDuration parse: {}", e)),
+                .map_err(|e| format!("dayTimeDuration parse: {e}")),
             RawObject::DurationStr(s) => {
-                let d = XsdDuration::parse(s).map_err(|e| format!("duration parse: {}", e))?;
+                let d = XsdDuration::parse(s).map_err(|e| format!("duration parse: {e}"))?;
                 let canonical = d.to_canonical_string();
                 let id = chunk.strings.get_or_insert(canonical.as_bytes());
                 Ok((ObjKind::LEX_ID, ObjKey::encode_u32_id(id)))
             }
             RawObject::GeoPoint { lat, lng } => {
                 let key = ObjKey::encode_geo_point(*lat, *lng)
-                    .map_err(|e| format!("geo point encode: {}", e))?;
+                    .map_err(|e| format!("geo point encode: {e}"))?;
                 Ok((ObjKind::GEO_POINT, key))
             }
             RawObject::Vector(v) => {
@@ -1631,7 +1633,7 @@ impl SharedResolverState {
                     .entry(p_id)
                     .or_default()
                     .insert_f64(v)
-                    .map_err(|e| format!("vector arena insert: {}", e))?;
+                    .map_err(|e| format!("vector arena insert: {e}"))?;
                 Ok((ObjKind::VECTOR_ID, ObjKey::encode_u32_id(handle)))
             }
         }
@@ -1822,7 +1824,7 @@ impl SharedResolverState {
         let p_prefix = self
             .ns_prefixes
             .get(&entry.predicate_ns)
-            .map(|s| s.as_str())
+            .map(std::string::String::as_str)
             .unwrap_or("");
         let p_id = self
             .predicates
@@ -1880,7 +1882,7 @@ impl SharedResolverState {
                     ));
                 }
                 let key = ObjKey::encode_f64(*n)
-                    .map_err(|e| ResolverError::Resolve(format!("txn_meta double: {}", e)))?;
+                    .map_err(|e| ResolverError::Resolve(format!("txn_meta double: {e}")))?;
                 Ok((ObjKind::NUM_F64, key, DatatypeDictId::DOUBLE.as_u16(), 0))
             }
             TxnMetaValue::Boolean(b) => Ok((
@@ -1918,8 +1920,7 @@ impl SharedResolverState {
                 let dt_id = self.resolve_datatype(*dt_ns, dt_name);
                 if dt_id > u8::MAX as u32 {
                     return Err(ResolverError::Resolve(format!(
-                        "txn_meta datatype dict overflow (dt_id={} exceeds u8 max)",
-                        dt_id
+                        "txn_meta datatype dict overflow (dt_id={dt_id} exceeds u8 max)"
                     )));
                 }
                 Ok((
@@ -2003,9 +2004,9 @@ impl From<io::Error> for ResolverError {
 impl std::fmt::Display for ResolverError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Codec(e) => write!(f, "commit-codec: {}", e),
-            Self::Io(e) => write!(f, "I/O: {}", e),
-            Self::Resolve(msg) => write!(f, "resolve: {}", msg),
+            Self::Codec(e) => write!(f, "commit-codec: {e}"),
+            Self::Io(e) => write!(f, "I/O: {e}"),
+            Self::Resolve(msg) => write!(f, "resolve: {msg}"),
         }
     }
 }
@@ -2153,7 +2154,7 @@ mod tests {
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
-            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+            + dict_bytes.iter().map(std::vec::Vec::len).sum::<usize>()
             + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 
@@ -2408,8 +2409,8 @@ mod tests {
         let ms = super::iso_to_epoch_ms("2025-01-20T12:00:00Z");
         assert!(ms.is_some());
         let ms = ms.unwrap();
-        assert!(ms > 1737000000000);
-        assert!(ms < 1738000000000);
+        assert!(ms > 1_737_000_000_000);
+        assert!(ms < 1_738_000_000_000);
 
         assert_eq!(super::iso_to_epoch_ms("not-a-date"), None);
     }
@@ -2427,7 +2428,7 @@ mod tests {
 
         let hex = "abc123def456abc123def456abc123def456abc123def456abc123def456abcd";
         let prev_hex = "0000000000000000000000000000000000000000000000000000000000000000";
-        let prev_commit_id = format!("fluree:commit:sha256:{}", prev_hex);
+        let prev_commit_id = format!("fluree:commit:sha256:{prev_hex}");
 
         let envelope = CodecEnvelope {
             t: 42,
@@ -2495,7 +2496,7 @@ mod tests {
         );
         // Verify epoch ms is reasonable (2025)
         let epoch_ms = ObjKey::from_u64(time_rec.o_key).decode_i64();
-        assert!(epoch_ms > 1718000000000, "epoch ms should be in 2025");
+        assert!(epoch_ms > 1_718_000_000_000, "epoch ms should be in 2025");
 
         // Find the t record
         let t_pid = p_t.unwrap();

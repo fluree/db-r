@@ -253,7 +253,7 @@ impl R2rmlCache {
         media_type.hash(&mut hasher);
         let combined_hash = hasher.finish();
 
-        format!("{}:{:016x}", graph_source_id, combined_hash)
+        format!("{graph_source_id}:{combined_hash:016x}")
     }
 }
 

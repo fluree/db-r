@@ -394,10 +394,10 @@ impl GeometryArena {
     /// This is used for exact predicate testing at query time.
     pub fn parse_geometry(&self, handle: u32) -> Result<Geometry<f64>> {
         let entry = self.get(handle).ok_or_else(|| {
-            SpatialError::InvalidGeometry(format!("no geometry at handle {}", handle))
+            SpatialError::InvalidGeometry(format!("no geometry at handle {handle}"))
         })?;
         let wkt_str = std::str::from_utf8(&entry.wkt)
-            .map_err(|e| SpatialError::WktParse(format!("invalid UTF-8: {}", e)))?;
+            .map_err(|e| SpatialError::WktParse(format!("invalid UTF-8: {e}")))?;
         parse_wkt(wkt_str)
     }
 }
@@ -482,8 +482,7 @@ impl GeometryArena {
         let version = data[4];
         if version != ARENA_VERSION {
             return Err(SpatialError::FormatError(format!(
-                "unsupported arena version: {}",
-                version
+                "unsupported arena version: {version}"
             )));
         }
 
@@ -556,10 +555,10 @@ impl GeometryArena {
 pub fn parse_wkt(wkt: &str) -> Result<Geometry<f64>> {
     use std::str::FromStr;
     wkt::Wkt::from_str(wkt)
-        .map_err(|e| SpatialError::WktParse(format!("{:?}", e)))
+        .map_err(|e| SpatialError::WktParse(format!("{e:?}")))
         .and_then(|w| {
             w.try_into()
-                .map_err(|e: wkt::conversion::Error| SpatialError::WktParse(format!("{:?}", e)))
+                .map_err(|e: wkt::conversion::Error| SpatialError::WktParse(format!("{e:?}")))
         })
 }
 

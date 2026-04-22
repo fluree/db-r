@@ -355,8 +355,8 @@ async fn e2e_r2rml_query_iceberg_table() {
         .or_else(|| Some("root:s3cr3t".to_string())); // Default Polaris credentials
 
     eprintln!("E2E Test Configuration:");
-    eprintln!("  Catalog URI: {}", catalog_uri);
-    eprintln!("  Warehouse: {}", warehouse);
+    eprintln!("  Catalog URI: {catalog_uri}");
+    eprintln!("  Warehouse: {warehouse}");
     eprintln!(
         "  OAuth2: {}",
         oauth2_credential
@@ -453,8 +453,8 @@ async fn e2e_r2rml_query_iceberg_table() {
 
     match result {
         Ok(batches) => {
-            let total_rows: usize = batches.iter().map(|b| b.len()).sum();
-            eprintln!("Query returned {} rows", total_rows);
+            let total_rows: usize = batches.iter().map(fluree_db_api::Batch::len).sum();
+            eprintln!("Query returned {total_rows} rows");
 
             // Print first few results
             for (batch_idx, batch) in batches.iter().enumerate() {
@@ -478,17 +478,16 @@ async fn e2e_r2rml_query_iceberg_table() {
             // OpenFlights has ~6000 airlines
             assert!(
                 total_rows > 100,
-                "Expected many airline rows, got {}",
-                total_rows
+                "Expected many airline rows, got {total_rows}"
             );
         }
         Err(e) => {
-            eprintln!("Query failed: {}", e);
+            eprintln!("Query failed: {e}");
             // Don't panic if it's a connection error - the infrastructure might not be running
             if e.to_string().contains("connection") || e.to_string().contains("Connection") {
                 eprintln!("WARNING: Could not connect to Iceberg catalog - is it running?");
             } else {
-                panic!("Query failed with unexpected error: {}", e);
+                panic!("Query failed with unexpected error: {e}");
             }
         }
     }
@@ -537,8 +536,8 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         std::env::var("ICEBERG_OAUTH2_CREDENTIAL").unwrap_or_else(|_| "root:s3cr3t".to_string());
 
     eprintln!("E2E FlureeR2rmlProvider Full Flow Test:");
-    eprintln!("  Catalog URI: {}", catalog_uri);
-    eprintln!("  Warehouse: {}", warehouse);
+    eprintln!("  Catalog URI: {catalog_uri}");
+    eprintln!("  Warehouse: {warehouse}");
 
     // R2RML mapping for airlines table
     const AIRLINES_R2RML: &str = r#"
@@ -581,14 +580,14 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
         .write_bytes(mapping_address, AIRLINES_R2RML.as_bytes())
         .await
         .expect("Failed to store mapping");
-    eprintln!("  Mapping stored at: {}", mapping_address);
+    eprintln!("  Mapping stored at: {mapping_address}");
 
     // Step 2: Create graph source using create_r2rml_graph_source()
     eprintln!("Step 2: Creating R2RML graph source...");
 
     // Parse OAuth2 credentials
     let parts: Vec<&str> = oauth2_credential.split(':').collect();
-    let token_url = format!("{}/v1/oauth/tokens", catalog_uri);
+    let token_url = format!("{catalog_uri}/v1/oauth/tokens");
 
     let mut config = R2rmlCreateConfig::new(
         "airlines-e2e",
@@ -615,13 +614,13 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
             eprintln!("  TriplesMap count: {}", result.triples_map_count);
         }
         Err(e) => {
-            eprintln!("  Graph source creation failed: {}", e);
+            eprintln!("  Graph source creation failed: {e}");
             let is_connection_error =
                 e.to_string().contains("connection") || e.to_string().contains("Connection");
 
             if strict_mode {
                 // In strict mode, fail hard on any error
-                panic!("Graph source creation failed (strict mode): {}", e);
+                panic!("Graph source creation failed (strict mode): {e}");
             } else if is_connection_error {
                 // In lenient mode, skip on connection errors
                 eprintln!("WARNING: Could not connect to Iceberg catalog - skipping test");
@@ -654,8 +653,12 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
 
     match result {
         Ok(query_result) => {
-            let total_rows: usize = query_result.batches.iter().map(|b| b.len()).sum();
-            eprintln!("  Query returned {} rows", total_rows);
+            let total_rows: usize = query_result
+                .batches
+                .iter()
+                .map(fluree_db_api::Batch::len)
+                .sum();
+            eprintln!("  Query returned {total_rows} rows");
 
             // Print first few results
             for (i, batch) in query_result.batches.iter().enumerate() {
@@ -676,14 +679,13 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
             // OpenFlights has ~6000 airlines
             assert!(
                 total_rows > 100,
-                "Expected many airline rows, got {}",
-                total_rows
+                "Expected many airline rows, got {total_rows}"
             );
             eprintln!("SUCCESS: Full FlureeR2rmlProvider flow works!");
         }
         Err(e) => {
             let error_msg = e.to_string();
-            eprintln!("  Query failed: {}", error_msg);
+            eprintln!("  Query failed: {error_msg}");
 
             let is_connection_error = error_msg.contains("connection")
                 || error_msg.contains("Connection")
@@ -691,12 +693,12 @@ async fn e2e_fluree_r2rml_provider_full_flow() {
 
             if strict_mode {
                 // In strict mode, fail hard on any error
-                panic!("Query failed (strict mode): {}", e);
+                panic!("Query failed (strict mode): {e}");
             } else if is_connection_error {
                 // In lenient mode, warn on connection errors
                 eprintln!("WARNING: Could not connect to Iceberg - is infrastructure running?");
             } else {
-                panic!("Query failed with unexpected error: {}", e);
+                panic!("Query failed with unexpected error: {e}");
             }
         }
     }
@@ -750,8 +752,8 @@ impl R2rmlTableProvider for IcebergDirectProvider {
             scan::{ScanConfig, SendScanPlanner},
         };
 
-        eprintln!("IcebergDirectProvider.scan_table: {}", table_name);
-        eprintln!("  projection: {:?}", projection);
+        eprintln!("IcebergDirectProvider.scan_table: {table_name}");
+        eprintln!("  projection: {projection:?}");
 
         // Create catalog client with OAuth2 auth if credentials provided
         let catalog_config = RestCatalogConfig {
@@ -765,7 +767,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
             let parts: Vec<&str> = cred.split(':').collect();
             if parts.len() == 2 {
                 let token_url = format!("{}/v1/oauth/tokens", self.catalog_uri);
-                eprintln!("  Using OAuth2 auth with token_url: {}", token_url);
+                eprintln!("  Using OAuth2 auth with token_url: {token_url}");
                 AuthConfig::OAuth2ClientCredentials {
                     token_url,
                     client_id: ConfigValue::literal(parts[0]),
@@ -774,24 +776,24 @@ impl R2rmlTableProvider for IcebergDirectProvider {
                     audience: None,
                 }
                 .create_provider_arc()
-                .map_err(|e| QueryError::Internal(format!("OAuth2 auth error: {}", e)))?
+                .map_err(|e| QueryError::Internal(format!("OAuth2 auth error: {e}")))?
             } else {
                 AuthConfig::None
                     .create_provider_arc()
-                    .map_err(|e| QueryError::Internal(format!("Auth error: {}", e)))?
+                    .map_err(|e| QueryError::Internal(format!("Auth error: {e}")))?
             }
         } else {
             AuthConfig::None
                 .create_provider_arc()
-                .map_err(|e| QueryError::Internal(format!("Auth error: {}", e)))?
+                .map_err(|e| QueryError::Internal(format!("Auth error: {e}")))?
         };
 
         let catalog = RestCatalogClient::new(catalog_config, auth)
-            .map_err(|e| QueryError::Internal(format!("Catalog error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Catalog error: {e}")))?;
 
         // Parse table identifier
         let table_id = parse_table_identifier(table_name)
-            .map_err(|e| QueryError::Internal(format!("Table ID error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Table ID error: {e}")))?;
 
         eprintln!("  Loading table: {}.{}", table_id.namespace, table_id.table);
 
@@ -799,7 +801,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
         let load_response = catalog
             .load_table(&table_id, true)
             .await
-            .map_err(|e| QueryError::Internal(format!("Load table error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Load table error: {e}")))?;
 
         eprintln!("  Metadata location: {}", load_response.metadata_location);
         eprintln!(
@@ -822,7 +824,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
                     ep.clone()
                 }
             });
-            eprintln!("    Using endpoint: {:?}", endpoint);
+            eprintln!("    Using endpoint: {endpoint:?}");
 
             // Workaround for AWS SDK TLS initialization issues:
             // Set environment variables and use the default chain instead of explicit credentials.
@@ -839,7 +841,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
                 creds.path_style,
             )
             .await
-            .map_err(|e| QueryError::Internal(format!("S3 storage error: {}", e)))?
+            .map_err(|e| QueryError::Internal(format!("S3 storage error: {e}")))?
         } else {
             eprintln!("  Using default AWS credentials");
             S3IcebergStorage::from_default_chain(
@@ -848,17 +850,17 @@ impl R2rmlTableProvider for IcebergDirectProvider {
                 self.s3_path_style,
             )
             .await
-            .map_err(|e| QueryError::Internal(format!("S3 storage error: {}", e)))?
+            .map_err(|e| QueryError::Internal(format!("S3 storage error: {e}")))?
         };
 
         // Read and parse metadata
         let metadata_bytes = storage
             .read(&load_response.metadata_location)
             .await
-            .map_err(|e| QueryError::Internal(format!("Metadata read error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Metadata read error: {e}")))?;
 
         let metadata = TableMetadata::from_json(&metadata_bytes)
-            .map_err(|e| QueryError::Internal(format!("Metadata parse error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Metadata parse error: {e}")))?;
 
         let schema = metadata
             .current_schema()
@@ -881,7 +883,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
                 .collect()
         };
 
-        eprintln!("  Projected field IDs: {:?}", projected_field_ids);
+        eprintln!("  Projected field IDs: {projected_field_ids:?}");
 
         // Create scan plan
         let scan_config = ScanConfig::new().with_projection(projected_field_ids);
@@ -889,7 +891,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
         let plan = planner
             .plan_scan()
             .await
-            .map_err(|e| QueryError::Internal(format!("Scan plan error: {}", e)))?;
+            .map_err(|e| QueryError::Internal(format!("Scan plan error: {e}")))?;
 
         eprintln!(
             "  Scan plan: {} files, ~{} rows",
@@ -909,7 +911,7 @@ impl R2rmlTableProvider for IcebergDirectProvider {
             let batches = reader
                 .read_task(task)
                 .await
-                .map_err(|e| QueryError::Internal(format!("Parquet read error: {}", e)))?;
+                .map_err(|e| QueryError::Internal(format!("Parquet read error: {e}")))?;
             all_batches.extend(batches);
         }
 
@@ -972,14 +974,13 @@ fn test_ref_object_map_compilation() {
 
     // Debug: print what TriplesMap keys were found
     let keys: Vec<_> = mapping.triples_maps.keys().collect();
-    eprintln!("Found TriplesMap keys: {:?}", keys);
+    eprintln!("Found TriplesMap keys: {keys:?}");
 
     // Should have two TriplesMap
     assert_eq!(
         mapping.triples_maps.len(),
         2,
-        "Expected 2 TriplesMap, found: {:?}",
-        keys
+        "Expected 2 TriplesMap, found: {keys:?}"
     );
 
     // RouteMapping should reference AirlineMapping
@@ -1107,7 +1108,7 @@ async fn engine_e2e_graph_pattern_r2rml_scan() {
 
     // Assert: Query should produce results (not just execute without error)
     // With a concrete predicate (ex:name), we should get one row per input table row.
-    let total_rows: usize = batches.iter().map(|b| b.len()).sum();
+    let total_rows: usize = batches.iter().map(fluree_db_api::Batch::len).sum();
     assert!(
         total_rows > 0,
         "R2RML query should produce results; got {} batches with {} total rows",
@@ -1137,7 +1138,7 @@ async fn engine_e2e_provider_method_calls() {
     #[async_trait]
     impl R2rmlProvider for TrackingProvider {
         async fn has_r2rml_mapping(&self, graph_source_id: &str) -> bool {
-            eprintln!("has_r2rml_mapping called for: {}", graph_source_id);
+            eprintln!("has_r2rml_mapping called for: {graph_source_id}");
             self.has_mapping_called.store(true, Ordering::SeqCst);
             graph_source_id == "airlines-gs:main"
         }
@@ -1147,7 +1148,7 @@ async fn engine_e2e_provider_method_calls() {
             graph_source_id: &str,
             _as_of_t: Option<i64>,
         ) -> QueryResult<Arc<CompiledR2rmlMapping>> {
-            eprintln!("compiled_mapping called for: {}", graph_source_id);
+            eprintln!("compiled_mapping called for: {graph_source_id}");
             self.compiled_mapping_called.fetch_add(1, Ordering::SeqCst);
             Ok(Arc::clone(&self.mapping))
         }
@@ -1163,8 +1164,7 @@ async fn engine_e2e_provider_method_calls() {
             _as_of_t: Option<i64>,
         ) -> QueryResult<Vec<ColumnBatch>> {
             eprintln!(
-                "scan_table called: gs={}, table={}, projection={:?}",
-                graph_source_id, table_name, projection
+                "scan_table called: gs={graph_source_id}, table={table_name}, projection={projection:?}"
             );
             self.scan_table_called.fetch_add(1, Ordering::SeqCst);
             Ok(self.batches.clone())
@@ -1454,7 +1454,7 @@ fn test_iceberg_graph_source_config_serialization() {
             assert_eq!(uri, "https://polaris.example.com");
             assert_eq!(warehouse, &Some("my-warehouse".to_string()));
         }
-        other => panic!("Expected Rest variant, got {:?}", other),
+        other => panic!("Expected Rest variant, got {other:?}"),
     }
     assert_eq!(parsed.table.identifier(), "ns.table");
     assert!(parsed.io.vended_credentials);
@@ -1657,13 +1657,12 @@ async fn integration_query_graph_source_provider_wiring() {
         Ok(_) => panic!("Query should fail without real catalog"),
         Err(e) => {
             let error_msg = e.to_string();
-            eprintln!("Expected error from query_graph_source: {}", error_msg);
+            eprintln!("Expected error from query_graph_source: {error_msg}");
 
             // Verify it's NOT a "not supported" error from NoOpR2rmlProvider
             assert!(
                 !error_msg.contains("R2RML graph sources are not supported"),
-                "Should use FlureeR2rmlProvider, not NoOpR2rmlProvider. Got: {}",
-                error_msg
+                "Should use FlureeR2rmlProvider, not NoOpR2rmlProvider. Got: {error_msg}"
             );
         }
     }
@@ -1767,14 +1766,14 @@ impl R2rmlTableProvider for MultiTableMockProvider {
         _projection: &[String],
         _as_of_t: Option<i64>,
     ) -> QueryResult<Vec<ColumnBatch>> {
-        eprintln!("MultiTableMockProvider.scan_table: {}", table_name);
+        eprintln!("MultiTableMockProvider.scan_table: {table_name}");
         // Return appropriate batch based on table name
         // Table names are normalized to dot notation
         match table_name {
             "openflights.airlines" => Ok(vec![self.airlines_batch.clone()]),
             "openflights.routes" => Ok(vec![self.routes_batch.clone()]),
             _ => {
-                eprintln!("Unknown table: {}", table_name);
+                eprintln!("Unknown table: {table_name}");
                 Ok(vec![])
             }
         }
@@ -1855,8 +1854,8 @@ async fn engine_e2e_ref_object_map_join_execution() {
     .expect("Query execution should succeed");
 
     // Count results
-    let total_rows: usize = batches.iter().map(|b| b.len()).sum();
-    eprintln!("RefObjectMap join query returned {} rows", total_rows);
+    let total_rows: usize = batches.iter().map(fluree_db_api::Batch::len).sum();
+    eprintln!("RefObjectMap join query returned {total_rows} rows");
 
     // We have 5 routes, but airline_id=999 has no matching airline
     // So we expect 4 results (routes with airline_id 1, 1, 2, 3)
@@ -1872,7 +1871,7 @@ async fn engine_e2e_ref_object_map_join_execution() {
             // Get airline binding
             if let Some(col) = batch.column_by_idx(1) {
                 let airline_binding = &col[row_idx];
-                eprintln!("Row {}: airline = {:?}", row_idx, airline_binding);
+                eprintln!("Row {row_idx}: airline = {airline_binding:?}");
                 // Should be a Sid (encoded IRI), not Unbound
                 assert!(
                     airline_binding.is_bound(),

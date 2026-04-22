@@ -150,7 +150,7 @@ pub(crate) fn format_binding(
                 FlakeValue::Json(json_str) => {
                     // @json datatype: deserialize for output
                     let json_val: JsonValue = serde_json::from_str(json_str).map_err(|e| {
-                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {}", e))
+                        FormatError::InvalidBinding(format!("Invalid JSON in @json value: {e}"))
                     })?;
                     Ok(json!({
                         "@value": json_val,

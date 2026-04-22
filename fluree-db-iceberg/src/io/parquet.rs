@@ -156,8 +156,7 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
         // Read footer length (last 8 bytes: 4-byte length + 4-byte magic)
         if file_size < 12 {
             return Err(IcebergError::Storage(format!(
-                "File too small to be Parquet: {} bytes",
-                file_size
+                "File too small to be Parquet: {file_size} bytes"
             )));
         }
 
@@ -234,7 +233,7 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
 
         // Parse using parquet-rs
         let reader = SerializedFileReader::new(file_bytes)
-            .map_err(|e| IcebergError::Storage(format!("Failed to read Parquet file: {}", e)))?;
+            .map_err(|e| IcebergError::Storage(format!("Failed to read Parquet file: {e}")))?;
 
         let metadata = reader.metadata();
 
@@ -261,7 +260,7 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
         // Process each row group separately to emit streaming batches
         for rg_idx in 0..metadata.num_row_groups() {
             let row_group_reader = reader.get_row_group(rg_idx).map_err(|e| {
-                IcebergError::Storage(format!("Failed to get row group {}: {}", rg_idx, e))
+                IcebergError::Storage(format!("Failed to get row group {rg_idx}: {e}"))
             })?;
 
             // Create row iterator for this row group with projection
@@ -269,8 +268,7 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
                 RowIter::from_row_group(Some(projected_schema.clone()), row_group_reader.as_ref())
                     .map_err(|e| {
                         IcebergError::Storage(format!(
-                            "Failed to create row iterator for row group {}: {}",
-                            rg_idx, e
+                            "Failed to create row iterator for row group {rg_idx}: {e}"
                         ))
                     })?;
 
@@ -283,7 +281,7 @@ impl<'a, S: IcebergStorage> ParquetReader<'a, S> {
 
             for row_result in row_iter {
                 let row = row_result
-                    .map_err(|e| IcebergError::Storage(format!("Failed to read row: {}", e)))?;
+                    .map_err(|e| IcebergError::Storage(format!("Failed to read row: {e}")))?;
 
                 // With projection, row columns come in the same order as projected schema.
                 let row_fields: Vec<_> = row.get_column_iter().map(|(_, f)| f).collect();
@@ -921,7 +919,7 @@ fn decode_bool_column(
             Some(&mut rep_levels),
             &mut values,
         )
-        .map_err(|e| IcebergError::Storage(format!("Failed to read bool column: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Failed to read bool column: {e}")))?;
 
     let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
@@ -945,7 +943,7 @@ fn decode_int32_column(
             Some(&mut rep_levels),
             &mut values,
         )
-        .map_err(|e| IcebergError::Storage(format!("Failed to read int32 column: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Failed to read int32 column: {e}")))?;
 
     let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
@@ -973,7 +971,7 @@ fn decode_int64_column(
             Some(&mut rep_levels),
             &mut values,
         )
-        .map_err(|e| IcebergError::Storage(format!("Failed to read int64 column: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Failed to read int64 column: {e}")))?;
 
     let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
@@ -1002,7 +1000,7 @@ fn decode_int96_column(
             Some(&mut rep_levels),
             &mut values,
         )
-        .map_err(|e| IcebergError::Storage(format!("Failed to read int96 column: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Failed to read int96 column: {e}")))?;
 
     // Convert INT96 to microseconds since epoch
     let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |int96| {
@@ -1021,7 +1019,7 @@ fn int96_to_nanos(int96: &parquet::data_type::Int96) -> i64 {
     let julian_day = data[2] as i64;
 
     // Convert Julian day to Unix epoch (Julian day 2440588 = 1970-01-01)
-    const JULIAN_UNIX_EPOCH: i64 = 2440588;
+    const JULIAN_UNIX_EPOCH: i64 = 2_440_588;
     const NANOS_PER_DAY: i64 = 86_400_000_000_000;
 
     let days_since_epoch = julian_day - JULIAN_UNIX_EPOCH;
@@ -1044,7 +1042,7 @@ fn decode_float_column(
             Some(&mut rep_levels),
             &mut values,
         )
-        .map_err(|e| IcebergError::Storage(format!("Failed to read float column: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Failed to read float column: {e}")))?;
 
     let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
@@ -1067,7 +1065,7 @@ fn decode_double_column(
             Some(&mut rep_levels),
             &mut values,
         )
-        .map_err(|e| IcebergError::Storage(format!("Failed to read double column: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Failed to read double column: {e}")))?;
 
     let result = decode_with_nulls(records_read, values_read, &def_levels, &values, |v| *v);
 
@@ -1102,9 +1100,7 @@ fn decode_byte_array_column(
                 Some(&mut rep_levels),
                 &mut values,
             )
-            .map_err(|e| {
-                IcebergError::Storage(format!("Failed to read byte array column: {}", e))
-            })?;
+            .map_err(|e| IcebergError::Storage(format!("Failed to read byte array column: {e}")))?;
 
         if records_read == 0 {
             break;
@@ -1201,7 +1197,7 @@ fn decode_fixed_len_byte_array_column(
                 &mut values,
             )
             .map_err(|e| {
-                IcebergError::Storage(format!("Failed to read fixed byte array column: {}", e))
+                IcebergError::Storage(format!("Failed to read fixed byte array column: {e}"))
             })?;
 
         if records_read == 0 {
@@ -1244,7 +1240,7 @@ pub fn parse_parquet_metadata_from_bytes(
     // For simplicity, try parsing with the full footer
     let metadata = reader
         .parse_and_finish(footer_bytes)
-        .map_err(|e| IcebergError::Storage(format!("Failed to parse Parquet metadata: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Failed to parse Parquet metadata: {e}")))?;
 
     Ok(metadata)
 }
@@ -1536,7 +1532,7 @@ pub fn build_projected_schema(
     SchemaType::group_type_builder(full_schema.name())
         .with_fields(projected_fields)
         .build()
-        .map_err(|e| IcebergError::Storage(format!("Failed to build projected schema: {}", e)))
+        .map_err(|e| IcebergError::Storage(format!("Failed to build projected schema: {e}")))
 }
 
 /// Convert Parquet type to our FieldType.
@@ -1628,7 +1624,7 @@ mod tests {
     #[test]
     fn test_int96_to_nanos() {
         // Test epoch (Julian day 2440588)
-        let int96 = parquet::data_type::Int96::from(vec![0, 0, 2440588u32]);
+        let int96 = parquet::data_type::Int96::from(vec![0, 0, 2_440_588_u32]);
         let nanos = int96_to_nanos(&int96);
         assert_eq!(nanos, 0);
     }
@@ -1861,7 +1857,7 @@ mod tests {
         // Larger positive: 1234567890
         // 1234567890 = 0x499602D2
         let bytes = vec![0x49, 0x96, 0x02, 0xD2];
-        assert_eq!(decimal_bytes_to_i128(&bytes), 1234567890);
+        assert_eq!(decimal_bytes_to_i128(&bytes), 1_234_567_890);
     }
 
     #[test]
@@ -1894,7 +1890,7 @@ mod tests {
         // 5 bytes positive
         let bytes = vec![0x01, 0x02, 0x03, 0x04, 0x05];
         // = 0x0102030405 = 4328719365
-        assert_eq!(decimal_bytes_to_i128(&bytes), 4328719365);
+        assert_eq!(decimal_bytes_to_i128(&bytes), 4_328_719_365);
     }
 
     #[test]

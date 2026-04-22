@@ -438,13 +438,12 @@ mod tests {
     fn template_contains_default_values() {
         let t = generate_config_template(None);
         // Spot-check a few interpolated values
-        assert!(t.contains(&format!("# listen_addr = \"{}\"", DEFAULT_LISTEN_ADDR)));
+        assert!(t.contains(&format!("# listen_addr = \"{DEFAULT_LISTEN_ADDR}\"")));
         assert!(t.contains(&format!(
-            "# reindex_min_bytes = {}",
-            DEFAULT_REINDEX_MIN_BYTES
+            "# reindex_min_bytes = {DEFAULT_REINDEX_MIN_BYTES}"
         )));
-        assert!(t.contains(&format!("# log_level = \"{}\"", DEFAULT_LOG_LEVEL)));
-        assert!(t.contains(&format!("# enabled = {}", DEFAULT_INDEXING_ENABLED)));
+        assert!(t.contains(&format!("# log_level = \"{DEFAULT_LOG_LEVEL}\"")));
+        assert!(t.contains(&format!("# enabled = {DEFAULT_INDEXING_ENABLED}")));
         assert!(t.contains("# cache_max_mb = 4096"));
     }
 

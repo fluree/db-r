@@ -62,7 +62,7 @@ async fn datalog_grandparent_rule() {
         .to_jsonld(&ledger.snapshot)
         .unwrap();
     let rule_results = normalize_rows(&rule_rows);
-    eprintln!("Found rules: {:?}", rule_results);
+    eprintln!("Found rules: {rule_results:?}");
     assert!(
         !rule_results.is_empty(),
         "Should have found the rule definition"
@@ -94,7 +94,7 @@ async fn datalog_grandparent_rule() {
         .to_jsonld(&ledger.snapshot)
         .unwrap();
     let data_results = normalize_rows(&data_rows);
-    eprintln!("Alice's parents: {:?}", data_results);
+    eprintln!("Alice's parents: {data_results:?}");
     assert!(
         data_results.contains(&json!("ex:bob")),
         "Alice should have parent bob"
@@ -120,8 +120,7 @@ async fn datalog_grandparent_rule() {
     // Alice's grandparent should be Charlie (via bob)
     assert!(
         results.contains(&json!("ex:charlie")),
-        "Alice should have grandparent Charlie via datalog rule, got {:?}",
-        results
+        "Alice should have grandparent Charlie via datalog rule, got {results:?}"
     );
 }
 
@@ -189,8 +188,7 @@ async fn datalog_sibling_rule() {
     // Alice should have Bob as a sibling
     assert!(
         results.contains(&json!("ex:bob")),
-        "Alice should have sibling Bob via datalog rule, got {:?}",
-        results
+        "Alice should have sibling Bob via datalog rule, got {results:?}"
     );
 }
 
@@ -232,8 +230,7 @@ async fn datalog_no_rules_returns_empty() {
     // Should be empty - no grandparent rule defined
     assert!(
         results.is_empty(),
-        "Should return empty without grandparent rule, got {:?}",
-        results
+        "Should return empty without grandparent rule, got {results:?}"
     );
 }
 
@@ -307,8 +304,7 @@ async fn datalog_combined_with_owl2rl() {
     // Alice's friend-of-friend should include Charlie (via bob)
     assert!(
         results.contains(&json!("ex:charlie")),
-        "Alice should have friend-of-friend Charlie, got {:?}",
-        results
+        "Alice should have friend-of-friend Charlie, got {results:?}"
     );
 }
 
@@ -392,18 +388,15 @@ async fn datalog_recursive_ancestor_rule() {
     // Iteration 3: derive alice->ancestor->dave (recursive from alice->charlie->dave)
     assert!(
         results.contains(&json!("ex:bob")),
-        "Alice should have ancestor Bob, got {:?}",
-        results
+        "Alice should have ancestor Bob, got {results:?}"
     );
     assert!(
         results.contains(&json!("ex:charlie")),
-        "Alice should have ancestor Charlie (requires recursive rule), got {:?}",
-        results
+        "Alice should have ancestor Charlie (requires recursive rule), got {results:?}"
     );
     assert!(
         results.contains(&json!("ex:dave")),
-        "Alice should have ancestor Dave (requires 2 recursive iterations), got {:?}",
-        results
+        "Alice should have ancestor Dave (requires 2 recursive iterations), got {results:?}"
     );
 }
 
@@ -581,8 +574,7 @@ async fn datalog_chains_off_owl_entailments() {
         results.contains(&json!("ex:music")),
         "Alice should learn about music via OWL+Datalog chaining. \
         OWL derives alice->friendOf->bob, Datalog uses that to derive alice->learnsAbout->music. \
-        Got: {:?}",
-        results
+        Got: {results:?}"
     );
 }
 
@@ -655,23 +647,19 @@ async fn datalog_filter_expression() {
     // Bob (45) should NOT be a senior
     assert!(
         results.contains(&json!("ex:alice")),
-        "Alice (age 65) should be a senior, got {:?}",
-        results
+        "Alice (age 65) should be a senior, got {results:?}"
     );
     assert!(
         results.contains(&json!("ex:charlie")),
-        "Charlie (age 70) should be a senior, got {:?}",
-        results
+        "Charlie (age 70) should be a senior, got {results:?}"
     );
     assert!(
         results.contains(&json!("ex:dave")),
-        "Dave (age 62) should be a senior (boundary case), got {:?}",
-        results
+        "Dave (age 62) should be a senior (boundary case), got {results:?}"
     );
     assert!(
         !results.contains(&json!("ex:bob")),
-        "Bob (age 45) should NOT be a senior, got {:?}",
-        results
+        "Bob (age 45) should NOT be a senior, got {results:?}"
     );
 }
 
@@ -741,18 +729,15 @@ async fn datalog_filter_less_than() {
     // Gadget (150) should NOT be affordable
     assert!(
         results.contains(&json!("ex:widget")),
-        "Widget (price 50) should be affordable, got {:?}",
-        results
+        "Widget (price 50) should be affordable, got {results:?}"
     );
     assert!(
         results.contains(&json!("ex:gizmo")),
-        "Gizmo (price 99) should be affordable, got {:?}",
-        results
+        "Gizmo (price 99) should be affordable, got {results:?}"
     );
     assert!(
         !results.contains(&json!("ex:gadget")),
-        "Gadget (price 150) should NOT be affordable, got {:?}",
-        results
+        "Gadget (price 150) should NOT be affordable, got {results:?}"
     );
 }
 
@@ -804,8 +789,7 @@ async fn datalog_query_time_rules() {
     // Alice's grandparent should be Charlie (via bob)
     assert!(
         results.contains(&json!("ex:charlie")),
-        "Alice should have grandparent Charlie via query-time rule, got {:?}",
-        results
+        "Alice should have grandparent Charlie via query-time rule, got {results:?}"
     );
 }
 
@@ -852,8 +836,7 @@ async fn datalog_query_time_rules_with_id() {
 
     assert!(
         results.contains(&json!("ex:charlie")),
-        "Named query-time rule should work, got {:?}",
-        results
+        "Named query-time rule should work, got {results:?}"
     );
 }
 
@@ -909,8 +892,7 @@ async fn datalog_query_time_rules_multiple() {
     // Brian's aunt should be Holly (via mike, carol's brother, whose spouse is holly)
     assert!(
         results.contains(&json!("ex:holly")),
-        "Brian should have aunt Holly via chained query-time rules, got {:?}",
-        results
+        "Brian should have aunt Holly via chained query-time rules, got {results:?}"
     );
 }
 
@@ -961,18 +943,15 @@ async fn datalog_query_time_rules_with_filter() {
 
     assert!(
         results.contains(&json!("ex:alice")),
-        "Alice (65) should be a senior, got {:?}",
-        results
+        "Alice (65) should be a senior, got {results:?}"
     );
     assert!(
         results.contains(&json!("ex:charlie")),
-        "Charlie (70) should be a senior, got {:?}",
-        results
+        "Charlie (70) should be a senior, got {results:?}"
     );
     assert!(
         !results.contains(&json!("ex:bob")),
-        "Bob (45) should NOT be a senior, got {:?}",
-        results
+        "Bob (45) should NOT be a senior, got {results:?}"
     );
 }
 
@@ -1044,7 +1023,6 @@ async fn datalog_query_time_rules_merged_with_db_rules() {
     // brian -> uncle -> mike (from DB rule), mike -> spouse -> holly -> aunt (from query-time rule)
     assert!(
         results.contains(&json!("ex:holly")),
-        "Query-time aunt rule should chain with DB uncle rule. Got: {:?}",
-        results
+        "Query-time aunt rule should chain with DB uncle rule. Got: {results:?}"
     );
 }

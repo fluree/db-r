@@ -79,7 +79,7 @@ impl HttpRemoteClient {
         let normalized = if trimmed.ends_with("/fluree") {
             trimmed
         } else {
-            format!("{}/fluree", trimmed)
+            format!("{trimmed}/fluree")
         };
         Self {
             base_url: normalized,

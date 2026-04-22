@@ -637,11 +637,12 @@ mod tests {
         // Should be a TypedLiteral with xsd:float datatype
         if let Some(ComparableValue::TypedLiteral { dtc, .. }) = &result {
             assert_eq!(
-                dtc.as_ref().map(|d| d.datatype_iri()),
+                dtc.as_ref()
+                    .map(fluree_vocab::UnresolvedDatatypeConstraint::datatype_iri),
                 Some("http://www.w3.org/2001/XMLSchema#float")
             );
         } else {
-            panic!("Expected TypedLiteral, got {:?}", result);
+            panic!("Expected TypedLiteral, got {result:?}");
         }
     }
 

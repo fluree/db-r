@@ -18,7 +18,7 @@ fn expand_id(id: &str) -> String {
     if id.starts_with(MEM_NAMESPACE) {
         id.to_string()
     } else if let Some(local) = id.strip_prefix(MEM_PREFIX) {
-        format!("{}{}", MEM_NAMESPACE, local)
+        format!("{MEM_NAMESPACE}{local}")
     } else {
         id.to_string()
     }
@@ -27,7 +27,7 @@ fn expand_id(id: &str) -> String {
 /// Compact a full IRI back to `mem:` prefix form (canonical for Memory.id).
 fn compact_id(id: &str) -> String {
     if let Some(local) = id.strip_prefix(MEM_NAMESPACE) {
-        format!("{}{}", MEM_PREFIX, local)
+        format!("{MEM_PREFIX}{local}")
     } else {
         id.to_string()
     }
@@ -557,15 +557,14 @@ WHERE {{\n\
         // Apply tag filter
         for tag in &filter.tags {
             let tag = escape_sparql_string(tag);
-            where_clauses.push(format!("?id <https://ns.flur.ee/memory#tag> \"{}\"", tag));
+            where_clauses.push(format!("?id <https://ns.flur.ee/memory#tag> \"{tag}\""));
         }
 
         // Apply branch filter
         if let Some(branch) = &filter.branch {
             let branch = escape_sparql_string(branch);
             where_clauses.push(format!(
-                "?id <https://ns.flur.ee/memory#branch> \"{}\"",
-                branch
+                "?id <https://ns.flur.ee/memory#branch> \"{branch}\""
             ));
         }
 
@@ -703,7 +702,7 @@ WHERE {{\n\
                 if let Some(arr) = row.as_array() {
                     if let (Some(id), Some(score)) = (
                         arr.first().and_then(|v| v.as_str()),
-                        arr.get(1).and_then(|v| v.as_f64()),
+                        arr.get(1).and_then(serde_json::Value::as_f64),
                     ) {
                         pairs.push((id.to_string(), score));
                     }
@@ -898,7 +897,7 @@ fn extract_binding_value(binding: &Value, var: &str) -> Option<String> {
         .get(var)
         .and_then(|v| v.get("value").or(Some(v)))
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 fn merge_bindings_to_memory(id: &str, bindings: &[&Value]) -> Option<Memory> {

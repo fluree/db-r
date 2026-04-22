@@ -224,7 +224,7 @@ impl S3Storage {
     /// Convert a Fluree address to an S3 key
     fn to_key(&self, address: &str) -> std::result::Result<String, CoreError> {
         address_to_key(address, self.prefix.as_deref())
-            .map_err(|e| CoreError::storage(format!("Invalid address: {}", e)))
+            .map_err(|e| CoreError::storage(format!("Invalid address: {e}")))
     }
 
     /// Convert an S3 key to a Fluree address
@@ -284,7 +284,7 @@ impl StorageRead for S3Storage {
             .body
             .collect()
             .await
-            .map_err(|e| CoreError::io(format!("Failed to read S3 body: {}", e)))?
+            .map_err(|e| CoreError::io(format!("Failed to read S3 body: {e}")))?
             .into_bytes()
             .to_vec();
         let body_collect_elapsed_ms = body_collect_started.elapsed().as_millis() as u64;
@@ -331,7 +331,7 @@ impl StorageRead for S3Storage {
             .body
             .collect()
             .await
-            .map_err(|e| CoreError::io(format!("Failed to read S3 body: {}", e)))?
+            .map_err(|e| CoreError::io(format!("Failed to read S3 body: {e}")))?
             .into_bytes()
             .to_vec();
 
@@ -449,7 +449,7 @@ impl ContentAddressedWrite for S3Storage {
 impl StorageDelete for S3Storage {
     async fn delete(&self, address: &str) -> StorageExtResult<()> {
         let key = address_to_key(address, self.prefix.as_deref())
-            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
+            .map_err(|e| StorageExtError::io(format!("Invalid address: {e}")))?;
 
         self.client
             .delete_object()
@@ -542,7 +542,9 @@ impl StorageList for S3Storage {
 
         Ok(NsListResult {
             keys: addresses,
-            continuation_token: response.next_continuation_token().map(|s| s.to_string()),
+            continuation_token: response
+                .next_continuation_token()
+                .map(std::string::ToString::to_string),
             is_truncated: response.is_truncated().unwrap_or(false),
         })
     }
@@ -576,7 +578,7 @@ impl S3Storage {
         let etag_quoted = if etag.starts_with('"') {
             etag.to_string()
         } else {
-            format!("\"{}\"", etag)
+            format!("\"{etag}\"")
         };
 
         let result = self
@@ -618,7 +620,7 @@ impl S3Storage {
             .body
             .collect()
             .await
-            .map_err(|e| StorageExtError::io(format!("Failed to read S3 body: {}", e)))?
+            .map_err(|e| StorageExtError::io(format!("Failed to read S3 body: {e}")))?
             .into_bytes()
             .to_vec();
 
@@ -630,7 +632,7 @@ impl S3Storage {
 impl StorageCas for S3Storage {
     async fn insert(&self, address: &str, bytes: &[u8]) -> StorageExtResult<bool> {
         let key = address_to_key(address, self.prefix.as_deref())
-            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
+            .map_err(|e| StorageExtError::io(format!("Invalid address: {e}")))?;
         self.put_if_absent(&key, bytes).await
     }
 
@@ -640,7 +642,7 @@ impl StorageCas for S3Storage {
         T: Send,
     {
         let key = address_to_key(address, self.prefix.as_deref())
-            .map_err(|e| StorageExtError::io(format!("Invalid address: {}", e)))?;
+            .map_err(|e| StorageExtError::io(format!("Invalid address: {e}")))?;
 
         for attempt in 0..MAX_S3_CAS_RETRIES {
             // Read current value with ETag
@@ -684,8 +686,7 @@ impl StorageCas for S3Storage {
         }
 
         Err(StorageExtError::io(format!(
-            "CAS update failed after {} retries for {}",
-            MAX_S3_CAS_RETRIES, address
+            "CAS update failed after {MAX_S3_CAS_RETRIES} retries for {address}"
         )))
     }
 }
@@ -706,21 +707,18 @@ fn map_s3_error_core<E: std::fmt::Debug>(
         SdkError::ServiceError(service_err) => {
             let status = service_err.raw().status().as_u16();
             match status {
-                404 => CoreError::not_found(format!("Key not found: {}", key)),
-                403 => CoreError::storage(format!("Access denied for key '{}': {:?}", key, err)),
-                _ => CoreError::storage(format!(
-                    "S3 error for key '{}' (HTTP {}): {:?}",
-                    key, status, err
-                )),
+                404 => CoreError::not_found(format!("Key not found: {key}")),
+                403 => CoreError::storage(format!("Access denied for key '{key}': {err:?}")),
+                _ => {
+                    CoreError::storage(format!("S3 error for key '{key}' (HTTP {status}): {err:?}"))
+                }
             }
         }
-        SdkError::TimeoutError(_) => {
-            CoreError::io(format!("S3 timeout for key '{}': {:?}", key, err))
-        }
+        SdkError::TimeoutError(_) => CoreError::io(format!("S3 timeout for key '{key}': {err:?}")),
         SdkError::DispatchFailure(_) => {
-            CoreError::io(format!("S3 connection error for key '{}': {:?}", key, err))
+            CoreError::io(format!("S3 connection error for key '{key}': {err:?}"))
         }
-        _ => CoreError::storage(format!("S3 error for key '{}': {:?}", key, err)),
+        _ => CoreError::storage(format!("S3 error for key '{key}': {err:?}")),
     }
 }
 
@@ -735,28 +733,26 @@ fn map_s3_error_ext<E: std::fmt::Debug>(
         SdkError::ServiceError(service_err) => {
             let status = service_err.raw().status().as_u16();
             match status {
-                404 => StorageExtError::not_found(format!("Key not found: {}", key)),
-                401 => StorageExtError::unauthorized(format!("Unauthorized for key: {}", key)),
-                403 => StorageExtError::forbidden(format!("Access denied for key: {}", key)),
-                412 => StorageExtError::PreconditionFailed(format!("key: {}", key)),
+                404 => StorageExtError::not_found(format!("Key not found: {key}")),
+                401 => StorageExtError::unauthorized(format!("Unauthorized for key: {key}")),
+                403 => StorageExtError::forbidden(format!("Access denied for key: {key}")),
+                412 => StorageExtError::PreconditionFailed(format!("key: {key}")),
                 // Retryable server errors: throttling (429), server errors (500/502/503/504)
                 429 | 500 | 502 | 503 | 504 => StorageExtError::throttled(format!(
-                    "Retryable error for key '{}' (HTTP {})",
-                    key, status
+                    "Retryable error for key '{key}' (HTTP {status})"
                 )),
                 _ => StorageExtError::io(format!(
-                    "S3 error for key '{}' (HTTP {}): {:?}",
-                    key, status, err
+                    "S3 error for key '{key}' (HTTP {status}): {err:?}"
                 )),
             }
         }
         SdkError::TimeoutError(_) => {
-            StorageExtError::io(format!("S3 timeout for key '{}': {:?}", key, err))
+            StorageExtError::io(format!("S3 timeout for key '{key}': {err:?}"))
         }
         SdkError::DispatchFailure(_) => {
-            StorageExtError::io(format!("S3 connection error for key '{}': {:?}", key, err))
+            StorageExtError::io(format!("S3 connection error for key '{key}': {err:?}"))
         }
-        _ => StorageExtError::io(format!("S3 error for key '{}': {:?}", key, err)),
+        _ => StorageExtError::io(format!("S3 error for key '{key}': {err:?}")),
     }
 }
 
@@ -775,11 +771,11 @@ fn ext_error_to_core(err: StorageExtError) -> CoreError {
     match err {
         StorageExtError::Io(msg) => CoreError::io(msg),
         StorageExtError::NotFound(msg) => CoreError::not_found(msg),
-        StorageExtError::Unauthorized(msg) => CoreError::storage(format!("Unauthorized: {}", msg)),
-        StorageExtError::Forbidden(msg) => CoreError::storage(format!("Forbidden: {}", msg)),
-        StorageExtError::Throttled(msg) => CoreError::io(format!("Throttled: {}", msg)),
+        StorageExtError::Unauthorized(msg) => CoreError::storage(format!("Unauthorized: {msg}")),
+        StorageExtError::Forbidden(msg) => CoreError::storage(format!("Forbidden: {msg}")),
+        StorageExtError::Throttled(msg) => CoreError::io(format!("Throttled: {msg}")),
         StorageExtError::PreconditionFailed(msg) => {
-            CoreError::storage(format!("Precondition failed: {}", msg))
+            CoreError::storage(format!("Precondition failed: {msg}"))
         }
         StorageExtError::Other(msg) => CoreError::other(msg),
     }

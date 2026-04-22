@@ -34,9 +34,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("ICEBERG_TABLE").unwrap_or_else(|_| "openflights.airlines".to_string());
 
     println!("=== Iceberg REST Catalog Reader ===");
-    println!("Catalog URI: {}", catalog_uri);
-    println!("MinIO endpoint: {}", minio_endpoint);
-    println!("Table: {}", table_name);
+    println!("Catalog URI: {catalog_uri}");
+    println!("MinIO endpoint: {minio_endpoint}");
+    println!("Table: {table_name}");
 
     // Create REST catalog client (no auth for local Tabular catalog)
     let catalog_config = RestCatalogConfig {
@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 first_batch = false;
                 println!("\n=== Sample Data (first 5 rows) ===");
                 let col_names: Vec<_> = batch.schema.fields.iter().map(|f| &f.name).collect();
-                println!("Columns: {:?}", col_names);
+                println!("Columns: {col_names:?}");
                 println!(
                     "Field IDs: {:?}",
                     batch.schema.field_ids().collect::<Vec<_>>()
@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Column::TimestampTz(v) => ("TimestampTz", v.len()),
                         Column::Decimal { values, .. } => ("Decimal", values.len()),
                     };
-                    println!("  Col {}: {} (len={})", i, col_type, len);
+                    println!("  Col {i}: {col_type} (len={len})");
                 }
 
                 for row_idx in 0..batch.num_rows.min(5) {
@@ -177,14 +177,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         };
                         row_values.push(val);
                     }
-                    println!("  Row {}: {:?}", row_idx, row_values);
+                    println!("  Row {row_idx}: {row_values:?}");
                 }
             }
         }
     }
 
     println!("\n=== Summary ===");
-    println!("Total rows read: {}", total_rows);
+    println!("Total rows read: {total_rows}");
 
     Ok(())
 }

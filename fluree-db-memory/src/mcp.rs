@@ -182,8 +182,7 @@ impl MemoryToolService {
         // Auto-initialize if needed
         if let Err(e) = self.ensure_initialized().await {
             return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to initialize memory store: {}",
-                e
+                "Failed to initialize memory store: {e}"
             ))]));
         }
 
@@ -214,7 +213,7 @@ impl MemoryToolService {
             .map(|s| {
                 Severity::parse_str(s).ok_or_else(|| {
                     rmcp::ErrorData::invalid_params(
-                        format!("Invalid severity '{}'. Valid: must, should, prefer", s),
+                        format!("Invalid severity '{s}'. Valid: must, should, prefer"),
                         None,
                     )
                 })
@@ -246,7 +245,7 @@ impl MemoryToolService {
             .map(|s| {
                 Scope::parse_str(s).ok_or_else(|| {
                     rmcp::ErrorData::invalid_params(
-                        format!("Invalid scope '{}'. Valid: repo, user", s),
+                        format!("Invalid scope '{s}'. Valid: repo, user"),
                         None,
                     )
                 })
@@ -269,7 +268,7 @@ impl MemoryToolService {
         } else {
             ""
         };
-        let preview_line = format!("{}{}", preview, ellipsis);
+        let preview_line = format!("{preview}{ellipsis}");
         let recall_query = content.clone();
 
         let input = MemoryInput {
@@ -304,8 +303,7 @@ impl MemoryToolService {
             Err(e) => {
                 error!(error = %e, "Failed to store memory");
                 Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Failed to store memory: {}",
-                    e
+                    "Failed to store memory: {e}"
                 ))]))
             }
         }
@@ -325,8 +323,7 @@ impl MemoryToolService {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = self.ensure_initialized().await {
             return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to initialize memory store: {}",
-                e
+                "Failed to initialize memory store: {e}"
             ))]));
         }
 
@@ -335,7 +332,7 @@ impl MemoryToolService {
             .as_deref()
             .map(|s| {
                 MemoryKind::parse(s).ok_or_else(|| {
-                    rmcp::ErrorData::invalid_params(format!("Invalid memory kind '{}'", s), None)
+                    rmcp::ErrorData::invalid_params(format!("Invalid memory kind '{s}'"), None)
                 })
             })
             .transpose()?;
@@ -346,7 +343,7 @@ impl MemoryToolService {
             .map(|s| {
                 Scope::parse_str(s).ok_or_else(|| {
                     rmcp::ErrorData::invalid_params(
-                        format!("Invalid scope '{}'. Valid: repo, user", s),
+                        format!("Invalid scope '{s}'. Valid: repo, user"),
                         None,
                     )
                 })
@@ -381,8 +378,7 @@ impl MemoryToolService {
             Err(e) => {
                 error!(error = %e, query = %req.query, "BM25 search failed");
                 return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Failed to search memories: {}",
-                    e
+                    "Failed to search memories: {e}"
                 ))]));
             }
         };
@@ -411,7 +407,7 @@ impl MemoryToolService {
 
                 if after_offset.is_empty() {
                     let msg = if offset > 0 {
-                        format!("No more memories at offset={}.", offset)
+                        format!("No more memories at offset={offset}.")
                     } else {
                         "No relevant memories found. Tip: use specific topic keywords, not generic terms.".to_string()
                     };
@@ -463,8 +459,7 @@ impl MemoryToolService {
             Err(e) => {
                 error!(error = %e, "Failed to load current memories");
                 Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Failed to recall memories: {}",
-                    e
+                    "Failed to recall memories: {e}"
                 ))]))
             }
         }
@@ -484,8 +479,7 @@ impl MemoryToolService {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = self.ensure_initialized().await {
             return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to initialize memory store: {}",
-                e
+                "Failed to initialize memory store: {e}"
             ))]));
         }
 
@@ -509,15 +503,14 @@ impl MemoryToolService {
 
         match self.store.update(&req.id, update).await {
             Ok(id) => {
-                let mut text = format!("Updated: {}", id);
+                let mut text = format!("Updated: {id}");
                 if let Ok(Some(mem)) = self.store.get(&id).await {
                     text = serde_json::to_string_pretty(&format_json(&mem)).unwrap_or(text);
                 }
                 Ok(CallToolResult::success(vec![Content::text(text)]))
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to update memory: {}",
-                e
+                "Failed to update memory: {e}"
             ))])),
         }
     }
@@ -533,8 +526,7 @@ impl MemoryToolService {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = self.ensure_initialized().await {
             return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to initialize memory store: {}",
-                e
+                "Failed to initialize memory store: {e}"
             ))]));
         }
 
@@ -544,8 +536,7 @@ impl MemoryToolService {
                 req.id
             ))])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to forget memory: {}",
-                e
+                "Failed to forget memory: {e}"
             ))])),
         }
     }
@@ -561,8 +552,7 @@ impl MemoryToolService {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = self.ensure_initialized().await {
             return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to initialize memory store: {}",
-                e
+                "Failed to initialize memory store: {e}"
             ))]));
         }
 
@@ -575,8 +565,7 @@ impl MemoryToolService {
             Err(e) => {
                 error!(error = %e, "Failed to get memory status");
                 Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Failed to get memory status: {}",
-                    e
+                    "Failed to get memory status: {e}"
                 ))]))
             }
         }
@@ -593,8 +582,7 @@ impl MemoryToolService {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         if let Err(e) = self.ensure_initialized().await {
             return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to initialize memory store: {}",
-                e
+                "Failed to initialize memory store: {e}"
             ))]));
         }
 
@@ -608,8 +596,7 @@ impl MemoryToolService {
             Err(e) => {
                 error!(error = %e, query = %req.query, "SPARQL query failed");
                 Ok(CallToolResult::error(vec![Content::text(format!(
-                    "SPARQL query error: {}",
-                    e
+                    "SPARQL query error: {e}"
                 ))]))
             }
         }
@@ -645,14 +632,14 @@ impl MemoryToolService {
             info!("Memory store not initialized, initializing");
             self.store.initialize().await.map_err(|e| {
                 error!(error = %e, "Memory initialization failed");
-                format!("initialization failed: {}", e)
+                format!("initialization failed: {e}")
             })?;
             info!("Memory store initialized");
         }
         // Rebuild ledger from .ttl files if they've changed (e.g. git pull)
         self.store.ensure_synced().await.map_err(|e| {
             error!(error = %e, "File sync failed");
-            format!("file sync failed: {}", e)
+            format!("file sync failed: {e}")
         })?;
         Ok(())
     }

@@ -123,15 +123,14 @@ pub fn build_regex_with_flags(pattern: &str, flags: &str) -> Result<Regex> {
             }
             c => {
                 return Err(QueryError::InvalidFilter(format!(
-                    "Unknown regex flag: '{}'",
-                    c
+                    "Unknown regex flag: '{c}'"
                 )));
             }
         }
     }
     let re = builder
         .build()
-        .map_err(|e| QueryError::InvalidFilter(format!("Invalid regex: {}", e)))?;
+        .map_err(|e| QueryError::InvalidFilter(format!("Invalid regex: {e}")))?;
 
     // Cache for future use
     REGEX_CACHE.with(|cache| {
@@ -697,7 +696,7 @@ fn flake_value_to_datetime(
             )
         }
         FlakeValue::String(s) => DateTime::parse_from_rfc3339(s).ok().or_else(|| {
-            let with_time = format!("{}T00:00:00+00:00", s);
+            let with_time = format!("{s}T00:00:00+00:00");
             DateTime::parse_from_rfc3339(&with_time).ok()
         }),
         FlakeValue::Long(y) if dt_sid == Some(&datatypes.xsd_g_year) => {

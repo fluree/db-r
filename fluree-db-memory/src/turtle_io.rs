@@ -54,7 +54,7 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
     .unwrap();
 
     // mem:tag (sorted, repeated predicates)
-    let mut tags: Vec<&str> = mem.tags.iter().map(|t| t.as_str()).collect();
+    let mut tags: Vec<&str> = mem.tags.iter().map(std::string::String::as_str).collect();
     tags.sort();
     for tag in &tags {
         writeln!(s, "    mem:tag \"{}\" ;", escape_turtle_string(tag)).unwrap();
@@ -78,7 +78,11 @@ pub fn memory_to_turtle_block(mem: &Memory) -> String {
     }
 
     // mem:artifactRef (sorted, repeated predicates)
-    let mut refs: Vec<&str> = mem.artifact_refs.iter().map(|r| r.as_str()).collect();
+    let mut refs: Vec<&str> = mem
+        .artifact_refs
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
     refs.sort();
     for aref in &refs {
         writeln!(
@@ -324,7 +328,7 @@ pub fn normalize_unicode_quotes(s: &str) -> String {
         match ch {
             // Double quote variants → ASCII "
             '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' | '\u{00AB}' | '\u{00BB}' => {
-                out.push('"')
+                out.push('"');
             }
             // Single quote variants → ASCII '
             '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' => out.push('\''),
@@ -563,9 +567,7 @@ mod tests {
             let block = memory_to_turtle_block(&mem);
             assert!(
                 block.contains(&format!("a {expected_type}")),
-                "kind {:?} should produce type {}",
-                kind,
-                expected_type
+                "kind {kind:?} should produce type {expected_type}"
             );
         }
     }

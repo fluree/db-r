@@ -232,7 +232,7 @@ impl NamespaceRegistry {
     /// Blank nodes use the predefined `BLANK_NODE` namespace code and generate
     /// a unique local name in the format: `fdb-{unique_id}`
     pub fn blank_node_sid(&self, unique_id: &str) -> Sid {
-        let local = format!("{}-{}", BLANK_NODE_ID_PREFIX, unique_id);
+        let local = format!("{BLANK_NODE_ID_PREFIX}-{unique_id}");
         Sid::new(BLANK_NODE, local)
     }
 }
@@ -342,7 +342,7 @@ impl SharedNamespaceAllocator {
 
     /// Create a Sid for a blank node (no lock needed — BLANK_NODE is predefined).
     pub fn blank_node_sid(&self, unique_id: &str) -> Sid {
-        let local = format!("{}-{}", BLANK_NODE_ID_PREFIX, unique_id);
+        let local = format!("{BLANK_NODE_ID_PREFIX}-{unique_id}");
         Sid::new(BLANK_NODE, local)
     }
 
@@ -361,9 +361,9 @@ impl SharedNamespaceAllocator {
             } else {
                 // Should never happen — every code in the set was allocated
                 // through this allocator. Log and skip in release; panic in debug.
-                if cfg!(debug_assertions) {
-                    panic!("code {code} not found in shared allocator");
-                }
+                #[cfg(debug_assertions)]
+                panic!("code {code} not found in shared allocator");
+                #[cfg(not(debug_assertions))]
                 tracing::warn!(code, "namespace code not found in shared allocator");
             }
         }
@@ -372,7 +372,10 @@ impl SharedNamespaceAllocator {
 
     /// Look up the prefix string for a namespace code.
     pub fn get_prefix(&self, code: u16) -> Option<String> {
-        self.inner.read().get_prefix(code).map(|s| s.to_string())
+        self.inner
+            .read()
+            .get_prefix(code)
+            .map(std::string::ToString::to_string)
     }
 
     /// Synchronize codes from a `NamespaceRegistry` into this allocator.
@@ -482,7 +485,7 @@ impl WorkerCache {
 
     /// Create a Sid for a blank node (no lock needed).
     pub fn blank_node_sid(&self, unique_id: &str) -> Sid {
-        let local = format!("{}-{}", BLANK_NODE_ID_PREFIX, unique_id);
+        let local = format!("{BLANK_NODE_ID_PREFIX}-{unique_id}");
         Sid::new(BLANK_NODE, local)
     }
 
@@ -733,7 +736,7 @@ mod tests {
                     let mut cache = WorkerCache::new(alloc);
                     let mut sids = Vec::new();
                     for i in 0..100 {
-                        let iri = format!("http://thread{}.example.org/item{}", thread_id, i);
+                        let iri = format!("http://thread{thread_id}.example.org/item{i}");
                         sids.push(cache.sid_for_iri(&iri));
                     }
                     sids

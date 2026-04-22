@@ -12,7 +12,7 @@ use super::path::parse_property_path;
 
 use super::Verb;
 
-impl<'a> super::Parser<'a> {
+impl super::Parser<'_> {
     /// Parse a simple predicate (no property paths).
     pub(super) fn parse_simple_predicate(&mut self) -> Option<PredicateTerm> {
         // 'a' keyword (rdf:type)
@@ -267,9 +267,8 @@ impl<'a> super::Parser<'a> {
                             return Some(Literal::typed(value.as_ref(), dt, full_span));
                         }
                         return Some(Literal::string(value.as_ref(), span));
-                    } else {
-                        return Some(Literal::string(value.as_ref(), span));
                     }
+                    return Some(Literal::string(value.as_ref(), span));
                 }
             }
             TokenKind::Integer(n) => {

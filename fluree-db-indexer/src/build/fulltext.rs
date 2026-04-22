@@ -81,7 +81,7 @@ pub(crate) async fn build_and_upload_fulltext_arenas<C: ContentStore + ?Sized>(
         // fallback for untagged values.
         let bucket_tag = languages
             .resolve(lang_id)
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .unwrap_or_else(|| "en".to_string());
         let bucket_language = Language::from_bcp47(&bucket_tag);
         let analyzer = Analyzer::for_language(bucket_language);
@@ -197,7 +197,7 @@ impl StringLookup for crate::run_index::dict_merge::StringMergeResult {
         self.forward_entries
             .get(string_id as usize)
             .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 }
 
@@ -206,7 +206,7 @@ impl StringLookup for HashMap<u32, Vec<u8>> {
     fn lookup_string(&self, string_id: u32) -> Option<String> {
         self.get(&string_id)
             .and_then(|bytes| std::str::from_utf8(bytes).ok())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 }
 

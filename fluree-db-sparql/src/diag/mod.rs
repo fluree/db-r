@@ -354,7 +354,7 @@ impl<T> ParseOutput<T> {
 
     /// Check if there are any errors.
     pub fn has_errors(&self) -> bool {
-        self.diagnostics.iter().any(|d| d.is_error())
+        self.diagnostics.iter().any(Diagnostic::is_error)
     }
 
     /// Get just the errors.

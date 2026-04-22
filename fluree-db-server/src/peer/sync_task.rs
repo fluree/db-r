@@ -92,7 +92,10 @@ impl PeerSyncTask {
                             &graph_source_id,
                             record.index_t,
                             config_hash,
-                            record.index_id.as_ref().map(|id| id.to_string()),
+                            record
+                                .index_id
+                                .as_ref()
+                                .map(std::string::ToString::to_string),
                         )
                         .await;
 
@@ -278,8 +281,14 @@ impl PeerSyncTask {
                 &record.ledger_id,
                 record.commit_t,
                 record.index_t,
-                record.commit_head_id.as_ref().map(|id| id.to_string()),
-                record.index_head_id.as_ref().map(|id| id.to_string()),
+                record
+                    .commit_head_id
+                    .as_ref()
+                    .map(std::string::ToString::to_string),
+                record
+                    .index_head_id
+                    .as_ref()
+                    .map(std::string::ToString::to_string),
             )
             .await;
 

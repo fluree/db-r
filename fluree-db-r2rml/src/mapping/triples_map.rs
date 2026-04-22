@@ -83,7 +83,12 @@ impl TriplesMap {
         let mut columns: Vec<&str> = Vec::new();
 
         // Subject template columns
-        columns.extend(self.subject_map.template_columns.iter().map(|s| s.as_str()));
+        columns.extend(
+            self.subject_map
+                .template_columns
+                .iter()
+                .map(std::string::String::as_str),
+        );
 
         // Predicate-object map columns
         for pom in &self.predicate_object_maps {
@@ -123,7 +128,12 @@ impl TriplesMap {
         let mut columns: Vec<&str> = Vec::new();
 
         // Subject template columns are always needed
-        columns.extend(self.subject_map.template_columns.iter().map(|s| s.as_str()));
+        columns.extend(
+            self.subject_map
+                .template_columns
+                .iter()
+                .map(std::string::String::as_str),
+        );
 
         // Also include subject column if using rr:column instead of template
         if let Some(ref col) = self.subject_map.column {
@@ -181,7 +191,12 @@ impl TriplesMap {
         let mut columns: Vec<&str> = Vec::new();
 
         // Subject columns are ALWAYS required - without a subject, no triples at all
-        columns.extend(self.subject_map.template_columns.iter().map(|s| s.as_str()));
+        columns.extend(
+            self.subject_map
+                .template_columns
+                .iter()
+                .map(std::string::String::as_str),
+        );
         if let Some(ref col) = self.subject_map.column {
             columns.push(col.as_str());
         }
@@ -196,7 +211,7 @@ impl TriplesMap {
                     super::ObjectMap::Template {
                         columns: tmpl_cols, ..
                     } => {
-                        columns.extend(tmpl_cols.iter().map(|s| s.as_str()));
+                        columns.extend(tmpl_cols.iter().map(std::string::String::as_str));
                     }
                     super::ObjectMap::RefObjectMap(rom) => {
                         // Child join columns are required

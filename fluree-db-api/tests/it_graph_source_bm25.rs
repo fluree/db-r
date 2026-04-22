@@ -80,7 +80,10 @@ async fn bm25_search_returns_scored_results() {
     // Analyze query and score
     let analyzer = Analyzer::english_default();
     let query_terms = analyzer.analyze_to_strings("rust programming");
-    let term_refs: Vec<&str> = query_terms.iter().map(|s| s.as_str()).collect();
+    let term_refs: Vec<&str> = query_terms
+        .iter()
+        .map(std::string::String::as_str)
+        .collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let results = scorer.top_k(10);
 
@@ -103,8 +106,7 @@ async fn bm25_search_returns_scored_results() {
     // Verify rust docs (doc1, doc2) rank before python doc (doc3)
     assert!(
         doc1_pos.is_some() && doc2_pos.is_some() && doc3_pos.is_some(),
-        "expected all docs in results, got: {:?}",
-        ids
+        "expected all docs in results, got: {ids:?}"
     );
     assert!(
         doc1_pos.unwrap() < doc3_pos.unwrap(),
@@ -345,7 +347,7 @@ async fn bm25_recreate_after_drop() {
         .unwrap();
     let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("original");
-    let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+    let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let results = scorer.top_k(10);
     assert_eq!(results.len(), 2, "search should find 2 original docs");
@@ -385,7 +387,7 @@ async fn bm25_recreate_after_drop() {
 
     // Search for "additional" which only appears in the new doc
     let terms2 = analyzer.analyze_to_strings("additional");
-    let term_refs2: Vec<&str> = terms2.iter().map(|s| s.as_str()).collect();
+    let term_refs2: Vec<&str> = terms2.iter().map(std::string::String::as_str).collect();
     let scorer2 = Bm25Scorer::new(&idx2, &term_refs2);
     let results2 = scorer2.top_k(10);
     assert_eq!(
@@ -396,7 +398,7 @@ async fn bm25_recreate_after_drop() {
 
     // Also verify "original" still finds 2 docs
     let terms3 = analyzer.analyze_to_strings("original");
-    let term_refs3: Vec<&str> = terms3.iter().map(|s| s.as_str()).collect();
+    let term_refs3: Vec<&str> = terms3.iter().map(std::string::String::as_str).collect();
     let scorer3 = Bm25Scorer::new(&idx2, &term_refs3);
     let results3 = scorer3.top_k(10);
     assert_eq!(
@@ -450,7 +452,7 @@ async fn bm25_federated_query_via_provider() {
     // Test 2: Search for "rust programming" returns scored results
     let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust programming");
-    let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+    let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let results = scorer.top_k(10);
 
@@ -480,9 +482,7 @@ async fn bm25_federated_query_via_provider() {
         let max_rust = rust_scores.iter().copied().fold(0.0_f64, f64::max);
         assert!(
             max_rust >= py_score,
-            "Rust docs should score >= Python doc: rust_max={}, python={}",
-            max_rust,
-            py_score
+            "Rust docs should score >= Python doc: rust_max={max_rust}, python={py_score}"
         );
     }
 
@@ -505,7 +505,7 @@ async fn bm25_federated_query_via_provider() {
         // Should have exactly one result (one author per doc)
         assert_eq!(result.batches.len(), 1, "expected one batch for doc query");
         let batch = &result.batches[0];
-        assert!(!batch.is_empty(), "expected author result for {}", iri);
+        assert!(!batch.is_empty(), "expected author result for {iri}");
     }
 }
 
@@ -570,7 +570,7 @@ async fn bm25_file_backed_storage() {
 
     let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust");
-    let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+    let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let results = scorer.top_k(10);
 
@@ -586,7 +586,7 @@ async fn bm25_file_backed_storage() {
 
     // Search for python should find 1 result
     let terms2 = analyzer.analyze_to_strings("python");
-    let term_refs2: Vec<&str> = terms2.iter().map(|s| s.as_str()).collect();
+    let term_refs2: Vec<&str> = terms2.iter().map(std::string::String::as_str).collect();
     let scorer2 = Bm25Scorer::new(&idx, &term_refs2);
     let results2 = scorer2.top_k(10);
     assert_eq!(results2.len(), 1, "expected 1 result for 'python'");
@@ -659,7 +659,7 @@ async fn bm25_query_connection_with_idx_pattern() {
         .query_connection_with_bm25(&regular_query)
         .await
         .expect("query_connection_with_bm25 failed for regular query");
-    let total_results: usize = result.batches.iter().map(|b| b.len()).sum();
+    let total_results: usize = result.batches.iter().map(fluree_db_api::Batch::len).sum();
     assert_eq!(total_results, 3, "expected 3 results from regular query");
 
     // Test 2: Execute f:* pattern through query_connection_with_bm25
@@ -691,11 +691,14 @@ async fn bm25_query_connection_with_idx_pattern() {
         .expect("query_connection_with_bm25 failed for f:* query");
 
     // Should have results (2 rust docs)
-    let idx_total: usize = idx_result.batches.iter().map(|b| b.len()).sum();
+    let idx_total: usize = idx_result
+        .batches
+        .iter()
+        .map(fluree_db_api::Batch::len)
+        .sum();
     assert!(
         idx_total >= 2,
-        "expected at least 2 rust docs in f:* query results, got {}",
-        idx_total
+        "expected at least 2 rust docs in f:* query results, got {idx_total}"
     );
 
     // Verify scores are present (VarRegistry uses "?score" with the ? prefix)
@@ -716,7 +719,7 @@ async fn bm25_query_connection_with_idx_pattern() {
     // Test 4: Direct search via provider (validates BM25 scorer)
     let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust");
-    let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+    let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let search_results = scorer.top_k(10);
     assert_eq!(
@@ -767,7 +770,7 @@ async fn bm25_federated_query_with_aggregation() {
         .unwrap();
     let analyzer = Analyzer::english_default();
     let terms = analyzer.analyze_to_strings("rust");
-    let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+    let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
     let scorer = Bm25Scorer::new(&idx, &term_refs);
     let search_results = scorer.top_k(10);
     assert_eq!(

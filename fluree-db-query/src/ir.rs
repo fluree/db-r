@@ -1212,7 +1212,7 @@ impl ServicePattern {
 
     /// Get all variables referenced by this pattern
     pub fn variables(&self) -> Vec<VarId> {
-        let mut vars: Vec<VarId> = self.patterns.iter().flat_map(|p| p.variables()).collect();
+        let mut vars: Vec<VarId> = self.patterns.iter().flat_map(Pattern::variables).collect();
         if let ServiceEndpoint::Var(v) = &self.endpoint {
             vars.push(*v);
         }
@@ -1345,10 +1345,10 @@ impl Pattern {
         match self {
             Pattern::Triple(tp) => tp.variables(),
             Pattern::Filter(expr) => expr.variables(),
-            Pattern::Optional(inner) => inner.iter().flat_map(|p| p.variables()).collect(),
+            Pattern::Optional(inner) => inner.iter().flat_map(Pattern::variables).collect(),
             Pattern::Union(branches) => branches
                 .iter()
-                .flat_map(|branch| branch.iter().flat_map(|p| p.variables()))
+                .flat_map(|branch| branch.iter().flat_map(Pattern::variables))
                 .collect(),
             Pattern::Bind { var, expr } => {
                 let mut vars = expr.variables();
@@ -1357,7 +1357,7 @@ impl Pattern {
             }
             Pattern::Values { vars, .. } => vars.clone(),
             Pattern::Minus(inner) | Pattern::Exists(inner) | Pattern::NotExists(inner) => {
-                inner.iter().flat_map(|p| p.variables()).collect()
+                inner.iter().flat_map(Pattern::variables).collect()
             }
             Pattern::PropertyPath(pp) => pp.variables(),
             Pattern::Subquery(sq) => sq.variables(),
@@ -1369,7 +1369,7 @@ impl Pattern {
             Pattern::Graph { name, patterns } => {
                 let mut vars = patterns
                     .iter()
-                    .flat_map(|p| p.variables())
+                    .flat_map(Pattern::variables)
                     .collect::<Vec<_>>();
                 if let GraphName::Var(v) = name {
                     vars.push(*v);
@@ -1625,9 +1625,9 @@ impl Expression {
         match self {
             Expression::Var(v) => vec![*v],
             Expression::Const(_) => vec![],
-            Expression::Call { args, .. } => args.iter().flat_map(|a| a.variables()).collect(),
+            Expression::Call { args, .. } => args.iter().flat_map(Expression::variables).collect(),
             Expression::Exists { patterns, .. } => {
-                patterns.iter().flat_map(|p| p.variables()).collect()
+                patterns.iter().flat_map(Pattern::variables).collect()
             }
         }
     }
@@ -1701,7 +1701,7 @@ impl Expression {
                         ))
                 }
                 // AND of range-safe expressions is range-safe
-                Function::And => args.iter().all(|e| e.is_range_safe()),
+                Function::And => args.iter().all(Expression::is_range_safe),
                 // Everything else is NOT range-safe
                 _ => false,
             },

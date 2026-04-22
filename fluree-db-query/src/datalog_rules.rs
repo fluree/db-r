@@ -66,7 +66,7 @@ pub async fn extract_datalog_rules(db: GraphDbRef<'_>) -> Result<DatalogRuleSet>
             },
         )
         .await
-        .map_err(|e| QueryError::Internal(format!("Failed to query for rules: {}", e)))?
+        .map_err(|e| QueryError::Internal(format!("Failed to query for rules: {e}")))?
         .into_iter()
         .filter(|f| f.op) // Only active assertions
         .collect();
@@ -122,7 +122,7 @@ fn parse_query_time_rule(
         let rule_id = if let Some(id_str) = json.get("@id").and_then(|v| v.as_str()) {
             Sid::new(0, id_str)
         } else {
-            Sid::new(0, format!("_:query_rule_{}", index))
+            Sid::new(0, format!("_:query_rule_{index}"))
         };
 
         return parse_rule_definition(&rule_id, rule_value, snapshot);
@@ -130,7 +130,7 @@ fn parse_query_time_rule(
 
     // Direct rule format
     // Generate a synthetic rule ID
-    let rule_id = Sid::new(0, format!("_:query_rule_{}", index));
+    let rule_id = Sid::new(0, format!("_:query_rule_{index}"));
     parse_rule_definition(&rule_id, json, snapshot)
 }
 
@@ -235,8 +235,7 @@ fn parse_filter_expression(arr: &[JsonValue]) -> Result<Option<RuleFilter>> {
     let expr = expr.trim();
     if !expr.starts_with('(') || !expr.ends_with(')') {
         return Err(QueryError::InvalidQuery(format!(
-            "Invalid filter expression: {}",
-            expr
+            "Invalid filter expression: {expr}"
         )));
     }
 
@@ -245,8 +244,7 @@ fn parse_filter_expression(arr: &[JsonValue]) -> Result<Option<RuleFilter>> {
 
     if parts.len() < 2 {
         return Err(QueryError::InvalidQuery(format!(
-            "Filter expression needs at least operator and one argument: {}",
-            expr
+            "Filter expression needs at least operator and one argument: {expr}"
         )));
     }
 
@@ -260,8 +258,7 @@ fn parse_filter_expression(arr: &[JsonValue]) -> Result<Option<RuleFilter>> {
         ">=" => CompareOp::GreaterThanOrEqual,
         _ => {
             return Err(QueryError::InvalidQuery(format!(
-                "Unknown filter operator: {}",
-                op_str
+                "Unknown filter operator: {op_str}"
             )));
         }
     };
@@ -272,8 +269,7 @@ fn parse_filter_expression(arr: &[JsonValue]) -> Result<Option<RuleFilter>> {
         parse_filter_term(parts[2])?
     } else {
         return Err(QueryError::InvalidQuery(format!(
-            "Comparison filter needs two arguments: {}",
-            expr
+            "Comparison filter needs two arguments: {expr}"
         )));
     };
 
@@ -458,7 +454,7 @@ fn parse_term(
             } else if let Some(f) = n.as_f64() {
                 Ok(RuleTerm::Value(RuleValue::Double(f)))
             } else {
-                Err(QueryError::InvalidQuery(format!("Invalid number: {}", n)))
+                Err(QueryError::InvalidQuery(format!("Invalid number: {n}")))
             }
         }
         JsonValue::Bool(b) => Ok(RuleTerm::Value(RuleValue::Boolean(*b))),
@@ -476,8 +472,7 @@ fn parse_term(
             }
         }
         _ => Err(QueryError::InvalidQuery(format!(
-            "Invalid term value: {:?}",
-            value
+            "Invalid term value: {value:?}"
         ))),
     }
 }
@@ -512,7 +507,7 @@ fn expand_iri(compact: &str, context: &JsonValue) -> Result<String> {
 
         if let JsonValue::Object(ctx) = context {
             if let Some(JsonValue::String(ns)) = ctx.get(prefix) {
-                return Ok(format!("{}{}", ns, local));
+                return Ok(format!("{ns}{local}"));
             }
         }
     }
@@ -526,7 +521,7 @@ fn resolve_iri(iri: &str, snapshot: &LedgerSnapshot) -> Result<Sid> {
     // Use the database's IRI encoding
     snapshot
         .encode_iri(iri)
-        .ok_or_else(|| QueryError::InvalidQuery(format!("Failed to encode IRI '{}'", iri)))
+        .ok_or_else(|| QueryError::InvalidQuery(format!("Failed to encode IRI '{iri}'")))
 }
 
 // ============================================================================
@@ -719,7 +714,7 @@ async fn match_pattern_with_bindings(
     let flakes: Vec<Flake> = db
         .range(index_type, RangeTest::Eq, range_match)
         .await
-        .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {}", e)))?
+        .map_err(|e| QueryError::Internal(format!("Pattern matching failed: {e}")))?
         .into_iter()
         .filter(|f| {
             if !f.op {
@@ -797,8 +792,7 @@ fn resolve_term_with_bindings(
                 match binding {
                     BindingValue::Sid(sid) => Ok((Some(sid.clone()), None)),
                     _ => Err(QueryError::InvalidQuery(format!(
-                        "Variable {} bound to non-SID value in subject/predicate position",
-                        var
+                        "Variable {var} bound to non-SID value in subject/predicate position"
                     ))),
                 }
             } else {
@@ -887,7 +881,7 @@ fn flake_value_to_binding(val: &FlakeValue) -> BindingValue {
         FlakeValue::DateTime(dt) => BindingValue::String(dt.to_string()),
         FlakeValue::Date(d) => BindingValue::String(d.to_string()),
         FlakeValue::Time(t) => BindingValue::String(t.to_string()),
-        FlakeValue::Vector(v) => BindingValue::String(format!("{:?}", v)),
+        FlakeValue::Vector(v) => BindingValue::String(format!("{v:?}")),
         FlakeValue::Null => BindingValue::String("null".to_string()),
         FlakeValue::GYear(v) => BindingValue::String(v.to_string()),
         FlakeValue::GYearMonth(v) => BindingValue::String(v.to_string()),
@@ -1147,7 +1141,7 @@ pub async fn execute_datalog_rules_with_query_rules(
 /// Wrapper to use a `&dyn OverlayProvider` as an owned `OverlayProvider`
 struct OverlayRef<'a>(&'a dyn OverlayProvider);
 
-impl<'a> OverlayProvider for OverlayRef<'a> {
+impl OverlayProvider for OverlayRef<'_> {
     fn as_any(&self) -> &dyn std::any::Any {
         self.0.as_any()
     }
@@ -1167,7 +1161,7 @@ impl<'a> OverlayProvider for OverlayRef<'a> {
         callback: &mut dyn FnMut(&Flake),
     ) {
         self.0
-            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback)
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback);
     }
 }
 

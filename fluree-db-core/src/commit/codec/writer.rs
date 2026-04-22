@@ -120,7 +120,7 @@ pub fn write_commit(
     let total_size = HEADER_LEN
         + envelope_bytes.len()
         + ops_section.len()
-        + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+        + dict_bytes.iter().map(std::vec::Vec::len).sum::<usize>()
         + FOOTER_LEN
         + pre_sig_block_len as usize;
     let mut output = Vec::with_capacity(total_size);

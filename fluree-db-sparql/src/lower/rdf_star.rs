@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use super::{LowerError, LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     /// Lower a BGP with special handling for RDF-star quoted triples.
     ///
     /// When a triple pattern has a quoted triple as subject and a metadata
@@ -93,8 +93,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
                         // Other predicates on quoted triples are not supported
                         return Err(LowerError::not_implemented(
                             format!(
-                                "RDF-star quoted triple with predicate '{}' (only f:t and f:op are supported)",
-                                predicate_iri
+                                "RDF-star quoted triple with predicate '{predicate_iri}' (only f:t and f:op are supported)"
                             ),
                             tp.subject.span(),
                         ));

@@ -107,7 +107,7 @@ async fn reload_detects_forward_namespace_conflict() {
     // Verify store contains the same namespace code as the snapshot.
     let store_prefix = store_ref.namespace_codes().get(&ex_code);
     assert_eq!(
-        store_prefix.map(|s| s.as_str()),
+        store_prefix.map(std::string::String::as_str),
         Some(ex_prefix),
         "store and snapshot should agree on ns code {ex_code}"
     );
@@ -117,8 +117,7 @@ async fn reload_detects_forward_namespace_conflict() {
         if let Some(store_p) = store_ref.namespace_codes().get(&code) {
             assert_eq!(
                 store_p, prefix,
-                "namespace code {code}: store has {:?}, snapshot has {:?}",
-                store_p, prefix
+                "namespace code {code}: store has {store_p:?}, snapshot has {prefix:?}"
             );
         }
         // Note: some snapshot codes (post-index novelty) may not be in the store yet —
@@ -151,17 +150,16 @@ async fn reload_after_index_preserves_namespace_consistency() {
         if let Some(snap_prefix) = ledger.snapshot.namespaces().get(code) {
             assert_eq!(
                 store_prefix, snap_prefix,
-                "code {code}: store={:?} snapshot={:?}",
-                store_prefix, snap_prefix
+                "code {code}: store={store_prefix:?} snapshot={snap_prefix:?}"
             );
         }
     }
 
     // Verify queries work (end-to-end consistency).
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?name WHERE { ex:thing1 ex:name ?name }
-    "#;
+    ";
     let result = support::query_sparql(&fluree2, &ledger, sparql)
         .await
         .unwrap()

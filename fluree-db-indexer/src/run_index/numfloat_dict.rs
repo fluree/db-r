@@ -65,7 +65,7 @@ pub fn read_numeric_shapes(path: &std::path::Path) -> io::Result<HashMap<u32, Nu
         let p_id: u32 = key.parse().map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("invalid p_id key '{}': {}", key, e),
+                format!("invalid p_id key '{key}': {e}"),
             )
         })?;
         let shape = match val.as_str() {
@@ -75,7 +75,7 @@ pub fn read_numeric_shapes(path: &std::path::Path) -> io::Result<HashMap<u32, Nu
             other => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unknown numeric shape '{}' for p_id={}", other, p_id),
+                    format!("unknown numeric shape '{other}' for p_id={p_id}"),
                 ))
             }
         };

@@ -19,10 +19,10 @@ fn extract_names(rows: &serde_json::Value) -> Vec<String> {
         .iter()
         .map(|r| {
             r.as_str()
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .or_else(|| {
                     r.as_array()
-                        .and_then(|a| a[0].as_str().map(|s| s.to_string()))
+                        .and_then(|a| a[0].as_str().map(std::string::ToString::to_string))
                 })
                 .expect("each row should contain a string value")
         })

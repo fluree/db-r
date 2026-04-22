@@ -20,7 +20,7 @@
 use std::io;
 use std::path::Path;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::run_index::vocab::vocab_file::{StringVocabWriter, SubjectVocabWriter};
@@ -60,7 +60,7 @@ impl ChunkSubjectDict {
     /// Create with a pre-allocated capacity hint (number of expected unique subjects).
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            reverse: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            reverse: FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher),
             forward: Vec::with_capacity(capacity),
             next_id: 0,
         }
@@ -219,7 +219,7 @@ impl ChunkStringDict {
     /// Create with a pre-allocated capacity hint.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            reverse: FxHashMap::with_capacity_and_hasher(capacity, Default::default()),
+            reverse: FxHashMap::with_capacity_and_hasher(capacity, FxBuildHasher),
             forward: Vec::with_capacity(capacity),
             next_id: 0,
         }

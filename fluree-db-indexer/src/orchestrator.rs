@@ -501,7 +501,7 @@ impl IndexerHandle {
     /// Check current status for a ledger
     pub async fn status(&self, ledger_id: &str) -> Option<IndexStatusSnapshot> {
         let states = self.states.lock().await;
-        states.get(ledger_id).map(|s| s.snapshot())
+        states.get(ledger_id).map(LedgerIndexState::snapshot)
     }
 
     /// Check if a ledger has pending or in-progress work
@@ -629,7 +629,7 @@ impl BackgroundIndexerWorker {
             let wait_result = if let Some(deadline) = retry_deadline {
                 tokio::select! {
                     result = self.tick_rx.changed() => result,
-                    _ = tokio::time::sleep_until(deadline) => Ok(()),
+                    () = tokio::time::sleep_until(deadline) => Ok(()),
                 }
             } else {
                 self.tick_rx.changed().await
@@ -1220,13 +1220,12 @@ where
 
             // Build final error message
             let error = match (&publish_error, &apply_result) {
-                (Some(pe), Ok(_)) => Some(format!("index applied but publish failed: {}", pe)),
-                (None, Err(ae)) => Some(format!("index published but apply_index failed: {}", ae)),
+                (Some(pe), Ok(())) => Some(format!("index applied but publish failed: {pe}")),
+                (None, Err(ae)) => Some(format!("index published but apply_index failed: {ae}")),
                 (Some(pe), Err(ae)) => Some(format!(
-                    "publish failed: {}; apply_index also failed: {}",
-                    pe, ae
+                    "publish failed: {pe}; apply_index also failed: {ae}"
                 )),
-                (None, Ok(_)) => None,
+                (None, Ok(())) => None,
             };
 
             (
@@ -1388,7 +1387,7 @@ mod tests {
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
-            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+            + dict_bytes.iter().map(std::vec::Vec::len).sum::<usize>()
             + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 
@@ -1920,7 +1919,7 @@ mod tests {
 
         let completion = handle.trigger("test:main", 1).await;
         // Should not panic
-        let debug_str = format!("{:?}", completion);
+        let debug_str = format!("{completion:?}");
         assert!(debug_str.contains("IndexCompletion"));
     }
 
@@ -2071,7 +2070,7 @@ mod embedded_tests {
         let total_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
-            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+            + dict_bytes.iter().map(std::vec::Vec::len).sum::<usize>()
             + FOOTER_LEN;
         let mut blob = vec![0u8; total_len];
 

@@ -162,7 +162,7 @@ async fn manual_indexing_disabled_mode_then_trigger_updates_nameservice_and_load
                 .await
                 .expect("query");
             let json_rows = result.to_jsonld(&loaded.snapshot).expect("jsonld");
-            assert_eq!(json_rows.as_array().map(|a| a.len()), Some(10));
+            assert_eq!(json_rows.as_array().map(std::vec::Vec::len), Some(10));
         })
         .await;
 }
@@ -250,7 +250,7 @@ async fn indexing_coalesces_multiple_commits_and_latest_root_is_queryable() {
                 }
                 fluree_db_api::IndexOutcome::Failed(e) => panic!("indexing failed: {e}"),
                 fluree_db_api::IndexOutcome::Cancelled => panic!("indexing cancelled"),
-            };
+            }
 
             // Load via fluree.ledger() which attaches BinaryRangeProvider
             let ledger_loaded = fluree.ledger(ledger_id).await.expect("ledger load");
@@ -348,7 +348,7 @@ async fn file_based_indexing_then_new_connection_loads_and_queries() {
                 .await
                 .expect("query");
             let json_rows = result.to_jsonld(&loaded.snapshot).expect("jsonld");
-            assert_eq!(json_rows.as_array().map(|a| a.len()), Some(20));
+            assert_eq!(json_rows.as_array().map(std::vec::Vec::len), Some(20));
         })
         .await;
 }
@@ -999,7 +999,7 @@ async fn reindex_default_from_t_includes_all_data() {
                 &idx_cfg,
             )
             .await
-            .unwrap_or_else(|_| panic!("insert tx{}", i))
+            .unwrap_or_else(|_| panic!("insert tx{i}"))
             .ledger;
     }
     assert_eq!(ledger.t(), 3, "Should be at t=3 after 3 transactions");

@@ -131,11 +131,7 @@ impl NsFileV2 {
     pub fn to_config_value(&self) -> ConfigValue {
         let has_default_ctx = self.default_context_cid.is_some();
         let v = self.config_v.unwrap_or_else(|| {
-            if has_default_ctx || self.config_meta.is_some() || self.config_cid.is_some() {
-                1
-            } else {
-                0
-            }
+            i64::from(has_default_ctx || self.config_meta.is_some() || self.config_cid.is_some())
         });
 
         let resolved_ctx = self
@@ -167,7 +163,10 @@ impl NsFileV2 {
     /// Overwrite commit head and index head from a snapshot.
     /// Used by `reset_head` implementations to roll back after a failed operation.
     pub(crate) fn apply_snapshot(&mut self, snapshot: &crate::NsRecordSnapshot) {
-        self.commit_cid = snapshot.commit_head_id.as_ref().map(|c| c.to_string());
+        self.commit_cid = snapshot
+            .commit_head_id
+            .as_ref()
+            .map(std::string::ToString::to_string);
         self.t = snapshot.commit_t;
         self.index = snapshot.index_head_id.as_ref().map(|id| IndexRef {
             cid: Some(id.to_string()),

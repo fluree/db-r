@@ -199,7 +199,12 @@ mod tests {
         }
 
         fn estimated_rows(&self) -> Option<usize> {
-            Some(self.batches.iter().map(|b| b.len()).sum())
+            Some(
+                self.batches
+                    .iter()
+                    .map(super::super::binding::Batch::len)
+                    .sum(),
+            )
         }
     }
 

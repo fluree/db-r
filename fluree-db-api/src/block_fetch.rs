@@ -317,7 +317,9 @@ pub fn decode_leaf_block(
                 }
             };
 
-            let lang = store.resolve_lang_tag(o_type).map(|s| s.to_string());
+            let lang = store
+                .resolve_lang_tag(o_type)
+                .map(std::string::ToString::to_string);
             let meta = if lang.is_some() || o_i != u32::MAX {
                 Some(fluree_db_core::FlakeMeta {
                     lang,
@@ -372,7 +374,7 @@ pub async fn apply_policy_filter(
     }
 
     let opts = QueryConnectionOptions {
-        identity: identity.map(|s| s.to_string()),
+        identity: identity.map(std::string::ToString::to_string),
         policy_class: policy_class.map(|c| vec![c.to_string()]),
         ..Default::default()
     };

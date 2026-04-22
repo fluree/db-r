@@ -23,7 +23,6 @@ pub async fn subscribe() -> Result<Json<JsonValue>> {
 /// Not yet implemented - returns 501.
 pub async fn remote(Path(path): Path<String>) -> Result<Json<JsonValue>> {
     Err(ServerError::not_implemented(format!(
-        "Remote resource fetch not yet implemented: {}",
-        path
+        "Remote resource fetch not yet implemented: {path}"
     )))
 }

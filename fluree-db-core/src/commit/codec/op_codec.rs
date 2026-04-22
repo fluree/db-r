@@ -164,7 +164,7 @@ fn encode_object(
         }
         FlakeValue::Boolean(b) => {
             buf.push(OTag::Boolean as u8);
-            buf.push(if *b { 1 } else { 0 });
+            buf.push(u8::from(*b));
         }
         FlakeValue::DateTime(dt) => {
             buf.push(OTag::DateTime as u8);
@@ -273,7 +273,7 @@ fn encode_len_prefixed_display(value: &impl std::fmt::Display, buf: &mut Vec<u8>
         }
     }
     // Display::fmt is infallible for our temporal/numeric types.
-    write!(VecWriter(buf), "{}", value).expect("Display::fmt failed");
+    write!(VecWriter(buf), "{value}").expect("Display::fmt failed");
 
     let data_len = buf.len() - data_start;
     if data_len < 128 {
@@ -285,7 +285,7 @@ fn encode_len_prefixed_display(value: &impl std::fmt::Display, buf: &mut Vec<u8>
         encode_varint(data_len as u64, &mut varint_buf);
         let extra = varint_buf.len() - 1; // how many extra bytes beyond our 1-byte placeholder
                                           // Make room by inserting `extra` bytes at data_start.
-        buf.splice(len_pos..len_pos + 1, varint_buf);
+        buf.splice(len_pos..=len_pos, varint_buf);
         // Data was shifted by `extra` bytes, which splice handles automatically.
         let _ = extra; // splice already handled the shift
     }
@@ -300,7 +300,7 @@ fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, Commi
     let len = decode_varint(data, pos)? as usize;
     let bytes = read_exact(data, pos, len)?;
     std::str::from_utf8(bytes)
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .map_err(|e| CommitCodecError::InvalidOp(format!("invalid UTF-8: {e}")))
 }
 
@@ -308,9 +308,8 @@ fn decode_len_prefixed_str(data: &[u8], pos: &mut usize) -> Result<String, Commi
 /// exceeds `u16::MAX`.
 fn decode_ns_code(data: &[u8], pos: &mut usize) -> Result<u16, CommitCodecError> {
     let raw = decode_varint(data, pos)?;
-    u16::try_from(raw).map_err(|_| {
-        CommitCodecError::InvalidOp(format!("namespace code {} exceeds u16::MAX", raw))
-    })
+    u16::try_from(raw)
+        .map_err(|_| CommitCodecError::InvalidOp(format!("namespace code {raw} exceeds u16::MAX")))
 }
 
 /// Decode a single op from `data` starting at `*pos`, returning a `Flake`.
@@ -376,8 +375,7 @@ pub fn decode_op(
         let raw = decode_varint(data, pos)?;
         if raw > i32::MAX as u64 {
             return Err(CommitCodecError::InvalidOp(format!(
-                "list index {} exceeds i32::MAX",
-                raw
+                "list index {raw} exceeds i32::MAX"
             )));
         }
         Some(raw as i32)
@@ -575,7 +573,7 @@ mod tests {
                 assert_eq!(sid.namespace_code, 101);
                 assert_eq!(sid.name.as_ref(), "Bob");
             }
-            other => panic!("expected Ref, got {:?}", other),
+            other => panic!("expected Ref, got {other:?}"),
         }
     }
 
@@ -680,7 +678,7 @@ mod tests {
                 assert!((v[1] - 2.5).abs() < f64::EPSILON);
                 assert!((v[2] - (-3.7)).abs() < f64::EPSILON);
             }
-            other => panic!("expected Vector, got {:?}", other),
+            other => panic!("expected Vector, got {other:?}"),
         }
     }
 

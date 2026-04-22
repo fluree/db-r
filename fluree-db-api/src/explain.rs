@@ -43,7 +43,7 @@ fn term_to_user_string(term: &Term, vars: &VarRegistry, compactor: &IriCompactor
         Term::Iri(iri) => compactor.compact_vocab_iri(iri),
         Term::Value(v) => match v {
             fluree_db_core::FlakeValue::String(s) => s.clone(),
-            _ => format!("{:?}", v),
+            _ => format!("{v:?}"),
         },
     }
 }
@@ -264,7 +264,7 @@ fn explain_from_parsed(
         .map(|s| StatsView::from_db_stats_with_namespaces(s, snapshot.namespaces()));
     let stats_available = stats_view
         .as_ref()
-        .map(|s| s.has_property_stats())
+        .map(fluree_db_core::StatsView::has_property_stats)
         .unwrap_or(false);
     let execution_hints = explain_execution_hints(&parsed.patterns, stats_view.as_ref());
 

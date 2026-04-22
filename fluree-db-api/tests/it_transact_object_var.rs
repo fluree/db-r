@@ -66,8 +66,8 @@ async fn object_var_parsing_update_opt() {
                 object_var_parsing: Some(true),
                 ..Default::default()
             },
-            Default::default(),
-            &Default::default(),
+            fluree_db_transact::CommitOpts::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .unwrap()
@@ -93,8 +93,8 @@ async fn object_var_parsing_update_opt() {
                 object_var_parsing: Some(false),
                 ..Default::default()
             },
-            Default::default(),
-            &Default::default(),
+            fluree_db_transact::CommitOpts::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .unwrap()
@@ -127,8 +127,8 @@ async fn update_with_object_var_parsing_false_treats_bare_var_as_literal() {
                 object_var_parsing: Some(false),
                 ..Default::default()
             },
-            Default::default(),
-            &Default::default(),
+            fluree_db_transact::CommitOpts::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .unwrap()
@@ -174,8 +174,8 @@ async fn update_explicit_variable_map_parses_when_flag_false_and_bound() {
                 object_var_parsing: Some(false),
                 ..Default::default()
             },
-            Default::default(),
-            &Default::default(),
+            fluree_db_transact::CommitOpts::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .unwrap()
@@ -221,8 +221,8 @@ async fn update_id_var_still_parses_when_flag_false() {
                 object_var_parsing: Some(false),
                 ..Default::default()
             },
-            Default::default(),
-            &Default::default(),
+            fluree_db_transact::CommitOpts::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .unwrap()
@@ -269,8 +269,8 @@ async fn update_predicate_var_still_parses_when_flag_false() {
                 object_var_parsing: Some(false),
                 ..Default::default()
             },
-            Default::default(),
-            &Default::default(),
+            fluree_db_transact::CommitOpts::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .unwrap()
@@ -463,8 +463,8 @@ async fn update_literal_qmark_string_where_binds_and_updates() {
             ledger1,
             &update,
             txn_opts,
-            Default::default(),
-            &Default::default(),
+            fluree_db_transact::CommitOpts::default(),
+            &fluree_db_ledger::IndexConfig::default(),
         )
         .await
         .unwrap()

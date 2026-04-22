@@ -180,14 +180,11 @@ impl FileNameService {
 
         while let Some(current_dir) = stack.pop() {
             let mut dir_entries = tokio::fs::read_dir(&current_dir).await.map_err(|e| {
-                NameServiceError::storage(format!(
-                    "Failed to read directory {:?}: {}",
-                    current_dir, e
-                ))
+                NameServiceError::storage(format!("Failed to read directory {current_dir:?}: {e}"))
             })?;
 
             while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
-                NameServiceError::storage(format!("Failed to read directory entry: {}", e))
+                NameServiceError::storage(format!("Failed to read directory entry: {e}"))
             })? {
                 let path = entry.path();
 
@@ -307,9 +304,9 @@ impl FileNameService {
             return Ok(false);
         }
 
-        let content = tokio::fs::read_to_string(&main_path).await.map_err(|e| {
-            NameServiceError::storage(format!("Failed to read {:?}: {}", main_path, e))
-        })?;
+        let content = tokio::fs::read_to_string(&main_path)
+            .await
+            .map_err(|e| NameServiceError::storage(format!("Failed to read {main_path:?}: {e}")))?;
 
         // Parse just enough to check @type
         let parsed: serde_json::Value = serde_json::from_str(&content)?;
@@ -470,10 +467,7 @@ impl NameService for FileNameService {
             .load_record(ledger_name, source_branch)
             .await?
             .ok_or_else(|| {
-                NameServiceError::not_found(format!(
-                    "source branch {}:{}",
-                    ledger_name, source_branch
-                ))
+                NameServiceError::not_found(format!("source branch {ledger_name}:{source_branch}"))
             })?;
 
         let file = NsFileV2 {
@@ -484,7 +478,10 @@ impl NameService for FileNameService {
                 id: ledger_name.to_string(),
             },
             branch: new_branch.to_string(),
-            commit_cid: source_record.commit_head_id.as_ref().map(|c| c.to_string()),
+            commit_cid: source_record
+                .commit_head_id
+                .as_ref()
+                .map(std::string::ToString::to_string),
             config_cid: None,
             t: source_record.commit_t,
             index: None,
@@ -529,8 +526,7 @@ impl NameService for FileNameService {
             let created_path = self.ns_path(ledger_name, new_branch);
             let _ = tokio::fs::remove_file(&created_path).await;
             return Err(NameServiceError::not_found(format!(
-                "source branch {}:{}",
-                ledger_name, source_branch
+                "source branch {ledger_name}:{source_branch}"
             )));
         }
 
@@ -1005,14 +1001,11 @@ impl GraphSourceLookup for FileNameService {
 
         while let Some(current_dir) = stack.pop() {
             let mut dir_entries = tokio::fs::read_dir(&current_dir).await.map_err(|e| {
-                NameServiceError::storage(format!(
-                    "Failed to read directory {:?}: {}",
-                    current_dir, e
-                ))
+                NameServiceError::storage(format!("Failed to read directory {current_dir:?}: {e}"))
             })?;
 
             while let Some(entry) = dir_entries.next_entry().await.map_err(|e| {
-                NameServiceError::storage(format!("Failed to read directory entry: {}", e))
+                NameServiceError::storage(format!("Failed to read directory entry: {e}"))
             })? {
                 let path = entry.path();
 
@@ -1193,7 +1186,8 @@ impl RefPublisher for FileNameService {
                         });
 
                         // CID goes into the commit_cid field.
-                        file.commit_cid = new_clone.id.as_ref().map(|cid| cid.to_string());
+                        file.commit_cid =
+                            new_clone.id.as_ref().map(std::string::ToString::to_string);
                         file.t = new_clone.t;
 
                         let new_bytes = serialize_json(&file)?;
@@ -1275,7 +1269,7 @@ impl RefPublisher for FileNameService {
                         let file = NsIndexFileV2 {
                             context: ns_context(),
                             index: IndexRef {
-                                cid: new_clone.id.as_ref().map(|cid| cid.to_string()),
+                                cid: new_clone.id.as_ref().map(std::string::ToString::to_string),
                                 t: new_clone.t,
                             },
                         };
@@ -1431,14 +1425,19 @@ impl ConfigPublisher for FileNameService {
 
                 if let Some(ref payload) = new_clone.payload {
                     // Write CID to field (CID-only)
-                    file.default_context_cid =
-                        payload.default_context.as_ref().map(|c| c.to_string());
+                    file.default_context_cid = payload
+                        .default_context
+                        .as_ref()
+                        .map(std::string::ToString::to_string);
                     file.config_meta = if payload.extra.is_empty() {
                         None
                     } else {
                         Some(payload.extra.clone())
                     };
-                    file.config_cid = payload.config_id.as_ref().map(|cid| cid.to_string());
+                    file.config_cid = payload
+                        .config_id
+                        .as_ref()
+                        .map(std::string::ToString::to_string);
                 } else {
                     file.default_context_cid = None;
                     file.config_meta = None;
@@ -1650,7 +1649,7 @@ mod tests {
     async fn test_graph_source_index_monotonic_update() {
         let (_temp, ns) = setup().await;
 
-        let config = r#"{}"#;
+        let config = r"{}";
         ns.publish_graph_source("gs", "main", GraphSourceType::Bm25, config, &[])
             .await
             .unwrap();
@@ -1726,18 +1725,18 @@ mod tests {
         // lookup_any should return correct type
         match ns.lookup_any("ledger:main").await.unwrap() {
             NsLookupResult::Ledger(r) => assert_eq!(r.name, "ledger"),
-            other => panic!("Expected Ledger, got {:?}", other),
+            other => panic!("Expected Ledger, got {other:?}"),
         }
 
         match ns.lookup_any("gs:main").await.unwrap() {
             NsLookupResult::GraphSource(r) => assert_eq!(r.name, "gs"),
-            other => panic!("Expected GraphSource, got {:?}", other),
+            other => panic!("Expected GraphSource, got {other:?}"),
         }
 
         // Non-existent should return NotFound
         match ns.lookup_any("nonexistent:main").await.unwrap() {
             NsLookupResult::NotFound => {}
-            other => panic!("Expected NotFound, got {:?}", other),
+            other => panic!("Expected NotFound, got {other:?}"),
         }
     }
 

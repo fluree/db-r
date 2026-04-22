@@ -293,8 +293,7 @@ fn test_sync_connect_fails_for_s3() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("async") || err_msg.contains("connect_async"),
-        "Error should mention async: {}",
-        err_msg
+        "Error should mention async: {err_msg}"
     );
 }
 
@@ -428,15 +427,14 @@ fn test_shared_storage_reference() {
     // All three should reference the same bucket/prefix
     let check_shared = |st: &StorageType, context: &str| match st {
         StorageType::S3(s3) => {
-            assert_eq!(&*s3.bucket, "unified-bucket", "{} bucket mismatch", context);
+            assert_eq!(&*s3.bucket, "unified-bucket", "{context} bucket mismatch");
             assert_eq!(
                 s3.prefix.as_deref(),
                 Some("all-data"),
-                "{} prefix mismatch",
-                context
+                "{context} prefix mismatch"
             );
         }
-        _ => panic!("{}: Expected S3 storage", context),
+        _ => panic!("{context}: Expected S3 storage"),
     };
 
     check_shared(&parsed.index_storage.storage_type, "index_storage");
@@ -540,10 +538,7 @@ async fn test_connect_async_s3() {
         }
         Err(e) => {
             // May fail if bucket doesn't exist or credentials aren't set
-            eprintln!(
-                "S3 connection failed (expected without bucket setup): {}",
-                e
-            );
+            eprintln!("S3 connection failed (expected without bucket setup): {e}");
         }
     }
 }
@@ -605,10 +600,7 @@ async fn test_connect_async_dynamodb() {
             println!("DynamoDB connection created: {:?}", conn.config().id);
         }
         Err(e) => {
-            eprintln!(
-                "DynamoDB connection failed (expected without table setup): {}",
-                e
-            );
+            eprintln!("DynamoDB connection failed (expected without table setup): {e}");
         }
     }
 }
@@ -666,7 +658,7 @@ async fn test_connect_async_storage_nameservice() {
             );
         }
         Err(e) => {
-            eprintln!("Storage nameservice connection failed: {}", e);
+            eprintln!("Storage nameservice connection failed: {e}");
         }
     }
 }

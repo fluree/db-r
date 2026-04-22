@@ -391,7 +391,7 @@ async fn subquery_inside_union() {
     assert_eq!(
         normalize_rows(&rows),
         normalize_rows(&json!([
-            ["Alice", 42.333333333333336_f64],
+            ["Alice", 42.333_333_333_333_336_f64],
             ["Cam", 7.5_f64]
         ]))
     );
@@ -418,7 +418,7 @@ async fn subquery_union_branch_query_alone_has_results() {
         .unwrap()
         .to_jsonld(&ledger.snapshot)
         .unwrap();
-    assert_eq!(rows, json!([["Alice", 42.333333333333336_f64]]));
+    assert_eq!(rows, json!([["Alice", 42.333_333_333_333_336_f64]]));
 }
 
 #[tokio::test]

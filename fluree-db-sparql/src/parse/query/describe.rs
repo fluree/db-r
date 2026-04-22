@@ -3,7 +3,7 @@
 use crate::ast::{AskQuery, DescribeQuery, DescribeTarget};
 use crate::lex::TokenKind;
 
-impl<'a> super::Parser<'a> {
+impl super::Parser<'_> {
     /// Parse an ASK query.
     ///
     /// ASK queries return a boolean indicating whether the pattern matches.

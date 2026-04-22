@@ -69,7 +69,7 @@ impl crate::Fluree {
         let iceberg_config = config.to_iceberg_gs_config();
         let config_json = iceberg_config
             .to_json()
-            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {}", e)))?;
+            .map_err(|e| crate::ApiError::Config(format!("Failed to serialize config: {e}")))?;
 
         // 4. Publish graph source record to nameservice
         self.publisher()?
@@ -197,9 +197,10 @@ impl crate::Fluree {
         };
 
         // Create auth provider
-        let auth = rest.auth.create_provider_arc().map_err(|e| {
-            crate::ApiError::Config(format!("Failed to create auth provider: {}", e))
-        })?;
+        let auth = rest
+            .auth
+            .create_provider_arc()
+            .map_err(|e| crate::ApiError::Config(format!("Failed to create auth provider: {e}")))?;
 
         // Create catalog client
         let catalog_config = RestCatalogConfig {
@@ -209,19 +210,19 @@ impl crate::Fluree {
         };
 
         let catalog = RestCatalogClient::new(catalog_config, auth).map_err(|e| {
-            crate::ApiError::Config(format!("Failed to create catalog client: {}", e))
+            crate::ApiError::Config(format!("Failed to create catalog client: {e}"))
         })?;
 
         // Parse table identifier
         let table_id = parse_table_identifier(&rest.table_identifier)
-            .map_err(|e| crate::ApiError::Config(format!("Invalid table identifier: {}", e)))?;
+            .map_err(|e| crate::ApiError::Config(format!("Invalid table identifier: {e}")))?;
 
         // Attempt to load table metadata (this tests the connection)
         catalog
             .load_table(&table_id, rest.vended_credentials)
             .await
             .map_err(|e| {
-                crate::ApiError::Config(format!("Failed to load table from catalog: {}", e))
+                crate::ApiError::Config(format!("Failed to load table from catalog: {e}"))
             })?;
 
         Ok(())
@@ -354,9 +355,9 @@ impl R2rmlProvider for FlureeR2rmlProvider<'_> {
             .nameservice()
             .lookup_graph_source(graph_source_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
+            .map_err(|e| QueryError::Internal(format!("Nameservice error: {e}")))?
             .ok_or_else(|| {
-                QueryError::InvalidQuery(format!("Graph source '{}' not found", graph_source_id))
+                QueryError::InvalidQuery(format!("Graph source '{graph_source_id}' not found"))
             })?;
 
         // Verify it's an R2RML or Iceberg graph source
@@ -373,15 +374,13 @@ impl R2rmlProvider for FlureeR2rmlProvider<'_> {
         // Parse into typed config
         let iceberg_config = IcebergGsConfig::from_json(&record.config).map_err(|e| {
             QueryError::Internal(format!(
-                "Failed to parse graph source config for '{}': {}",
-                graph_source_id, e
+                "Failed to parse graph source config for '{graph_source_id}': {e}"
             ))
         })?;
 
         let mapping_config = iceberg_config.mapping.as_ref().ok_or_else(|| {
             QueryError::InvalidQuery(format!(
-                "Graph source '{}' is missing 'mapping' in config",
-                graph_source_id
+                "Graph source '{graph_source_id}' is missing 'mapping' in config"
             ))
         })?;
 
@@ -420,22 +419,19 @@ impl R2rmlProvider for FlureeR2rmlProvider<'_> {
         } else {
             let storage = self.fluree.admin_storage().ok_or_else(|| {
                 QueryError::InvalidQuery(format!(
-                    "Cannot load R2RML mapping from address '{}': address-based reads are not supported on this backend",
-                    mapping_source,
+                    "Cannot load R2RML mapping from address '{mapping_source}': address-based reads are not supported on this backend",
                 ))
             })?;
             storage.read_bytes(mapping_source).await.map_err(|e| {
                 QueryError::InvalidQuery(format!(
-                    "Failed to load R2RML mapping from '{}': {}",
-                    mapping_source, e
+                    "Failed to load R2RML mapping from '{mapping_source}': {e}"
                 ))
             })?
         };
 
         let mapping_content = String::from_utf8(mapping_bytes).map_err(|e| {
             QueryError::InvalidQuery(format!(
-                "R2RML mapping at '{}' is not valid UTF-8: {}",
-                mapping_source, e
+                "R2RML mapping at '{mapping_source}' is not valid UTF-8: {e}"
             ))
         })?;
 
@@ -451,22 +447,19 @@ impl R2rmlProvider for FlureeR2rmlProvider<'_> {
             fluree_db_r2rml::loader::R2rmlLoader::from_turtle(&mapping_content)
                 .map_err(|e| {
                     QueryError::InvalidQuery(format!(
-                        "Failed to parse R2RML Turtle from '{}': {}",
-                        mapping_source, e
+                        "Failed to parse R2RML Turtle from '{mapping_source}': {e}"
                     ))
                 })?
                 .compile()
                 .map_err(|e| {
                     QueryError::InvalidQuery(format!(
-                        "Failed to compile R2RML mapping from '{}': {}",
-                        mapping_source, e
+                        "Failed to compile R2RML mapping from '{mapping_source}': {e}"
                     ))
                 })?
         } else {
             return Err(QueryError::InvalidQuery(format!(
-                "R2RML mapping for '{}' uses JSON-LD format, which is not yet supported. \
-                 Please use Turtle format (.ttl).",
-                graph_source_id
+                "R2RML mapping for '{graph_source_id}' uses JSON-LD format, which is not yet supported. \
+                 Please use Turtle format (.ttl)."
             )));
         };
 
@@ -507,24 +500,22 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
             .nameservice()
             .lookup_graph_source(graph_source_id)
             .await
-            .map_err(|e| QueryError::Internal(format!("Nameservice error: {}", e)))?
+            .map_err(|e| QueryError::Internal(format!("Nameservice error: {e}")))?
             .ok_or_else(|| {
-                QueryError::InvalidQuery(format!("Graph source '{}' not found", graph_source_id))
+                QueryError::InvalidQuery(format!("Graph source '{graph_source_id}' not found"))
             })?;
 
         // Parse the Iceberg graph source config
         let iceberg_config = IcebergGsConfig::from_json(&record.config).map_err(|e| {
             QueryError::Internal(format!(
-                "Failed to parse Iceberg graph source config for '{}': {}",
-                graph_source_id, e
+                "Failed to parse Iceberg graph source config for '{graph_source_id}': {e}"
             ))
         })?;
 
         // Validate the config
         iceberg_config.validate().map_err(|e| {
             QueryError::InvalidQuery(format!(
-                "Invalid Iceberg graph source config for '{}': {}",
-                graph_source_id, e
+                "Invalid Iceberg graph source config for '{graph_source_id}': {e}"
             ))
         })?;
 
@@ -544,13 +535,12 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
         let table_id = if !table_name.is_empty() {
             parse_table_identifier(table_name).map_err(|e| {
                 QueryError::Internal(format!(
-                    "Failed to parse table identifier '{}': {}",
-                    table_name, e
+                    "Failed to parse table identifier '{table_name}': {e}"
                 ))
             })?
         } else {
             iceberg_config.table_identifier().map_err(|e| {
-                QueryError::Internal(format!("Failed to parse table identifier: {}", e))
+                QueryError::Internal(format!("Failed to parse table identifier: {e}"))
             })?
         };
 
@@ -570,7 +560,7 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                 );
 
                 let auth_provider = auth.create_provider_arc().map_err(|e| {
-                    QueryError::Internal(format!("Failed to create auth provider: {}", e))
+                    QueryError::Internal(format!("Failed to create auth provider: {e}"))
                 })?;
 
                 let catalog_config = RestCatalogConfig {
@@ -581,14 +571,14 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
 
                 let catalog =
                     RestCatalogClient::new(catalog_config, auth_provider).map_err(|e| {
-                        QueryError::Internal(format!("Failed to create catalog client: {}", e))
+                        QueryError::Internal(format!("Failed to create catalog client: {e}"))
                     })?;
 
                 let load_response = catalog
                     .load_table(&table_id, iceberg_config.io.vended_credentials)
                     .await
                     .map_err(|e| {
-                        QueryError::Internal(format!("Failed to load table from catalog: {}", e))
+                        QueryError::Internal(format!("Failed to load table from catalog: {e}"))
                     })?;
 
                 info!(
@@ -602,7 +592,7 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                     S3IcebergStorage::from_vended_credentials(credentials)
                         .await
                         .map_err(|e| {
-                            QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                            QueryError::Internal(format!("Failed to create S3 storage: {e}"))
                         })?
                 } else {
                     info!(
@@ -617,7 +607,7 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                     )
                     .await
                     .map_err(|e| {
-                        QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                        QueryError::Internal(format!("Failed to create S3 storage: {e}"))
                     })?
                 };
 
@@ -638,7 +628,7 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                     )
                     .await
                     .map_err(|e| {
-                        QueryError::Internal(format!("Failed to create S3 storage: {}", e))
+                        QueryError::Internal(format!("Failed to create S3 storage: {e}"))
                     })?,
                 );
 
@@ -653,7 +643,7 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                     );
                     fluree_db_iceberg::catalog::LoadTableResponse {
                         metadata_location,
-                        config: Default::default(),
+                        config: std::collections::HashMap::default(),
                         credentials: None,
                     }
                 } else {
@@ -668,8 +658,7 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                             .await
                             .map_err(|e| {
                                 QueryError::Internal(format!(
-                                    "Failed to resolve table metadata from {}: {}",
-                                    table_location, e
+                                    "Failed to resolve table metadata from {table_location}: {e}"
                                 ))
                             })?;
                     cache
@@ -704,12 +693,10 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                 .as_ref()
                 .read(metadata_location)
                 .await
-                .map_err(|e| {
-                    QueryError::Internal(format!("Failed to read table metadata: {}", e))
-                })?;
+                .map_err(|e| QueryError::Internal(format!("Failed to read table metadata: {e}")))?;
 
             let parsed = TableMetadata::from_json(&metadata_bytes).map_err(|e| {
-                QueryError::Internal(format!("Failed to parse table metadata: {}", e))
+                QueryError::Internal(format!("Failed to parse table metadata: {e}"))
             })?;
 
             let metadata = Arc::new(parsed);
@@ -801,7 +788,7 @@ impl R2rmlTableProvider for FlureeR2rmlProvider<'_> {
                 let plan = planner
                     .plan_scan()
                     .await
-                    .map_err(|e| QueryError::Internal(format!("Failed to plan scan: {}", e)))?;
+                    .map_err(|e| QueryError::Internal(format!("Failed to plan scan: {e}")))?;
 
                 let cached = Arc::new(CachedScanFiles {
                     data_files: Arc::new(

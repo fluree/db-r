@@ -65,7 +65,7 @@ impl TrackingOptions {
             .get("max-fuel")
             .or_else(|| opts.get("max_fuel"))
             .or_else(|| opts.get("maxFuel"))
-            .and_then(|v| v.as_f64())
+            .and_then(serde_json::Value::as_f64)
             .map(fuel_to_micro);
 
         let track_all = matches!(meta, Some(JsonValue::Bool(true)));
@@ -74,7 +74,7 @@ impl TrackingOptions {
         let meta_flag = |k: &str| -> bool {
             meta_obj
                 .and_then(|m| m.get(k))
-                .and_then(|v| v.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false)
         };
 
@@ -284,5 +284,5 @@ pub struct TrackingTally {
 
 fn format_time_ms(duration: Duration) -> String {
     let ms = duration.as_secs_f64() * 1000.0;
-    format!("{:.2}ms", ms)
+    format!("{ms:.2}ms")
 }

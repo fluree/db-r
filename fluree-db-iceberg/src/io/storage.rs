@@ -199,11 +199,11 @@ impl S3IcebergStorage {
             .strip_prefix("s3://")
             .or_else(|| path.strip_prefix("s3a://"))
             .ok_or_else(|| {
-                IcebergError::storage(format!("Invalid S3 URI (must start with s3://): {}", path))
+                IcebergError::storage(format!("Invalid S3 URI (must start with s3://): {path}"))
             })?;
 
         let (bucket, key) = path.split_once('/').ok_or_else(|| {
-            IcebergError::storage(format!("Invalid S3 URI (no key path): s3://{}", path))
+            IcebergError::storage(format!("Invalid S3 URI (no key path): s3://{path}"))
         })?;
 
         if bucket.is_empty() {
@@ -225,13 +225,13 @@ impl S3IcebergStorage {
             .range(range_header)
             .send()
             .await
-            .map_err(|e| IcebergError::storage(format!("S3 GetObject failed: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("S3 GetObject failed: {e}")))?;
 
         let body = response
             .body
             .collect()
             .await
-            .map_err(|e| IcebergError::storage(format!("Failed to read S3 body: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("Failed to read S3 body: {e}")))?;
 
         Ok(body.into_bytes())
     }
@@ -279,13 +279,13 @@ impl IcebergStorage for S3IcebergStorage {
             .key(key)
             .send()
             .await
-            .map_err(|e| IcebergError::storage(format!("S3 GetObject failed: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("S3 GetObject failed: {e}")))?;
 
         let body = response
             .body
             .collect()
             .await
-            .map_err(|e| IcebergError::storage(format!("Failed to read S3 body: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("Failed to read S3 body: {e}")))?;
 
         Ok(body.into_bytes())
     }
@@ -305,7 +305,7 @@ impl IcebergStorage for S3IcebergStorage {
             .key(key)
             .send()
             .await
-            .map_err(|e| IcebergError::storage(format!("S3 HeadObject failed: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("S3 HeadObject failed: {e}")))?;
 
         response
             .content_length()
@@ -327,13 +327,13 @@ impl SendIcebergStorage for S3IcebergStorage {
             .key(key)
             .send()
             .await
-            .map_err(|e| IcebergError::storage(format!("S3 GetObject failed: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("S3 GetObject failed: {e}")))?;
 
         let body = response
             .body
             .collect()
             .await
-            .map_err(|e| IcebergError::storage(format!("Failed to read S3 body: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("Failed to read S3 body: {e}")))?;
 
         Ok(body.into_bytes())
     }
@@ -353,7 +353,7 @@ impl SendIcebergStorage for S3IcebergStorage {
             .key(key)
             .send()
             .await
-            .map_err(|e| IcebergError::storage(format!("S3 HeadObject failed: {}", e)))?;
+            .map_err(|e| IcebergError::storage(format!("S3 HeadObject failed: {e}")))?;
 
         response
             .content_length()
@@ -386,14 +386,14 @@ impl IcebergStorage for MemoryStorage {
         self.files
             .get(path)
             .cloned()
-            .ok_or_else(|| IcebergError::storage(format!("File not found: {}", path)))
+            .ok_or_else(|| IcebergError::storage(format!("File not found: {path}")))
     }
 
     async fn read_range(&self, path: &str, range: Range<u64>) -> Result<Bytes> {
         let content = self
             .files
             .get(path)
-            .ok_or_else(|| IcebergError::storage(format!("File not found: {}", path)))?;
+            .ok_or_else(|| IcebergError::storage(format!("File not found: {path}")))?;
 
         let start = range.start as usize;
         let end = (range.end as usize).min(content.len());
@@ -409,7 +409,7 @@ impl IcebergStorage for MemoryStorage {
         self.files
             .get(path)
             .map(|c| c.len() as u64)
-            .ok_or_else(|| IcebergError::storage(format!("File not found: {}", path)))
+            .ok_or_else(|| IcebergError::storage(format!("File not found: {path}")))
     }
 }
 
@@ -452,8 +452,7 @@ impl<S: IcebergStorage> RangeOnlyStorage<S> {
         let calls = self.read_calls();
         assert_eq!(
             calls, 0,
-            "Expected 0 whole-file read() calls, but got {}. Range reads should be used instead.",
-            calls
+            "Expected 0 whole-file read() calls, but got {calls}. Range reads should be used instead."
         );
     }
 }

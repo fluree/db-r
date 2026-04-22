@@ -171,7 +171,7 @@ impl DataSetDb {
     ///
     /// This is the internal bridge to the query engine. Each graph keeps its own
     /// `t` (per-view), and policy enforcement is carried via `GraphRef::policy_enforcer`.
-    pub(crate) fn as_runtime_dataset<'a>(&'a self) -> fluree_db_query::DataSet<'a> {
+    pub(crate) fn as_runtime_dataset(&self) -> fluree_db_query::DataSet<'_> {
         let mut ds = fluree_db_query::DataSet::new();
 
         for view in &self.default {

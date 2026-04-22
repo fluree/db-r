@@ -1221,10 +1221,10 @@ fn format_unix_as_iso8601(secs: u64) -> String {
 /// Civil date from days since Unix epoch (1970-01-01).
 /// Howard Hinnant's algorithm, adapted from chrono/date.
 fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let z = days + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
     let y = (yoe as i64 + era * 400) as i32;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -1292,5 +1292,5 @@ fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
     let yoe = (y - era * 400) as u64;
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy as u64;
-    era * 146097 + doe as i64 - 719468
+    era * 146_097 + doe as i64 - 719_468
 }

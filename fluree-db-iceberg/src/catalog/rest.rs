@@ -61,7 +61,7 @@ impl RestCatalogClient {
             .connect_timeout(Duration::from_secs(config.connect_timeout_secs))
             .timeout(Duration::from_secs(config.request_timeout_secs))
             .build()
-            .map_err(|e| IcebergError::Http(format!("Failed to build HTTP client: {}", e)))?;
+            .map_err(|e| IcebergError::Http(format!("Failed to build HTTP client: {e}")))?;
 
         Ok(Self {
             config,
@@ -119,23 +119,21 @@ impl RestCatalogClient {
             if status == reqwest::StatusCode::NOT_FOUND {
                 let body = response.text().await.unwrap_or_default();
                 return Err(IcebergError::TableNotFound(format!(
-                    "Resource not found at {}: {}",
-                    path, body
+                    "Resource not found at {path}: {body}"
                 )));
             }
 
             if !status.is_success() {
                 let body = response.text().await.unwrap_or_default();
                 return Err(IcebergError::Catalog(format!(
-                    "Catalog request failed ({}): {}",
-                    status, body
+                    "Catalog request failed ({status}): {body}"
                 )));
             }
 
             response
                 .json()
                 .await
-                .map_err(|e| IcebergError::Catalog(format!("Failed to parse response: {}", e)))
+                .map_err(|e| IcebergError::Catalog(format!("Failed to parse response: {e}")))
         })
     }
 
@@ -155,7 +153,7 @@ impl RestCatalogClient {
     /// Polaris with warehouse: `/v1/{warehouse}/namespaces/...`
     fn api_prefix(&self) -> String {
         match &self.config.warehouse {
-            Some(warehouse) => format!("/v1/{}", warehouse),
+            Some(warehouse) => format!("/v1/{warehouse}"),
             None => "/v1".to_string(),
         }
     }
@@ -211,7 +209,7 @@ impl CatalogClient for RestCatalogClient {
                             .join(".")
                     })?;
                 let table = id.get("name").and_then(|v| v.as_str())?;
-                Some(format!("{}.{}", ns, table))
+                Some(format!("{ns}.{table}"))
             })
             .collect())
     }
@@ -310,7 +308,7 @@ impl super::SendCatalogClient for RestCatalogClient {
                             .join(".")
                     })?;
                 let table = id.get("name").and_then(|v| v.as_str())?;
-                Some(format!("{}.{}", ns, table))
+                Some(format!("{ns}.{table}"))
             })
             .collect())
     }

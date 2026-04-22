@@ -50,11 +50,11 @@ fn create_jws(claims: &JsonValue, signing_key: &SigningKey) -> String {
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-    format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+    format!("{header_b64}.{payload_b64}.{sig_b64}")
 }
 
 fn identity_token(signing_key: &SigningKey, identity: &str, ledger: &str) -> String {
@@ -152,7 +152,7 @@ async fn setup_policy_ledger(app: axum::Router, ledger: &str) -> axum::Router {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/fluree/insert/{}", ledger))
+                .uri(format!("/v1/fluree/insert/{ledger}"))
                 .header("content-type", "application/json")
                 .body(Body::from(docs_tx.to_string()))
                 .unwrap(),
@@ -229,7 +229,7 @@ async fn setup_policy_ledger(app: axum::Router, ledger: &str) -> axum::Router {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/fluree/insert/{}", ledger))
+                .uri(format!("/v1/fluree/insert/{ledger}"))
                 .header("content-type", "application/json")
                 .body(Body::from(policy_tx.to_string()))
                 .unwrap(),
@@ -268,11 +268,11 @@ async fn query_docs(
 
     let mut req = Request::builder()
         .method("POST")
-        .uri(format!("/v1/fluree/query/{}", ledger))
+        .uri(format!("/v1/fluree/query/{ledger}"))
         .header("content-type", "application/json");
 
     if let Some(tok) = token {
-        req = req.header("authorization", format!("Bearer {}", tok));
+        req = req.header("authorization", format!("Bearer {tok}"));
     }
 
     let resp = app
@@ -314,13 +314,11 @@ async fn public_identity_sees_only_public_docs() {
     assert_eq!(
         names.len(),
         1,
-        "public user should see exactly 1 document; got: {:?}",
-        names
+        "public user should see exactly 1 document; got: {names:?}"
     );
     assert!(
         names.contains(&"Public Post"),
-        "expected 'Public Post'; got: {:?}",
-        names
+        "expected 'Public Post'; got: {names:?}"
     );
 }
 
@@ -348,23 +346,19 @@ async fn employee_identity_sees_public_and_internal() {
     assert_eq!(
         names.len(),
         2,
-        "employee should see exactly 2 documents; got: {:?}",
-        names
+        "employee should see exactly 2 documents; got: {names:?}"
     );
     assert!(
         names.contains(&"Public Post"),
-        "expected 'Public Post'; got: {:?}",
-        names
+        "expected 'Public Post'; got: {names:?}"
     );
     assert!(
         names.contains(&"Internal Memo"),
-        "expected 'Internal Memo'; got: {:?}",
-        names
+        "expected 'Internal Memo'; got: {names:?}"
     );
     assert!(
         !names.contains(&"Executive Salaries"),
-        "employee must NOT see 'Executive Salaries'; got: {:?}",
-        names
+        "employee must NOT see 'Executive Salaries'; got: {names:?}"
     );
 }
 
@@ -388,8 +382,7 @@ async fn manager_identity_sees_all_documents() {
     assert_eq!(
         names.len(),
         3,
-        "manager should see all 3 documents; got: {:?}",
-        names
+        "manager should see all 3 documents; got: {names:?}"
     );
 }
 
@@ -417,8 +410,7 @@ async fn identity_without_policy_class_default_allow_false_denies_all() {
     let names = names_from_results(&json);
     assert!(
         names.is_empty(),
-        "unknown identity + default-allow:false must see nothing; got: {:?}",
-        names
+        "unknown identity + default-allow:false must see nothing; got: {names:?}"
     );
 }
 
@@ -451,8 +443,7 @@ async fn unknown_identity_allowed_with_default_allow_true() {
     assert_eq!(
         names.len(),
         3,
-        "unknown identity + default-allow:true must see all documents; got: {:?}",
-        names
+        "unknown identity + default-allow:true must see all documents; got: {names:?}"
     );
 }
 
@@ -524,7 +515,7 @@ async fn property_level_deny_hides_ex_content_field() {
                 .method("POST")
                 .uri("/v1/fluree/query/policy6:main")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(row_level_body.to_string()))
                 .unwrap(),
         )
@@ -540,14 +531,12 @@ async fn property_level_deny_hides_ex_content_field() {
         .collect();
     assert!(
         !names.contains(&"Executive Salaries"),
-        "employee must NOT see confidential doc; got: {:?}",
-        names
+        "employee must NOT see confidential doc; got: {names:?}"
     );
     assert_eq!(
         rows.len(),
         2,
-        "employee should see 2 documents; got: {:?}",
-        names
+        "employee should see 2 documents; got: {names:?}"
     );
 
     // Query 2: with ex:content as a required triple pattern — verifies property-level deny.
@@ -576,7 +565,7 @@ async fn property_level_deny_hides_ex_content_field() {
                 .method("POST")
                 .uri("/v1/fluree/query/policy6:main")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(property_deny_body.to_string()))
                 .unwrap(),
         )
@@ -589,8 +578,7 @@ async fn property_level_deny_hides_ex_content_field() {
     assert_eq!(
         rows_with_content.len(),
         0,
-        "property deny on ex:content must cause required triple pattern to match nothing; got: {:?}",
-        rows_with_content
+        "property deny on ex:content must cause required triple pattern to match nothing; got: {rows_with_content:?}"
     );
 }
 
@@ -643,8 +631,7 @@ async fn known_identity_no_policy_class_default_allow_true_allows_all() {
     assert_eq!(
         names.len(),
         3,
-        "known identity with no policyClass + default-allow:true must see all 3 docs; got: {:?}",
-        names
+        "known identity with no policyClass + default-allow:true must see all 3 docs; got: {names:?}"
     );
 }
 
@@ -668,7 +655,7 @@ async fn register_root_identity(app: &axum::Router, ledger: &str, identity_iri: 
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/fluree/insert/{}", ledger))
+                .uri(format!("/v1/fluree/insert/{ledger}"))
                 .header("content-type", "application/json")
                 .body(Body::from(tx.to_string()))
                 .unwrap(),
@@ -678,8 +665,7 @@ async fn register_root_identity(app: &axum::Router, ledger: &str, identity_iri: 
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "insert root identity {}",
-        identity_iri
+        "insert root identity {identity_iri}"
     );
 }
 
@@ -707,9 +693,9 @@ async fn query_docs_as(
 
     let req = Request::builder()
         .method("POST")
-        .uri(format!("/v1/fluree/query/{}", ledger))
+        .uri(format!("/v1/fluree/query/{ledger}"))
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", bearer_token));
+        .header("authorization", format!("Bearer {bearer_token}"));
 
     let resp = app
         .oneshot(req.body(Body::from(body.to_string())).unwrap())
@@ -738,8 +724,7 @@ async fn root_bearer_can_impersonate_employee_via_body_opts() {
     assert_eq!(
         names.len(),
         2,
-        "impersonating employee should see exactly 2 docs; got: {:?}",
-        names
+        "impersonating employee should see exactly 2 docs; got: {names:?}"
     );
     assert!(names.contains(&"Public Post"));
     assert!(names.contains(&"Internal Memo"));
@@ -770,8 +755,7 @@ async fn restricted_bearer_cannot_impersonate_manager() {
     assert_eq!(
         names.len(),
         2,
-        "restricted bearer should see employee view (2 docs), not manager view (3); got: {:?}",
-        names
+        "restricted bearer should see employee view (2 docs), not manager view (3); got: {names:?}"
     );
     assert!(!names.contains(&"Executive Salaries"));
 }
@@ -801,7 +785,7 @@ async fn root_bearer_can_impersonate_via_sparql_header() {
         .method("POST")
         .uri("/v1/fluree/query/imp3:main")
         .header("content-type", "application/sparql-query")
-        .header("authorization", format!("Bearer {}", token))
+        .header("authorization", format!("Bearer {token}"))
         .header("fluree-identity", "http://example.org/public-user");
 
     let resp = app
@@ -824,8 +808,7 @@ async fn root_bearer_can_impersonate_via_sparql_header() {
     assert_eq!(
         names.len(),
         1,
-        "impersonated public-user should see 1 doc via SPARQL; got: {:?}",
-        names
+        "impersonated public-user should see 1 doc via SPARQL; got: {names:?}"
     );
     assert_eq!(names[0], "Public Post");
 }
@@ -853,7 +836,7 @@ async fn restricted_bearer_cannot_impersonate_via_sparql_header() {
         .method("POST")
         .uri("/v1/fluree/query/imp4:main")
         .header("content-type", "application/sparql-query")
-        .header("authorization", format!("Bearer {}", token))
+        .header("authorization", format!("Bearer {token}"))
         .header("fluree-identity", "http://example.org/manager-user");
 
     let resp = app
@@ -875,8 +858,7 @@ async fn restricted_bearer_cannot_impersonate_via_sparql_header() {
     assert_eq!(
         names.len(),
         2,
-        "restricted SPARQL bearer should see employee view (2), not manager (3); got: {:?}",
-        names
+        "restricted SPARQL bearer should see employee view (2), not manager (3); got: {names:?}"
     );
     assert!(!names.contains(&"Executive Salaries"));
 }
@@ -961,7 +943,7 @@ async fn inline_policy_via_body_opts_filters_to_public() {
         .method("POST")
         .uri("/v1/fluree/query/inline1:main")
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token));
+        .header("authorization", format!("Bearer {token}"));
 
     let resp = app
         .oneshot(req.body(Body::from(body.to_string())).unwrap())
@@ -974,8 +956,7 @@ async fn inline_policy_via_body_opts_filters_to_public() {
     assert_eq!(
         names.len(),
         1,
-        "inline policy should restrict to 1 public doc; got: {:?}",
-        names
+        "inline policy should restrict to 1 public doc; got: {names:?}"
     );
     assert_eq!(names[0], "Public Post");
 }
@@ -1029,8 +1010,7 @@ async fn inline_policy_via_header_filters_sparql() {
     assert_eq!(
         names.len(),
         1,
-        "header-supplied inline policy should filter SPARQL to internal-only; got: {:?}",
-        names
+        "header-supplied inline policy should filter SPARQL to internal-only; got: {names:?}"
     );
     assert_eq!(names[0], "Internal Memo");
 }
@@ -1052,7 +1032,7 @@ async fn assign_docs_to_identities(app: &axum::Router, ledger: &str) {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/fluree/upsert/{}", ledger))
+                .uri(format!("/v1/fluree/upsert/{ledger}"))
                 .header("content-type", "application/json")
                 .body(Body::from(tx.to_string()))
                 .unwrap(),
@@ -1118,8 +1098,7 @@ async fn policy_values_substitute_into_inline_policy() {
     assert_eq!(
         names.len(),
         1,
-        "?$identity=employee-user should yield only doc2; got: {:?}",
-        names
+        "?$identity=employee-user should yield only doc2; got: {names:?}"
     );
     assert_eq!(names[0], "Internal Memo");
 }
@@ -1173,8 +1152,7 @@ async fn policy_values_via_header_for_sparql() {
     assert_eq!(
         names.len(),
         1,
-        "?$identity=manager-user binding via headers should yield 1 doc; got: {:?}",
-        names
+        "?$identity=manager-user binding via headers should yield 1 doc; got: {names:?}"
     );
     assert_eq!(names[0], "Executive Salaries");
 }
@@ -1216,13 +1194,11 @@ async fn multi_value_policy_class_via_repeated_sparql_headers() {
     let names = sparql_names(&json);
     assert!(
         names.contains(&"Public Post") && names.contains(&"Internal Memo"),
-        "two policy-class headers should union into public+internal access; got: {:?}",
-        names
+        "two policy-class headers should union into public+internal access; got: {names:?}"
     );
     assert!(
         !names.contains(&"Executive Salaries"),
-        "confidential should remain hidden; got: {:?}",
-        names
+        "confidential should remain hidden; got: {names:?}"
     );
 }
 
@@ -1317,7 +1293,7 @@ async fn add_modify_policies(app: &axum::Router, ledger: &str) {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/v1/fluree/insert/{}", ledger))
+                .uri(format!("/v1/fluree/insert/{ledger}"))
                 .header("content-type", "application/json")
                 .body(Body::from(policy_tx.to_string()))
                 .unwrap(),
@@ -1359,7 +1335,7 @@ async fn employee_bearer_update_denied_with_ex_message() {
         .method("POST")
         .uri("/v1/fluree/update/wpol1:main")
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token));
+        .header("authorization", format!("Bearer {token}"));
 
     let resp = app
         .oneshot(
@@ -1373,8 +1349,7 @@ async fn employee_bearer_update_denied_with_ex_message() {
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "employee write must be rejected; got body: {}",
-        json
+        "employee write must be rejected; got body: {json}"
     );
     let err_msg = json
         .get("error")
@@ -1382,8 +1357,7 @@ async fn employee_bearer_update_denied_with_ex_message() {
         .unwrap_or_default();
     assert!(
         err_msg.contains("Employees may not modify document content."),
-        "expected custom f:exMessage in error; got: {}",
-        err_msg
+        "expected custom f:exMessage in error; got: {err_msg}"
     );
 }
 
@@ -1408,7 +1382,7 @@ async fn manager_bearer_update_allowed() {
         .method("POST")
         .uri("/v1/fluree/update/wpol2:main")
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token));
+        .header("authorization", format!("Bearer {token}"));
 
     let resp = app
         .oneshot(
@@ -1422,8 +1396,7 @@ async fn manager_bearer_update_allowed() {
     assert_eq!(
         status,
         StatusCode::OK,
-        "manager write must succeed; got body: {}",
-        json
+        "manager write must succeed; got body: {json}"
     );
 }
 
@@ -1451,7 +1424,7 @@ async fn root_bearer_impersonating_employee_update_denied() {
         .method("POST")
         .uri("/v1/fluree/update/wpol3:main")
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token));
+        .header("authorization", format!("Bearer {token}"));
 
     let resp = app
         .oneshot(req.body(Body::from(body.to_string())).unwrap())
@@ -1462,8 +1435,7 @@ async fn root_bearer_impersonating_employee_update_denied() {
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "impersonated employee write must be rejected; got body: {}",
-        json
+        "impersonated employee write must be rejected; got body: {json}"
     );
     let err_msg = json
         .get("error")
@@ -1471,8 +1443,7 @@ async fn root_bearer_impersonating_employee_update_denied() {
         .unwrap_or_default();
     assert!(
         err_msg.contains("Employees may not modify document content."),
-        "expected exMessage in error; got: {}",
-        err_msg
+        "expected exMessage in error; got: {err_msg}"
     );
 }
 
@@ -1503,7 +1474,7 @@ async fn sparql_update_under_employee_bearer_denied() {
         .method("POST")
         .uri("/v1/fluree/update/wpol4:main")
         .header("content-type", "application/sparql-update")
-        .header("authorization", format!("Bearer {}", token));
+        .header("authorization", format!("Bearer {token}"));
 
     let resp = app
         .oneshot(req.body(Body::from(sparql)).unwrap())
@@ -1514,8 +1485,7 @@ async fn sparql_update_under_employee_bearer_denied() {
     assert_eq!(
         status,
         StatusCode::BAD_REQUEST,
-        "employee SPARQL UPDATE must be rejected; got body: {}",
-        json
+        "employee SPARQL UPDATE must be rejected; got body: {json}"
     );
     let err_msg = json
         .get("error")
@@ -1523,7 +1493,6 @@ async fn sparql_update_under_employee_bearer_denied() {
         .unwrap_or_default();
     assert!(
         err_msg.contains("Employees may not modify document content."),
-        "expected exMessage in error; got: {}",
-        err_msg
+        "expected exMessage in error; got: {err_msg}"
     );
 }

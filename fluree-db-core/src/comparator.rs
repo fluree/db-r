@@ -109,7 +109,7 @@ impl std::str::FromStr for IndexType {
             "psot" => Ok(IndexType::Psot),
             "post" => Ok(IndexType::Post),
             "opst" => Ok(IndexType::Opst),
-            _ => Err(format!("Unknown index type: {}", s)),
+            _ => Err(format!("Unknown index type: {s}")),
         }
     }
 }
@@ -231,8 +231,8 @@ mod tests {
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,

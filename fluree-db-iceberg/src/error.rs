@@ -120,11 +120,11 @@ impl From<fluree_db_tabular::TabularError> for IcebergError {
 impl From<reqwest::Error> for IcebergError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
-            IcebergError::Http(format!("Request timeout: {}", err))
+            IcebergError::Http(format!("Request timeout: {err}"))
         } else if err.is_connect() {
-            IcebergError::Http(format!("Connection error: {}", err))
+            IcebergError::Http(format!("Connection error: {err}"))
         } else {
-            IcebergError::Http(format!("HTTP error: {}", err))
+            IcebergError::Http(format!("HTTP error: {err}"))
         }
     }
 }

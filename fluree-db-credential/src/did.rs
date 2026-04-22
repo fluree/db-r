@@ -32,7 +32,7 @@ pub fn did_from_pubkey(pubkey: &[u8; 32]) -> String {
     let base58 = bs58::encode(&bytes).into_string();
 
     // Add multibase 'z' prefix and did:key: scheme
-    format!("did:key:z{}", base58)
+    format!("did:key:z{base58}")
 }
 
 /// Extract an Ed25519 public key from a did:key identifier
@@ -47,7 +47,7 @@ pub fn did_from_pubkey(pubkey: &[u8; 32]) -> String {
 pub fn pubkey_from_did(did: &str) -> Result<[u8; 32]> {
     // Strip did:key:z prefix
     let key_part = did.strip_prefix("did:key:z").ok_or_else(|| {
-        CredentialError::InvalidDid(format!("DID must start with 'did:key:z', got: {}", did))
+        CredentialError::InvalidDid(format!("DID must start with 'did:key:z', got: {did}"))
     })?;
 
     // Base58btc decode
@@ -126,7 +126,7 @@ mod tests {
     fn test_invalid_multicodec_prefix() {
         // Create a DID with wrong multicodec prefix
         let wrong_prefix = bs58::encode([0x00, 0x01]).into_string();
-        let bad_did = format!("did:key:z{}", wrong_prefix);
+        let bad_did = format!("did:key:z{wrong_prefix}");
         let result = pubkey_from_did(&bad_did);
         assert!(matches!(result, Err(CredentialError::InvalidPublicKey(_))));
     }

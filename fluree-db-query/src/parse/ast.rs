@@ -1150,7 +1150,10 @@ mod tests {
 
         assert!(pattern.dtc.is_some());
         assert_eq!(
-            pattern.dtc.as_ref().map(|c| c.datatype_iri()),
+            pattern
+                .dtc
+                .as_ref()
+                .map(fluree_vocab::UnresolvedDatatypeConstraint::datatype_iri),
             Some("http://www.w3.org/2001/XMLSchema#integer")
         );
     }

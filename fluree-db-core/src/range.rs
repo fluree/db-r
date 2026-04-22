@@ -214,7 +214,7 @@ impl<O: OverlayProvider + ?Sized> OverlayProvider for SizedOverlayRef<'_, O> {
         callback: &mut dyn FnMut(&Flake),
     ) {
         self.0
-            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback)
+            .for_each_overlay_flake(g_id, index, first, rhs, leftmost, to_t, callback);
     }
 }
 

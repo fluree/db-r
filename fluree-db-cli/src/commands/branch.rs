@@ -122,7 +122,7 @@ async fn run_create(
             let source = record.source_branch.as_deref().unwrap_or("main");
             let t = record.commit_t;
 
-            println!("Created branch '{}' from '{}' at t={}", name, source, t);
+            println!("Created branch '{name}' from '{source}' at t={t}");
             println!("Ledger ID: {}", record.ledger_id);
         }
     }
@@ -139,14 +139,17 @@ fn print_branch_created(result: &serde_json::Value) -> CliResult<()> {
         .get("source")
         .and_then(|v| v.as_str())
         .unwrap_or("main");
-    let t = result.get("t").and_then(|v| v.as_i64()).unwrap_or(0);
+    let t = result
+        .get("t")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
     let ledger_id = result
         .get("ledger_id")
         .and_then(|v| v.as_str())
         .unwrap_or("(unknown)");
 
-    println!("Created branch '{}' from '{}' at t={}", branch, source, t);
-    println!("Ledger ID: {}", ledger_id);
+    println!("Created branch '{branch}' from '{source}' at t={t}");
+    println!("Ledger ID: {ledger_id}");
     Ok(())
 }
 
@@ -199,7 +202,7 @@ async fn run_list(
             let records = fluree.list_branches(&ledger_name).await?;
 
             if records.is_empty() {
-                println!("No branches found for '{}'.", ledger_name);
+                println!("No branches found for '{ledger_name}'.");
                 return Ok(());
             }
 
@@ -249,7 +252,7 @@ fn print_branch_list_json(result: &serde_json::Value) -> CliResult<()> {
             .unwrap_or("(unknown)");
         let t = branch
             .get("t")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string());
         let source = branch.get("source").and_then(|v| v.as_str()).unwrap_or("-");
@@ -311,12 +314,9 @@ async fn run_drop(
             let report = fluree.drop_branch(&ledger_name, name).await?;
 
             if report.deferred {
-                println!(
-                    "Branch '{}' retracted (has children, storage preserved).",
-                    name
-                );
+                println!("Branch '{name}' retracted (has children, storage preserved).");
             } else {
-                println!("Dropped branch '{}'.", name);
+                println!("Dropped branch '{name}'.");
             }
             if report.artifacts_deleted > 0 {
                 println!("  Artifacts deleted: {}", report.artifacts_deleted);
@@ -325,7 +325,7 @@ async fn run_drop(
                 println!("  Cascaded drops: {}", report.cascaded.join(", "));
             }
             for warning in &report.warnings {
-                eprintln!("  Warning: {}", warning);
+                eprintln!("  Warning: {warning}");
             }
         }
     }
@@ -369,7 +369,7 @@ async fn run_rebase(
     };
 
     let conflict_strategy = fluree_db_api::ConflictStrategy::from_str_name(strategy)
-        .ok_or_else(|| CliError::Config(format!("Unknown conflict strategy: {}", strategy)))?;
+        .ok_or_else(|| CliError::Config(format!("Unknown conflict strategy: {strategy}")))?;
 
     match mode {
         LedgerMode::Tracked {
@@ -418,7 +418,7 @@ async fn run_rebase(
 fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
     let fast_forward = result
         .get("fast_forward")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let branch = result
         .get("branch")
@@ -426,25 +426,33 @@ fn print_rebase_result(result: &serde_json::Value) -> CliResult<()> {
         .unwrap_or("(unknown)");
     let new_t = result
         .get("source_head_t")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
 
     if fast_forward {
-        println!("Fast-forward rebase of '{}' to t={}.", branch, new_t);
+        println!("Fast-forward rebase of '{branch}' to t={new_t}.");
     } else {
-        let replayed = result.get("replayed").and_then(|v| v.as_u64()).unwrap_or(0);
-        let skipped = result.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
+        let replayed = result
+            .get("replayed")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let skipped = result
+            .get("skipped")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
         let conflicts = result
             .get("conflicts")
-            .and_then(|v| v.as_u64())
+            .and_then(serde_json::Value::as_u64)
             .unwrap_or(0);
-        let failures = result.get("failures").and_then(|v| v.as_u64()).unwrap_or(0);
+        let failures = result
+            .get("failures")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
 
         println!(
-            "Rebased '{}': {} commits replayed, {} skipped, {} conflicts, {} failures.",
-            branch, replayed, skipped, conflicts, failures,
+            "Rebased '{branch}': {replayed} commits replayed, {skipped} skipped, {conflicts} conflicts, {failures} failures.",
         );
-        println!("  Source head: t={}", new_t);
+        println!("  Source head: t={new_t}");
     }
     Ok(())
 }
@@ -482,7 +490,7 @@ async fn run_merge(
     };
 
     let conflict_strategy = fluree_db_api::ConflictStrategy::from_str_name(strategy)
-        .ok_or_else(|| CliError::Config(format!("Unknown conflict strategy: {}", strategy)))?;
+        .ok_or_else(|| CliError::Config(format!("Unknown conflict strategy: {strategy}")))?;
 
     match mode {
         LedgerMode::Tracked {
@@ -539,30 +547,28 @@ fn print_merge_result(result: &serde_json::Value) -> CliResult<()> {
         .unwrap_or("(unknown)");
     let new_t = result
         .get("new_head_t")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
     let commits_copied = result
         .get("commits_copied")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     let fast_forward = result
         .get("fast_forward")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let conflict_count = result
         .get("conflict_count")
-        .and_then(|v| v.as_u64())
+        .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
 
     if fast_forward {
         println!(
-            "Merged '{}' into '{}' (fast-forward to t={}, {} commits copied).",
-            source, target, new_t, commits_copied,
+            "Merged '{source}' into '{target}' (fast-forward to t={new_t}, {commits_copied} commits copied).",
         );
     } else {
         println!(
-            "Merged '{}' into '{}' (t={}, {} commits copied, {} conflicts).",
-            source, target, new_t, commits_copied, conflict_count,
+            "Merged '{source}' into '{target}' (t={new_t}, {commits_copied} commits copied, {conflict_count} conflicts).",
         );
     }
     Ok(())
@@ -575,21 +581,21 @@ fn print_branch_dropped(result: &serde_json::Value) -> CliResult<()> {
         .unwrap_or("(unknown)");
     let deferred = result
         .get("deferred")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     if deferred {
-        println!(
-            "Branch retracted (has children, storage preserved): {}",
-            ledger_id
-        );
+        println!("Branch retracted (has children, storage preserved): {ledger_id}");
     } else {
-        println!("Dropped branch: {}", ledger_id);
+        println!("Dropped branch: {ledger_id}");
     }
 
-    if let Some(artifacts) = result.get("files_deleted").and_then(|v| v.as_u64()) {
+    if let Some(artifacts) = result
+        .get("files_deleted")
+        .and_then(serde_json::Value::as_u64)
+    {
         if artifacts > 0 {
-            println!("  Artifacts deleted: {}", artifacts);
+            println!("  Artifacts deleted: {artifacts}");
         }
     }
     if let Some(cascaded) = result.get("cascaded").and_then(|v| v.as_array()) {
@@ -601,7 +607,7 @@ fn print_branch_dropped(result: &serde_json::Value) -> CliResult<()> {
     if let Some(warnings) = result.get("warnings").and_then(|v| v.as_array()) {
         for w in warnings {
             if let Some(msg) = w.as_str() {
-                eprintln!("  Warning: {}", msg);
+                eprintln!("  Warning: {msg}");
             }
         }
     }

@@ -24,7 +24,7 @@ pub(crate) fn late_materialized_object_binding(
     let ot = OType::from_u16(o_type);
     match ot.decode_kind() {
         DecodeKind::IriRef => Some(Binding::EncodedSid { s_id: o_key }),
-        DecodeKind::BlankNode => Some(Binding::Sid(Sid::new(0, format!("_:b{}", o_key)))),
+        DecodeKind::BlankNode => Some(Binding::Sid(Sid::new(0, format!("_:b{o_key}")))),
         DecodeKind::StringDict => {
             let (dt_id, lang_id) = if ot.is_lang_string() {
                 (DatatypeDictId::LANG_STRING.as_u16(), ot.payload())

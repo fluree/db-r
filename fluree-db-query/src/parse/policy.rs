@@ -86,7 +86,7 @@ pub fn parse_strict_compact_iri_opt(obj: &serde_json::Map<String, JsonValue>) ->
     obj.get("opts")
         .and_then(|v| v.as_object())
         .and_then(|opts| opts.get("strictCompactIri"))
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
 }
 
 /// Resolve a [`JsonLdParsePolicy`] from an optional programmatic override and

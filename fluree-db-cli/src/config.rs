@@ -286,11 +286,11 @@ pub fn read_indexing_thresholds(config_dir: &Path) -> IndexingThresholds {
             IndexingThresholds {
                 reindex_min_bytes: indexing
                     .and_then(|i| i.get("reindex_min_bytes"))
-                    .and_then(|v| v.as_integer())
+                    .and_then(toml::Value::as_integer)
                     .map(|v| v as usize),
                 reindex_max_bytes: indexing
                     .and_then(|i| i.get("reindex_max_bytes"))
-                    .and_then(|v| v.as_integer())
+                    .and_then(toml::Value::as_integer)
                     .map(|v| v as usize),
             }
         }
@@ -303,11 +303,11 @@ pub fn read_indexing_thresholds(config_dir: &Path) -> IndexingThresholds {
             IndexingThresholds {
                 reindex_min_bytes: indexing
                     .and_then(|i| i.get("reindex_min_bytes"))
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .map(|v| v as usize),
                 reindex_max_bytes: indexing
                     .and_then(|i| i.get("reindex_max_bytes"))
-                    .and_then(|v| v.as_u64())
+                    .and_then(serde_json::Value::as_u64)
                     .map(|v| v as usize),
             }
         }
@@ -610,7 +610,8 @@ impl TomlSyncConfigStore {
                         auth_table.insert("refresh_token", Value::from(v.as_str()).into());
                     }
                     if let Some(ref scopes) = auth.scopes {
-                        let arr: toml_edit::Array = scopes.iter().map(|s| s.as_str()).collect();
+                        let arr: toml_edit::Array =
+                            scopes.iter().map(std::string::String::as_str).collect();
                         auth_table.insert("scopes", Value::from(arr).into());
                     }
                     if let Some(port) = auth.redirect_port {

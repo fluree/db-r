@@ -36,10 +36,10 @@ fn create_jws(payload: &str, signing_key: &SigningKey) -> String {
 
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let sig = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(sig.to_bytes());
-    format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+    format!("{header_b64}.{payload_b64}.{sig_b64}")
 }
 
 fn ctx_ct(ns_prefix: &str) -> JsonValue {
@@ -267,13 +267,13 @@ async fn credential_query_sparql_uses_identity_based_policy() {
 
     // Make sure the value is "Daniel" before any credential_transact in this test.
     let sparql = format!(
-        r#"
+        r"
 PREFIX ct: <ledger:{ns_prefix}/>
 SELECT ?name
 FROM <{ledger_id}>
 WHERE {{ <{did_root}> ct:name ?name }}
 ORDER BY ?name
-"#
+"
     );
 
     // Root can see itself.

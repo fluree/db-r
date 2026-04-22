@@ -81,8 +81,7 @@ impl crate::watch::RemoteWatch for SseRemoteWatch {
                                                 if consecutive_parse_errors >= MAX_CONSECUTIVE_PARSE_ERRORS {
                                                     yield RemoteEvent::Fatal {
                                                         reason: format!(
-                                                            "Too many SSE parse errors ({}): likely schema mismatch",
-                                                            consecutive_parse_errors
+                                                            "Too many SSE parse errors ({consecutive_parse_errors}): likely schema mismatch"
                                                         ),
                                                     };
                                                     return;
@@ -93,7 +92,7 @@ impl crate::watch::RemoteWatch for SseRemoteWatch {
                                 }
                                 Err(e) => {
                                     yield RemoteEvent::Disconnected {
-                                        reason: format!("Stream error: {}", e),
+                                        reason: format!("Stream error: {e}"),
                                     };
                                     break;
                                 }
@@ -110,17 +109,17 @@ impl crate::watch::RemoteWatch for SseRemoteWatch {
                         if status.as_u16() == 401 || status.as_u16() == 403 {
                             // Fatal auth error — do not retry
                             yield RemoteEvent::Fatal {
-                                reason: format!("HTTP {}", status),
+                                reason: format!("HTTP {status}"),
                             };
                             break;
                         }
                         yield RemoteEvent::Disconnected {
-                            reason: format!("HTTP {}", status),
+                            reason: format!("HTTP {status}"),
                         };
                     }
                     Err(e) => {
                         yield RemoteEvent::Disconnected {
-                            reason: format!("Connection failed: {}", e),
+                            reason: format!("Connection failed: {e}"),
                         };
                     }
                 }

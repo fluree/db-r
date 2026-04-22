@@ -94,9 +94,8 @@ pub fn format(
                     bindings.push(first);
                 }
                 break;
-            } else {
-                bindings.extend(disaggregated);
             }
+            bindings.extend(disaggregated);
         }
         if select_one && !bindings.is_empty() {
             break;

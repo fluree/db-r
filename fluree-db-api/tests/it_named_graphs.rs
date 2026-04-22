@@ -86,7 +86,7 @@ async fn test_trig_named_graph_basic() {
             assert_eq!(arr[0], "Alice");
 
             // Query the named graph via fragment - should see the event
-            let named_graph_alias = format!("{}#http://example.org/graphs/audit", ledger_id);
+            let named_graph_alias = format!("{ledger_id}#http://example.org/graphs/audit");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &named_graph_alias,
@@ -183,7 +183,7 @@ async fn test_trig_multiple_named_graphs() {
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query users graph
-            let users_alias = format!("{}#http://example.org/graphs/users", ledger_id);
+            let users_alias = format!("{ledger_id}#http://example.org/graphs/users");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &users_alias,
@@ -195,10 +195,10 @@ async fn test_trig_multiple_named_graphs() {
             let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
             // Should have 2 names (Alice, Bob)
-            assert_eq!(arr.len(), 2, "should find 2 users: {:?}", arr);
+            assert_eq!(arr.len(), 2, "should find 2 users: {arr:?}");
 
             // Query products graph
-            let products_alias = format!("{}#http://example.org/graphs/products", ledger_id);
+            let products_alias = format!("{ledger_id}#http://example.org/graphs/products");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &products_alias,
@@ -247,7 +247,7 @@ async fn test_unknown_named_graph_error() {
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query a non-existent named graph - should error
-            let unknown_alias = format!("{}#http://example.org/nonexistent", ledger_id);
+            let unknown_alias = format!("{ledger_id}#http://example.org/nonexistent");
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &unknown_alias,
@@ -260,8 +260,7 @@ async fn test_unknown_named_graph_error() {
             let err_msg = format!("{}", result.unwrap_err());
             assert!(
                 err_msg.contains("Unknown named graph"),
-                "error should mention unknown graph: {}",
-                err_msg
+                "error should mention unknown graph: {err_msg}"
             );
         })
         .await;
@@ -321,7 +320,7 @@ async fn test_update_default_graph_and_template_graph_sugar() {
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
             // Query the named graph - should see "new"
-            let named_graph_alias = format!("{}#http://example.org/graphs/audit", ledger_id);
+            let named_graph_alias = format!("{ledger_id}#http://example.org/graphs/audit");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &named_graph_alias,
@@ -401,7 +400,7 @@ async fn test_update_from_scopes_where_default_graph() {
             let result = fluree.update(ledger, &update).await.expect("update");
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
-            let named_g2 = format!("{}#http://example.org/g2", ledger_id);
+            let named_g2 = format!("{ledger_id}#http://example.org/g2");
             let query = json!({
                 "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
                 "from": &named_g2,
@@ -465,7 +464,7 @@ async fn test_update_from_multiple_default_graphs_merge_where() {
             let result = fluree.update(ledger, &update).await.expect("update");
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
-            let named_g1 = format!("{}#http://example.org/g1", ledger_id);
+            let named_g1 = format!("{ledger_id}#http://example.org/g1");
             let query = json!({
                 "@context": { "ex": "http://example.org/" },
                 "from": &named_g1,
@@ -520,7 +519,7 @@ async fn test_update_from_named_alias_usable_in_templates() {
                 .expect("insert via alias");
             trigger_index_and_wait(&handle, ledger_id, result.receipt.t).await;
 
-            let named_g2 = format!("{}#http://example.org/g2", ledger_id);
+            let named_g2 = format!("{ledger_id}#http://example.org/g2");
             let query = json!({
                 "@context": { "ex": "http://example.org/", "schema": "http://schema.org/" },
                 "from": &named_g2,
@@ -600,12 +599,11 @@ async fn test_default_graph_isolation() {
             let arr = results.as_array().expect("array");
             assert!(
                 arr.is_empty(),
-                "default graph should not contain named graph data: {:?}",
-                arr
+                "default graph should not contain named graph data: {arr:?}"
             );
 
             // Query named graph - should find the secret
-            let private_alias = format!("{}#http://example.org/graphs/private", ledger_id);
+            let private_alias = format!("{ledger_id}#http://example.org/graphs/private");
             let query = json!({
                 "@context": {"ex": "http://example.org/", "schema": "http://schema.org/"},
                 "from": &private_alias,
@@ -692,7 +690,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
             assert_eq!(arr[0], "Alice");
 
             // Query txn-meta graph
-            let meta_alias = format!("{}#txn-meta", ledger_id);
+            let meta_alias = format!("{ledger_id}#txn-meta");
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &meta_alias,
@@ -710,7 +708,7 @@ async fn test_txn_meta_and_named_graph_coexist() {
             assert_eq!(arr[0], "batch-123");
 
             // Query audit graph
-            let audit_alias = format!("{}#http://example.org/graphs/audit", ledger_id);
+            let audit_alias = format!("{ledger_id}#http://example.org/graphs/audit");
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &audit_alias,
@@ -753,7 +751,7 @@ async fn test_named_graph_update_and_query_current() {
             let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Transaction 1: Initial data in named graph
-            let trig1 = r#"
+            let trig1 = r"
                 @prefix ex: <http://example.org/> .
                 @prefix schema: <http://schema.org/> .
 
@@ -761,7 +759,7 @@ async fn test_named_graph_update_and_query_current() {
                     ex:widget ex:stock 100 .
                     ex:gadget ex:stock 50 .
                 }
-            "#;
+            ";
 
             let result1 = fluree
                 .stage_owned(ledger)
@@ -775,7 +773,7 @@ async fn test_named_graph_update_and_query_current() {
             trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
 
             // Transaction 2: Update stock levels using graph().transact() API
-            let trig2 = r#"
+            let trig2 = r"
                 @prefix ex: <http://example.org/> .
 
                 GRAPH <http://example.org/graphs/inventory> {
@@ -783,7 +781,7 @@ async fn test_named_graph_update_and_query_current() {
                     ex:gadget ex:stock 60 .
                     ex:gizmo ex:stock 25 .
                 }
-            "#;
+            ";
 
             let result2 = fluree
                 .graph(ledger_id)
@@ -798,7 +796,7 @@ async fn test_named_graph_update_and_query_current() {
             trigger_index_and_wait(&handle, ledger_id, result2.receipt.t).await;
 
             // Query current state (t=2) - should see updated values
-            let inv_alias = format!("{}#http://example.org/graphs/inventory", ledger_id);
+            let inv_alias = format!("{ledger_id}#http://example.org/graphs/inventory");
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             let query = json!({
@@ -817,7 +815,7 @@ async fn test_named_graph_update_and_query_current() {
             let arr = results.as_array().expect("array");
 
             // Should have 3 items with updated stock
-            assert_eq!(arr.len(), 3, "should have 3 items: {:?}", arr);
+            assert_eq!(arr.len(), 3, "should have 3 items: {arr:?}");
 
             // Check widget has updated stock (75, not 100)
             let widget_row = arr.iter().find(|r| {
@@ -833,7 +831,7 @@ async fn test_named_graph_update_and_query_current() {
                 .unwrap()
                 .as_array()
                 .and_then(|a| a.get(1))
-                .and_then(|v| v.as_i64());
+                .and_then(serde_json::Value::as_i64);
             assert_eq!(widget_stock, Some(75), "widget should have updated stock");
 
             // Check gizmo exists (added in tx2)
@@ -873,14 +871,14 @@ async fn test_named_graph_time_travel() {
             let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Transaction 1: Initial prices
-            let trig1 = r#"
+            let trig1 = r"
                 @prefix ex: <http://example.org/> .
 
                 GRAPH <http://example.org/graphs/pricing> {
                     ex:product1 ex:price 100 .
                     ex:product2 ex:price 200 .
                 }
-            "#;
+            ";
 
             let result1 = fluree
                 .stage_owned(ledger)
@@ -893,14 +891,14 @@ async fn test_named_graph_time_travel() {
             trigger_index_and_wait(&handle, ledger_id, result1.receipt.t).await;
 
             // Transaction 2: Price updates using graph().transact() API
-            let trig2 = r#"
+            let trig2 = r"
                 @prefix ex: <http://example.org/> .
 
                 GRAPH <http://example.org/graphs/pricing> {
                     ex:product1 ex:price 150 .
                     ex:product2 ex:price 175 .
                 }
-            "#;
+            ";
 
             let result2 = fluree
                 .graph(ledger_id)
@@ -988,7 +986,7 @@ async fn test_named_graph_time_travel() {
             let p1_price = p1_row
                 .and_then(|r| r.as_array())
                 .and_then(|a| a.get(1))
-                .and_then(|v| v.as_i64());
+                .and_then(serde_json::Value::as_i64);
             assert_eq!(p1_price, Some(100), "product1 at t=1 should be 100");
 
             // Query at t=2 (updated prices)
@@ -1024,7 +1022,7 @@ async fn test_named_graph_time_travel() {
             let p1_price = p1_row
                 .and_then(|r| r.as_array())
                 .and_then(|a| a.get(1))
-                .and_then(|v| v.as_i64());
+                .and_then(serde_json::Value::as_i64);
             assert_eq!(p1_price, Some(150), "product1 at t=2 should be 150");
 
             // Query current (should match t=2)
@@ -1061,7 +1059,7 @@ async fn test_named_graph_time_travel() {
             let p1_price = p1_row
                 .and_then(|r| r.as_array())
                 .and_then(|a| a.get(1))
-                .and_then(|v| v.as_i64());
+                .and_then(serde_json::Value::as_i64);
             assert_eq!(p1_price, Some(150), "current product1 should be 150");
         })
         .await;
@@ -1086,7 +1084,7 @@ async fn test_named_graph_retraction() {
             let ledger = genesis_ledger(&fluree, ledger_id);
 
             // Transaction 1: Add data to named graph
-            let trig1 = r#"
+            let trig1 = r"
                 @prefix ex: <http://example.org/> .
 
                 GRAPH <http://example.org/graphs/users> {
@@ -1094,7 +1092,7 @@ async fn test_named_graph_retraction() {
                     ex:bob ex:active true .
                     ex:carol ex:active true .
                 }
-            "#;
+            ";
 
             let result1 = fluree
                 .stage_owned(ledger)
@@ -1125,7 +1123,7 @@ async fn test_named_graph_retraction() {
             let ledger = fluree.ledger(ledger_id).await.expect("load ledger");
 
             // Query current - should have alice and carol, but NOT bob
-            let users_alias = format!("{}#http://example.org/graphs/users", ledger_id);
+            let users_alias = format!("{ledger_id}#http://example.org/graphs/users");
             let query = json!({
                 "@context": {"ex": "http://example.org/"},
                 "from": &users_alias,
@@ -1144,8 +1142,7 @@ async fn test_named_graph_retraction() {
             assert_eq!(
                 arr.len(),
                 2,
-                "should have 2 active users after retraction: {:?}",
-                arr
+                "should have 2 active users after retraction: {arr:?}"
             );
 
             let user_ids: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
@@ -1181,7 +1178,7 @@ async fn test_named_graph_retraction() {
             let results = results.to_jsonld(&ledger.snapshot).expect("to_jsonld");
             let arr = results.as_array().expect("array");
 
-            assert_eq!(arr.len(), 3, "should have 3 active users at t=1: {:?}", arr);
+            assert_eq!(arr.len(), 3, "should have 3 active users at t=1: {arr:?}");
         })
         .await;
 }

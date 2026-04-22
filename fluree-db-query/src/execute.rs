@@ -290,6 +290,10 @@ pub async fn execute_with_dataset_and_providers<'a, 'b>(
 ///
 /// This combines dataset execution with policy enforcement and both BM25 and
 /// vector index provider support.
+#[allow(
+    clippy::elidable_lifetime_names,
+    reason = "named lifetimes document the 'a/'b relationship between the db ref and context params"
+)]
 pub async fn execute_with_dataset_and_policy_and_providers<'a, 'b>(
     db: GraphDbRef<'a>,
     vars: &VarRegistry,

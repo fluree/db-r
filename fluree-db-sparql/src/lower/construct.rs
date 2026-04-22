@@ -16,7 +16,7 @@ use fluree_db_query::triple::TriplePattern;
 
 use super::{LoweringContext, Result};
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     /// Lower a CONSTRUCT query to a ParsedQuery.
     pub(super) fn lower_construct(&mut self, construct: &ConstructQuery) -> Result<ParsedQuery> {
         // Lower WHERE clause patterns

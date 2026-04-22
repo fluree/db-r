@@ -115,7 +115,7 @@ impl AppState {
     ) -> Result<Self, fluree_db_api::ApiError> {
         // Validate configuration at startup
         config.validate().map_err(|e| {
-            fluree_db_api::ApiError::internal(format!("Invalid configuration: {}", e))
+            fluree_db_api::ApiError::internal(format!("Invalid configuration: {e}"))
         })?;
 
         // Create Fluree instance based on storage access mode
@@ -155,8 +155,7 @@ impl AppState {
                 Ok(_) => None,
                 Err(e) => {
                     return Err(fluree_db_api::ApiError::internal(format!(
-                        "Invalid JWKS configuration: {}",
-                        e
+                        "Invalid JWKS configuration: {e}"
                     )));
                 }
             }
@@ -254,7 +253,7 @@ impl AppState {
             .expect("tx_server_url validated in proxy mode");
 
         let token = config.load_storage_proxy_token().map_err(|e| {
-            fluree_db_api::ApiError::internal(format!("Failed to load storage proxy token: {}", e))
+            fluree_db_api::ApiError::internal(format!("Failed to load storage proxy token: {e}"))
         })?;
 
         let storage = ProxyStorage::new(tx_url.clone(), token.clone());

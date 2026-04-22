@@ -59,7 +59,7 @@ async fn export_ledger_to_bytes(fluree: &fluree_db_api::Fluree, ledger_id: &str)
         None
     };
 
-    let artifact_count = index_artifacts.as_ref().map_or(0, |a| a.len());
+    let artifact_count = index_artifacts.as_ref().map_or(0, std::vec::Vec::len);
 
     let mut out = Vec::new();
     write_stream_preamble(&mut out);
@@ -212,7 +212,7 @@ async fn import_ledger_from_bytes(fluree: &fluree_db_api::Fluree, ledger_id: &st
     let commit_cid: fluree_db_core::ContentId = commit_cid_str.parse().expect("parse commit CID");
     let commit_t = manifest
         .get("commit_t")
-        .and_then(|v| v.as_i64())
+        .and_then(serde_json::Value::as_i64)
         .unwrap_or(0);
     fluree
         .set_commit_head(&handle, &commit_cid, commit_t)
@@ -224,7 +224,7 @@ async fn import_ledger_from_bytes(fluree: &fluree_db_api::Fluree, ledger_id: &st
         let index_cid: fluree_db_core::ContentId = index_cid_str.parse().expect("parse index CID");
         let index_t = manifest
             .get("index_t")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .unwrap_or(0);
         fluree
             .set_index_head(&handle, &index_cid, index_t)
@@ -580,12 +580,12 @@ async fn flpack_stream_structure_is_valid() {
     assert!(commit_count >= 1, "should have at least one commit frame");
     assert!(has_ns_manifest, "should have a nameservice manifest");
     assert_eq!(
-        frame_types.first().map(|s| s.as_str()),
+        frame_types.first().map(std::string::String::as_str),
         Some("Header"),
         "first frame should be Header"
     );
     assert_eq!(
-        frame_types.last().map(|s| s.as_str()),
+        frame_types.last().map(std::string::String::as_str),
         Some("End"),
         "last frame should be End"
     );

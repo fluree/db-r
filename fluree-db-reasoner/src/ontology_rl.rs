@@ -553,7 +553,7 @@ impl OntologyRL {
         self.inner
             .inverse_of
             .get(p)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -576,7 +576,7 @@ impl OntologyRL {
         self.inner
             .domain
             .get(p)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -589,7 +589,7 @@ impl OntologyRL {
         self.inner
             .range
             .get(p)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -612,7 +612,7 @@ impl OntologyRL {
         self.inner
             .super_properties
             .get(p)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -630,7 +630,7 @@ impl OntologyRL {
         self.inner
             .super_classes
             .get(c)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -648,7 +648,7 @@ impl OntologyRL {
         self.inner
             .equivalent_classes
             .get(c)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -742,7 +742,7 @@ impl OntologyRL {
         self.inner
             .has_keys
             .get(class)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 

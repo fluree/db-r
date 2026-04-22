@@ -19,7 +19,7 @@ pub fn ledger_id_to_path_prefix(ledger_id: &str) -> Result<String, LedgerIdParse
     }
 
     let (name, branch) = split_ledger_id(ledger_id)?;
-    Ok(format!("{}/{}", name, branch))
+    Ok(format!("{name}/{branch}"))
 }
 
 /// Namespace for content shared across all branches of a ledger.
@@ -38,5 +38,5 @@ pub fn shared_prefix_for_path(ledger_id: &str) -> String {
     } else {
         ledger_id.split(':').next().unwrap_or(ledger_id)
     };
-    format!("{}/{}", name, SHARED_NAMESPACE)
+    format!("{name}/{SHARED_NAMESPACE}")
 }

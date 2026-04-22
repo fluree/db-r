@@ -153,7 +153,7 @@ impl Operator for DistinctOperator {
                 }
             }
 
-            if columns.first().map(|c| c.is_empty()).unwrap_or(true) {
+            if columns.first().map(std::vec::Vec::is_empty).unwrap_or(true) {
                 // All rows were duplicates, try next batch
                 continue;
             }
@@ -237,7 +237,12 @@ mod tests {
         }
 
         fn estimated_rows(&self) -> Option<usize> {
-            Some(self.batches.iter().map(|b| b.len()).sum())
+            Some(
+                self.batches
+                    .iter()
+                    .map(super::super::binding::Batch::len)
+                    .sum(),
+            )
         }
     }
 

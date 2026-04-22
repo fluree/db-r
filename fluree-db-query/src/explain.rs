@@ -321,7 +321,7 @@ fn format_ref(r: &Ref) -> String {
     match r {
         Ref::Var(v) => format!("?v{}", v.0),
         Ref::Sid(sid) => format!("<{}:{}>", sid.namespace_code, &sid.name),
-        Ref::Iri(iri) => format!("<{}>", iri),
+        Ref::Iri(iri) => format!("<{iri}>"),
     }
 }
 
@@ -330,8 +330,8 @@ fn format_term(term: &Term) -> String {
     match term {
         Term::Var(v) => format!("?v{}", v.0),
         Term::Sid(sid) => format!("<{}:{}>", sid.namespace_code, &sid.name),
-        Term::Iri(iri) => format!("<{}>", iri),
-        Term::Value(val) => format!("{:?}", val),
+        Term::Iri(iri) => format!("<{iri}>"),
+        Term::Value(val) => format!("{val:?}"),
     }
 }
 
@@ -469,27 +469,27 @@ impl fmt::Display for PatternDisplay {
                 FallbackReason::FullScanPattern => "full-scan",
                 FallbackReason::ClassNotInStats => "class-not-in-stats",
             };
-            write!(f, " (fallback: {})", reason_str)?;
+            write!(f, " (fallback: {reason_str})")?;
         }
 
         if let Some(ref prop) = self.inputs.property_sid {
-            write!(f, " prop={}", prop)?;
+            write!(f, " prop={prop}")?;
         }
 
         if let Some(count) = self.inputs.count {
-            write!(f, " count={}", count)?;
+            write!(f, " count={count}")?;
         }
 
         if let Some(ndv) = self.inputs.ndv_values {
-            write!(f, " ndv_val={}", ndv)?;
+            write!(f, " ndv_val={ndv}")?;
         }
 
         if let Some(ndv) = self.inputs.ndv_subjects {
-            write!(f, " ndv_subj={}", ndv)?;
+            write!(f, " ndv_subj={ndv}")?;
         }
 
         if let Some(cc) = self.inputs.class_count {
-            write!(f, " class_count={}", cc)?;
+            write!(f, " class_count={cc}")?;
         }
 
         Ok(())
@@ -596,7 +596,7 @@ fn build_general_pattern_display(
 pub fn format_general_pattern(pattern: &Pattern) -> String {
     match pattern {
         Pattern::Triple(tp) => format_pattern(tp),
-        Pattern::Filter(expr) => format!("FILTER({:?})", expr),
+        Pattern::Filter(expr) => format!("FILTER({expr:?})"),
         Pattern::Bind { var, expr } => format!("BIND({:?} AS ?v{})", expr, var.0),
         Pattern::Values { vars, rows } => {
             let var_names: Vec<String> = vars.iter().map(|v| format!("?v{}", v.0)).collect();
@@ -845,7 +845,7 @@ mod tests {
         ];
         let explain = explain_patterns(&patterns, None);
 
-        let output = format!("{}", explain);
+        let output = format!("{explain}");
         assert!(output.contains("Query Optimization Explain"));
         assert!(output.contains("Statistics available: no"));
         assert!(output.contains("Original Pattern Order"));

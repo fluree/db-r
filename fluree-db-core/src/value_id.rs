@@ -160,7 +160,7 @@ impl fmt::Debug for ObjKind {
             0x13 => write!(f, "ObjKind::DayTimeDur"),
             0x14 => write!(f, "ObjKind::GeoPoint"),
             0xFF => write!(f, "ObjKind::Max"),
-            n => write!(f, "ObjKind({:#04x})", n),
+            n => write!(f, "ObjKind({n:#04x})"),
         }
     }
 }
@@ -853,9 +853,9 @@ impl fmt::Display for ValueTypeTag {
             38 => "f:embeddingVector",
             39 => "f:fullText",
             255 => "UNKNOWN",
-            n => return write!(f, "ValueTypeTag({})", n),
+            n => return write!(f, "ValueTypeTag({n})"),
         };
-        write!(f, "{}", name)
+        write!(f, "{name}")
     }
 }
 
@@ -966,7 +966,7 @@ mod tests {
             i32::MIN as i64,
         ] {
             let key = ObjKey::encode_i64(v);
-            assert_eq!(key.decode_i64(), v, "round-trip failed for {}", v);
+            assert_eq!(key.decode_i64(), v, "round-trip failed for {v}");
         }
     }
 
@@ -1020,12 +1020,7 @@ mod tests {
         for &v in &[0.0f64, 1.0, -1.0, 0.5, -0.5, 3.13, -2.77, 1e10, -1e10] {
             let key = ObjKey::encode_f64(v).unwrap();
             let decoded = key.decode_f64();
-            assert_eq!(
-                decoded.to_bits(),
-                v.to_bits(),
-                "round-trip failed for {}",
-                v
-            );
+            assert_eq!(decoded.to_bits(), v.to_bits(), "round-trip failed for {v}");
         }
     }
 
@@ -1147,12 +1142,7 @@ mod tests {
     fn test_date_round_trip() {
         for &days in &[0i32, 19737, -365, i32::MIN, i32::MAX] {
             let key = ObjKey::encode_date(days);
-            assert_eq!(
-                key.decode_date(),
-                days,
-                "date round-trip failed for {}",
-                days
-            );
+            assert_eq!(key.decode_date(), days, "date round-trip failed for {days}");
         }
     }
 
@@ -1192,8 +1182,7 @@ mod tests {
             assert_eq!(
                 key.decode_datetime(),
                 micros,
-                "datetime round-trip failed for {}",
-                micros
+                "datetime round-trip failed for {micros}"
             );
         }
     }
@@ -1229,17 +1218,11 @@ mod tests {
             // 30-bit precision gives ~0.0001 degree accuracy (~11m at equator)
             assert!(
                 (lat - dec_lat).abs() < 0.0001,
-                "lat round-trip failed for ({}, {}): got {}",
-                lat,
-                lng,
-                dec_lat
+                "lat round-trip failed for ({lat}, {lng}): got {dec_lat}"
             );
             assert!(
                 (lng - dec_lng).abs() < 0.0001,
-                "lng round-trip failed for ({}, {}): got {}",
-                lat,
-                lng,
-                dec_lng
+                "lng round-trip failed for ({lat}, {lng}): got {dec_lng}"
             );
         }
     }
@@ -1333,16 +1316,16 @@ mod tests {
         // At equator, 1 degree = 111,320m, so 0.0001 degree = ~11m
         // Our encoding should preserve at least this precision
 
-        let lat = 45.123456789;
-        let lng = -122.987654321;
+        let lat = 45.123_456_789;
+        let lng = -122.987_654_321;
         let key = ObjKey::encode_geo_point(lat, lng).unwrap();
         let (dec_lat, dec_lng) = key.decode_geo_point();
 
         // Should preserve at least 4 decimal places
         let lat_error = (lat - dec_lat).abs();
         let lng_error = (lng - dec_lng).abs();
-        assert!(lat_error < 0.00002, "lat precision error: {}", lat_error);
-        assert!(lng_error < 0.00004, "lng precision error: {}", lng_error);
+        assert!(lat_error < 0.00002, "lat precision error: {lat_error}");
+        assert!(lng_error < 0.00004, "lng precision error: {lng_error}");
     }
 
     // ---- Composite (kind, key) ordering ----
@@ -1604,13 +1587,13 @@ mod tests {
             ValueTypeTag::NON_POSITIVE_INTEGER,
             ValueTypeTag::NEGATIVE_INTEGER,
         ] {
-            assert!(dt.is_integer_type(), "{} should be integer type", dt);
-            assert!(!dt.is_float_type(), "{} should not be float type", dt);
+            assert!(dt.is_integer_type(), "{dt} should be integer type");
+            assert!(!dt.is_float_type(), "{dt} should not be float type");
         }
 
         for dt in [ValueTypeTag::DOUBLE, ValueTypeTag::FLOAT] {
-            assert!(dt.is_float_type(), "{} should be float type", dt);
-            assert!(!dt.is_integer_type(), "{} should not be integer type", dt);
+            assert!(dt.is_float_type(), "{dt} should be float type");
+            assert!(!dt.is_integer_type(), "{dt} should not be integer type");
         }
 
         for dt in [
@@ -1621,8 +1604,8 @@ mod tests {
             ValueTypeTag::TIME,
             ValueTypeTag::LANG_STRING,
         ] {
-            assert!(!dt.is_integer_type(), "{} should not be integer type", dt);
-            assert!(!dt.is_float_type(), "{} should not be float type", dt);
+            assert!(!dt.is_integer_type(), "{dt} should not be integer type");
+            assert!(!dt.is_float_type(), "{dt} should not be float type");
         }
     }
 }

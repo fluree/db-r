@@ -11,7 +11,7 @@ pub async fn run(ledger: &str, dirs: &FlureeDir) -> CliResult<()> {
     let record = fluree.nameservice().lookup(&ledger_id).await?;
     if record.is_some() {
         config::write_active_ledger(dirs.data_dir(), ledger)?;
-        println!("Now using ledger '{}'", ledger);
+        println!("Now using ledger '{ledger}'");
         return Ok(());
     }
 
@@ -19,9 +19,9 @@ pub async fn run(ledger: &str, dirs: &FlureeDir) -> CliResult<()> {
     let store = TomlSyncConfigStore::new(dirs.config_dir().to_path_buf());
     if store.get_tracked(ledger).is_some() || store.get_tracked(&ledger_id).is_some() {
         config::write_active_ledger(dirs.data_dir(), ledger)?;
-        println!("Now using tracked ledger '{}'", ledger);
+        println!("Now using tracked ledger '{ledger}'");
         return Ok(());
     }
 
-    Err(CliError::NotFound(format!("ledger '{}' not found", ledger)))
+    Err(CliError::NotFound(format!("ledger '{ledger}' not found")))
 }

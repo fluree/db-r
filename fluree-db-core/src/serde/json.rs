@@ -84,7 +84,7 @@ pub fn deserialize_sid(value: &serde_json::Value) -> Result<Sid> {
                 .as_u64()
                 .ok_or_else(|| Error::other("SID namespace_code must be integer"))?;
             let ns_code = u16::try_from(raw_code).map_err(|_| {
-                Error::other(format!("SID namespace_code {} exceeds u16::MAX", raw_code))
+                Error::other(format!("SID namespace_code {raw_code} exceeds u16::MAX"))
             })?;
             let name = arr[1]
                 .as_str()
@@ -93,8 +93,7 @@ pub fn deserialize_sid(value: &serde_json::Value) -> Result<Sid> {
             Ok(Sid::new(ns_code, name))
         }
         _ => Err(Error::other(format!(
-            "SID must be [namespace_code, name] array, got {:?}",
-            value
+            "SID must be [namespace_code, name] array, got {value:?}"
         ))),
     }
 }
@@ -149,7 +148,7 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
                 let s = n.to_string();
                 return BigInt::from_str(&s)
                     .map(|bi| FlakeValue::BigInt(Box::new(bi)))
-                    .map_err(|e| Error::other(format!("Invalid integer: {}", e)));
+                    .map_err(|e| Error::other(format!("Invalid integer: {e}")));
             }
             serde_json::Value::String(s) => {
                 // Try i64 first, fall back to BigInt
@@ -158,7 +157,7 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
                 }
                 return BigInt::from_str(s)
                     .map(|bi| FlakeValue::BigInt(Box::new(bi)))
-                    .map_err(|e| Error::other(format!("Invalid integer: {}", e)));
+                    .map_err(|e| Error::other(format!("Invalid integer: {e}")));
             }
             _ => {}
         }
@@ -178,7 +177,7 @@ pub fn deserialize_object(value: &serde_json::Value, dt: &Sid) -> Result<FlakeVa
             serde_json::Value::String(s) => {
                 return BigDecimal::from_str(s)
                     .map(|bd| FlakeValue::Decimal(Box::new(bd)))
-                    .map_err(|e| Error::other(format!("Invalid decimal: {}", e)));
+                    .map_err(|e| Error::other(format!("Invalid decimal: {e}")));
             }
             _ => {}
         }
@@ -225,7 +224,10 @@ pub fn deserialize_meta(value: &serde_json::Value) -> Result<Option<FlakeMeta>> 
         serde_json::Value::Null => Ok(None),
         serde_json::Value::Object(map) => {
             let lang = map.get("lang").and_then(|v| v.as_str()).map(String::from);
-            let i = map.get("i").and_then(|v| v.as_i64()).map(|v| v as i32);
+            let i = map
+                .get("i")
+                .and_then(serde_json::Value::as_i64)
+                .map(|v| v as i32);
             if lang.is_none() && i.is_none() {
                 Ok(None)
             } else {
@@ -295,8 +297,7 @@ mod tests {
         let result = deserialize_object(&value, &rdf_json_dt).unwrap();
         assert!(
             matches!(&result, FlakeValue::Json(s) if s == json_str),
-            "rdf:JSON datatype should produce FlakeValue::Json, got: {:?}",
-            result
+            "rdf:JSON datatype should produce FlakeValue::Json, got: {result:?}"
         );
     }
 

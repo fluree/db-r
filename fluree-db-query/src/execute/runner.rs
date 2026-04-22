@@ -5,7 +5,7 @@
 //! and ensure consistent behavior (including tracing) across all execution paths.
 
 use crate::binding::Batch;
-use crate::context::ExecutionContext;
+use crate::context::{ExecutionContext, FulltextProviders};
 use crate::dataset::DataSet;
 use crate::error::Result;
 use crate::ir::Pattern;
@@ -17,7 +17,7 @@ use crate::rewrite_owl_ql::Ontology;
 use crate::stats_cache::cached_stats_view_for_db;
 use crate::triple::{Ref, Term, TriplePattern};
 use crate::var_registry::VarRegistry;
-use fluree_db_binary_index::{BinaryIndexStore, FulltextArena};
+use fluree_db_binary_index::BinaryIndexStore;
 use fluree_db_core::dict_novelty::DictNovelty;
 use fluree_db_core::{GraphDbRef, GraphId, LedgerSnapshot, Tracker};
 use fluree_db_reasoner::DerivedFactsOverlay;
@@ -500,7 +500,7 @@ pub struct ContextConfig<'a, 'b> {
     /// Fulltext BoW arenas for `fulltext()` BM25 scoring.
     /// Keys are `(g_id, p_id, lang_id)` triples — one arena per language on
     /// each property.
-    pub fulltext_providers: Option<&'a HashMap<(GraphId, u32, u16), Arc<FulltextArena>>>,
+    pub fulltext_providers: Option<&'a FulltextProviders>,
     /// Dict-assigned lang_id for BCP-47 `"en"`, used as the arena-lookup
     /// key for `@fulltext`-datatype values and as the final fallback in
     /// the language-resolution chain for configured full-text properties.
@@ -924,6 +924,10 @@ pub async fn execute_prepared_with_dataset_and_providers<'a, 'b>(
 }
 
 /// Execute with dataset, policy, and both BM25 and vector providers
+#[allow(
+    clippy::elidable_lifetime_names,
+    reason = "named lifetimes document the 'a/'b relationship between the db ref and context params"
+)]
 pub async fn execute_prepared_with_dataset_and_policy_and_providers<'a, 'b>(
     db: GraphDbRef<'a>,
     vars: &VarRegistry,

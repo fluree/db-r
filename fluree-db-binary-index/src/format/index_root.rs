@@ -588,7 +588,7 @@ impl IndexRoot {
             buf.extend_from_slice(&entry.o_type.to_le_bytes());
             buf.push(entry.decode_kind as u8);
             // flags: bit 0 = has_datatype_iri, bit 1 = has_dict_family
-            let entry_flags = (if entry.datatype_iri.is_some() { 1u8 } else { 0 })
+            let entry_flags = u8::from(entry.datatype_iri.is_some())
                 | (if entry.dict_family.is_some() { 2u8 } else { 0 });
             buf.push(entry_flags);
             if let Some(ref iri) = entry.datatype_iri {
@@ -895,13 +895,13 @@ impl IndexRoot {
             datatype_iris,
             language_tags,
             dict_refs,
-            graph_arenas,
             subject_watermarks,
             string_watermark,
             lex_sorted_string_ids,
             total_commit_size,
             total_asserts,
             total_retracts,
+            graph_arenas,
             o_type_table,
             default_graph_orders,
             named_graphs,

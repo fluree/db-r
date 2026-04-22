@@ -74,8 +74,7 @@ impl StagedOverlay {
                 None => 0,
                 Some(g_sid) => *reverse_graph.get(g_sid).ok_or_else(|| {
                     LedgerError::Core(fluree_db_core::Error::invalid_index(format!(
-                        "staged flake has unknown graph Sid '{}' not in reverse_graph",
-                        g_sid
+                        "staged flake has unknown graph Sid '{g_sid}' not in reverse_graph"
                     )))
                 })?,
             };
@@ -339,8 +338,8 @@ mod tests {
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,
@@ -399,7 +398,7 @@ mod tests {
         // Collect all flakes via overlay provider (g_id=0 for default graph)
         let mut collected = Vec::new();
         view.for_each_overlay_flake(0, IndexType::Spot, None, None, true, 100, &mut |f| {
-            collected.push(f.s.namespace_code)
+            collected.push(f.s.namespace_code);
         });
 
         // Should be merged in sorted order

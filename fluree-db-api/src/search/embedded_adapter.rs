@@ -94,7 +94,7 @@ impl<P: Bm25IndexProvider> Bm25SearchProvider for EmbeddedBm25SearchProvider<'_,
         }
 
         // Score documents using top_k for consistent behavior with service backend
-        let term_refs: Vec<&str> = terms.iter().map(|s| s.as_str()).collect();
+        let term_refs: Vec<&str> = terms.iter().map(std::string::String::as_str).collect();
         let scorer = Bm25Scorer::new(&index, &term_refs);
         let scored = scorer.top_k(limit);
 
@@ -137,8 +137,7 @@ mod tests {
         ) -> Result<Arc<Bm25Index>> {
             self.indexes.get(graph_source_id).cloned().ok_or_else(|| {
                 fluree_db_query::error::QueryError::InvalidQuery(format!(
-                    "No index for {}",
-                    graph_source_id
+                    "No index for {graph_source_id}"
                 ))
             })
         }
@@ -200,7 +199,7 @@ mod tests {
         // Use "quantum" which is not a stopword (unlike "test" which is filtered)
         for i in 0..10 {
             index.upsert_document(
-                DocKey::new("db:main", format!("http://example.org/doc-{}", i)),
+                DocKey::new("db:main", format!("http://example.org/doc-{i}")),
                 [("quantum", 1)].into_iter().collect(),
             );
         }

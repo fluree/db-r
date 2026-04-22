@@ -239,7 +239,11 @@ impl Operator for BindOperator {
             }
 
             // Check if any rows remain after filtering
-            if output_columns.first().map(|c| c.is_empty()).unwrap_or(true) {
+            if output_columns
+                .first()
+                .map(std::vec::Vec::is_empty)
+                .unwrap_or(true)
+            {
                 continue;
             }
 

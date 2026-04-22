@@ -100,7 +100,10 @@ async fn stats_ok() {
 
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(json.get("uptime_secs").and_then(|v| v.as_u64()).is_some());
+    assert!(json
+        .get("uptime_secs")
+        .and_then(serde_json::Value::as_u64)
+        .is_some());
     assert_eq!(
         json.get("storage_type").and_then(|v| v.as_str()),
         Some("file")
@@ -137,7 +140,7 @@ async fn create_ledger_then_ledger_info() {
         Some("test:main")
     );
     // Empty ledger has t=0
-    assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(0));
+    assert_eq!(json.get("t").and_then(serde_json::Value::as_i64), Some(0));
     // Should have tx-id and commit fields
     assert!(
         json.get("tx-id").is_some(),
@@ -166,7 +169,7 @@ async fn create_ledger_then_ledger_info() {
         Some("test:main")
     );
     // New ledger has no commits yet
-    assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(0));
+    assert_eq!(json.get("t").and_then(serde_json::Value::as_i64), Some(0));
 }
 
 #[tokio::test]
@@ -216,7 +219,12 @@ async fn insert_then_query_finds_value() {
         json.get("ledger_id").and_then(|v| v.as_str()),
         Some("test:main")
     );
-    assert!(json.get("t").and_then(|v| v.as_i64()).unwrap_or(0) >= 1);
+    assert!(
+        json.get("t")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+            >= 1
+    );
     assert!(
         json.get("tx-id").is_some(),
         "Response should have tx-id field"
@@ -248,8 +256,7 @@ async fn insert_then_query_finds_value() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         json_contains_string(&json, "Alice"),
-        "Expected query response to contain 'Alice', got: {}",
-        json
+        "Expected query response to contain 'Alice', got: {json}"
     );
 }
 
@@ -316,8 +323,7 @@ async fn ledger_with_slash_works_via_op_prefixed_routes() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         json_contains_string(&json, "Alice"),
-        "Expected query response to contain 'Alice', got: {}",
-        json
+        "Expected query response to contain 'Alice', got: {json}"
     );
 }
 
@@ -369,8 +375,14 @@ async fn push_endpoint_accepts_single_commit_and_advances_head() {
         .unwrap();
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json.get("accepted").and_then(|v| v.as_u64()), Some(1));
-    assert_eq!(json.pointer("/head/t").and_then(|v| v.as_i64()), Some(1));
+    assert_eq!(
+        json.get("accepted").and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        json.pointer("/head/t").and_then(serde_json::Value::as_i64),
+        Some(1)
+    );
     let head_cid = json
         .pointer("/head/commit_id")
         .and_then(|v| v.as_str())
@@ -392,8 +404,7 @@ async fn push_endpoint_accepts_single_commit_and_advances_head() {
     assert_eq!(
         resp.status(),
         StatusCode::CONFLICT,
-        "expected conflict when re-pushing commit already applied (head={})",
-        head_cid
+        "expected conflict when re-pushing commit already applied (head={head_cid})"
     );
 }
 
@@ -624,7 +635,12 @@ async fn update_endpoint_accepts_jsonld_transactions() {
         json.get("ledger_id").and_then(|v| v.as_str()),
         Some("test:update")
     );
-    assert!(json.get("t").and_then(|v| v.as_i64()).unwrap_or(0) >= 1);
+    assert!(
+        json.get("t")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+            >= 1
+    );
 
     // Query to verify
     let query_body = serde_json::json!({
@@ -694,7 +710,7 @@ async fn ledger_scoped_insert_upsert_history() {
         json.get("ledger_id").and_then(|v| v.as_str()),
         Some("scoped:test")
     );
-    assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(1));
+    assert_eq!(json.get("t").and_then(serde_json::Value::as_i64), Some(1));
 
     // Ledger-scoped upsert via /v1/fluree/upsert/<ledger...>
     let upsert_body = serde_json::json!({
@@ -716,7 +732,7 @@ async fn ledger_scoped_insert_upsert_history() {
         .unwrap();
     let (status, json) = json_body(resp).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json.get("t").and_then(|v| v.as_i64()), Some(2));
+    assert_eq!(json.get("t").and_then(serde_json::Value::as_i64), Some(2));
 
     // History query via /v1/fluree/query/<ledger...> using explicit "from" + "to" keys
     // This replaces the old /:ledger/history endpoint - history queries now go through unified query interface
@@ -742,12 +758,11 @@ async fn ledger_scoped_insert_upsert_history() {
         .await
         .unwrap();
     let (status, json) = json_body(resp).await;
-    assert_eq!(status, StatusCode::OK, "History query failed: {}", json);
+    assert_eq!(status, StatusCode::OK, "History query failed: {json}");
     // History should return array of changes (assertions for name at t=1 and email at t=2)
     assert!(
         json.is_array(),
-        "History should return an array, got: {}",
-        json
+        "History should return an array, got: {json}"
     );
     let history = json.as_array().unwrap();
     assert!(
@@ -799,12 +814,12 @@ async fn sparql_query_connection_from_clause_finds_value() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // SPARQL query via connection (requires FROM clause)
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/>
         SELECT ?name
         FROM <test:main>
         WHERE { ?s ex:name ?name }
-    "#;
+    ";
     let resp = app
         .oneshot(
             Request::builder()
@@ -821,8 +836,7 @@ async fn sparql_query_connection_from_clause_finds_value() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         json_contains_string(&json, "Alice"),
-        "Expected SPARQL response to contain 'Alice', got: {}",
-        json
+        "Expected SPARQL response to contain 'Alice', got: {json}"
     );
 }
 
@@ -869,11 +883,11 @@ async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // SPARQL query ledger-scoped via fluree-ledger header (FROM optional)
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/>
         SELECT ?name
         WHERE { ?s ex:name ?name }
-    "#;
+    ";
     let resp = app
         .oneshot(
             Request::builder()
@@ -890,8 +904,7 @@ async fn sparql_query_ledger_scoped_path_finds_value_without_from() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         json_contains_string(&json, "Alice"),
-        "Expected SPARQL response to contain 'Alice', got: {}",
-        json
+        "Expected SPARQL response to contain 'Alice', got: {json}"
     );
 }
 
@@ -925,8 +938,7 @@ async fn sparql_update_on_query_endpoint_returns_bad_request() {
     let error_msg = json["error"].as_str().unwrap_or("");
     assert!(
         error_msg.contains("/v1/fluree/update"),
-        "Expected error to mention /v1/fluree/update endpoint, got: {}",
-        error_msg
+        "Expected error to mention /v1/fluree/update endpoint, got: {error_msg}"
     );
 }
 
@@ -975,7 +987,7 @@ async fn sparql_update_supports_subquery_aggregate_and_bind() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // SPARQL UPDATE: compute MAX in a subquery, then BIND(max+1) and insert.
-    let sparql_update = r#"
+    let sparql_update = r"
         PREFIX ex: <http://example.org/>
 
         INSERT {
@@ -987,7 +999,7 @@ async fn sparql_update_supports_subquery_aggregate_and_bind() {
           }
           BIND((?m + 1) AS ?next)
         }
-    "#;
+    ";
     let resp = app
         .clone()
         .oneshot(
@@ -1005,11 +1017,11 @@ async fn sparql_update_supports_subquery_aggregate_and_bind() {
     assert_eq!(status, StatusCode::OK, "update failed: {json}");
 
     // Verify inserted value is 3
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/>
         SELECT ?next
         WHERE { ex:counter ex:next ?next }
-    "#;
+    ";
     let resp = app
         .oneshot(
             Request::builder()
@@ -1026,8 +1038,7 @@ async fn sparql_update_supports_subquery_aggregate_and_bind() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         json_contains_string(&json, "3"),
-        "Expected SPARQL response to contain '3', got: {}",
-        json
+        "Expected SPARQL response to contain '3', got: {json}"
     );
 }
 
@@ -1747,11 +1758,11 @@ async fn sparql_update_where_allows_blank_nodes() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 
     // Seed blank-node data via Turtle
-    let turtle = r#"
+    let turtle = r"
         @prefix ex: <http://example.org/> .
         ex:alice ex:knows _:x .
         _:x ex:seq 2 .
-    "#;
+    ";
     let resp = app
         .clone()
         .oneshot(
@@ -1769,14 +1780,14 @@ async fn sparql_update_where_allows_blank_nodes() {
 
     // SPARQL UPDATE: WHERE uses a blank-node label to match the existing bnode.
     // INSERT does not need to reference the bnode; it just checks that the pattern matches.
-    let sparql_update = r#"
+    let sparql_update = r"
         PREFIX ex: <http://example.org/>
         INSERT { ex:flag ex:ok true }
         WHERE {
           ex:alice ex:knows _:x .
           _:x ex:seq 2 .
         }
-    "#;
+    ";
     let resp = app
         .clone()
         .oneshot(
@@ -1794,11 +1805,11 @@ async fn sparql_update_where_allows_blank_nodes() {
     assert_eq!(status, StatusCode::OK, "update failed: {json}");
 
     // Verify inserted flag exists
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/>
         SELECT ?ok
         WHERE { ex:flag ex:ok ?ok }
-    "#;
+    ";
     let resp = app
         .oneshot(
             Request::builder()
@@ -1814,8 +1825,7 @@ async fn sparql_update_where_allows_blank_nodes() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         json_contains_string(&json, "true"),
-        "Expected response to contain 'true', got: {}",
-        json
+        "Expected response to contain 'true', got: {json}"
     );
 }
 
@@ -1841,11 +1851,11 @@ async fn sparql_delete_where_allows_blank_nodes() {
     assert_eq!(resp.status(), StatusCode::CREATED);
 
     // Seed blank-node data via Turtle
-    let turtle = r#"
+    let turtle = r"
         @prefix ex: <http://example.org/> .
         ex:alice ex:knows _:x .
         _:x ex:seq 2 .
-    "#;
+    ";
     let resp = app
         .clone()
         .oneshot(
@@ -1862,13 +1872,13 @@ async fn sparql_delete_where_allows_blank_nodes() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // DELETE WHERE using blank-node label should remove both triples.
-    let sparql_update = r#"
+    let sparql_update = r"
         PREFIX ex: <http://example.org/>
         DELETE WHERE {
           ex:alice ex:knows _:x .
           _:x ex:seq 2 .
         }
-    "#;
+    ";
     let resp = app
         .clone()
         .oneshot(
@@ -1886,11 +1896,11 @@ async fn sparql_delete_where_allows_blank_nodes() {
     assert_eq!(status, StatusCode::OK, "delete-where failed: {json}");
 
     // Verify no seq=2 remains
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/>
         SELECT ?s
         WHERE { ?s ex:seq 2 }
-    "#;
+    ";
     let resp = app
         .oneshot(
             Request::builder()
@@ -1906,8 +1916,7 @@ async fn sparql_delete_where_allows_blank_nodes() {
     assert_eq!(status, StatusCode::OK);
     assert!(
         !json_contains_string(&json, "seq"),
-        "Expected no results after delete, got: {}",
-        json
+        "Expected no results after delete, got: {json}"
     );
 }
 
@@ -1918,11 +1927,11 @@ async fn sparql_query_generic_requires_from_clause_even_with_no_header() {
 
     // A SPARQL query without FROM on the generic endpoint should fail.
     // (Ledger-scoped /:ledger/query can omit FROM.)
-    let sparql = r#"
+    let sparql = r"
         PREFIX ex: <http://example.org/>
         SELECT ?name
         WHERE { ?s ex:name ?name }
-    "#;
+    ";
     let resp = app
         .oneshot(
             Request::builder()
@@ -2327,11 +2336,11 @@ mod storage_auth {
         let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
         let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
-        let signing_input = format!("{}.{}", header_b64, payload_b64);
+        let signing_input = format!("{header_b64}.{payload_b64}");
         let signature = key.sign(signing_input.as_bytes());
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-        format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+        format!("{header_b64}.{payload_b64}.{sig_b64}")
     }
 
     pub fn now_secs() -> u64 {
@@ -2423,7 +2432,7 @@ async fn create_and_push_commits(
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/v1/fluree/push/{}", ledger))
+                    .uri(format!("/v1/fluree/push/{ledger}"))
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_string(&push_req).unwrap()))
                     .unwrap(),
@@ -2431,13 +2440,7 @@ async fn create_and_push_commits(
             .await
             .unwrap();
         let (status, json) = json_body(resp).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "push commit t={} failed: {}",
-            t,
-            json
-        );
+        assert_eq!(status, StatusCode::OK, "push commit t={t} failed: {json}");
 
         let cid: ContentId = json
             .pointer("/head/commit_id")
@@ -2460,13 +2463,13 @@ async fn fetch_commits(
     limit: Option<usize>,
 ) -> (StatusCode, JsonValue) {
     let token = storage_auth::storage_all_token();
-    let mut uri = format!("/v1/fluree/commits/{}", ledger);
+    let mut uri = format!("/v1/fluree/commits/{ledger}");
     let mut params = Vec::new();
     if let Some(c) = cursor {
         params.push(format!("cursor={}", urlencoding::encode(c)));
     }
     if let Some(l) = limit {
-        params.push(format!("limit={}", l));
+        params.push(format!("limit={l}"));
     }
     if !params.is_empty() {
         uri.push('?');
@@ -2479,7 +2482,7 @@ async fn fetch_commits(
             Request::builder()
                 .method("GET")
                 .uri(&uri)
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2498,7 +2501,7 @@ async fn commits_endpoint_returns_paginated_commits() {
 
     // Page 1: limit=2 → 2 commits (t=5, t=4).
     let (status, json) = fetch_commits(&app, "export:main", None, Some(2)).await;
-    assert_eq!(status, StatusCode::OK, "page 1 failed: {}", json);
+    assert_eq!(status, StatusCode::OK, "page 1 failed: {json}");
     let page1: ExportCommitsResponse = serde_json::from_value(json).expect("parse page 1");
     assert_eq!(page1.count, 2);
     assert_eq!(page1.newest_t, 5);
@@ -2510,7 +2513,7 @@ async fn commits_endpoint_returns_paginated_commits() {
     // Page 2: cursor from page 1 → 2 commits (t=3, t=2).
     let cursor = page1.next_cursor_id.as_ref().unwrap().to_string();
     let (status, json) = fetch_commits(&app, "export:main", Some(&cursor), Some(2)).await;
-    assert_eq!(status, StatusCode::OK, "page 2 failed: {}", json);
+    assert_eq!(status, StatusCode::OK, "page 2 failed: {json}");
     let page2: ExportCommitsResponse = serde_json::from_value(json).expect("parse page 2");
     assert_eq!(page2.count, 2);
     assert_eq!(page2.newest_t, 3);
@@ -2520,7 +2523,7 @@ async fn commits_endpoint_returns_paginated_commits() {
     // Page 3: cursor from page 2 → 1 commit (t=1, genesis).
     let cursor = page2.next_cursor_id.as_ref().unwrap().to_string();
     let (status, json) = fetch_commits(&app, "export:main", Some(&cursor), Some(2)).await;
-    assert_eq!(status, StatusCode::OK, "page 3 failed: {}", json);
+    assert_eq!(status, StatusCode::OK, "page 3 failed: {json}");
     let page3: ExportCommitsResponse = serde_json::from_value(json).expect("parse page 3");
     assert_eq!(page3.count, 1);
     assert_eq!(page3.newest_t, 1);
@@ -2619,7 +2622,7 @@ async fn commits_endpoint_rejects_without_storage_proxy() {
             Request::builder()
                 .method("GET")
                 .uri("/v1/fluree/commits/noauth:main")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

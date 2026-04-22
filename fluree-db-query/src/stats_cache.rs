@@ -43,14 +43,14 @@ pub(crate) fn cached_stats_view_for_db(
     binary_store: Option<&Arc<BinaryIndexStore>>,
 ) -> Option<Arc<StatsView>> {
     let build_view = || {
-        let indexed = db.snapshot.stats.as_ref().cloned().unwrap_or_default();
+        let indexed = db.snapshot.stats.clone().unwrap_or_default();
         // Note: downcast_ref::<Novelty>() silently falls through for non-Novelty overlays
         // (e.g. PolicyOverlay). In those cases we skip novelty merging and return only
         // the persisted indexed stats, which is correct since policy overlays don't
         // produce new statistical flakes.
         let stats = if let Some(novelty) = db.overlay.as_any().downcast_ref::<Novelty>() {
             let lookup = BinaryStoreStatsLookup {
-                store: binary_store.map(|store| store.as_ref()),
+                store: binary_store.map(std::convert::AsRef::as_ref),
                 runtime_small_dicts: db.runtime_small_dicts,
             };
             assemble_fast_stats(

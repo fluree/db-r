@@ -98,10 +98,7 @@ pub(crate) fn format_binding(binding: &Binding, compactor: &IriCompactor) -> Res
                 return match val {
                     FlakeValue::Json(json_str) | FlakeValue::String(json_str) => {
                         serde_json::from_str(json_str).map_err(|e| {
-                            FormatError::InvalidBinding(format!(
-                                "Invalid JSON in @json value: {}",
-                                e
-                            ))
+                            FormatError::InvalidBinding(format!("Invalid JSON in @json value: {e}"))
                         })
                     }
                     _ => Err(FormatError::InvalidBinding(

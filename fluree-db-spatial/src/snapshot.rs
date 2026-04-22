@@ -203,7 +203,7 @@ impl SpatialIndexSnapshot {
         // 1. Fetch and deserialize the cell index manifest
         let manifest_bytes = fetch_bytes(&root.cell_index_hash)?;
         let manifest: CellIndexManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
-            SpatialError::FormatError(format!("failed to deserialize cell index manifest: {}", e))
+            SpatialError::FormatError(format!("failed to deserialize cell index manifest: {e}"))
         })?;
 
         // 2. Fetch and deserialize the geometry arena
@@ -229,7 +229,7 @@ impl SpatialIndexSnapshot {
     /// This is required for `MergeSorted` to function correctly.
     pub fn set_novelty(&mut self, mut novelty: Vec<CellEntry>, epoch: u64) {
         // Sort by index order (cell_id, subject_id, t DESC, op ASC)
-        novelty.sort_by(|a, b| a.cmp_index(b));
+        novelty.sort_by(super::cell_index::CellEntry::cmp_index);
         self.novelty = novelty;
         self.novelty_epoch = epoch;
     }
@@ -1156,9 +1156,7 @@ mod tests {
         // bbox distance should be <= geometry distance (conservative)
         assert!(
             bbox_dist <= geom_dist,
-            "bbox_dist ({}) should be <= geom_dist ({})",
-            bbox_dist,
-            geom_dist
+            "bbox_dist ({bbox_dist}) should be <= geom_dist ({geom_dist})"
         );
     }
 
@@ -1178,8 +1176,7 @@ mod tests {
         // NOT ~785km which would be distance to center (5, 5)
         assert!(
             (dist - 555_000.0).abs() < 30000.0,
-            "Expected ~555km to edge, got {} meters",
-            dist
+            "Expected ~555km to edge, got {dist} meters"
         );
     }
 
@@ -1204,9 +1201,7 @@ mod tests {
         // The polygon should be within the radius (edge is ~222km away)
         assert!(
             dist <= radius_meters,
-            "Polygon edge at ~222km should be within {}m radius, but got {}m",
-            radius_meters,
-            dist
+            "Polygon edge at ~222km should be within {radius_meters}m radius, but got {dist}m"
         );
     }
 
@@ -1225,13 +1220,11 @@ mod tests {
         // Should be ~222km (2 degrees to hole boundary), NOT ~555km (5 degrees to exterior)
         assert!(
             dist < 300_000.0,
-            "Point in hole should be ~222km from hole boundary, got {}m",
-            dist
+            "Point in hole should be ~222km from hole boundary, got {dist}m"
         );
         assert!(
             (dist - 222_000.0).abs() < 30000.0,
-            "Expected ~222km to hole boundary, got {}m",
-            dist
+            "Expected ~222km to hole boundary, got {dist}m"
         );
     }
 
@@ -1257,9 +1250,7 @@ mod tests {
         // Would FAIL if only checking exterior (1111km > 600km)
         assert!(
             dist <= radius_meters,
-            "Polygon hole boundary at ~555km should be within {}m radius, but got {}m",
-            radius_meters,
-            dist
+            "Polygon hole boundary at ~555km should be within {radius_meters}m radius, but got {dist}m"
         );
     }
 }

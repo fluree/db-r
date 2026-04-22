@@ -38,7 +38,7 @@ pub fn validate_pattern(
             }
         }
         prefix.push(')');
-        format!("{}{}", prefix, pattern)
+        format!("{prefix}{pattern}")
     } else {
         pattern.to_string()
     };
@@ -54,10 +54,7 @@ pub fn validate_pattern(
         Ok(Some(ConstraintViolation {
             constraint: Constraint::Pattern(pattern.to_string(), flags.map(String::from)),
             value: Some(value.clone()),
-            message: format!(
-                "Value '{}' does not match pattern '{}'",
-                string_value, pattern
-            ),
+            message: format!("Value '{string_value}' does not match pattern '{pattern}'"),
         }))
     }
 }
@@ -70,7 +67,7 @@ pub fn validate_min_length(value: &FlakeValue, min: usize) -> Option<ConstraintV
         Some(ConstraintViolation {
             constraint: Constraint::MinLength(min),
             value: Some(value.clone()),
-            message: format!("String length {} is less than minimum {}", len, min),
+            message: format!("String length {len} is less than minimum {min}"),
         })
     } else {
         None
@@ -85,7 +82,7 @@ pub fn validate_max_length(value: &FlakeValue, max: usize) -> Option<ConstraintV
         Some(ConstraintViolation {
             constraint: Constraint::MaxLength(max),
             value: Some(value.clone()),
-            message: format!("String length {} exceeds maximum {}", len, max),
+            message: format!("String length {len} exceeds maximum {max}"),
         })
     } else {
         None

@@ -39,11 +39,11 @@ fn create_jws(claims: &serde_json::Value, signing_key: &SigningKey) -> String {
     let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
     let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
-    let signing_input = format!("{}.{}", header_b64, payload_b64);
+    let signing_input = format!("{header_b64}.{payload_b64}");
     let signature = signing_key.sign(signing_input.as_bytes());
     let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-    format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+    format!("{header_b64}.{payload_b64}.{sig_b64}")
 }
 
 fn now_secs() -> u64 {
@@ -160,7 +160,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
                 .method("POST")
                 .uri("/v1/fluree/insert/auth2:test")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(insert_body.to_string()))
                 .unwrap(),
         )
@@ -180,7 +180,7 @@ async fn data_auth_bearer_allows_read_and_write_with_scopes() {
                 .method("POST")
                 .uri("/v1/fluree/query/auth2:test")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(query_body.to_string()))
                 .unwrap(),
         )
@@ -204,7 +204,7 @@ async fn data_auth_denies_write_outside_scope_as_not_found() {
                     .method("POST")
                     .uri("/v1/fluree/create")
                     .header("content-type", "application/json")
-                    .body(Body::from(format!(r#"{{"ledger":"{}"}}"#, ledger)))
+                    .body(Body::from(format!(r#"{{"ledger":"{ledger}"}}"#)))
                     .unwrap(),
             )
             .await
@@ -233,7 +233,7 @@ async fn data_auth_denies_write_outside_scope_as_not_found() {
                 .method("POST")
                 .uri("/v1/fluree/insert/b:test")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token))
+                .header("authorization", format!("Bearer {token}"))
                 .body(Body::from(insert_body.to_string()))
                 .unwrap(),
         )

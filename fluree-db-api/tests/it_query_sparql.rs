@@ -392,7 +392,7 @@ async fn sparql_filter_query_outputs_jsonld_and_sparql_json() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT ?handle ?favNum
         WHERE {
@@ -400,7 +400,7 @@ async fn sparql_filter_query_outputs_jsonld_and_sparql_json() {
                   person:favNums ?favNum .
           FILTER ( ?favNum > 10 ) .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -445,11 +445,11 @@ async fn sparql_count_star_counts_solutions() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (COUNT(*) AS ?cnt)
         WHERE { ?p a ex:Person . }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -469,7 +469,7 @@ async fn sparql_count_distinct_with_group_by_and_order_by() {
     // Test the user's exact query pattern:
     // SELECT ?handle (COUNT(DISTINCT ?favNum) AS ?distinctCount)
     // WHERE { ... } GROUP BY ?handle ORDER BY DESC(?distinctCount) LIMIT 10
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT ?handle (COUNT(DISTINCT ?favNum) AS ?distinctCount)
         WHERE {
@@ -479,7 +479,7 @@ async fn sparql_count_distinct_with_group_by_and_order_by() {
         GROUP BY ?handle
         ORDER BY DESC(?distinctCount)
         LIMIT 10
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -517,13 +517,13 @@ async fn sparql_delete_data_removes_specified_triples() {
 
     let ledger2 = fluree.update(ledger, &delete_txn).await.unwrap().ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX person: <http://example.org/Person#>
         SELECT ?favNum
         WHERE { ex:jdoe person:favNums ?favNum }
         ORDER BY ?favNum
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger2, query)
         .await
@@ -540,7 +540,7 @@ async fn sparql_select_star_returns_object_rows() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX person: <http://example.org/Person#>
         SELECT *
@@ -548,7 +548,7 @@ async fn sparql_select_star_returns_object_rows() {
           ?person person:handle ?handle ;
                   person:favNums ?favNums .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -606,7 +606,7 @@ async fn sparql_union_combines_unioned_patterns() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX foaf: <http://xmlns.com/foaf/0.1/>
         SELECT ?name
         WHERE {
@@ -615,7 +615,7 @@ async fn sparql_union_combines_unioned_patterns() {
           { ?s foaf:firstname ?name }
         }
         ORDER BY ?name
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -631,7 +631,7 @@ async fn sparql_optional_includes_unbound_values_as_null() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX person: <http://example.org/Person#>
         SELECT ?person ?favNums
@@ -639,7 +639,7 @@ async fn sparql_optional_includes_unbound_values_as_null() {
           ?person person:handle ?handle .
           OPTIONAL { ?person person:favNums ?favNums . }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -675,7 +675,7 @@ async fn sparql_optional_multi_pattern_requires_conjunctive_match() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX person: <http://example.org/Person#>
         SELECT ?person ?favNums ?email
@@ -686,7 +686,7 @@ async fn sparql_optional_multi_pattern_requires_conjunctive_match() {
             ?person person:email ?email .
           }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -713,7 +713,7 @@ async fn sparql_group_by_with_optional_preserves_grouped_lists() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX person: <http://example.org/Person#>
         SELECT ?person ?favNums
@@ -722,7 +722,7 @@ async fn sparql_group_by_with_optional_preserves_grouped_lists() {
           OPTIONAL { ?person person:favNums ?favNums . }
         }
         GROUP BY ?person
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -785,11 +785,11 @@ async fn sparql_scalar_sha512_function_binds_values() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (SHA512(?handle) AS ?handleHash)
         WHERE { ?person person:handle ?handle . }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -816,11 +816,11 @@ async fn sparql_aggregate_avg_over_values() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (AVG(?favNums) AS ?avgFav)
         WHERE { ?person person:favNums ?favNums . }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -830,9 +830,9 @@ async fn sparql_aggregate_avg_over_values() {
     let avg = jsonld
         .as_array()
         .and_then(|arr| arr.first())
-        .and_then(|v| v.as_f64())
+        .and_then(serde_json::Value::as_f64)
         .expect("avg result");
-    assert!((avg - 17.66666666666667).abs() < 1e-12);
+    assert!((avg - 17.666_666_666_666_67).abs() < 1e-12);
 }
 
 #[tokio::test]
@@ -842,13 +842,13 @@ async fn sparql_group_by_having_filters_groups() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (AVG(?favNums) AS ?avgFav)
         WHERE { ?person person:favNums ?favNums . }
         GROUP BY ?person
         HAVING (AVG(?favNums) > 10)
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -859,7 +859,7 @@ async fn sparql_group_by_having_filters_groups() {
         .as_array()
         .expect("avg rows array")
         .iter()
-        .filter_map(|v| v.as_f64())
+        .filter_map(serde_json::Value::as_f64)
         .collect();
     values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
@@ -900,14 +900,14 @@ async fn sparql_having_aggregate_without_select_alias() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX person: <http://example.org/Person#>
         SELECT ?person
         WHERE { ?person person:favNums ?favNums . }
         GROUP BY ?person
         HAVING (COUNT(?favNums) > 4)
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -924,11 +924,11 @@ async fn sparql_multiple_select_expressions_with_aggregate_alias() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (AVG(?favNums) AS ?avgFav) (CEIL(?avgFav) AS ?caf)
         WHERE { ?person person:favNums ?favNums . }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -939,7 +939,7 @@ async fn sparql_multiple_select_expressions_with_aggregate_alias() {
     assert_eq!(rows.len(), 1);
     let avg = rows[0][0].as_f64().expect("avg");
     let ceil = rows[0][1].as_f64().expect("ceil");
-    assert!((avg - 17.66666666666667).abs() < 1e-12);
+    assert!((avg - 17.666_666_666_666_67).abs() < 1e-12);
     assert!((ceil - 18.0).abs() < 1e-12);
 }
 
@@ -1007,7 +1007,7 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX person: <http://example.org/Person#>
         SELECT ?favNums (AVG(?favNums) AS ?avg) ?person ?handle (MAX(?favNums) AS ?max)
@@ -1016,7 +1016,7 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
           ?person person:favNums ?favNums .
         }
         GROUP BY ?person ?handle
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1053,7 +1053,7 @@ async fn sparql_mix_of_grouped_values_and_aggregates() {
             "ex:jbob".to_string(),
             "jbob".to_string(),
             vec![0, 3, 5, 6, 7, 8, 9],
-            5.428571428571429,
+            5.428_571_428_571_429,
             9,
         ),
         (
@@ -1082,12 +1082,12 @@ async fn sparql_count_aggregate_per_group() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (COUNT(?favNums) AS ?numFavs)
         WHERE { ?person person:favNums ?favNums . }
         GROUP BY ?person
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1107,12 +1107,12 @@ async fn sparql_count_star_per_group() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (COUNT(*) AS ?count)
         WHERE { ?person person:favNums ?favNums . }
         GROUP BY ?person
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1132,12 +1132,12 @@ async fn sparql_sample_aggregate_returns_one_value() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (SAMPLE(?favNums) AS ?favNum)
         WHERE { ?person person:favNums ?favNums . }
         GROUP BY ?person
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1158,12 +1158,12 @@ async fn sparql_sum_aggregate_per_group() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (SUM(?favNums) AS ?favNum)
         WHERE { ?person person:favNums ?favNums . }
         GROUP BY ?person
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1183,11 +1183,11 @@ async fn sparql_sum_boolean_comparison_counts_true_rows() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT (SUM(?favNums > 10) AS ?count)
         WHERE { ?person person:favNums ?favNums . }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1207,12 +1207,12 @@ async fn sparql_order_by_ascending_sorts_results() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT ?handle
         WHERE { ?person person:handle ?handle . }
         ORDER BY ?handle
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1229,12 +1229,12 @@ async fn sparql_order_by_descending_sorts_results() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT ?handle
         WHERE { ?person person:handle ?handle . }
         ORDER BY DESC(?handle)
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1278,7 +1278,7 @@ async fn sparql_construct_query_outputs_jsonld_graph() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX foaf: <http://xmlns.com/foaf/0.1/>
         CONSTRUCT {
@@ -1289,7 +1289,7 @@ async fn sparql_construct_query_outputs_jsonld_graph() {
           { ?x foaf:firstname ?gname } UNION { ?x foaf:givenname ?gname } .
           { ?x foaf:surname ?fname } UNION { ?x foaf:family_name ?fname } .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1343,11 +1343,11 @@ async fn sparql_construct_where_outputs_graph() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         PREFIX foaf: <http://xmlns.com/foaf/0.1/>
         CONSTRUCT WHERE { ?x foaf:firstname ?fname }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1399,12 +1399,12 @@ async fn sparql_base_iri_compacts_relative_ids() {
     let ledger_id = "books:main";
     let ledger = seed_books(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         BASE <http://example.org/book/>
         SELECT ?book ?title
         WHERE { ?book <title> ?title . }
         ORDER BY ?book
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1427,12 +1427,12 @@ async fn sparql_prefix_declarations_compact_ids() {
     let ledger_id = "books:main";
     let ledger = seed_books(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX book: <http://example.org/book/>
         SELECT ?book ?title
         WHERE { ?book book:title ?title . }
         ORDER BY ?book
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1455,11 +1455,11 @@ async fn sparql_sparql_json_language_tags() {
     let ledger_id = "people:main";
     let ledger = seed_people(&fluree, ledger_id).await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?catchphrase
         WHERE { ex:carol ex:catchphrase ?catchphrase }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -1676,8 +1676,7 @@ async fn sparql_property_path_nested_alternative_under_transitive_errors() {
     let msg = format!("{}", result.unwrap_err());
     assert!(
         msg.contains("simple predicate IRI"),
-        "Error should mention 'simple predicate IRI', got: {}",
-        msg
+        "Error should mention 'simple predicate IRI', got: {msg}"
     );
 }
 
@@ -1755,8 +1754,7 @@ async fn sparql_property_path_sequence_wildcard_hides_internal_vars() {
         for key in obj.keys() {
             assert!(
                 !key.starts_with("?__"),
-                "Wildcard output should not contain internal variables, found: {}",
-                key
+                "Wildcard output should not contain internal variables, found: {key}"
             );
         }
     }
@@ -1989,13 +1987,13 @@ async fn sparql_str_expands_custom_namespace_predicate() {
     let ledger = seed_custom_ns(&fluree, "custom_ns:main").await;
 
     // Query all predicates for ex:item1 and apply STR() to the predicate variable
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (STR(?p) AS ?predicate)
         WHERE {
             ex:item1 ?p ?o .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2011,22 +2009,19 @@ async fn sparql_str_expands_custom_namespace_predicate() {
     for row in &rows {
         assert!(
             !row.contains("\"21:") && !row.contains("\"20:"),
-            "STR() returned internal namespace code form: {}",
-            row
+            "STR() returned internal namespace code form: {row}"
         );
     }
     // Verify the custom namespace predicates are present as full IRIs
     assert!(
         rows.iter()
             .any(|r| r.contains("https://taxo.cbcrc.ca/ns/packageType")),
-        "Expected cust:packageType as full IRI in STR() output, got: {:?}",
-        rows
+        "Expected cust:packageType as full IRI in STR() output, got: {rows:?}"
     );
     assert!(
         rows.iter()
             .any(|r| r.contains("https://taxo.cbcrc.ca/ns/category")),
-        "Expected cust:category as full IRI in STR() output, got: {:?}",
-        rows
+        "Expected cust:category as full IRI in STR() output, got: {rows:?}"
     );
 }
 
@@ -2039,12 +2034,12 @@ async fn sparql_full_iri_predicate_matches_custom_namespace() {
     let ledger = seed_custom_ns(&fluree, "custom_ns_match:main").await;
 
     // Query using the full IRI (not PREFIX shorthand)
-    let query = r#"
+    let query = r"
         SELECT ?type
         WHERE {
             ?s <https://taxo.cbcrc.ca/ns/packageType> ?type .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2059,18 +2054,15 @@ async fn sparql_full_iri_predicate_matches_custom_namespace() {
     assert_eq!(
         rows.len(),
         2,
-        "Expected 2 rows for packageType, got: {:?}",
-        rows
+        "Expected 2 rows for packageType, got: {rows:?}"
     );
     assert!(
         rows.iter().any(|r| r.contains("premium")),
-        "Expected 'premium', got: {:?}",
-        rows
+        "Expected 'premium', got: {rows:?}"
     );
     assert!(
         rows.iter().any(|r| r.contains("standard")),
-        "Expected 'standard', got: {:?}",
-        rows
+        "Expected 'standard', got: {rows:?}"
     );
 }
 
@@ -2081,13 +2073,13 @@ async fn sparql_prefix_shorthand_matches_custom_namespace() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_custom_ns(&fluree, "custom_ns_prefix:main").await;
 
-    let query = r#"
+    let query = r"
         PREFIX cust: <https://taxo.cbcrc.ca/ns/>
         SELECT ?type
         WHERE {
             ?s cust:packageType ?type .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2102,18 +2094,15 @@ async fn sparql_prefix_shorthand_matches_custom_namespace() {
     assert_eq!(
         rows.len(),
         2,
-        "Expected 2 rows for packageType, got: {:?}",
-        rows
+        "Expected 2 rows for packageType, got: {rows:?}"
     );
     assert!(
         rows.iter().any(|r| r.contains("premium")),
-        "Expected 'premium', got: {:?}",
-        rows
+        "Expected 'premium', got: {rows:?}"
     );
     assert!(
         rows.iter().any(|r| r.contains("standard")),
-        "Expected 'standard', got: {:?}",
-        rows
+        "Expected 'standard', got: {rows:?}"
     );
 }
 
@@ -2124,11 +2113,11 @@ async fn sparql_exact_repro_custom_pred_without_type() {
     let ledger = seed_exact_repro(&fluree, "repro/bug1:main").await;
 
     // WITH rdf:type → should return 1 row (baseline)
-    let with_type = r#"
+    let with_type = r"
         PREFIX cust: <https://taxo.cbcrc.ca/ns/>
         SELECT ?s ?o
         WHERE { ?s a cust:CoveragePackage ; cust:anchor ?o . }
-    "#;
+    ";
     let result = support::query_sparql(&fluree, &ledger, with_type)
         .await
         .expect("query with type");
@@ -2143,11 +2132,11 @@ async fn sparql_exact_repro_custom_pred_without_type() {
     );
 
     // WITHOUT rdf:type → should ALSO return 1 row (BUG: returned 0)
-    let without_type = r#"
+    let without_type = r"
         PREFIX cust: <https://taxo.cbcrc.ca/ns/>
         SELECT ?s ?o
         WHERE { ?s cust:anchor ?o . }
-    "#;
+    ";
     let result = support::query_sparql(&fluree, &ledger, without_type)
         .await
         .expect("query without type");
@@ -2190,8 +2179,7 @@ async fn jsonld_exact_repro_graph_crawl_custom_type() {
     let obj = rows[0].as_object().expect("should be object");
     assert!(
         obj.len() > 1,
-        "graph crawl should return properties, not just @id; got: {:?}",
-        obj
+        "graph crawl should return properties, not just @id; got: {obj:?}"
     );
 }
 
@@ -2222,12 +2210,12 @@ async fn sparql_bind_iri_with_optional_propagates_binding() {
     let ledger = receipt.ledger;
 
     // Control: direct IRI in OPTIONAL works
-    let control = r#"
+    let control = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?label WHERE {
             OPTIONAL { ex:thing1 ex:label ?label }
         }
-    "#;
+    ";
     let result = support::query_sparql(&fluree, &ledger, control)
         .await
         .expect("control query");
@@ -2239,13 +2227,13 @@ async fn sparql_bind_iri_with_optional_propagates_binding() {
     );
 
     // Bug 3b: BIND + OPTIONAL returns empty binding
-    let bind_query = r#"
+    let bind_query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?label WHERE {
             BIND(ex:thing1 AS ?s)
             OPTIONAL { ?s ex:label ?label }
         }
-    "#;
+    ";
     let result = support::query_sparql(&fluree, &ledger, bind_query)
         .await
         .expect("bind query");
@@ -2285,7 +2273,7 @@ async fn sparql_minus_with_filter_in_subtree() {
         .expect("insert lifeforms");
 
     // Query: keep animals that are NOT Reptile or Insect (via MINUS)
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?animal WHERE {
             ?animal a ex:Animal
@@ -2294,7 +2282,7 @@ async fn sparql_minus_with_filter_in_subtree() {
                 FILTER(?type = ex:Reptile || ?type = ex:Insect)
             }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger.ledger, query)
         .await
@@ -2337,13 +2325,13 @@ async fn sparql_minus_basic_anti_join() {
         .expect("insert lifeforms");
 
     // Simple MINUS: remove animals that are insects
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?animal WHERE {
             ?animal a ex:Animal
             MINUS { ?animal a ex:Insect }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger.ledger, query)
         .await
@@ -2354,7 +2342,7 @@ async fn sparql_minus_basic_anti_join() {
 
     // lifeForm1 and lifeForm2 should remain (lifeForm3 is Insect, removed)
     let rows = normalize_rows(&jsonld);
-    assert_eq!(rows.len(), 2, "Expected 2 results, got: {:?}", rows);
+    assert_eq!(rows.len(), 2, "Expected 2 results, got: {rows:?}");
 }
 
 /// Test compound FILTER NOT EXISTS inside MINUS subtree (subset-02 pattern).
@@ -2384,7 +2372,7 @@ async fn sparql_minus_compound_not_exists() {
 
     // MINUS with compound FILTER: remove pairs where s1 has a member not in s2
     // (OR with NOT EXISTS), also removing self-pairs via s1=s2 clause.
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s1 ?s2 WHERE {
             ?s1 a ex:Set .
@@ -2396,7 +2384,7 @@ async fn sparql_minus_compound_not_exists() {
                 FILTER ( ?s1 = ?s2 || NOT EXISTS { ?s2 ex:member ?x } )
             }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger.ledger, query)
         .await
@@ -2446,7 +2434,7 @@ async fn sparql_compound_filter_not_exists_standalone() {
 
     // This is the MINUS subtree from subset-02, run as a standalone query.
     // Should return rows where s1=s2 OR s2 doesn't have member x.
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s1 ?s2 ?x WHERE {
             ?s1 a ex:Set .
@@ -2454,7 +2442,7 @@ async fn sparql_compound_filter_not_exists_standalone() {
             ?s1 ex:member ?x .
             FILTER ( ?s1 = ?s2 || NOT EXISTS { ?s2 ex:member ?x } )
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger.ledger, query)
         .await
@@ -2502,13 +2490,13 @@ async fn sparql_compound_filter_not_exists_equals_standalone() {
     let ledger = fluree.insert(ledger0, &insert).await.expect("insert sets");
 
     // Standalone NOT EXISTS: s2 does NOT have member x
-    let standalone = r#"
+    let standalone = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s1 ?s2 ?x WHERE {
             ?s1 a ex:Set . ?s2 a ex:Set . ?s1 ex:member ?x .
             FILTER NOT EXISTS { ?s2 ex:member ?x }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger.ledger, standalone)
         .await
@@ -2519,13 +2507,13 @@ async fn sparql_compound_filter_not_exists_equals_standalone() {
     assert_eq!(standalone_count, 1, "standalone NOT EXISTS");
 
     // Compound: false || NOT EXISTS should produce the same result
-    let compound = r#"
+    let compound = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?s1 ?s2 ?x WHERE {
             ?s1 a ex:Set . ?s2 a ex:Set . ?s1 ex:member ?x .
             FILTER ( false || NOT EXISTS { ?s2 ex:member ?x } )
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger.ledger, compound)
         .await
@@ -2559,12 +2547,12 @@ async fn sparql_wildcard_header_with_empty_results() {
     let ledger = fluree.insert(ledger0, &insert).await.expect("insert data");
 
     // SELECT * with a condition that matches nothing
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT * WHERE {
             ?x ex:nonExistentProperty ?y
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger.ledger, query)
         .await
@@ -2596,11 +2584,11 @@ async fn sparql_strlen_multibyte_characters() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:strlen-mb").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?label (STRLEN(?label) AS ?len)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2618,11 +2606,11 @@ async fn sparql_substr_multibyte_characters() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:substr-mb").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (SUBSTR(?label, 2, 2) AS ?sub)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2638,11 +2626,11 @@ async fn sparql_substr_multibyte_no_length() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:substr-mb-nolen").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (SUBSTR(?label, 2) AS ?sub)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2659,11 +2647,11 @@ async fn sparql_timezone_returns_day_time_duration() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:timezone").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (TIMEZONE(?dt) AS ?tz)
         WHERE { ex:sushi ex:created ?dt }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2693,11 +2681,11 @@ async fn sparql_timezone_positive_offset() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:timezone-pos").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (TIMEZONE(?dt) AS ?tz)
         WHERE { ex:beer ex:created ?dt }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2718,11 +2706,11 @@ async fn sparql_tz_returns_string() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:tz-string").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (TZ(?dt) AS ?tz)
         WHERE { ex:sushi ex:created ?dt }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2738,11 +2726,11 @@ async fn sparql_uuid_returns_iri() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:uuid-iri").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (UUID() AS ?id)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2771,11 +2759,11 @@ async fn sparql_struuid_returns_string() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:struuid-str").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (STRUUID() AS ?id)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2810,14 +2798,14 @@ async fn sparql_isnumeric_decimal() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:isnumeric-dec").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT ?label (isNumeric(?price) AS ?numP) (isNumeric(?label) AS ?numL)
         WHERE {
             ex:sushi ex:price ?price .
             ex:sushi ex:label ?label .
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2835,11 +2823,11 @@ async fn sparql_ucase_preserves_language_tag() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:ucase-lang").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (UCASE(?note) AS ?upper)
         WHERE { ex:sushi ex:note ?note }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2865,11 +2853,11 @@ async fn sparql_lcase_preserves_language_tag() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "fn:lcase-lang").await;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/ns/>
         SELECT (LCASE(?note) AS ?lower)
         WHERE { ex:beer ex:note ?note }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2899,12 +2887,12 @@ async fn sparql_xsd_cast_integer_from_bool() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "cast:int-bool").await;
 
-    let query = r#"
+    let query = r"
         PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
         PREFIX ex: <http://example.org/ns/>
         SELECT (xsd:integer(true) AS ?one) (xsd:integer(false) AS ?zero)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2939,12 +2927,12 @@ async fn sparql_xsd_cast_double_from_integer() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "cast:dbl-int").await;
 
-    let query = r#"
+    let query = r"
         PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
         PREFIX ex: <http://example.org/ns/>
         SELECT (xsd:double(42) AS ?d)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -2959,12 +2947,12 @@ async fn sparql_xsd_cast_string_from_integer() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_builtin_fn_data(&fluree, "cast:str-int").await;
 
-    let query = r#"
+    let query = r"
         PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
         PREFIX ex: <http://example.org/ns/>
         SELECT (xsd:string(42) AS ?s)
         WHERE { ex:sushi ex:label ?label }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3006,13 +2994,13 @@ async fn sparql_bind01_exact_w3c_unbound_predicate() {
     let ledger0 = genesis_ledger(&fluree, "bind:w3c01");
 
     // Load turtle data matching W3C bind/data.ttl
-    let turtle = r#"
+    let turtle = r"
         @prefix : <http://example.org/> .
         :s1 :p 1 .
         :s2 :p 2 .
         :s3 :p 3 .
         :s4 :p 4 .
-    "#;
+    ";
     let receipt = fluree
         .insert_turtle(ledger0, turtle)
         .await
@@ -3020,14 +3008,14 @@ async fn sparql_bind01_exact_w3c_unbound_predicate() {
     let ledger = receipt.ledger;
 
     // Exact W3C bind01 query
-    let query = r#"
+    let query = r"
         PREFIX : <http://example.org/>
         SELECT ?z
         {
           ?s ?p ?o .
           BIND(?o+10 AS ?z)
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3038,7 +3026,7 @@ async fn sparql_bind01_exact_w3c_unbound_predicate() {
         .as_array()
         .expect("array")
         .iter()
-        .filter_map(|v| v.as_i64())
+        .filter_map(serde_json::Value::as_i64)
         .collect();
     values.sort();
     assert_eq!(
@@ -3066,13 +3054,13 @@ async fn sparql_bind_expression_in_select() {
     let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
     let ledger = receipt.ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         SELECT ?z WHERE {
             ?s ex:p ?o .
             BIND(?o + 10 AS ?z)
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3105,13 +3093,13 @@ async fn sparql_bind_wildcard_select() {
     let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
     let ledger = receipt.ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         SELECT * WHERE {
             ?s ex:p ?o .
             BIND(?o + 10 AS ?z)
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3150,7 +3138,7 @@ async fn sparql_post_query_values() {
     let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
     let ledger = receipt.ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         SELECT ?book ?title ?price
         WHERE {
@@ -3158,7 +3146,7 @@ async fn sparql_post_query_values() {
                   ex:price ?price .
         }
         VALUES ?book { ex:book1 }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3192,7 +3180,7 @@ async fn sparql_bind_chained_binds() {
     let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
     let ledger = receipt.ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         SELECT ?o ?z ?z2
         WHERE {
@@ -3200,7 +3188,7 @@ async fn sparql_bind_chained_binds() {
             BIND(?o + 10 AS ?z)
             BIND(?o + 100 AS ?z2)
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3246,7 +3234,7 @@ async fn sparql_bind_in_union() {
     let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
     let ledger = receipt.ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         SELECT ?z
         WHERE {
@@ -3254,7 +3242,7 @@ async fn sparql_bind_in_union() {
             UNION
             { ?s ex:q ?o . BIND(?o + 100 AS ?z) }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3264,7 +3252,7 @@ async fn sparql_bind_in_union() {
         .as_array()
         .expect("array")
         .iter()
-        .filter_map(|v| v.as_i64())
+        .filter_map(serde_json::Value::as_i64)
         .collect();
     values.sort();
     assert_eq!(values, vec![11, 110], "BIND in each UNION branch");
@@ -3288,7 +3276,7 @@ async fn sparql_bind_with_filter() {
     let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
     let ledger = receipt.ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         SELECT ?z
         WHERE {
@@ -3296,7 +3284,7 @@ async fn sparql_bind_with_filter() {
             BIND(?o + 10 AS ?z)
             FILTER(?z > 11)
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3306,7 +3294,7 @@ async fn sparql_bind_with_filter() {
         .as_array()
         .expect("array")
         .iter()
-        .filter_map(|v| v.as_i64())
+        .filter_map(serde_json::Value::as_i64)
         .collect();
     values.sort();
     assert_eq!(values, vec![12, 13], "FILTER(?z > 11) on BIND(?o+10 AS ?z)");
@@ -3331,14 +3319,14 @@ async fn sparql_bind_scoping() {
     // bind10: BIND(4 AS ?z) { ?s :p ?v . FILTER(?v = ?z) }
     // The inner { } creates a new scope. ?z from outer BIND should NOT
     // be visible inside, so FILTER(?v = ?z) never matches → 0 results.
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         SELECT ?z ?v
         WHERE {
             BIND(4 AS ?z)
             { ?s ex:p ?v . FILTER(?v = ?z) }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3416,10 +3404,10 @@ async fn sparql_describe_constant_iri_outgoing_triples() {
     let receipt = fluree.insert(ledger0, &insert).await.expect("insert");
     let ledger = receipt.ledger;
 
-    let query = r#"
+    let query = r"
         PREFIX ex: <http://example.org/>
         DESCRIBE ex:alice
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3507,7 +3495,7 @@ async fn sparql_service_self_reference_returns_data() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "people:main").await;
 
-    let query = r#"
+    let query = r"
         PREFIX person: <http://example.org/Person#>
         SELECT ?handle
         WHERE {
@@ -3516,7 +3504,7 @@ async fn sparql_service_self_reference_returns_data() {
           }
         }
         ORDER BY ?handle
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3535,11 +3523,11 @@ async fn sparql_service_external_endpoint_errors() {
     let fluree = FlureeBuilder::memory().build_memory();
     let ledger = seed_people(&fluree, "people:main").await;
 
-    let query = r#"
+    let query = r"
         SELECT * WHERE {
           SERVICE <http://remote.example.org/sparql> { ?s ?p ?o }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query).await;
     assert!(
@@ -3561,14 +3549,14 @@ async fn sparql_service_silent_external_yields_empty() {
 
     // SERVICE SILENT with an unsupported external endpoint should not error,
     // and since SERVICE is the only pattern, should yield zero results.
-    let query = r#"
+    let query = r"
         SELECT ?s ?p ?o
         WHERE {
           SERVICE SILENT <http://remote.example.org/sparql> {
             ?s ?p ?o .
           }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3610,7 +3598,7 @@ async fn sparql_service_remote_returns_mock_data() {
     );
     fluree.set_remote_service(Arc::new(mock));
 
-    let query = r#"
+    let query = r"
         SELECT ?name ?email
         WHERE {
           SERVICE <fluree:remote:acme/customers:main> {
@@ -3619,7 +3607,7 @@ async fn sparql_service_remote_returns_mock_data() {
           }
         }
         ORDER BY ?name
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3642,13 +3630,13 @@ async fn sparql_service_remote_unknown_connection_errors() {
     let mock = fluree_db_api::remote_service::MockRemoteService::new();
     fluree.set_remote_service(Arc::new(mock));
 
-    let query = r#"
+    let query = r"
         SELECT * WHERE {
           SERVICE <fluree:remote:nonexistent/db:main> {
             ?s ?p ?o .
           }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query).await;
     assert!(result.is_err(), "Unknown remote connection should error");
@@ -3664,14 +3652,14 @@ async fn sparql_service_remote_silent_swallows_error() {
     let mock = fluree_db_api::remote_service::MockRemoteService::new();
     fluree.set_remote_service(Arc::new(mock));
 
-    let query = r#"
+    let query = r"
         SELECT ?s ?p ?o
         WHERE {
           SERVICE SILENT <fluree:remote:missing/db:main> {
             ?s ?p ?o .
           }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query)
         .await
@@ -3691,11 +3679,11 @@ async fn sparql_service_remote_no_executor_errors() {
     let ledger = seed_people(&fluree, "people:main").await;
 
     // No remote executor set
-    let query = r#"
+    let query = r"
         SELECT * WHERE {
           SERVICE <fluree:remote:acme/db:main> { ?s ?p ?o }
         }
-    "#;
+    ";
 
     let result = support::query_sparql(&fluree, &ledger, query).await;
     assert!(

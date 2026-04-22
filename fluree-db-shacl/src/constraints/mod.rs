@@ -132,35 +132,32 @@ impl Constraint {
     /// Get a human-readable description of this constraint
     pub fn description(&self) -> String {
         match self {
-            Constraint::MinCount(n) => format!("sh:minCount {}", n),
-            Constraint::MaxCount(n) => format!("sh:maxCount {}", n),
+            Constraint::MinCount(n) => format!("sh:minCount {n}"),
+            Constraint::MaxCount(n) => format!("sh:maxCount {n}"),
             Constraint::Datatype(dt) => format!("sh:datatype {}", dt.name),
-            Constraint::NodeKind(kind) => format!("sh:nodeKind {:?}", kind),
+            Constraint::NodeKind(kind) => format!("sh:nodeKind {kind:?}"),
             Constraint::Class(class) => format!("sh:class {}", class.name),
-            Constraint::MinInclusive(v) => format!("sh:minInclusive {:?}", v),
-            Constraint::MaxInclusive(v) => format!("sh:maxInclusive {:?}", v),
-            Constraint::MinExclusive(v) => format!("sh:minExclusive {:?}", v),
-            Constraint::MaxExclusive(v) => format!("sh:maxExclusive {:?}", v),
-            Constraint::Pattern(p, _) => format!("sh:pattern \"{}\"", p),
-            Constraint::MinLength(n) => format!("sh:minLength {}", n),
-            Constraint::MaxLength(n) => format!("sh:maxLength {}", n),
-            Constraint::HasValue(v) => format!("sh:hasValue {:?}", v),
+            Constraint::MinInclusive(v) => format!("sh:minInclusive {v:?}"),
+            Constraint::MaxInclusive(v) => format!("sh:maxInclusive {v:?}"),
+            Constraint::MinExclusive(v) => format!("sh:minExclusive {v:?}"),
+            Constraint::MaxExclusive(v) => format!("sh:maxExclusive {v:?}"),
+            Constraint::Pattern(p, _) => format!("sh:pattern \"{p}\""),
+            Constraint::MinLength(n) => format!("sh:minLength {n}"),
+            Constraint::MaxLength(n) => format!("sh:maxLength {n}"),
+            Constraint::HasValue(v) => format!("sh:hasValue {v:?}"),
             Constraint::In(vs) => format!("sh:in ({} values)", vs.len()),
             Constraint::Equals(prop) => format!("sh:equals {}", prop.name),
             Constraint::Disjoint(prop) => format!("sh:disjoint {}", prop.name),
             Constraint::LessThan(prop) => format!("sh:lessThan {}", prop.name),
             Constraint::LessThanOrEquals(prop) => format!("sh:lessThanOrEquals {}", prop.name),
-            Constraint::UniqueLang(v) => format!("sh:uniqueLang {}", v),
-            Constraint::LanguageIn(langs) => format!("sh:languageIn {:?}", langs),
+            Constraint::UniqueLang(v) => format!("sh:uniqueLang {v}"),
+            Constraint::LanguageIn(langs) => format!("sh:languageIn {langs:?}"),
             Constraint::QualifiedValueShape {
                 min_count,
                 max_count,
                 ..
             } => {
-                format!(
-                    "sh:qualifiedValueShape (min: {:?}, max: {:?})",
-                    min_count, max_count
-                )
+                format!("sh:qualifiedValueShape (min: {min_count:?}, max: {max_count:?})")
             }
         }
     }

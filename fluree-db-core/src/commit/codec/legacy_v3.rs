@@ -432,8 +432,7 @@ fn decode_sig_block_v3(data: &[u8]) -> Result<Vec<CommitSignature>, CommitCodecE
     let sig_count = u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap());
     if sig_count > MAX_SIG_COUNT_LOCAL {
         return Err(CommitCodecError::EnvelopeDecode(format!(
-            "signature count {} exceeds maximum {}",
-            sig_count, MAX_SIG_COUNT_LOCAL
+            "signature count {sig_count} exceeds maximum {MAX_SIG_COUNT_LOCAL}"
         )));
     }
 
@@ -443,20 +442,17 @@ fn decode_sig_block_v3(data: &[u8]) -> Result<Vec<CommitSignature>, CommitCodecE
             u16::from_le_bytes(read_exact(data, &mut pos, 2)?.try_into().unwrap()) as usize;
         if signer_len > MAX_SIGNER_LEN_LOCAL {
             return Err(CommitCodecError::EnvelopeDecode(format!(
-                "signer length {} exceeds maximum {}",
-                signer_len, MAX_SIGNER_LEN_LOCAL
+                "signer length {signer_len} exceeds maximum {MAX_SIGNER_LEN_LOCAL}"
             )));
         }
         let signer_bytes = read_exact(data, &mut pos, signer_len)?;
-        let signer = std::str::from_utf8(signer_bytes).map_err(|e| {
-            CommitCodecError::EnvelopeDecode(format!("invalid signer UTF-8: {}", e))
-        })?;
+        let signer = std::str::from_utf8(signer_bytes)
+            .map_err(|e| CommitCodecError::EnvelopeDecode(format!("invalid signer UTF-8: {e}")))?;
 
         let algo = read_u8(data, &mut pos)?;
         if algo != ALGO_ED25519 {
             return Err(CommitCodecError::EnvelopeDecode(format!(
-                "unknown signature algorithm: 0x{:02x}",
-                algo
+                "unknown signature algorithm: 0x{algo:02x}"
             )));
         }
 
@@ -472,8 +468,7 @@ fn decode_sig_block_v3(data: &[u8]) -> Result<Vec<CommitSignature>, CommitCodecE
         let metadata = if meta_len > 0 {
             if meta_len > MAX_METADATA_LEN_LOCAL {
                 return Err(CommitCodecError::EnvelopeDecode(format!(
-                    "metadata length {} exceeds maximum {}",
-                    meta_len, MAX_METADATA_LEN_LOCAL
+                    "metadata length {meta_len} exceeds maximum {MAX_METADATA_LEN_LOCAL}"
                 )));
             }
             Some(read_exact(data, &mut pos, meta_len)?.to_vec())
@@ -775,10 +770,10 @@ mod tests {
             ("anyURI", namespaces::XSD),
             ("normalizedString", namespaces::XSD),
         ] {
-            let curie = format!("xsd:{}", local);
+            let curie = format!("xsd:{local}");
             let s = Sid::new(namespaces::EMPTY, &curie);
             let c = canonicalize_dt_sid(&s)
-                .unwrap_or_else(|| panic!("should canonicalize xsd:{}", local));
+                .unwrap_or_else(|| panic!("should canonicalize xsd:{local}"));
             assert_eq!(c.namespace_code, expected_ns);
             assert_eq!(c.name.as_ref(), local);
         }
@@ -897,7 +892,7 @@ mod tests {
         let body_len = HEADER_LEN
             + envelope_bytes.len()
             + ops_buf.len()
-            + dict_bytes.iter().map(|d| d.len()).sum::<usize>()
+            + dict_bytes.iter().map(std::vec::Vec::len).sum::<usize>()
             + FOOTER_LEN;
         let total_len = body_len + HASH_LEN_V3;
         let mut blob = vec![0u8; total_len];

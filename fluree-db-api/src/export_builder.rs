@@ -133,8 +133,7 @@ impl<'a> ExportBuilder<'a> {
         match registry.graph_id_for_iri(iri) {
             Some(g_id) => Ok((g_id, iri.to_string())),
             None => Err(ApiError::Config(format!(
-                "graph '{}' not found in ledger graph registry",
-                iri
+                "graph '{iri}' not found in ledger graph registry"
             ))),
         }
     }

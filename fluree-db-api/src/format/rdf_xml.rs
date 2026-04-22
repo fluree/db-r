@@ -64,9 +64,9 @@ fn format_graph(graph: &Graph) -> Result<String> {
 
     let mut out = String::new();
     out.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
-    out.push_str(r#"<rdf:RDF"#);
+    out.push_str(r"<rdf:RDF");
     for (ns, prefix) in &ns_to_prefix {
-        out.push_str(r#" xmlns:"#);
+        out.push_str(r" xmlns:");
         out.push_str(prefix);
         out.push_str(r#"=""#);
         escape_attr_into(ns, &mut out);
@@ -195,7 +195,7 @@ fn split_iri_for_qname(iri: &str) -> Result<(&str, &str)> {
 
 fn split_namespace(iri: &str) -> Option<&str> {
     let idx = iri.rfind('#').or_else(|| iri.rfind('/'))?;
-    Some(&iri[..idx + 1])
+    Some(&iri[..=idx])
 }
 
 fn is_ncname(s: &str) -> bool {

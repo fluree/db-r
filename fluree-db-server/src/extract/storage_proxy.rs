@@ -307,11 +307,11 @@ mod test_helpers {
         let header_b64 = URL_SAFE_NO_PAD.encode(header.to_string().as_bytes());
         let payload_b64 = URL_SAFE_NO_PAD.encode(claims.to_string().as_bytes());
 
-        let signing_input = format!("{}.{}", header_b64, payload_b64);
+        let signing_input = format!("{header_b64}.{payload_b64}");
         let signature = key.sign(signing_input.as_bytes());
         let sig_b64 = URL_SAFE_NO_PAD.encode(signature.to_bytes());
 
-        format!("{}.{}.{}", header_b64, payload_b64, sig_b64)
+        format!("{header_b64}.{payload_b64}.{sig_b64}")
     }
 
     pub fn now_secs() -> u64 {

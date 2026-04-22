@@ -25,7 +25,7 @@ use super::{LowerError, LoweringContext, Result};
 /// `(a|b)/(c|d)/(e|f)/...`.
 const MAX_SEQUENCE_EXPANSION: usize = 64;
 
-impl<'a, E: IriEncoder> LoweringContext<'a, E> {
+impl<E: IriEncoder> LoweringContext<'_, E> {
     pub(super) fn lower_property_path(
         &mut self,
         subject: &SubjectTerm,
@@ -510,8 +510,7 @@ impl<'a, E: IriEncoder> LoweringContext<'a, E> {
         if n > MAX_SEQUENCE_EXPANSION {
             return Err(LowerError::invalid_property_path(
                 format!(
-                    "Property path sequence expands to {} chains (limit {})",
-                    n, MAX_SEQUENCE_EXPANSION,
+                    "Property path sequence expands to {n} chains (limit {MAX_SEQUENCE_EXPANSION})",
                 ),
                 span,
             ));

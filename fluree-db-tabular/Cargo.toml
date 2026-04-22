@@ -9,3 +9,6 @@ description = "Tabular column batch types for Fluree DB graph sources"
 [dependencies]
 # Error handling
 thiserror.workspace = true
+
+[lints]
+workspace = true

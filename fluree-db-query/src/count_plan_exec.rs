@@ -267,16 +267,20 @@ fn merge_sorted_lists(existing: Option<&[u64]>, new: &[u64]) -> Vec<u64> {
     let mut result = Vec::with_capacity(existing.len() + new.len());
     let (mut i, mut j) = (0, 0);
     while i < existing.len() && j < new.len() {
-        if existing[i] < new[j] {
-            result.push(existing[i]);
-            i += 1;
-        } else if existing[i] > new[j] {
-            result.push(new[j]);
-            j += 1;
-        } else {
-            result.push(existing[i]);
-            i += 1;
-            j += 1;
+        match existing[i].cmp(&new[j]) {
+            std::cmp::Ordering::Less => {
+                result.push(existing[i]);
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                result.push(new[j]);
+                j += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                result.push(existing[i]);
+                i += 1;
+                j += 1;
+            }
         }
     }
     result.extend_from_slice(&existing[i..]);
@@ -289,14 +293,14 @@ fn intersect_sorted_pair(a: &[u64], b: &[u64]) -> Vec<u64> {
     let mut result = Vec::with_capacity(a.len().min(b.len()));
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
-        if a[i] < b[j] {
-            i += 1;
-        } else if a[i] > b[j] {
-            j += 1;
-        } else {
-            result.push(a[i]);
-            i += 1;
-            j += 1;
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                result.push(a[i]);
+                i += 1;
+                j += 1;
+            }
         }
     }
     result
@@ -338,7 +342,7 @@ fn sum_star_join(
     let mut total: u128 = 0;
 
     loop {
-        if curr.iter().any(|c| c.is_none()) {
+        if curr.iter().any(std::option::Option::is_none) {
             break;
         }
 
@@ -457,7 +461,7 @@ fn sum_optional_join(
     let mut total: u128 = 0;
 
     loop {
-        if req_cur.iter().any(|c| c.is_none()) {
+        if req_cur.iter().any(std::option::Option::is_none) {
             break;
         }
 
@@ -713,7 +717,7 @@ fn execute_chain(
         },
     }
 
-    impl<'a> P2WeightMode<'a> {
+    impl P2WeightMode<'_> {
         #[inline]
         fn weight_row(&self, o_type: u16, o_key: u64) -> u64 {
             let is_iri = o_type == fluree_db_core::o_type::OType::IRI_REF.as_u16();

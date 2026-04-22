@@ -652,12 +652,24 @@ pub async fn incremental_index(
     root_builder.set_predicate_sids(new_pred_sids);
 
     let new_graph_iris: Vec<String> = (0..novelty.shared.graphs.len())
-        .filter_map(|id| novelty.shared.graphs.resolve(id).map(|s| s.to_string()))
+        .filter_map(|id| {
+            novelty
+                .shared
+                .graphs
+                .resolve(id)
+                .map(std::string::ToString::to_string)
+        })
         .collect();
     root_builder.set_graph_iris(new_graph_iris);
 
     let new_datatype_iris: Vec<String> = (0..novelty.shared.datatypes.len())
-        .filter_map(|id| novelty.shared.datatypes.resolve(id).map(|s| s.to_string()))
+        .filter_map(|id| {
+            novelty
+                .shared
+                .datatypes
+                .resolve(id)
+                .map(std::string::ToString::to_string)
+        })
         .collect();
     root_builder.set_datatype_iris(new_datatype_iris);
 
@@ -1014,7 +1026,7 @@ pub async fn incremental_index(
                     .shared
                     .fulltext_hook
                     .as_ref()
-                    .map(|h| h.entries())
+                    .map(super::super::fulltext_hook::FulltextHook::entries)
                     .unwrap_or(&[]);
 
                 // Resolve the dict-assigned lang_id for `"en"` once — used as
@@ -1055,7 +1067,7 @@ pub async fn incremental_index(
                         .shared
                         .languages
                         .resolve(lang_id)
-                        .map(|s| s.to_string())
+                        .map(std::string::ToString::to_string)
                         .unwrap_or_else(|| "en".to_string());
                     let language = Language::from_bcp47(&lang_tag);
                     let analyzer = Analyzer::for_language(language);
@@ -1173,7 +1185,7 @@ pub async fn incremental_index(
                     .shared
                     .spatial_hook
                     .as_ref()
-                    .map(|h| h.entries())
+                    .map(super::super::spatial_hook::SpatialHook::entries)
                     .unwrap_or(&[]);
 
                 // Group novelty entries by (g_id, p_id).
@@ -1195,7 +1207,7 @@ pub async fn incremental_index(
                         .to_string();
 
                     let config = fluree_db_spatial::SpatialCreateConfig::new(
-                        format!("spatial:g{}p{}", g_id, p_id),
+                        format!("spatial:g{g_id}p{p_id}"),
                         ledger_id.to_string(),
                         pred_iri.clone(),
                     );
@@ -1211,15 +1223,13 @@ pub async fn incremental_index(
                         let root_bytes =
                             content_store.get(&sp_ref.root_cid).await.map_err(|e| {
                                 IndexerError::StorageRead(format!(
-                                    "spatial root load for g{}:p{}: {e}",
-                                    g_id, p_id
+                                    "spatial root load for g{g_id}:p{p_id}: {e}"
                                 ))
                             })?;
                         let spatial_root: fluree_db_spatial::SpatialIndexRoot =
                             serde_json::from_slice(&root_bytes).map_err(|e| {
                                 IndexerError::StorageRead(format!(
-                                    "spatial root decode for g{}:p{}: {e}",
-                                    g_id, p_id
+                                    "spatial root decode for g{g_id}:p{p_id}: {e}"
                                 ))
                             })?;
 
@@ -1290,7 +1300,7 @@ pub async fn incremental_index(
                     }
 
                     let build_result = builder.build().map_err(|e| {
-                        IndexerError::Other(format!("spatial build g{}:p{}: {e}", g_id, p_id))
+                        IndexerError::Other(format!("spatial build g{g_id}:p{p_id}: {e}"))
                     })?;
 
                     if build_result.entries.is_empty() {
@@ -1658,7 +1668,8 @@ pub async fn incremental_index(
                         sids.dedup();
                     }
 
-                    let total_subjects: usize = subjects_by_graph.values().map(|v| v.len()).sum();
+                    let total_subjects: usize =
+                        subjects_by_graph.values().map(std::vec::Vec::len).sum();
                     tracing::debug!(
                         graphs = subjects_by_graph.len(),
                         total_subjects,
@@ -1740,8 +1751,10 @@ pub async fn incremental_index(
                         }
                     }
                 }
-                let total_subject_class_links: usize =
-                    subject_classes.values().map(|set| set.len()).sum();
+                let total_subject_class_links: usize = subject_classes
+                    .values()
+                    .map(std::collections::HashSet::len)
+                    .sum();
                 tracing::debug!(
                     subjects = subject_classes.len(),
                     class_links = total_subject_class_links,
@@ -1829,14 +1842,16 @@ pub async fn incremental_index(
                         }
                     }
                 }
-                let class_property_count: usize =
-                    class_properties.values().map(|set| set.len()).sum();
+                let class_property_count: usize = class_properties
+                    .values()
+                    .map(std::collections::HashSet::len)
+                    .sum();
                 let class_ref_edge_count: usize = ref_edges
                     .values()
                     .map(|per_prop| {
                         per_prop
                             .values()
-                            .map(|targets| targets.len())
+                            .map(std::collections::HashMap::len)
                             .sum::<usize>()
                     })
                     .sum();
@@ -1935,7 +1950,7 @@ pub async fn incremental_index(
                 let ref_class_sid_hits = AtomicUsize::new(0usize);
                 let mut merged_class_entries = 0usize;
                 let total_class_entries = entries_by_key.len();
-                for (&(g_id, class_sid64), entry) in entries_by_key.iter_mut() {
+                for (&(g_id, class_sid64), entry) in &mut entries_by_key {
                     if let Some(props) = class_properties.get(&(g_id, class_sid64)) {
                         let class_dts = class_prop_dts.get(&(g_id, class_sid64));
                         let class_refs = ref_edges.get(&(g_id, class_sid64));
@@ -1952,7 +1967,7 @@ pub async fn incremental_index(
                                         .shared
                                         .ns_prefixes
                                         .get(&pu.property_sid.namespace_code)
-                                        .map(|s| s.as_str())
+                                        .map(std::string::String::as_str)
                                         .unwrap_or(""),
                                     pu.property_sid.name
                                 ))
@@ -1974,7 +1989,7 @@ pub async fn incremental_index(
                                         .shared
                                         .ns_prefixes
                                         .get(&pu.property_sid.namespace_code)
-                                        .map(|s| s.as_str())
+                                        .map(std::string::String::as_str)
                                         .unwrap_or(""),
                                     pu.property_sid.name
                                 );
@@ -2166,7 +2181,7 @@ pub async fn incremental_index(
 
         tracing::debug!(
             total_flakes = db_stats.flakes,
-            property_count = db_stats.properties.as_ref().map_or(0, |p| p.len()),
+            property_count = db_stats.properties.as_ref().map_or(0, std::vec::Vec::len),
             "incremental V6: stats refreshed"
         );
 
@@ -2287,7 +2302,10 @@ pub async fn incremental_index(
 
     // Write garbage manifest.
     if !replaced_cids.is_empty() {
-        let garbage_strings: Vec<String> = replaced_cids.iter().map(|c| c.to_string()).collect();
+        let garbage_strings: Vec<String> = replaced_cids
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         let garbage_cid = gc::write_garbage_record(
             content_store.as_ref(),
             ledger_id,

@@ -134,7 +134,7 @@ impl FileIndexLoader {
             .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
+                message: format!("Nameservice error: {e}"),
             })?;
 
         let record = match record {
@@ -152,12 +152,12 @@ impl FileIndexLoader {
             .get(index_cid)
             .await
             .map_err(|e| ServiceError::Internal {
-                message: format!("Storage error loading manifest: {}", e),
+                message: format!("Storage error loading manifest: {e}"),
             })?;
 
         let manifest: Bm25Manifest =
             serde_json::from_slice(&bytes).map_err(|e| ServiceError::Internal {
-                message: format!("Manifest deserialize error: {}", e),
+                message: format!("Manifest deserialize error: {e}"),
             })?;
 
         Ok(manifest)
@@ -175,7 +175,7 @@ impl IndexLoader for FileIndexLoader {
             .iter()
             .find(|e| e.index_t == index_t)
             .ok_or_else(|| ServiceError::Internal {
-                message: format!("No snapshot found for {} at t={}", graph_source_id, index_t),
+                message: format!("No snapshot found for {graph_source_id} at t={index_t}"),
             })?;
 
         // Load index bytes via content store
@@ -184,12 +184,12 @@ impl IndexLoader for FileIndexLoader {
             .get(&entry.snapshot_id)
             .await
             .map_err(|e| ServiceError::Internal {
-                message: format!("Storage error: {}", e),
+                message: format!("Storage error: {e}"),
             })?;
 
         // Deserialize the index
         let index = deserialize(&bytes).map_err(|e| ServiceError::Internal {
-            message: format!("Deserialize error: {}", e),
+            message: format!("Deserialize error: {e}"),
         })?;
 
         Ok(index)
@@ -247,7 +247,7 @@ impl VectorIndexLoader for FileVectorIndexLoader {
             .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
+                message: format!("Nameservice error: {e}"),
             })?;
 
         let record = record.ok_or_else(|| ServiceError::GraphSourceNotFound {
@@ -255,7 +255,7 @@ impl VectorIndexLoader for FileVectorIndexLoader {
         })?;
 
         let index_cid = record.index_id.ok_or_else(|| ServiceError::Internal {
-            message: format!("No index CID for vector graph source: {}", graph_source_id),
+            message: format!("No index CID for vector graph source: {graph_source_id}"),
         })?;
 
         let cs = fluree_db_core::content_store_for(self.storage.clone(), graph_source_id);
@@ -263,11 +263,11 @@ impl VectorIndexLoader for FileVectorIndexLoader {
             .get(&index_cid)
             .await
             .map_err(|e| ServiceError::Internal {
-                message: format!("Storage error: {}", e),
+                message: format!("Storage error: {e}"),
             })?;
 
         let index = vector_deserialize(&bytes).map_err(|e| ServiceError::Internal {
-            message: format!("Vector index deserialize error: {}", e),
+            message: format!("Vector index deserialize error: {e}"),
         })?;
 
         Ok(index)
@@ -279,7 +279,7 @@ impl VectorIndexLoader for FileVectorIndexLoader {
             .lookup_graph_source(graph_source_id)
             .await
             .map_err(|e| ServiceError::Internal {
-                message: format!("Nameservice error: {}", e),
+                message: format!("Nameservice error: {e}"),
             })?;
 
         Ok(record.and_then(|r| {

@@ -50,23 +50,20 @@ impl IcebergGsConfig {
     /// Parse from JSON string (stored in GraphSourceRecord.config).
     pub fn from_json(json: &str) -> Result<Self> {
         serde_json::from_str(json).map_err(|e| {
-            IcebergError::Config(format!(
-                "Failed to parse Iceberg graph source config: {}",
-                e
-            ))
+            IcebergError::Config(format!("Failed to parse Iceberg graph source config: {e}"))
         })
     }
 
     /// Serialize to JSON string.
     pub fn to_json(&self) -> Result<String> {
         serde_json::to_string(self)
-            .map_err(|e| IcebergError::Config(format!("Failed to serialize config: {}", e)))
+            .map_err(|e| IcebergError::Config(format!("Failed to serialize config: {e}")))
     }
 
     /// Serialize to pretty-printed JSON string.
     pub fn to_json_pretty(&self) -> Result<String> {
         serde_json::to_string_pretty(self)
-            .map_err(|e| IcebergError::Config(format!("Failed to serialize config: {}", e)))
+            .map_err(|e| IcebergError::Config(format!("Failed to serialize config: {e}")))
     }
 
     /// Get the table identifier.
@@ -121,8 +118,7 @@ impl IcebergGsConfig {
                 }
                 if !table_location.starts_with("s3://") && !table_location.starts_with("s3a://") {
                     return Err(IcebergError::Config(format!(
-                        "Direct catalog table_location must be an S3 URI (s3:// or s3a://), got: {}",
-                        table_location
+                        "Direct catalog table_location must be an S3 URI (s3:// or s3a://), got: {table_location}"
                     )));
                 }
                 // Validate table identifier can be derived from table_location
@@ -323,7 +319,7 @@ impl TableConfig {
     pub fn identifier(&self) -> String {
         match self {
             TableConfig::Identifier(id) => id.clone(),
-            TableConfig::Structured { namespace, name } => format!("{}.{}", namespace, name),
+            TableConfig::Structured { namespace, name } => format!("{namespace}.{name}"),
         }
     }
 }
@@ -397,7 +393,7 @@ mod tests {
                 assert_eq!(uri, "https://polaris.example.com");
                 assert_eq!(catalog_type, "polaris");
             }
-            other => panic!("Expected Rest variant, got {:?}", other),
+            other => panic!("Expected Rest variant, got {other:?}"),
         }
         assert_eq!(config.table.identifier(), "openflights.airlines");
         assert!(config.io.vended_credentials);
@@ -441,7 +437,7 @@ mod tests {
                 assert_eq!(catalog_type, "rest");
                 assert_eq!(warehouse, &Some("my-warehouse".to_string()));
             }
-            other => panic!("Expected Rest variant, got {:?}", other),
+            other => panic!("Expected Rest variant, got {other:?}"),
         }
         assert_eq!(config.table.identifier(), "db.schema.events");
         assert!(!config.io.vended_credentials);
@@ -470,7 +466,7 @@ mod tests {
                 assert_eq!(uri, "https://polaris.example.com");
                 assert_eq!(warehouse, &Some("wh1".to_string()));
             }
-            other => panic!("Expected Rest variant, got {:?}", other),
+            other => panic!("Expected Rest variant, got {other:?}"),
         }
     }
 
@@ -492,7 +488,7 @@ mod tests {
             CatalogConfig::Direct { table_location } => {
                 assert_eq!(table_location, "s3://bucket/warehouse/ns/table");
             }
-            other => panic!("Expected Direct variant, got {:?}", other),
+            other => panic!("Expected Direct variant, got {other:?}"),
         }
         // Table identifier derived from path
         let table_id = config.table_identifier().unwrap();

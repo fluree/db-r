@@ -10,7 +10,7 @@ use crate::lex::TokenKind;
 
 use super::expr::parse_expression;
 
-impl<'a> super::Parser<'a> {
+impl super::Parser<'_> {
     /// Parse solution modifiers (ORDER BY, LIMIT, OFFSET).
     pub(super) fn parse_solution_modifiers(&mut self) -> SolutionModifiers {
         let mut modifiers = SolutionModifiers::new();

@@ -176,28 +176,28 @@ impl TransportValue {
             TransportValue::BigInt(s) => {
                 let bi: BigInt = s
                     .parse()
-                    .map_err(|e| FlakesTransportError::ParseError(format!("BigInt: {}", e)))?;
+                    .map_err(|e| FlakesTransportError::ParseError(format!("BigInt: {e}")))?;
                 Ok(FlakeValue::BigInt(Box::new(bi)))
             }
             TransportValue::BigDec(s) => {
                 let bd: BigDecimal = s
                     .parse()
-                    .map_err(|e| FlakesTransportError::ParseError(format!("BigDecimal: {}", e)))?;
+                    .map_err(|e| FlakesTransportError::ParseError(format!("BigDecimal: {e}")))?;
                 Ok(FlakeValue::Decimal(Box::new(bd)))
             }
             TransportValue::DateTime(s) => {
                 let dt = DateTime::parse(s)
-                    .map_err(|e| FlakesTransportError::ParseError(format!("DateTime: {}", e)))?;
+                    .map_err(|e| FlakesTransportError::ParseError(format!("DateTime: {e}")))?;
                 Ok(FlakeValue::DateTime(Box::new(dt)))
             }
             TransportValue::Date(s) => {
                 let d = Date::parse(s)
-                    .map_err(|e| FlakesTransportError::ParseError(format!("Date: {}", e)))?;
+                    .map_err(|e| FlakesTransportError::ParseError(format!("Date: {e}")))?;
                 Ok(FlakeValue::Date(Box::new(d)))
             }
             TransportValue::Time(s) => {
                 let t = Time::parse(s)
-                    .map_err(|e| FlakesTransportError::ParseError(format!("Time: {}", e)))?;
+                    .map_err(|e| FlakesTransportError::ParseError(format!("Time: {e}")))?;
                 Ok(FlakeValue::Time(Box::new(t)))
             }
             TransportValue::Vector(v) => Ok(FlakeValue::Vector(v.clone())),
@@ -420,10 +420,8 @@ mod tests {
             // Serialize to JSON to check the tag
             let json = serde_json::to_string(&transport).unwrap();
             assert!(
-                json.contains(&format!(r#""type":"{}""#, expected_type)),
-                "Expected type '{}' in JSON: {}",
-                expected_type,
-                json
+                json.contains(&format!(r#""type":"{expected_type}""#)),
+                "Expected type '{expected_type}' in JSON: {json}"
             );
         }
     }

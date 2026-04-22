@@ -224,7 +224,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.has_value_by_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -233,7 +233,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.some_values_from_by_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -242,7 +242,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.all_values_from_by_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -251,7 +251,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.max_cardinality_by_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -260,7 +260,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.max_qualified_cardinality_by_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -284,7 +284,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.has_value_by_inverse_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -293,7 +293,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.some_values_from_by_inverse_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 
@@ -302,7 +302,7 @@ impl RestrictionIndex {
         static EMPTY: &[Sid] = &[];
         self.all_values_from_by_inverse_property
             .get(property)
-            .map(|v| v.as_slice())
+            .map(std::vec::Vec::as_slice)
             .unwrap_or(EMPTY)
     }
 

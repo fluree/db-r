@@ -104,7 +104,7 @@ impl SchemaHierarchy {
         self.inner
             .subclasses_closure
             .get(c)
-            .map(|arc| arc.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .unwrap_or(EMPTY_SIDS)
     }
 
@@ -119,7 +119,7 @@ impl SchemaHierarchy {
         self.inner
             .subproperties_closure
             .get(p)
-            .map(|arc| arc.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .unwrap_or(EMPTY_SIDS)
     }
 
@@ -128,7 +128,7 @@ impl SchemaHierarchy {
         self.inner
             .direct_subclass_of
             .get(c)
-            .map(|sv| sv.as_slice())
+            .map(smallvec::SmallVec::as_slice)
             .unwrap_or(EMPTY_SIDS)
     }
 
@@ -137,7 +137,7 @@ impl SchemaHierarchy {
         self.inner
             .direct_subproperty_of
             .get(p)
-            .map(|sv| sv.as_slice())
+            .map(smallvec::SmallVec::as_slice)
             .unwrap_or(EMPTY_SIDS)
     }
 

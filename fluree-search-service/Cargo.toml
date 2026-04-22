@@ -34,3 +34,6 @@ native = ["fluree-db-core/native", "fluree-db-query/native"]
 
 [dev-dependencies]
 tokio = { workspace = true }
+
+[lints]
+workspace = true

@@ -112,7 +112,7 @@ mod http_tests {
                 .lookup_graph_source(graph_source_id)
                 .await
                 .map_err(|e| ServiceError::Internal {
-                    message: format!("Nameservice error: {}", e),
+                    message: format!("Nameservice error: {e}"),
                 })?;
 
             let record = match record {
@@ -130,12 +130,12 @@ mod http_tests {
                 .get(index_cid)
                 .await
                 .map_err(|e| ServiceError::Internal {
-                    message: format!("Storage error loading manifest: {}", e),
+                    message: format!("Storage error loading manifest: {e}"),
                 })?;
 
             let manifest: Bm25Manifest =
                 serde_json::from_slice(&bytes).map_err(|e| ServiceError::Internal {
-                    message: format!("Manifest deserialize error: {}", e),
+                    message: format!("Manifest deserialize error: {e}"),
                 })?;
 
             Ok(manifest)
@@ -156,7 +156,7 @@ mod http_tests {
                 .iter()
                 .find(|e| e.index_t == index_t)
                 .ok_or_else(|| ServiceError::Internal {
-                    message: format!("No snapshot found for {} at t={}", graph_source_id, index_t),
+                    message: format!("No snapshot found for {graph_source_id} at t={index_t}"),
                 })?;
 
             let cs = fluree_db_core::content_store_for(self.storage.clone(), graph_source_id);
@@ -164,11 +164,11 @@ mod http_tests {
                 .get(&entry.snapshot_id)
                 .await
                 .map_err(|e| ServiceError::Internal {
-                    message: format!("Storage error: {}", e),
+                    message: format!("Storage error: {e}"),
                 })?;
 
             let index = deserialize(&bytes).map_err(|e| ServiceError::Internal {
-                message: format!("Deserialize error: {}", e),
+                message: format!("Deserialize error: {e}"),
             })?;
 
             Ok(index)
@@ -358,8 +358,7 @@ mod http_tests {
         // Should return NOT_FOUND or similar error status
         assert!(
             status == StatusCode::NOT_FOUND || status == StatusCode::INTERNAL_SERVER_ERROR,
-            "Expected 404 or 500 for nonexistent graph source, got {}",
-            status
+            "Expected 404 or 500 for nonexistent graph source, got {status}"
         );
     }
 
@@ -429,8 +428,7 @@ mod http_tests {
         assert_eq!(
             status,
             StatusCode::OK,
-            "Search should succeed, got: {:?}",
-            json
+            "Search should succeed, got: {json:?}"
         );
 
         // Verify response structure
@@ -462,8 +460,7 @@ mod http_tests {
             .any(|iri| iri.contains("doc1") || iri.contains("doc2"));
         assert!(
             rust_in_top_2,
-            "Rust documents should rank in top 2 for 'rust programming', got: {:?}",
-            iris
+            "Rust documents should rank in top 2 for 'rust programming', got: {iris:?}"
         );
     }
 }
@@ -553,7 +550,10 @@ mod parity_tests {
             .unwrap();
         let analyzer = Analyzer::english_default();
         let query_terms = analyzer.analyze_to_strings("rust programming");
-        let term_refs: Vec<&str> = query_terms.iter().map(|s| s.as_str()).collect();
+        let term_refs: Vec<&str> = query_terms
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
         let scorer = Bm25Scorer::new(&idx, &term_refs);
         let direct_results = scorer.top_k(10);
 
@@ -692,9 +692,7 @@ mod parity_tests {
             assert_eq!(
                 result.hits.len(),
                 expected_count,
-                "Limit {} should return {} results",
-                limit,
-                expected_count
+                "Limit {limit} should return {expected_count} results"
             );
         }
     }
@@ -737,8 +735,7 @@ mod parity_tests {
         for i in 1..scores.len() {
             assert!(
                 scores[i - 1] >= scores[i],
-                "Scores should be in descending order: {:?}",
-                scores
+                "Scores should be in descending order: {scores:?}"
             );
         }
 

@@ -86,7 +86,7 @@ async fn test_values_first_then_join() {
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
-    assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
+    assert!(results.is_empty() || results.iter().all(fluree_db_query::Batch::is_empty));
 }
 
 /// Test BIND at position 0 creates a new variable
@@ -119,7 +119,7 @@ async fn test_bind_first() {
 
     // With an empty database, we'll get no results from the join
     // but the query structure is valid
-    assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
+    assert!(results.is_empty() || results.iter().all(fluree_db_query::Batch::is_empty));
 }
 
 /// Test UNION at position 0 with two branches
@@ -157,7 +157,7 @@ async fn test_union_first() {
 
     // With an empty database, we'll get no results
     // but the query structure is valid
-    assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
+    assert!(results.is_empty() || results.iter().all(fluree_db_query::Batch::is_empty));
 }
 
 /// Test FILTER at position 0 (filter on constants)
@@ -186,7 +186,7 @@ async fn test_filter_first_true() {
     let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // Empty database, so no triple matches
-    assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
+    assert!(results.is_empty() || results.iter().all(fluree_db_query::Batch::is_empty));
 }
 
 /// Test FILTER at position 0 with false condition
@@ -213,7 +213,7 @@ async fn test_filter_first_false() {
     let results = execute_with_overlay(db, &vars, &executable).await.unwrap();
 
     // No results because the filter eliminates the empty seed row
-    assert!(results.is_empty() || results.iter().all(|b| b.is_empty()));
+    assert!(results.is_empty() || results.iter().all(fluree_db_query::Batch::is_empty));
 }
 
 /// Test ValuesOperator directly with overlap compatibility

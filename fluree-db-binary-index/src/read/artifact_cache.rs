@@ -295,8 +295,7 @@ impl DiskArtifactCache {
             let _ = fs::remove_file(&tmp);
             if !target.exists() {
                 return Err(io::Error::other(format!(
-                    "failed to cache bytes to {:?}",
-                    target
+                    "failed to cache bytes to {target:?}"
                 )));
             }
             return Ok(false);
@@ -380,7 +379,7 @@ pub async fn fetch_cached_bytes(
         };
     }
     let hash = id.digest_hex();
-    let cached = cache_dir.join(format!("{}.{}", hash, ext));
+    let cached = cache_dir.join(format!("{hash}.{ext}"));
     if let Some(bytes) = try_read_cached_bytes(&cached)? {
         return Ok(bytes);
     }

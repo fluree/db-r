@@ -225,8 +225,7 @@ impl<'a> ForwardPage<'a> {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "page: final offset {} != data section length {}",
-                    final_offset, data_section_len
+                    "page: final offset {final_offset} != data section length {data_section_len}"
                 ),
             ));
         }
@@ -347,7 +346,7 @@ pub(crate) fn parse_pack_meta(data: &[u8]) -> io::Result<ParsedPackMeta> {
         if entry.entry_count == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("pack: page {} has entry_count 0", i),
+                format!("pack: page {i} has entry_count 0"),
             ));
         }
 
@@ -580,8 +579,7 @@ pub fn encode_forward_pack(
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
-                    "pack encode: entry {} has id {} but expected {} (contiguity violation)",
-                    i, id, expected
+                    "pack encode: entry {i} has id {id} but expected {expected} (contiguity violation)"
                 ),
             ));
         }
@@ -719,7 +717,7 @@ mod tests {
         (0..count)
             .map(|i| {
                 let id = first + i as u64;
-                let value = format!("value_{}", id).into_bytes();
+                let value = format!("value_{id}").into_bytes();
                 (id, value)
             })
             .collect()
@@ -743,7 +741,7 @@ mod tests {
 
         for &(id, ref value) in &entries {
             let found = pack.lookup(id).unwrap();
-            assert_eq!(found, value.as_slice(), "mismatch at id={}", id);
+            assert_eq!(found, value.as_slice(), "mismatch at id={id}");
         }
 
         // Out of range
@@ -770,7 +768,7 @@ mod tests {
         for &(id, ref value) in &entries {
             let found = pack
                 .lookup(id)
-                .unwrap_or_else(|| panic!("should find id={}", id));
+                .unwrap_or_else(|| panic!("should find id={id}"));
             assert_eq!(found, value.as_slice());
         }
 
@@ -834,8 +832,8 @@ mod tests {
         for id in [0, 1, 999, 50_000, 99_999] {
             let val = pack
                 .lookup(id)
-                .unwrap_or_else(|| panic!("should find id={}", id));
-            assert_eq!(val, format!("value_{}", id).as_bytes());
+                .unwrap_or_else(|| panic!("should find id={id}"));
+            assert_eq!(val, format!("value_{id}").as_bytes());
         }
     }
 
@@ -843,7 +841,7 @@ mod tests {
     fn test_subject_forward_pack() {
         // Subject packs store local_id as the key, ns_code in header.
         let entries: Vec<(u64, Vec<u8>)> = (0..20)
-            .map(|i| (i as u64, format!("suffix/{}", i).into_bytes()))
+            .map(|i| (i as u64, format!("suffix/{i}").into_bytes()))
             .collect();
         let refs = as_refs(&entries);
         let pack_bytes = encode_forward_pack(&refs, KIND_SUBJECT_FWD, 7, 1024 * 1024).unwrap();
@@ -960,7 +958,7 @@ mod tests {
         // Verify lookup_in_pack works with pre-parsed meta.
         for &(id, ref value) in &entries {
             let found = lookup_in_pack(&pack_bytes, &meta, id).unwrap();
-            assert_eq!(found, value.as_slice(), "mismatch at id={}", id);
+            assert_eq!(found, value.as_slice(), "mismatch at id={id}");
         }
 
         assert!(lookup_in_pack(&pack_bytes, &meta, 99).is_none());

@@ -16,7 +16,7 @@ pub async fn run_index(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()> 
 
     // Verify ledger exists
     if !fluree.ledger_exists(&ledger_id).await.unwrap_or(false) {
-        return Err(CliError::NotFound(format!("ledger '{}' not found", alias)));
+        return Err(CliError::NotFound(format!("ledger '{alias}' not found")));
     }
 
     eprintln!("  {} indexing {}...", "index:".cyan().bold(), alias);
@@ -64,7 +64,7 @@ pub async fn run_reindex(ledger: Option<&str>, dirs: &FlureeDir) -> CliResult<()
 
     // Verify ledger exists
     if !fluree.ledger_exists(&ledger_id).await.unwrap_or(false) {
-        return Err(CliError::NotFound(format!("ledger '{}' not found", alias)));
+        return Err(CliError::NotFound(format!("ledger '{alias}' not found")));
     }
 
     eprintln!(

@@ -39,8 +39,7 @@ impl Fluree {
                 let cs = self.content_store(ns_ledger_id);
                 let bytes = cs.get(&index_cid).await.map_err(|e| {
                     ApiError::internal(format!(
-                        "failed to read binary index root for {}: {}",
-                        index_cid, e
+                        "failed to read binary index root for {index_cid}: {e}"
                     ))
                 })?;
 
@@ -56,8 +55,7 @@ impl Fluree {
                 .await
                 .map_err(|e| {
                     ApiError::internal(format!(
-                        "failed to load binary index store for {}: {}",
-                        index_cid, e
+                        "failed to load binary index store for {index_cid}: {e}"
                     ))
                 })?;
 
@@ -135,7 +133,7 @@ impl Fluree {
         }
 
         // Load default context from CAS if the nameservice record has one.
-        if let Some(ref ctx_id) = state
+        if let Some(ctx_id) = state
             .ns_record
             .as_ref()
             .and_then(|r| r.default_context.as_ref())
@@ -151,7 +149,7 @@ impl Fluree {
                     Ok(ctx) => state.default_context = Some(ctx),
                     Err(e) => tracing::warn!(%e, "failed to parse default context JSON"),
                 },
-                Err(e) => tracing::debug!(%e, cid = %ctx_id, "could not load default context"),
+                Err(e) => tracing::debug!(%e, cid = %&ctx_id, "could not load default context"),
             }
         }
 
@@ -283,8 +281,7 @@ impl Fluree {
         // Verify the source branch has a commit head before creating.
         if source_record.commit_head_id.is_none() {
             return Err(ApiError::internal(format!(
-                "Source branch {} has no commit head",
-                source_id
+                "Source branch {source_id} has no commit head"
             )));
         }
 
@@ -317,8 +314,7 @@ impl Fluree {
 
         let record = self.nameservice().lookup(&new_id).await?.ok_or_else(|| {
             ApiError::internal(format!(
-                "Branch {} was created but not found in nameservice",
-                new_id
+                "Branch {new_id} was created but not found in nameservice"
             ))
         })?;
 
@@ -356,10 +352,10 @@ impl Fluree {
 
         // Read and parse the index root
         let root_bytes = source_store.get(index_cid).await.map_err(|e| {
-            ApiError::internal(format!("failed to read index root {}: {}", index_cid, e))
+            ApiError::internal(format!("failed to read index root {index_cid}: {e}"))
         })?;
         let root = IndexRoot::decode(&root_bytes).map_err(|e| {
-            ApiError::internal(format!("failed to decode index root {}: {}", index_cid, e))
+            ApiError::internal(format!("failed to decode index root {index_cid}: {e}"))
         })?;
 
         // Collect all CIDs referenced by the index root
@@ -417,8 +413,7 @@ impl Fluree {
             async move {
                 let bytes = storage.read_bytes(&src_addr).await.map_err(|e| {
                     ApiError::internal(format!(
-                        "failed to read index artifact {} from {}: {}",
-                        cid_display, source_label, e
+                        "failed to read index artifact {cid_display} from {source_label}: {e}"
                     ))
                 })?;
                 storage

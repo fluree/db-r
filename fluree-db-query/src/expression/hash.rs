@@ -95,8 +95,7 @@ where
                 Ok(Some(ComparableValue::String(Arc::from(hash_fn(s)))))
             }
             None => Err(QueryError::InvalidFilter(format!(
-                "{} requires a string argument",
-                fn_name
+                "{fn_name} requires a string argument"
             ))),
         },
         None => Ok(None),

@@ -374,7 +374,7 @@ fn process_literal<S: GraphSink>(
     let language = obj
         .get("@language")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
 
     // Handle the actual value
     match val {
@@ -522,7 +522,7 @@ mod tests {
                 datatype,
             } => {
                 assert!(matches!(value, LiteralValue::String(s) if s.as_ref() == "Alice"));
-                assert!(language.as_ref().map(|l| l.as_ref()) == Some("en"));
+                assert!(language.as_ref().map(std::convert::AsRef::as_ref) == Some("en"));
                 assert!(datatype.is_lang_string());
             }
             _ => panic!("Expected literal"),
@@ -1021,11 +1021,11 @@ mod tests {
         let expanded = json!([{
             "@id": "http://example.org/campaign1",
             "http://example.org/ns#budget": [{
-                "@value": 1350000,
+                "@value": 1_350_000,
                 "@type": "http://www.w3.org/2001/XMLSchema#float"
             }],
             "http://example.org/ns#revenue": [{
-                "@value": 5000000,
+                "@value": 5_000_000,
                 "@type": "http://www.w3.org/2001/XMLSchema#double"
             }]
         }]);
@@ -1041,11 +1041,10 @@ mod tests {
                 Term::Literal { value, .. } => {
                     assert!(
                         matches!(value, LiteralValue::Double(_)),
-                        "Expected Double for float-typed integer, got {:?}",
-                        value
+                        "Expected Double for float-typed integer, got {value:?}"
                     );
                 }
-                other => panic!("Expected literal, got {:?}", other),
+                other => panic!("Expected literal, got {other:?}"),
             }
         }
     }

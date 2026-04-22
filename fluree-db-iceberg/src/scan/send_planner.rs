@@ -137,7 +137,7 @@ impl<'a, S: SendIcebergStorage> SendScanPlanner<'a, S> {
                 let mut names = Vec::with_capacity(field_ids.len());
                 for &id in field_ids {
                     let field = schema.field(id).ok_or_else(|| {
-                        IcebergError::Scan(format!("Field ID {} not found in schema", id))
+                        IcebergError::Scan(format!("Field ID {id} not found in schema"))
                     })?;
                     names.push(field.name.clone());
                 }

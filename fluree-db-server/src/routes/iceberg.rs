@@ -96,9 +96,9 @@ async fn iceberg_map_local(state: Arc<AppState>, request: Request) -> Result<imp
 
     let body_bytes = axum::body::to_bytes(request.into_body(), 50 * 1024 * 1024)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
     let req: IcebergMapRequest = serde_json::from_slice(&body_bytes)
-        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Invalid JSON: {e}")))?;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
     let trace_id = extract_trace_id(&headers.raw);
@@ -197,8 +197,7 @@ fn build_iceberg_config(req: &IcebergMapRequest) -> Result<fluree_db_api::Iceber
         }
         other => {
             return Err(ServerError::bad_request(format!(
-                "unknown catalog mode '{}'. Use 'rest' or 'direct'.",
-                other
+                "unknown catalog mode '{other}'. Use 'rest' or 'direct'."
             )));
         }
     };

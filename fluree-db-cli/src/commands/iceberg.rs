@@ -17,8 +17,7 @@ pub async fn run_iceberg_map(
         let client = crate::context::build_remote_client(remote_name, dirs).await?;
         let result = run_iceberg_map_remote(&client, &args).await.map_err(|e| {
             CliError::Remote(format!(
-                "failed to map Iceberg graph source on '{}': {}",
-                remote_name, e
+                "failed to map Iceberg graph source on '{remote_name}': {e}"
             ))
         });
         crate::context::persist_refreshed_tokens(&client, remote_name, dirs).await;
@@ -28,9 +27,9 @@ pub async fn run_iceberg_map(
     // Try server routing (unless --direct)
     if !direct {
         if let Some(client) = crate::context::try_server_route_client(dirs) {
-            return run_iceberg_map_remote(&client, &args).await.map_err(|e| {
-                CliError::Remote(format!("failed to map Iceberg graph source: {}", e))
-            });
+            return run_iceberg_map_remote(&client, &args)
+                .await
+                .map_err(|e| CliError::Remote(format!("failed to map Iceberg graph source: {e}")));
         }
     }
 
@@ -51,8 +50,7 @@ pub async fn run_iceberg_list(
         let client = context::build_remote_client(remote_name, dirs).await?;
         let result = client.list_ledgers().await.map_err(|e| {
             CliError::Remote(format!(
-                "failed to list Iceberg graph sources on '{}': {}",
-                remote_name, e
+                "failed to list Iceberg graph sources on '{remote_name}': {e}"
             ))
         })?;
         context::persist_refreshed_tokens(&client, remote_name, dirs).await;
@@ -62,7 +60,7 @@ pub async fn run_iceberg_list(
     if !direct {
         if let Some(client) = context::try_server_route_client(dirs) {
             let result = client.list_ledgers().await.map_err(|e| {
-                CliError::Remote(format!("failed to list Iceberg graph sources: {}", e))
+                CliError::Remote(format!("failed to list Iceberg graph sources: {e}"))
             })?;
             return print_iceberg_list_remote(&result, None);
         }
@@ -117,8 +115,7 @@ pub async fn run_iceberg_info(
         let client = context::build_remote_client(remote_name, dirs).await?;
         let info = client.ledger_info(name, None).await.map_err(|e| {
             CliError::Remote(format!(
-                "failed to load Iceberg graph source info from '{}': {}",
-                remote_name, e
+                "failed to load Iceberg graph source info from '{remote_name}': {e}"
             ))
         })?;
         context::persist_refreshed_tokens(&client, remote_name, dirs).await;
@@ -128,7 +125,7 @@ pub async fn run_iceberg_info(
     if !direct {
         if let Some(client) = context::try_server_route_client(dirs) {
             let info = client.ledger_info(name, None).await.map_err(|e| {
-                CliError::Remote(format!("failed to load Iceberg graph source info: {}", e))
+                CliError::Remote(format!("failed to load Iceberg graph source info: {e}"))
             })?;
             return print_iceberg_info_remote(name, &info);
         }
@@ -141,13 +138,12 @@ pub async fn run_iceberg_info(
         .lookup_graph_source(&gs_id)
         .await?
         .ok_or_else(|| {
-            CliError::NotFound(format!("'{}' not found as an Iceberg graph source", name))
+            CliError::NotFound(format!("'{name}' not found as an Iceberg graph source"))
         })?;
 
     if !is_iceberg_family_source_type(&gs.source_type) {
         return Err(CliError::NotFound(format!(
-            "'{}' is not an Iceberg graph source",
-            name
+            "'{name}' is not an Iceberg graph source"
         )));
     }
 
@@ -176,16 +172,14 @@ pub async fn run_iceberg_drop(
         let client = context::build_remote_client(remote_name, dirs).await?;
         let info = client.ledger_info(name, None).await.map_err(|e| {
             CliError::Remote(format!(
-                "failed to validate Iceberg graph source on '{}': {}",
-                remote_name, e
+                "failed to validate Iceberg graph source on '{remote_name}': {e}"
             ))
         })?;
         ensure_remote_iceberg_info(name, &info)?;
 
         let response = client.drop_resource(name, true).await.map_err(|e| {
             CliError::Remote(format!(
-                "failed to drop Iceberg graph source on '{}': {}",
-                remote_name, e
+                "failed to drop Iceberg graph source on '{remote_name}': {e}"
             ))
         })?;
         context::persist_refreshed_tokens(&client, remote_name, dirs).await;
@@ -195,12 +189,12 @@ pub async fn run_iceberg_drop(
     if !direct {
         if let Some(client) = context::try_server_route_client(dirs) {
             let info = client.ledger_info(name, None).await.map_err(|e| {
-                CliError::Remote(format!("failed to validate Iceberg graph source: {}", e))
+                CliError::Remote(format!("failed to validate Iceberg graph source: {e}"))
             })?;
             ensure_remote_iceberg_info(name, &info)?;
 
             let response = client.drop_resource(name, true).await.map_err(|e| {
-                CliError::Remote(format!("failed to drop Iceberg graph source: {}", e))
+                CliError::Remote(format!("failed to drop Iceberg graph source: {e}"))
             })?;
             return print_remote_drop_response(&response);
         }
@@ -213,13 +207,12 @@ pub async fn run_iceberg_drop(
         .lookup_graph_source(&gs_id)
         .await?
         .ok_or_else(|| {
-            CliError::NotFound(format!("'{}' not found as an Iceberg graph source", name))
+            CliError::NotFound(format!("'{name}' not found as an Iceberg graph source"))
         })?;
 
     if !is_iceberg_family_source_type(&gs.source_type) {
         return Err(CliError::NotFound(format!(
-            "'{}' is not an Iceberg graph source",
-            name
+            "'{name}' is not an Iceberg graph source"
         )));
     }
 
@@ -245,8 +238,7 @@ pub async fn run_iceberg_drop(
         }
         fluree_db_api::admin::DropStatus::NotFound => {
             return Err(CliError::NotFound(format!(
-                "'{}' not found as an Iceberg graph source",
-                name
+                "'{name}' not found as an Iceberg graph source"
             )));
         }
     }
@@ -276,7 +268,7 @@ async fn run_iceberg_map_remote(
         .unwrap_or("-");
     let connection = result
         .get("connection_tested")
-        .and_then(|v| v.as_bool())
+        .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
     if let Some(mapping) = result.get("mapping_source").and_then(|v| v.as_str()) {
@@ -284,7 +276,10 @@ async fn run_iceberg_map_remote(
         println!("  Table:       {table}");
         println!("  Catalog:     {catalog}");
         println!("  R2RML:       {mapping}");
-        if let Some(count) = result.get("triples_map_count").and_then(|v| v.as_u64()) {
+        if let Some(count) = result
+            .get("triples_map_count")
+            .and_then(serde_json::Value::as_u64)
+        {
             println!("  TriplesMaps: {count}");
         }
         println!(
@@ -293,7 +288,7 @@ async fn run_iceberg_map_remote(
         );
         let validated = result
             .get("mapping_validated")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
         println!(
             "  Mapping:     {}",
@@ -401,7 +396,7 @@ fn print_iceberg_list_remote(
 
     if filtered.is_empty() {
         match remote_label {
-            Some(name) => println!("No Iceberg graph sources on remote '{}'.", name),
+            Some(name) => println!("No Iceberg graph sources on remote '{name}'."),
             None => println!("No Iceberg graph sources found."),
         }
         return Ok(());
@@ -423,7 +418,7 @@ fn print_iceberg_list_remote(
         let entry_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
         let t = entry
             .get("t")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string());
         table.add_row(vec![
@@ -446,13 +441,12 @@ fn print_iceberg_info_remote(name: &str, info: &serde_json::Value) -> CliResult<
 
 fn ensure_remote_iceberg_info(name: &str, info: &serde_json::Value) -> CliResult<()> {
     let info_type = info.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
-        CliError::NotFound(format!("'{}' not found as an Iceberg graph source", name))
+        CliError::NotFound(format!("'{name}' not found as an Iceberg graph source"))
     })?;
 
     if !is_iceberg_family_type_str(info_type) || info.get("graph_source_id").is_none() {
         return Err(CliError::NotFound(format!(
-            "'{}' is not an Iceberg graph source",
-            name
+            "'{name}' is not an Iceberg graph source"
         )));
     }
 
@@ -472,18 +466,16 @@ fn print_remote_drop_response(response: &serde_json::Value) -> CliResult<()> {
     match status {
         "dropped" => println!("Dropped Iceberg graph source '{ledger_id}'"),
         "already_retracted" => {
-            println!("Iceberg graph source '{ledger_id}' was already dropped")
+            println!("Iceberg graph source '{ledger_id}' was already dropped");
         }
         "not_found" => {
             return Err(CliError::NotFound(format!(
-                "'{}' not found as an Iceberg graph source",
-                ledger_id
+                "'{ledger_id}' not found as an Iceberg graph source"
             )))
         }
         other => {
             return Err(CliError::Remote(format!(
-                "unexpected drop status '{}'",
-                other
+                "unexpected drop status '{other}'"
             )))
         }
     }
@@ -511,7 +503,7 @@ fn print_remote_graph_source_info(info: &serde_json::Value) {
     println!("Type:           {gs_type}");
     println!("ID:             {gs_id}");
 
-    if let Some(t) = info.get("index_t").and_then(|v| v.as_i64()) {
+    if let Some(t) = info.get("index_t").and_then(serde_json::Value::as_i64) {
         println!("Index t:        {t}");
     }
     if let Some(id) = info.get("index_id").and_then(|v| v.as_str()) {
@@ -544,7 +536,7 @@ fn print_graph_source_info(gs: &fluree_db_nameservice::GraphSourceRecord) {
         "Index ID:       {}",
         gs.index_id
             .as_ref()
-            .map(|id| id.to_string())
+            .map(std::string::ToString::to_string)
             .as_deref()
             .unwrap_or("(none)")
     );
@@ -680,8 +672,7 @@ fn build_iceberg_config(args: &IcebergMapArgs) -> CliResult<fluree_db_api::Icebe
         }
         other => {
             return Err(CliError::Usage(format!(
-                "unknown catalog mode '{}'. Use 'rest' or 'direct'.",
-                other
+                "unknown catalog mode '{other}'. Use 'rest' or 'direct'."
             )));
         }
     };

@@ -31,3 +31,6 @@ fluree-db-core = { path = "../fluree-db-core" }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "test-util"] }
 wiremock = { workspace = true }
 tempfile = "3.19"
+
+[lints]
+workspace = true

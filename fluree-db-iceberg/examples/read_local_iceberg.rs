@@ -26,8 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let metadata_path = table_path.join("metadata/v2.metadata.json");
 
     println!("=== Reading Local Iceberg Table ===");
-    println!("Table path: {:?}", table_path);
-    println!("Metadata path: {:?}", metadata_path);
+    println!("Table path: {table_path:?}");
+    println!("Metadata path: {metadata_path:?}");
 
     // Load metadata
     let metadata_bytes = fs::read(&metadata_path)?;
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .manifest_list
             .as_ref()
             .ok_or("Snapshot has no manifest list (v1 format not supported)")?;
-        println!("Manifest list: {}", manifest_list_uri);
+        println!("Manifest list: {manifest_list_uri}");
 
         // Load all files into memory storage for the scan
         let mut storage = MemoryStorage::new();
@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(manifest_list_uri)
             .trim_start_matches('/');
         let manifest_list_file = table_path.join(manifest_list_path);
-        println!("\nLoading manifest list: {:?}", manifest_list_file);
+        println!("\nLoading manifest list: {manifest_list_file:?}");
         let manifest_list_bytes = fs::read(&manifest_list_file)?;
         storage.add_file(manifest_list_uri.clone(), manifest_list_bytes);
 
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or(&entry.manifest_path)
                 .trim_start_matches('/');
             let manifest_file = table_path.join(manifest_path);
-            println!("  Loading manifest: {:?}", manifest_file);
+            println!("  Loading manifest: {manifest_file:?}");
             let manifest_bytes = fs::read(&manifest_file)?;
             storage.add_file(entry.manifest_path.clone(), manifest_bytes);
 
@@ -147,40 +147,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if total_rows <= batch.num_rows && batch.num_rows > 0 {
                     println!("\nSample data (first 5 rows):");
                     let col_names: Vec<_> = batch.schema.fields.iter().map(|f| &f.name).collect();
-                    println!("Columns: {:?}", col_names);
+                    println!("Columns: {col_names:?}");
 
                     for row_idx in 0..batch.num_rows.min(5) {
                         let mut row_values = Vec::new();
                         for col in &batch.columns {
                             let val = match col {
-                                fluree_db_iceberg::io::batch::Column::Int32(v) => v
-                                    .get(row_idx)
-                                    .map(|x| format!("{:?}", x))
-                                    .unwrap_or_default(),
-                                fluree_db_iceberg::io::batch::Column::Int64(v) => v
-                                    .get(row_idx)
-                                    .map(|x| format!("{:?}", x))
-                                    .unwrap_or_default(),
-                                fluree_db_iceberg::io::batch::Column::String(v) => v
-                                    .get(row_idx)
-                                    .map(|x| format!("{:?}", x))
-                                    .unwrap_or_default(),
-                                fluree_db_iceberg::io::batch::Column::Boolean(v) => v
-                                    .get(row_idx)
-                                    .map(|x| format!("{:?}", x))
-                                    .unwrap_or_default(),
+                                fluree_db_iceberg::io::batch::Column::Int32(v) => {
+                                    v.get(row_idx).map(|x| format!("{x:?}")).unwrap_or_default()
+                                }
+                                fluree_db_iceberg::io::batch::Column::Int64(v) => {
+                                    v.get(row_idx).map(|x| format!("{x:?}")).unwrap_or_default()
+                                }
+                                fluree_db_iceberg::io::batch::Column::String(v) => {
+                                    v.get(row_idx).map(|x| format!("{x:?}")).unwrap_or_default()
+                                }
+                                fluree_db_iceberg::io::batch::Column::Boolean(v) => {
+                                    v.get(row_idx).map(|x| format!("{x:?}")).unwrap_or_default()
+                                }
                                 _ => "...".to_string(),
                             };
                             row_values.push(val);
                         }
-                        println!("  Row {}: {:?}", row_idx, row_values);
+                        println!("  Row {row_idx}: {row_values:?}");
                     }
                 }
             }
         }
 
         println!("\n=== Summary ===");
-        println!("Total rows read: {}", total_rows);
+        println!("Total rows read: {total_rows}");
     } else {
         println!("No current snapshot found");
     }

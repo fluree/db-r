@@ -85,8 +85,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
         // Read footer length (last 8 bytes: 4-byte length + 4-byte magic)
         if file_size < 12 {
             return Err(IcebergError::Storage(format!(
-                "File too small to be Parquet: {} bytes",
-                file_size
+                "File too small to be Parquet: {file_size} bytes"
             )));
         }
 
@@ -180,7 +179,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
 
         // Parse using parquet-rs
         let reader = SerializedFileReader::new(file_bytes)
-            .map_err(|e| IcebergError::Storage(format!("Failed to read Parquet file: {}", e)))?;
+            .map_err(|e| IcebergError::Storage(format!("Failed to read Parquet file: {e}")))?;
 
         let metadata = reader.metadata();
 
@@ -207,7 +206,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
         // Process each row group separately to emit streaming batches
         for rg_idx in 0..metadata.num_row_groups() {
             let row_group_reader = reader.get_row_group(rg_idx).map_err(|e| {
-                IcebergError::Storage(format!("Failed to get row group {}: {}", rg_idx, e))
+                IcebergError::Storage(format!("Failed to get row group {rg_idx}: {e}"))
             })?;
 
             // Create row iterator for this row group with projection
@@ -215,8 +214,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
                 RowIter::from_row_group(Some(projected_schema.clone()), row_group_reader.as_ref())
                     .map_err(|e| {
                         IcebergError::Storage(format!(
-                            "Failed to create row iterator for row group {}: {}",
-                            rg_idx, e
+                            "Failed to create row iterator for row group {rg_idx}: {e}"
                         ))
                     })?;
 
@@ -229,7 +227,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
 
             for row_result in row_iter {
                 let row = row_result
-                    .map_err(|e| IcebergError::Storage(format!("Failed to read row: {}", e)))?;
+                    .map_err(|e| IcebergError::Storage(format!("Failed to read row: {e}")))?;
 
                 // With projection, row columns come in the same order as projected schema.
                 let row_fields: Vec<_> = row.get_column_iter().map(|(_, f)| f).collect();
@@ -297,9 +295,8 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
                 RangeBackedChunkReader::new(storage, path.clone(), file_size, runtime);
 
             // Parse using parquet-rs with our chunk reader
-            let reader = SerializedFileReader::new(chunk_reader).map_err(|e| {
-                IcebergError::Storage(format!("Failed to read Parquet file: {}", e))
-            })?;
+            let reader = SerializedFileReader::new(chunk_reader)
+                .map_err(|e| IcebergError::Storage(format!("Failed to read Parquet file: {e}")))?;
 
             let metadata = reader.metadata();
 
@@ -341,7 +338,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
             // Process each row group
             for rg_idx in 0..metadata.num_row_groups() {
                 let row_group_reader = reader.get_row_group(rg_idx).map_err(|e| {
-                    IcebergError::Storage(format!("Failed to get row group {}: {}", rg_idx, e))
+                    IcebergError::Storage(format!("Failed to get row group {rg_idx}: {e}"))
                 })?;
 
                 let row_iter = RowIter::from_row_group(
@@ -349,7 +346,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
                     row_group_reader.as_ref(),
                 )
                 .map_err(|e| {
-                    IcebergError::Storage(format!("Failed to create row iterator: {}", e))
+                    IcebergError::Storage(format!("Failed to create row iterator: {e}"))
                 })?;
 
                 let num_fields = batch_schema.fields.len();
@@ -360,7 +357,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
 
                 for row_result in row_iter {
                     let row = row_result
-                        .map_err(|e| IcebergError::Storage(format!("Failed to read row: {}", e)))?;
+                        .map_err(|e| IcebergError::Storage(format!("Failed to read row: {e}")))?;
 
                     let row_fields: Vec<_> = row.get_column_iter().map(|(_, f)| f).collect();
 
@@ -386,7 +383,7 @@ impl<'a, S: SendIcebergStorage> SendParquetReader<'a, S> {
             Ok::<Vec<ColumnBatch>, IcebergError>(batches)
         })
         .await
-        .map_err(|e| IcebergError::Storage(format!("Blocking task failed: {}", e)))?;
+        .map_err(|e| IcebergError::Storage(format!("Blocking task failed: {e}")))?;
 
         result
     }

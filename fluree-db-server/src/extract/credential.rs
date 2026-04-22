@@ -248,7 +248,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
     // Read the body
     let body = axum::body::to_bytes(req.into_body(), usize::MAX)
         .await
-        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {}", e)))?;
+        .map_err(|e| ServerError::bad_request(format!("Failed to read body: {e}")))?;
 
     let body_str = std::str::from_utf8(&body).ok();
 
@@ -279,26 +279,24 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
                 is_turtle: false,
                 is_trig: false,
             });
-        } else {
-            // JSON JWS - payload is JSON query/transaction
-            let result = credential::verify_credential(CredentialInput::Jws(jws_str))?;
-            let payload_bytes = serde_json::to_vec(&result.subject).map_err(|e| {
-                ServerError::internal(format!("Failed to serialize payload: {}", e))
-            })?;
-            return Ok(MaybeCredential {
-                headers,
-                credential: Some(ExtractedCredential {
-                    did: result.did,
-                    payload: CredentialPayload::Json(result.subject.clone()),
-                    raw_body: body.clone(),
-                }),
-                body: Bytes::from(payload_bytes),
-                is_sparql: false,
-                is_sparql_update: false,
-                is_turtle: false,
-                is_trig: false,
-            });
         }
+        // JSON JWS - payload is JSON query/transaction
+        let result = credential::verify_credential(CredentialInput::Jws(jws_str))?;
+        let payload_bytes = serde_json::to_vec(&result.subject)
+            .map_err(|e| ServerError::internal(format!("Failed to serialize payload: {e}")))?;
+        return Ok(MaybeCredential {
+            headers,
+            credential: Some(ExtractedCredential {
+                did: result.did,
+                payload: CredentialPayload::Json(result.subject.clone()),
+                raw_body: body.clone(),
+            }),
+            body: Bytes::from(payload_bytes),
+            is_sparql: false,
+            is_sparql_update: false,
+            is_turtle: false,
+            is_trig: false,
+        });
     }
 
     // Check if it's a JSON body that might be a VC
@@ -307,7 +305,7 @@ async fn extract_credential(req: Request<axum::body::Body>) -> Result<MaybeCrede
             if looks_like_credential_json(&json) {
                 let result = credential::verify_credential(CredentialInput::Json(&json))?;
                 let payload_bytes = serde_json::to_vec(&result.subject).map_err(|e| {
-                    ServerError::internal(format!("Failed to serialize payload: {}", e))
+                    ServerError::internal(format!("Failed to serialize payload: {e}"))
                 })?;
                 return Ok(MaybeCredential {
                     headers,

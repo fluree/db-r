@@ -507,8 +507,8 @@ mod tests {
 
     fn make_flake(s: u16, p: u16, o: i64, t: i64) -> Flake {
         Flake::new(
-            Sid::new(s, format!("s{}", s)),
-            Sid::new(p, format!("p{}", p)),
+            Sid::new(s, format!("s{s}")),
+            Sid::new(p, format!("p{p}")),
             FlakeValue::Long(o),
             Sid::new(2, "long"),
             t,
@@ -612,9 +612,10 @@ mod tests {
         match ns.fast_forward_commit(ledger_id, &new, 3).await.unwrap() {
             CasResult::Updated => {}
             CasResult::Conflict { actual } => {
-                if actual.as_ref().map(|r| r.t).unwrap_or(0) < commit.t {
-                    panic!("unexpected commit publish conflict: {actual:?}");
-                }
+                assert!(
+                    actual.as_ref().map(|r| r.t).unwrap_or(0) >= commit.t,
+                    "unexpected commit publish conflict: {actual:?}"
+                );
             }
         }
         cid

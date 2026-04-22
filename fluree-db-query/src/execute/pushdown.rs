@@ -96,7 +96,7 @@ pub fn extract_lookahead_bounds_with_consumption(
                         bounds
                             .entry(var)
                             .and_modify(|existing| {
-                                *existing = merge_object_bounds(existing, &new_bounds)
+                                *existing = merge_object_bounds(existing, &new_bounds);
                             })
                             .or_insert(new_bounds);
                     }

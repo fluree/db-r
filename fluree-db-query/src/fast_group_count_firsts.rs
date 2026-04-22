@@ -179,7 +179,12 @@ impl Operator for PredicateGroupCountFirstsOperator {
         // Try V6 fast-path first (only when no novelty overlay — overlay delta merge not yet implemented).
         //
         // `ExecutionContext` always carries an overlay provider; `NoOverlay` has epoch=0.
-        if ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 {
+        if ctx
+            .overlay
+            .map(fluree_db_core::OverlayProvider::epoch)
+            .unwrap_or(0)
+            == 0
+        {
             if let Some(binary_index_store) = ctx.binary_store.as_ref() {
                 match group_count_v6(
                     binary_index_store,
@@ -409,7 +414,12 @@ impl Operator for PredicateObjectCountFirstsOperator {
         // Try V6 fast-path first (only when no novelty overlay — overlay delta merge not yet implemented).
         //
         // `ExecutionContext` always carries an overlay provider; `NoOverlay` has epoch=0.
-        if ctx.overlay.map(|o| o.epoch()).unwrap_or(0) == 0 {
+        if ctx
+            .overlay
+            .map(fluree_db_core::OverlayProvider::epoch)
+            .unwrap_or(0)
+            == 0
+        {
             if let Some(binary_index_store) = ctx.binary_store.as_ref() {
                 match count_bound_object_v6(
                     binary_index_store,
@@ -1115,7 +1125,11 @@ fn collect_subject_set_for_predicate_group(
     pred: &crate::triple::Ref,
     restrict_to: Option<&FxHashSet<u64>>,
 ) -> Result<Option<FxHashSet<u64>>> {
-    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
+    let overlay_has_rows = ctx
+        .overlay
+        .map(fluree_db_core::OverlayProvider::epoch)
+        .unwrap_or(0)
+        != 0;
     let sid = ref_to_sid_group(store, pred)?;
     let Some(p_id) = store.sid_to_p_id(&sid) else {
         return if overlay_has_rows {
@@ -1174,7 +1188,11 @@ fn compute_group_by_object_star_topk(
     sample_var: Option<VarId>,
     limit: usize,
 ) -> Result<Option<crate::binding::Batch>> {
-    let overlay_has_rows = ctx.overlay.map(|o| o.epoch()).unwrap_or(0) != 0;
+    let overlay_has_rows = ctx
+        .overlay
+        .map(fluree_db_core::OverlayProvider::epoch)
+        .unwrap_or(0)
+        != 0;
     // Scan group predicate PSOT for (s_id, o_type, o_key).
     let sid = ref_to_sid_group(store, group_pred)?;
     let Some(p_id) = store.sid_to_p_id(&sid) else {
@@ -1324,7 +1342,7 @@ fn compute_group_by_object_star_topk(
     } else {
         // General path: build subject set S by intersecting filter predicates.
         let mut s_set: Option<FxHashSet<u64>> = None;
-        for p in filter_preds.iter() {
+        for p in filter_preds {
             let Some(next) = collect_subject_set_for_predicate_group(
                 store,
                 ctx,
@@ -1336,7 +1354,10 @@ fn compute_group_by_object_star_topk(
                 return Ok(None);
             };
             s_set = Some(next);
-            if s_set.as_ref().is_some_and(|s| s.is_empty()) {
+            if s_set
+                .as_ref()
+                .is_some_and(std::collections::HashSet::is_empty)
+            {
                 break;
             }
         }

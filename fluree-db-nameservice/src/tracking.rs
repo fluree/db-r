@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn test_remote_name_display() {
         let name = RemoteName::new("origin");
-        assert_eq!(format!("{}", name), "origin");
+        assert_eq!(format!("{name}"), "origin");
         assert_eq!(name.as_str(), "origin");
     }
 }

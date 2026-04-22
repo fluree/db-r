@@ -325,7 +325,7 @@ pub fn read_numbig_arena_from_bytes(data: &[u8]) -> io::Result<NumBigArena> {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("unknown numbig tag: {}", tag),
+                    format!("unknown numbig tag: {tag}"),
                 ));
             }
         }

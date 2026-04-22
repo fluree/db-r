@@ -69,7 +69,7 @@ async fn run_status(store: &TomlSyncConfigStore, remote: Option<&str>) -> CliRes
         .get_remote(&remote_name)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", name)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{name}' not found")))?;
 
     println!("{}", "Auth Status:".bold());
     println!("  Remote: {}", name.green());
@@ -79,7 +79,7 @@ async fn run_status(store: &TomlSyncConfigStore, remote: Option<&str>) -> CliRes
         Some(RemoteAuthType::OidcDevice) => {
             println!("  Auth type: {}", "oidc_device".cyan());
             if let Some(ref issuer) = config.auth.issuer {
-                println!("  Issuer: {}", issuer);
+                println!("  Issuer: {issuer}");
             }
         }
         Some(RemoteAuthType::Token) => {
@@ -96,21 +96,21 @@ async fn run_status(store: &TomlSyncConfigStore, remote: Option<&str>) -> CliRes
             match decode_token_summary(token) {
                 Ok(summary) => {
                     if let Some(exp) = summary.expiry {
-                        println!("  Expiry: {}", exp);
+                        println!("  Expiry: {exp}");
                     } else {
                         println!("  Expiry: {}", "no expiry claim".yellow());
                     }
                     if let Some(identity) = &summary.identity {
-                        println!("  Identity: {}", identity);
+                        println!("  Identity: {identity}");
                     }
                     if let Some(issuer) = &summary.issuer {
-                        println!("  Issuer: {}", issuer);
+                        println!("  Issuer: {issuer}");
                     }
                     if let Some(subject) = &summary.subject {
-                        println!("  Subject: {}", subject);
+                        println!("  Subject: {subject}");
                     }
                 }
-                Err(_) => {
+                Err(()) => {
                     println!("  {}", "(could not decode token claims)".yellow());
                 }
             }
@@ -147,7 +147,7 @@ async fn run_login(
         .get_remote(&remote_name)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", name)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{name}' not found")))?;
 
     // Route based on auth type
     let is_oidc = config.auth.auth_type.as_ref() == Some(&RemoteAuthType::OidcDevice);
@@ -181,10 +181,10 @@ async fn run_login(
     if let Some(ref tok) = config.auth.token {
         if let Ok(summary) = decode_token_summary(tok) {
             if let Some(exp) = summary.expiry {
-                println!("  Expiry: {}", exp);
+                println!("  Expiry: {exp}");
             }
             if let Some(identity) = &summary.identity {
-                println!("  Identity: {}", identity);
+                println!("  Identity: {identity}");
             }
         }
     }
@@ -571,7 +571,10 @@ async fn request_device_code(
         .and_then(|v| v.as_str())
         .map(String::from);
 
-    let interval = body.get("interval").and_then(|v| v.as_u64()).unwrap_or(5);
+    let interval = body
+        .get("interval")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(5);
 
     Ok(DeviceAuthResponse {
         device_code,
@@ -744,7 +747,7 @@ async fn run_auth_code_flow(
     }
 
     // Step 4: Wait for callback
-    eprintln!("Waiting for authorization callback on port {}...", port);
+    eprintln!("Waiting for authorization callback on port {port}...");
     let (code, received_state) = accept_callback(&listener).await?;
 
     // Validate state (CSRF protection)
@@ -1052,10 +1055,10 @@ async fn run_logout(store: &TomlSyncConfigStore, remote: Option<&str>) -> CliRes
         .get_remote(&remote_name)
         .await
         .map_err(|e| CliError::Config(e.to_string()))?
-        .ok_or_else(|| CliError::NotFound(format!("remote '{}' not found", name)))?;
+        .ok_or_else(|| CliError::NotFound(format!("remote '{name}' not found")))?;
 
     if config.auth.token.is_none() && config.auth.refresh_token.is_none() {
-        println!("No token stored for remote '{}'", name);
+        println!("No token stored for remote '{name}'");
         return Ok(());
     }
 
@@ -1093,19 +1096,22 @@ fn decode_token_summary(token: &str) -> Result<TokenSummary, ()> {
     let payload_bytes = URL_SAFE_NO_PAD.decode(parts[1]).map_err(|_| ())?;
     let claims: serde_json::Value = serde_json::from_slice(&payload_bytes).map_err(|_| ())?;
 
-    let expiry = claims.get("exp").and_then(|v| v.as_u64()).map(|exp| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if exp < now {
-            format!("{} (expired)", format_timestamp(exp))
-                .red()
-                .to_string()
-        } else {
-            format_timestamp(exp)
-        }
-    });
+    let expiry = claims
+        .get("exp")
+        .and_then(serde_json::Value::as_u64)
+        .map(|exp| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if exp < now {
+                format!("{} (expired)", format_timestamp(exp))
+                    .red()
+                    .to_string()
+            } else {
+                format_timestamp(exp)
+            }
+        });
 
     let identity = claims
         .get("fluree.identity")

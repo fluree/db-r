@@ -239,7 +239,7 @@ pub fn analyze_property_join(patterns: &[TriplePattern]) -> PropertyJoinAnalysis
                 enough_patterns,
                 subject_is_var: false,
                 same_subject: false,
-                predicates_bound: patterns.iter().all(|p| p.p_bound()),
+                predicates_bound: patterns.iter().all(super::triple::TriplePattern::p_bound),
                 object_modes_supported: false,
                 object_vars_distinct: false,
                 has_bound_objects: false,
@@ -253,7 +253,7 @@ pub fn analyze_property_join(patterns: &[TriplePattern]) -> PropertyJoinAnalysis
         _ => false,
     });
 
-    let predicates_bound = patterns.iter().all(|p| p.p_bound());
+    let predicates_bound = patterns.iter().all(super::triple::TriplePattern::p_bound);
 
     let mut obj_vars: HashSet<VarId> = HashSet::new();
     let mut object_modes_supported = true;
@@ -280,8 +280,8 @@ pub fn analyze_property_join(patterns: &[TriplePattern]) -> PropertyJoinAnalysis
     let predicates: HashSet<String> = patterns
         .iter()
         .filter_map(|p| match &p.p {
-            Ref::Sid(sid) => Some(format!("sid:{}", sid)),
-            Ref::Iri(iri) => Some(format!("iri:{}", iri)),
+            Ref::Sid(sid) => Some(format!("sid:{sid}")),
+            Ref::Iri(iri) => Some(format!("iri:{iri}")),
             _ => None,
         })
         .collect();
@@ -905,7 +905,10 @@ pub fn pattern_shares_variables(pattern: &Pattern, bound_vars: &HashSet<VarId>) 
 
 /// Collect the variables that a slice of patterns guarantees to bind.
 fn collect_guaranteed_vars(patterns: &[Pattern]) -> HashSet<VarId> {
-    patterns.iter().flat_map(|p| p.variables()).collect()
+    patterns
+        .iter()
+        .flat_map(super::ir::Pattern::variables)
+        .collect()
 }
 
 /// Try to nest a deferred pattern into a compound pattern's inner lists.
@@ -1018,8 +1021,10 @@ pub fn reorder_patterns(
             Pattern::Minus(_) | Pattern::Exists(_) | Pattern::NotExists(_)
         ) {
             // Require all variables from preceding patterns (order preservation)
-            let mut required: HashSet<VarId> =
-                patterns[..i].iter().flat_map(|p| p.variables()).collect();
+            let mut required: HashSet<VarId> = patterns[..i]
+                .iter()
+                .flat_map(super::ir::Pattern::variables)
+                .collect();
             // If no preceding patterns, require the pattern's own variables
             // so it cannot execute before any sources provide bindings.
             if required.is_empty() {

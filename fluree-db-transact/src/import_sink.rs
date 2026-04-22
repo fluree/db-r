@@ -240,7 +240,7 @@ mod inner {
             let prefix = self
                 .ns_prefix_cache
                 .get(&code)
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .unwrap_or("");
             self.predicates.get_or_insert_parts(prefix, &sid.name)
         }
@@ -255,7 +255,7 @@ mod inner {
             let prefix = self
                 .ns_prefix_cache
                 .get(&code)
-                .map(|s| s.as_str())
+                .map(std::string::String::as_str)
                 .unwrap_or("");
             self.datatypes.get_or_insert_parts(prefix, &sid.name) as u16
         }
@@ -596,7 +596,7 @@ mod inner {
             };
 
             let dt = dtc.datatype().clone();
-            let lang = dtc.lang_tag().map(|s| s.to_string());
+            let lang = dtc.lang_tag().map(std::string::ToString::to_string);
 
             let meta = match (&lang, list_index) {
                 (Some(l), Some(i)) => Some(FlakeMeta {
@@ -632,7 +632,7 @@ mod inner {
         }
     }
 
-    impl<'a> GraphSink for ImportSink<'a> {
+    impl GraphSink for ImportSink<'_> {
         fn on_base(&mut self, _base_iri: &str) {
             // No-op — parser resolves relative IRIs before calling term_iri
         }

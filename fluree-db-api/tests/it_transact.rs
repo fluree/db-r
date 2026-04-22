@@ -685,15 +685,21 @@ async fn transact_with_explicit_commit() {
     });
 
     let stage = fluree
-        .stage_transaction(ledger0, TxnType::Insert, &txn, Default::default(), None)
+        .stage_transaction(
+            ledger0,
+            TxnType::Insert,
+            &txn,
+            fluree_db_transact::TxnOpts::default(),
+            None,
+        )
         .await
         .unwrap();
     let (receipt, ledger1) = fluree
         .commit_staged(
             stage.view,
             stage.ns_registry,
-            &Default::default(),
-            Default::default(),
+            &fluree_db_ledger::IndexConfig::default(),
+            fluree_db_transact::CommitOpts::default(),
         )
         .await
         .unwrap();
@@ -765,7 +771,7 @@ async fn insert_data_then_query_names() {
         .to_jsonld(&inserted.ledger.snapshot)
         .expect("to_jsonld");
     let arr = rows.as_array_mut().expect("rows array");
-    arr.sort_by_key(|a| a.to_string());
+    arr.sort_by_key(std::string::ToString::to_string);
 
     assert_eq!(rows, json!(["Alice", "Bob"]));
 }
