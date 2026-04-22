@@ -788,7 +788,7 @@ pub struct CreateBranchRequest {
     /// Optional transaction time to branch from. When set, the branch is
     /// created at this historical commit instead of the source's HEAD.
     #[serde(default)]
-    pub t: Option<i64>,
+    pub at_t: Option<i64>,
 }
 
 /// Create branch response
@@ -836,7 +836,7 @@ async fn create_branch_local(state: Arc<AppState>, request: Request) -> Result<i
     let source = req.source.unwrap_or_else(|| "main".to_string());
     let ledger = req.ledger;
     let branch = req.branch;
-    let at_t = req.t;
+    let at_t = req.at_t;
 
     let request_id = extract_request_id(&headers.raw, &state.telemetry_config);
     let trace_id = extract_trace_id(&headers.raw);
