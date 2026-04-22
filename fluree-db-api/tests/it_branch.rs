@@ -671,3 +671,184 @@ async fn branch_at_future_t_fails() {
         "expected 'beyond' in error, got: {err}"
     );
 }
+
+/// Transacting on a historical branch advances its t independently.
+///
+/// Creates a branch at t=2 (of 3 on main), transacts on it, and verifies
+/// the new data is visible on the branch but not on main, and that main's
+/// later data (t=3) is not visible on the branch.
+#[tokio::test]
+async fn transact_on_historical_branch() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+
+    // t=1: Alice
+    let r1 = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // t=2: Bob
+    let r2 = fluree
+        .insert(
+            r1.ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // t=3: Carol (main only)
+    fluree
+        .insert(
+            r2.ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:carol", "ex:name": "Carol"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Branch from t=2
+    fluree
+        .create_branch("mydb", "snap", None, Some(2))
+        .await
+        .unwrap();
+
+    // Transact on the historical branch — t should advance to 3
+    let snap = fluree.ledger("mydb:snap").await.unwrap();
+    let r = fluree
+        .insert(
+            snap,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:dave", "ex:name": "Dave"}]
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.receipt.t, 3, "branch t should advance from 2 to 3");
+
+    // Branch sees Alice + Bob + Dave (not Carol)
+    let query = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "select": ["?name"],
+        "where": {"@id": "?s", "ex:name": "?name"}
+    });
+    let snap = fluree.ledger("mydb:snap").await.unwrap();
+    let result = support::query_jsonld(&fluree, &snap, &query).await.unwrap();
+    let rows = result.to_jsonld(&snap.snapshot).unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice", "Bob", "Dave"]);
+
+    // Main still sees Alice + Bob + Carol (not Dave)
+    let main = fluree.ledger("mydb:main").await.unwrap();
+    let result = support::query_jsonld(&fluree, &main, &query).await.unwrap();
+    let rows = result.to_jsonld(&main.snapshot).unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice", "Bob", "Carol"]);
+}
+
+/// Time-travel query on a historical branch.
+///
+/// Creates a branch at t=2, transacts on it (t=3), then queries the branch
+/// at t=1 and t=2 to verify time-travel works correctly through the
+/// `BranchedContentStore` fallback chain.
+#[tokio::test]
+async fn time_travel_on_historical_branch() {
+    let fluree = FlureeBuilder::memory().build_memory();
+
+    let ledger = fluree.create_ledger("mydb").await.unwrap();
+
+    // t=1: Alice
+    let r1 = fluree
+        .insert(
+            ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:alice", "ex:name": "Alice"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // t=2: Bob
+    let r2 = fluree
+        .insert(
+            r1.ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:bob", "ex:name": "Bob"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // t=3: Carol (main only)
+    fluree
+        .insert(
+            r2.ledger,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:carol", "ex:name": "Carol"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Branch from t=2, then transact Dave at branch t=3
+    fluree
+        .create_branch("mydb", "snap", None, Some(2))
+        .await
+        .unwrap();
+    let snap = fluree.ledger("mydb:snap").await.unwrap();
+    fluree
+        .insert(
+            snap,
+            &json!({
+                "@context": {"ex": "http://example.org/ns/"},
+                "@graph": [{"@id": "ex:dave", "ex:name": "Dave"}]
+            }),
+        )
+        .await
+        .unwrap();
+
+    // Time-travel: branch at t=1 should show only Alice
+    let q_t1 = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "from": ["mydb:snap@t:1"],
+        "select": ["?name"],
+        "where": [{"@id": "?s", "ex:name": "?name"}],
+        "orderBy": ["?name"]
+    });
+    let result = fluree.query_connection(&q_t1).await.unwrap();
+    let snap_for_fmt = fluree.ledger("mydb:snap").await.unwrap();
+    let rows = result
+        .to_jsonld_async(snap_for_fmt.as_graph_db_ref(0))
+        .await
+        .unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice"]);
+
+    // Time-travel: branch at t=2 should show Alice + Bob (not Dave)
+    let q_t2 = json!({
+        "@context": {"ex": "http://example.org/ns/"},
+        "from": ["mydb:snap@t:2"],
+        "select": ["?name"],
+        "where": [{"@id": "?s", "ex:name": "?name"}],
+        "orderBy": ["?name"]
+    });
+    let result = fluree.query_connection(&q_t2).await.unwrap();
+    let rows = result
+        .to_jsonld_async(snap_for_fmt.as_graph_db_ref(0))
+        .await
+        .unwrap();
+    assert_eq!(extract_names(&rows), vec!["Alice", "Bob"]);
+}
