@@ -26,6 +26,93 @@ use tracing::{info, warn};
 /// Caps socket pressure and S3 throttling for large indexes with many leaflets.
 const BM25_IO_CONCURRENCY: usize = 32;
 
+/// Whether a graph_select spec is "simple" enough for the BM25 fast-path
+/// formatter. Simple = single-level crawl, no nested property expansion, no
+/// reverse properties, no wildcard, no auto-depth. For those, all values the
+/// BM25 builder needs are already in the query batches after execution, so we
+/// can skip graph_crawl entirely. Complex crawls (nested refs, reverse props,
+/// wildcards) still need graph_crawl to fetch the transitive shape.
+fn is_simple_bm25_crawl(gs: &fluree_db_query::ir::GraphSelectSpec) -> bool {
+    if gs.has_wildcard || gs.depth > 0 || !gs.reverse.is_empty() {
+        return false;
+    }
+    for sel in &gs.selections {
+        if let fluree_db_query::ir::SelectionSpec::Property {
+            sub_spec: Some(_), ..
+        } = sel
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// Decide the fast-path root var: the graph_select root if it's a variable
+/// and the select is simple enough that graph_crawl would fetch nothing the
+/// batches don't already contain.
+fn bm25_fast_path_root(parsed: &fluree_db_query::ParsedQuery) -> Option<fluree_db_query::VarId> {
+    parsed.graph_select.as_ref().and_then(|gs| {
+        if !is_simple_bm25_crawl(gs) {
+            return None;
+        }
+        match gs.root {
+            fluree_db_query::ir::Root::Var(v) => Some(v),
+            fluree_db_query::ir::Root::Sid(_) => None,
+        }
+    })
+}
+
+/// Fast-path formatter: build BM25-shaped documents
+/// (`{"@id": "<iri>", "<var_name>": <value>, ...}`) directly from query batches,
+/// skipping graph_crawl. Used by `execute_bm25_indexing_query(_historical)` when
+/// the indexing query's graph_select is simple enough that graph_crawl would
+/// just re-fetch data the batches already carry.
+fn format_bm25_docs_from_batches(
+    result: &crate::QueryResult,
+    namespaces: &std::collections::HashMap<u16, String>,
+    root_var_id: fluree_db_query::VarId,
+) -> Result<Vec<JsonValue>> {
+    use fluree_db_query::binding::Binding;
+    let compactor = crate::format::IriCompactor::new(namespaces, &result.context);
+    let row_count: usize = result.batches.iter().map(|b| b.len()).sum();
+    let mut out: Vec<JsonValue> = Vec::with_capacity(row_count);
+    for batch in &result.batches {
+        for row_idx in 0..batch.len() {
+            let mut obj = serde_json::Map::new();
+            if let Some(binding) = batch.get(row_idx, root_var_id) {
+                if !matches!(binding, Binding::Unbound | Binding::Poisoned) {
+                    let id_value = crate::format::jsonld::format_binding_with_result(
+                        result, binding, &compactor,
+                    )?;
+                    if matches!(id_value, JsonValue::String(_)) {
+                        obj.insert("@id".to_string(), id_value);
+                    }
+                }
+            }
+            for &var_id in batch.schema() {
+                if var_id == root_var_id {
+                    continue;
+                }
+                let Some(binding) = batch.get(row_idx, var_id) else {
+                    continue;
+                };
+                if matches!(binding, Binding::Unbound | Binding::Poisoned) {
+                    continue;
+                }
+                let var_name = result.vars.name(var_id);
+                if var_name.starts_with("?__") {
+                    continue;
+                }
+                let value =
+                    crate::format::jsonld::format_binding_with_result(result, binding, &compactor)?;
+                obj.insert(var_name.to_string(), value);
+            }
+            out.push(JsonValue::Object(obj));
+        }
+    }
+    Ok(out)
+}
+
 /// Best-effort deletion of old snapshot blobs from storage.
 /// Derives storage addresses from CIDs using the graph source namespace.
 /// Logs warnings on failure but does not propagate errors.
@@ -214,22 +301,58 @@ impl crate::Fluree {
         ledger: &LedgerState,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
-        // Parse the query
         let mut vars = VarRegistry::new();
         let parsed = parse_query(query_json, &ledger.snapshot, &mut vars)?;
+        let fast_path_root = bm25_fast_path_root(&parsed);
 
-        // Execute with a wildcard select so the operator pipeline does not project away
-        // bindings we need for indexing
+        // Execute with wildcard + no graph_select regardless of path — we want
+        // all bound vars materialized for both the fast-path formatter and the
+        // graph_crawl formatter (which re-walks subjects anyway).
         let mut parsed_for_exec = parsed.clone();
         parsed_for_exec.output = QueryOutput::Wildcard;
         parsed_for_exec.graph_select = None;
-
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
+        let t_exec = std::time::Instant::now();
         let db = ledger.as_graph_db_ref(0);
         let batches = execute_with_overlay(db, &vars, &executable).await?;
+        let row_count: usize = batches.iter().map(|b| b.len()).sum();
+        info!(
+            batch_count = batches.len(),
+            row_count,
+            elapsed_ms = t_exec.elapsed().as_millis() as u64,
+            "bm25.phase query_execute"
+        );
 
-        // Format using the standard JSON-LD formatter
+        let result_for_fast_path = fast_path_root.map(|_| {
+            let mut parsed_flat = parsed.clone();
+            parsed_flat.graph_select = None;
+            parsed_flat.output = QueryOutput::Wildcard;
+            parsed_flat
+        });
+
+        if let (Some(root_var_id), Some(parsed_flat)) = (fast_path_root, result_for_fast_path) {
+            let t_format = std::time::Instant::now();
+            let result = crate::query::helpers::build_query_result(
+                vars,
+                parsed_flat,
+                batches,
+                Some(ledger.t()),
+                Some(ledger.novelty.clone()),
+                None,
+            );
+            let out =
+                format_bm25_docs_from_batches(&result, ledger.snapshot.namespaces(), root_var_id)?;
+            info!(
+                result_len = out.len(),
+                elapsed_ms = t_format.elapsed().as_millis() as u64,
+                "bm25.phase format_direct"
+            );
+            return Ok(out);
+        }
+
+        // Fallback: graph_crawl preserves nested expansion, reverse props, wildcards.
+        let t_format = std::time::Instant::now();
         let result = crate::query::helpers::build_query_result(
             vars,
             parsed,
@@ -238,13 +361,18 @@ impl crate::Fluree {
             Some(ledger.novelty.clone()),
             None,
         );
-
         let json = result.to_jsonld_async(ledger.as_graph_db_ref(0)).await?;
-        match json {
-            JsonValue::Array(arr) => Ok(arr),
-            JsonValue::Object(_) => Ok(vec![json]),
-            _ => Ok(Vec::new()),
-        }
+        let out = match json {
+            JsonValue::Array(arr) => arr,
+            JsonValue::Object(_) => vec![json],
+            _ => Vec::new(),
+        };
+        info!(
+            result_len = out.len(),
+            elapsed_ms = t_format.elapsed().as_millis() as u64,
+            "bm25.phase format_graph_crawl"
+        );
+        Ok(out)
     }
 
     /// Execute an indexing query against a historical ledger view.
@@ -255,24 +383,54 @@ impl crate::Fluree {
         view: &crate::HistoricalLedgerView,
         query_json: &JsonValue,
     ) -> Result<Vec<JsonValue>> {
-        // Parse the query
         let mut vars = VarRegistry::new();
         let parsed = parse_query(query_json, &view.snapshot, &mut vars)?;
+        let fast_path_root = bm25_fast_path_root(&parsed);
 
-        // Execute with a wildcard select
         let mut parsed_for_exec = parsed.clone();
         parsed_for_exec.output = QueryOutput::Wildcard;
         parsed_for_exec.graph_select = None;
-
         let executable = ExecutableQuery::simple(parsed_for_exec);
 
+        let t_exec = std::time::Instant::now();
         let db = view.as_graph_db_ref(0);
         let batches = execute_with_overlay(db, &vars, &executable).await?;
+        let row_count: usize = batches.iter().map(|b| b.len()).sum();
+        info!(
+            batch_count = batches.len(),
+            row_count,
+            elapsed_ms = t_exec.elapsed().as_millis() as u64,
+            "bm25.phase query_execute (historical)"
+        );
 
-        // Format using the standard JSON-LD formatter
         let novelty = view
             .overlay()
             .map(|n| Arc::clone(n) as Arc<dyn OverlayProvider>);
+
+        if let Some(root_var_id) = fast_path_root {
+            let t_format = std::time::Instant::now();
+            let mut parsed_flat = parsed.clone();
+            parsed_flat.graph_select = None;
+            parsed_flat.output = QueryOutput::Wildcard;
+            let result = crate::query::helpers::build_query_result(
+                vars,
+                parsed_flat,
+                batches,
+                Some(view.to_t()),
+                novelty,
+                None,
+            );
+            let out =
+                format_bm25_docs_from_batches(&result, view.snapshot.namespaces(), root_var_id)?;
+            info!(
+                result_len = out.len(),
+                elapsed_ms = t_format.elapsed().as_millis() as u64,
+                "bm25.phase format_direct (historical)"
+            );
+            return Ok(out);
+        }
+
+        let t_format = std::time::Instant::now();
         let result = crate::query::helpers::build_query_result(
             vars,
             parsed,
@@ -281,13 +439,18 @@ impl crate::Fluree {
             novelty,
             None,
         );
-
         let json = result.to_jsonld_async(view.as_graph_db_ref(0)).await?;
-        match json {
-            JsonValue::Array(arr) => Ok(arr),
-            JsonValue::Object(_) => Ok(vec![json]),
-            _ => Ok(Vec::new()),
-        }
+        let out = match json {
+            JsonValue::Array(arr) => arr,
+            JsonValue::Object(_) => vec![json],
+            _ => Vec::new(),
+        };
+        info!(
+            result_len = out.len(),
+            elapsed_ms = t_format.elapsed().as_millis() as u64,
+            "bm25.phase format_graph_crawl (historical)"
+        );
+        Ok(out)
     }
 
     /// Write a BM25 index snapshot to CAS, choosing v3 (single blob) or v4

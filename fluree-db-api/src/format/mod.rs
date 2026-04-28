@@ -46,7 +46,7 @@ pub mod datatype;
 pub mod delimited;
 mod graph_crawl;
 pub mod iri;
-mod jsonld;
+pub(crate) mod jsonld;
 mod materialize;
 mod rdf_xml;
 mod sparql;
